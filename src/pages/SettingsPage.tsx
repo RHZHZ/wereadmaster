@@ -828,7 +828,7 @@ export function SettingsPage({
                         value={apiKey}
                         type="password"
                         autoComplete="off"
-                        placeholder="粘贴 sk-...，保存后不会再显示"
+                        placeholder="粘贴 wrk-...，保存后不会再显示"
                         onChange={(event) => setApiKey(event.target.value)}
                       />
                     </label>
