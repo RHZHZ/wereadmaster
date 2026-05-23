@@ -44,6 +44,7 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # 核心：Tauri 构建发布（自动打包+上传安装包）
       - name: Build and publish Tauri release
         id: publish
         uses: tauri-apps/tauri-action@v0.6.2
@@ -58,6 +59,22 @@ jobs:
           releaseDraft: false
           prerelease: false
 
+      # ✅ 新增：安装 Tauri CLI（必须！否则无法执行 tauri 命令）
+      - name: Install Tauri CLI
+        run: npm install -g @tauri-apps/cli
+
+      # ✅ 新增：生成 latest.json（自动更新核心文件）
+      - name: Generate latest.json
+        run: tauri updater build --target x86_64-pc-windows-msvc
+
+      # ✅ 新增：上传 latest.json 到 GitHub Release
+      - name: Upload latest.json to Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ inputs.tag_name || github.ref_name }}" "./src-tauri/target/release/bundle/latest.json" --clobber
+
+  # Android 构建任务（保持不变，正确）
   release-android:
     name: Release Android
     runs-on: ubuntu-latest
