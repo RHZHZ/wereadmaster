@@ -36,6 +36,28 @@ cargo check
 npx playwright install chromium
 ```
 
+## 发布与一键更新
+
+- Windows 正式发布通过 GitHub Releases 分发，仓库地址为 `RHZHZ/wxreadmaster`。
+- 应用内“检查并更新”依赖 Tauri updater，从 GitHub Releases 的 `latest.json` 检查新版本。
+- updater 公钥已写入 `src-tauri/tauri.conf.json`，私钥必须只保存在本机或 GitHub Actions Secrets 中。
+
+发布前建议执行：
+
+```powershell
+npm test
+npm run build
+cargo check --manifest-path "src-tauri/Cargo.toml"
+```
+
+首次配置或更换签名密钥时：
+
+```powershell
+npm run tauri signer generate -- --ci -w "$env:USERPROFILE/.tauri/wxreadmaster.key"
+```
+
+完整发布说明见 `docs/github-release-updates.md`。
+
 ## 缓存策略
 
 应用有两层缓存：

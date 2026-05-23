@@ -10,7 +10,9 @@
 - 设置页已提供“检查并更新”入口。
 - 构建配置已开启 `createUpdaterArtifacts`。
 - GitHub Actions 已新增 tag 触发的 Windows 发布流程。
-- GitHub 仓库地址、updater 公钥和 endpoints 仍需在首次正式发布前填入。
+- GitHub 仓库地址已固定为 `RHZHZ/wxreadmaster`。
+- updater 公钥已写入 `src-tauri/tauri.conf.json`。
+- 首次正式发布前仍需把私钥配置到 GitHub Actions Secrets。
 
 ## 首次发布前准备
 
@@ -18,21 +20,18 @@
 2. 生成 Tauri updater 签名密钥：
 
    ```powershell
-   npm run tauri signer generate
+   npm run tauri signer generate -- --ci -w "$env:USERPROFILE/.tauri/wxreadmaster.key"
    ```
 
-3. 把生成的公钥写入 `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`。
-4. 把 GitHub Releases 的更新描述文件地址写入 `plugins.updater.endpoints`。
-
-   推荐格式：
+3. 当前项目公钥已经写入 `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`。
+4. 当前项目更新端点已经写入：
 
    ```json
    {
      "plugins": {
        "updater": {
-         "pubkey": "填入生成的公钥",
          "endpoints": [
-           "https://github.com/<owner>/<repo>/releases/latest/download/latest.json"
+           "https://github.com/RHZHZ/wxreadmaster/releases/latest/download/latest.json"
          ]
        }
      }
@@ -43,6 +42,14 @@
 
    - `TAURI_SIGNING_PRIVATE_KEY`
    - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+
+   如果私钥没有设置密码，`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 可以留空或先不配置。
+
+6. `TAURI_SIGNING_PRIVATE_KEY` 建议填入：
+
+   - `C:\Users\RHZ\.tauri\wxreadmaster.key` 文件全文内容
+   - 不要提交到仓库
+   - 不要写进 `.env`
 
 ## 发布步骤
 
@@ -70,6 +77,16 @@
 4. GitHub Actions 会创建 draft release，并上传安装包和 updater 产物。
 5. 检查 draft release 中的安装包、`latest.json` 和签名产物。
 6. 补充发布说明后发布 release。
+
+## 首次发布建议
+
+建议第一次使用：
+
+1. 标签使用 `v0.1.0` 或 `v0.1.1`。
+2. 先发布为 draft release。
+3. 下载并安装当前版本。
+4. 再推送一个更高版本标签，例如 `v0.1.2`。
+5. 在已安装旧版本的应用里点击“检查并更新”验证整条链路。
 
 ## 验收标准
 
