@@ -59,6 +59,7 @@
 
 7. 如果 GitHub Actions 仍然提示 `Resource not accessible by integration`，先检查仓库 `Settings > Actions > General` 里的 `Workflow permissions` 是否为 `Read and write permissions`；如果组织策略限制了默认 token，就启用 `TAURI_RELEASE_PAT`。
 8. Android 不是走 Google Play 也可以发 APK，但必须提供自己的 keystore；建议把 keystore 先转成 base64 存到 `ANDROID_KEY_BASE64`，并由 CI 直接上传到同一个 release。
+9. 当前 workflow 中，`tauri-action` 仍可使用 `TAURI_RELEASE_PAT` 兜底；但后续 `gh release upload` 步骤固定使用内置 `github.token`。如果你配置了 `TAURI_RELEASE_PAT` 且日志出现 `HTTP 401: Bad credentials`，优先检查该 secret 是否过期、是否多复制了空格或换行。
 
 ## 本地打包说明
 

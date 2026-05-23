@@ -49,7 +49,7 @@ jobs:
         id: publish
         uses: tauri-apps/tauri-action@v0.6.2
         env:
-          GITHUB_TOKEN: ${{ secrets.TAURI_RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.TAURI_RELEASE_PAT || github.token }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
@@ -62,7 +62,7 @@ jobs:
 
       - name: Generate latest.json
         env:
-          GH_TOKEN: ${{ secrets.TAURI_RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
         run: |
           $bundleDir = Join-Path $PWD "src-tauri/target/release/bundle/nsis"
@@ -120,7 +120,7 @@ jobs:
 
       - name: Upload latest.json to Release
         env:
-          GH_TOKEN: ${{ secrets.TAURI_RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
         run: |
           gh release upload "$env:RELEASE_TAG" "./src-tauri/target/release/bundle/latest.json" --clobber
@@ -176,7 +176,7 @@ jobs:
 
       - name: Upload Android APK to release
         env:
-          GH_TOKEN: ${{ secrets.TAURI_RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           APK_PATH="$(find src-tauri/gen/android -name '*.apk' | head -n 1)"
           if [ -z "$APK_PATH" ]; then
