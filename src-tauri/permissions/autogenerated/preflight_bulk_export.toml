@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-preflight-bulk-export"
+description = "Enables the preflight_bulk_export command without any pre-configured scope."
+commands.allow = ["preflight_bulk_export"]
+
+[[permission]]
+identifier = "deny-preflight-bulk-export"
+description = "Denies the preflight_bulk_export command without any pre-configured scope."
+commands.deny = ["preflight_bulk_export"]

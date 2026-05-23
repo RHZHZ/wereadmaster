@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cancel-bulk-export"
+description = "Enables the cancel_bulk_export command without any pre-configured scope."
+commands.allow = ["cancel_bulk_export"]
+
+[[permission]]
+identifier = "deny-cancel-bulk-export"
+description = "Denies the cancel_bulk_export command without any pre-configured scope."
+commands.deny = ["cancel_bulk_export"]

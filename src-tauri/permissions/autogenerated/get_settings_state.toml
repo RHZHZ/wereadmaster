@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-settings-state"
+description = "Enables the get_settings_state command without any pre-configured scope."
+commands.allow = ["get_settings_state"]
+
+[[permission]]
+identifier = "deny-get-settings-state"
+description = "Denies the get_settings_state command without any pre-configured scope."
+commands.deny = ["get_settings_state"]

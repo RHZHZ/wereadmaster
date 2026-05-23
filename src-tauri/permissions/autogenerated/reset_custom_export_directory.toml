@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-reset-custom-export-directory"
+description = "Enables the reset_custom_export_directory command without any pre-configured scope."
+commands.allow = ["reset_custom_export_directory"]
+
+[[permission]]
+identifier = "deny-reset-custom-export-directory"
+description = "Denies the reset_custom_export_directory command without any pre-configured scope."
+commands.deny = ["reset_custom_export_directory"]

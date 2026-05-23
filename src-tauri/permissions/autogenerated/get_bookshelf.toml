@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-bookshelf"
+description = "Enables the get_bookshelf command without any pre-configured scope."
+commands.allow = ["get_bookshelf"]
+
+[[permission]]
+identifier = "deny-get-bookshelf"
+description = "Denies the get_bookshelf command without any pre-configured scope."
+commands.deny = ["get_bookshelf"]

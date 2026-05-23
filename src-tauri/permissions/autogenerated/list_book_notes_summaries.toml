@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-book-notes-summaries"
+description = "Enables the list_book_notes_summaries command without any pre-configured scope."
+commands.allow = ["list_book_notes_summaries"]
+
+[[permission]]
+identifier = "deny-list-book-notes-summaries"
+description = "Denies the list_book_notes_summaries command without any pre-configured scope."
+commands.deny = ["list_book_notes_summaries"]

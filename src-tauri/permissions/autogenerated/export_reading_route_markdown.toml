@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-export-reading-route-markdown"
+description = "Enables the export_reading_route_markdown command without any pre-configured scope."
+commands.allow = ["export_reading_route_markdown"]
+
+[[permission]]
+identifier = "deny-export-reading-route-markdown"
+description = "Denies the export_reading_route_markdown command without any pre-configured scope."
+commands.deny = ["export_reading_route_markdown"]

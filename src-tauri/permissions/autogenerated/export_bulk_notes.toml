@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-export-bulk-notes"
+description = "Enables the export_bulk_notes command without any pre-configured scope."
+commands.allow = ["export_bulk_notes"]
+
+[[permission]]
+identifier = "deny-export-bulk-notes"
+description = "Denies the export_bulk_notes command without any pre-configured scope."
+commands.deny = ["export_bulk_notes"]

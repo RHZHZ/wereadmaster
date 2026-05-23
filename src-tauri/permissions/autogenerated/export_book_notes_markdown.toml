@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-export-book-notes-markdown"
+description = "Enables the export_book_notes_markdown command without any pre-configured scope."
+commands.allow = ["export_book_notes_markdown"]
+
+[[permission]]
+identifier = "deny-export-book-notes-markdown"
+description = "Denies the export_book_notes_markdown command without any pre-configured scope."
+commands.deny = ["export_book_notes_markdown"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-export-local-data-backup"
+description = "Enables the export_local_data_backup command without any pre-configured scope."
+commands.allow = ["export_local_data_backup"]
+
+[[permission]]
+identifier = "deny-export-local-data-backup"
+description = "Denies the export_local_data_backup command without any pre-configured scope."
+commands.deny = ["export_local_data_backup"]

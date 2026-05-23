@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "个人阅读管理",
+  "version": "0.1.0",
+  "identifier": "com.wxreadmaster.personal-reading",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://127.0.0.1:5173",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "个人阅读管理",
+        "width": 1360,
+        "height": 820,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true,
+        "decorations": false,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "useLocalToolsDir": true,
+    "createUpdaterArtifacts": true,
+    "targets": ["nsis"],
+    "category": "Productivity",
+    "icon": ["icons/icon-v2.ico"]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": [
+        "https://github.com/<owner>/<repo>/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}

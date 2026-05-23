@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-latest-reading-stats-review"
+description = "Enables the get_latest_reading_stats_review command without any pre-configured scope."
+commands.allow = ["get_latest_reading_stats_review"]
+
+[[permission]]
+identifier = "deny-get-latest-reading-stats-review"
+description = "Denies the get_latest_reading_stats_review command without any pre-configured scope."
+commands.deny = ["get_latest_reading_stats_review"]

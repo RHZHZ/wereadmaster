@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-test-ai-connection"
+description = "Enables the test_ai_connection command without any pre-configured scope."
+commands.allow = ["test_ai_connection"]
+
+[[permission]]
+identifier = "deny-test-ai-connection"
+description = "Denies the test_ai_connection command without any pre-configured scope."
+commands.deny = ["test_ai_connection"]

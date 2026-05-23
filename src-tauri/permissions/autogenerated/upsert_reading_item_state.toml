@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-upsert-reading-item-state"
+description = "Enables the upsert_reading_item_state command without any pre-configured scope."
+commands.allow = ["upsert_reading_item_state"]
+
+[[permission]]
+identifier = "deny-upsert-reading-item-state"
+description = "Denies the upsert_reading_item_state command without any pre-configured scope."
+commands.deny = ["upsert_reading_item_state"]

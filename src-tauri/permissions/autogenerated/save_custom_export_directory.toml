@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-save-custom-export-directory"
+description = "Enables the save_custom_export_directory command without any pre-configured scope."
+commands.allow = ["save_custom_export_directory"]
+
+[[permission]]
+identifier = "deny-save-custom-export-directory"
+description = "Denies the save_custom_export_directory command without any pre-configured scope."
+commands.deny = ["save_custom_export_directory"]

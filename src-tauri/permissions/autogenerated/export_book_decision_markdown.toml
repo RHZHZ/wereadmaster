@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-export-book-decision-markdown"
+description = "Enables the export_book_decision_markdown command without any pre-configured scope."
+commands.allow = ["export_book_decision_markdown"]
+
+[[permission]]
+identifier = "deny-export-book-decision-markdown"
+description = "Denies the export_book_decision_markdown command without any pre-configured scope."
+commands.deny = ["export_book_decision_markdown"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-sync-shelf"
+description = "Enables the sync_shelf command without any pre-configured scope."
+commands.allow = ["sync_shelf"]
+
+[[permission]]
+identifier = "deny-sync-shelf"
+description = "Denies the sync_shelf command without any pre-configured scope."
+commands.deny = ["sync_shelf"]

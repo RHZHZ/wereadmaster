@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-summarize-book-notes"
+description = "Enables the summarize_book_notes command without any pre-configured scope."
+commands.allow = ["summarize_book_notes"]
+
+[[permission]]
+identifier = "deny-summarize-book-notes"
+description = "Denies the summarize_book_notes command without any pre-configured scope."
+commands.deny = ["summarize_book_notes"]

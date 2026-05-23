@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-summarize-reading-stats"
+description = "Enables the summarize_reading_stats command without any pre-configured scope."
+commands.allow = ["summarize_reading_stats"]
+
+[[permission]]
+identifier = "deny-summarize-reading-stats"
+description = "Denies the summarize_reading_stats command without any pre-configured scope."
+commands.deny = ["summarize_reading_stats"]

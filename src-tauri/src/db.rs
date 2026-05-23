@@ -1,0 +1,394 @@
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
+use rusqlite::{Connection, Result as SqliteResult};
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Manager};
+
+pub const DATABASE_FILE_NAME: &str = "reading-cache.sqlite3";
+pub const DATA_DIRECTORY_CONFIG_FILE_NAME: &str = "local-data-directory.json";
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct DataDirectoryConfig {
+    custom_data_dir: Option<String>,
+    custom_export_dir: Option<String>,
+}
+
+pub fn default_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| error.to_string())?;
+    fs::create_dir_all(&data_dir).map_err(|error| error.to_string())?;
+
+    Ok(data_dir)
+}
+
+pub fn active_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let default_dir = default_data_dir(app)?;
+    let data_dir = read_custom_data_directory_config(&default_dir)?.unwrap_or(default_dir);
+    fs::create_dir_all(&data_dir).map_err(|error| error.to_string())?;
+
+    Ok(data_dir)
+}
+
+pub fn default_export_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(active_data_dir(app)?.join("exports"))
+}
+
+pub fn active_export_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let default_dir = default_data_dir(app)?;
+    let export_dir =
+        read_custom_export_directory_config(&default_dir)?.unwrap_or(default_export_dir(app)?);
+    fs::create_dir_all(&export_dir).map_err(|error| error.to_string())?;
+
+    Ok(export_dir)
+}
+
+pub fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let data_dir = active_data_dir(app)?;
+
+    Ok(data_dir.join(DATABASE_FILE_NAME))
+}
+
+pub fn read_custom_data_directory_config(config_dir: &Path) -> Result<Option<PathBuf>, String> {
+    let config_path = config_dir.join(DATA_DIRECTORY_CONFIG_FILE_NAME);
+    if !config_path.is_file() {
+        return Ok(None);
+    }
+
+    let config = read_data_directory_config(config_dir)?;
+
+    Ok(config
+        .custom_data_dir
+        .filter(|path| !path.trim().is_empty())
+        .map(PathBuf::from))
+}
+
+pub fn write_custom_data_directory_config(
+    config_dir: &Path,
+    custom_data_dir: Option<&Path>,
+) -> Result<(), String> {
+    let mut config = read_data_directory_config(config_dir)?;
+    config.custom_data_dir = custom_data_dir.map(|data_dir| data_dir.display().to_string());
+
+    write_data_directory_config(config_dir, config)
+}
+
+pub fn read_custom_export_directory_config(config_dir: &Path) -> Result<Option<PathBuf>, String> {
+    let config = read_data_directory_config(config_dir)?;
+
+    Ok(config
+        .custom_export_dir
+        .filter(|path| !path.trim().is_empty())
+        .map(PathBuf::from))
+}
+
+pub fn write_custom_export_directory_config(
+    config_dir: &Path,
+    custom_export_dir: Option<&Path>,
+) -> Result<(), String> {
+    let mut config = read_data_directory_config(config_dir)?;
+    config.custom_export_dir = custom_export_dir.map(|export_dir| export_dir.display().to_string());
+
+    write_data_directory_config(config_dir, config)
+}
+
+fn read_data_directory_config(config_dir: &Path) -> Result<DataDirectoryConfig, String> {
+    let config_path = config_dir.join(DATA_DIRECTORY_CONFIG_FILE_NAME);
+    if !config_path.is_file() {
+        return Ok(DataDirectoryConfig::default());
+    }
+
+    let content = fs::read_to_string(&config_path).map_err(|error| error.to_string())?;
+    serde_json::from_str::<DataDirectoryConfig>(&content).map_err(|error| error.to_string())
+}
+
+fn write_data_directory_config(
+    config_dir: &Path,
+    config: DataDirectoryConfig,
+) -> Result<(), String> {
+    fs::create_dir_all(config_dir).map_err(|error| error.to_string())?;
+    let config_path = config_dir.join(DATA_DIRECTORY_CONFIG_FILE_NAME);
+
+    if config.custom_data_dir.is_none() && config.custom_export_dir.is_none() {
+        if config_path.exists() {
+            fs::remove_file(config_path).map_err(|error| error.to_string())?;
+        }
+        return Ok(());
+    }
+
+    let content = serde_json::to_string_pretty(&config).map_err(|error| error.to_string())?;
+    fs::write(config_path, content).map_err(|error| error.to_string())
+}
+
+pub fn open_connection(app: &AppHandle) -> Result<Connection, String> {
+    let path = database_path(app)?;
+    let connection = Connection::open(path).map_err(|error| error.to_string())?;
+    initialize_schema(&connection).map_err(|error| error.to_string())?;
+
+    Ok(connection)
+}
+
+pub fn initialize_schema(connection: &Connection) -> SqliteResult<()> {
+    connection.pragma_update(None, "foreign_keys", "ON")?;
+    let _ = connection.pragma_update(None, "journal_mode", "WAL");
+    connection.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS sync_state (
+            section TEXT PRIMARY KEY NOT NULL,
+            status TEXT NOT NULL,
+            last_success_at TEXT,
+            last_attempt_at TEXT,
+            error_code TEXT,
+            error_message TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS shelf_entries (
+            id TEXT PRIMARY KEY NOT NULL,
+            type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            author TEXT,
+            cover TEXT,
+            category TEXT,
+            is_top INTEGER NOT NULL DEFAULT 0,
+            is_secret INTEGER NOT NULL DEFAULT 0,
+            is_finished INTEGER,
+            last_read_at INTEGER,
+            raw_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS book_details (
+            book_id TEXT PRIMARY KEY NOT NULL,
+            title TEXT NOT NULL,
+            author TEXT,
+            cover TEXT,
+            category TEXT,
+            intro TEXT,
+            raw_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS book_progress (
+            book_id TEXT PRIMARY KEY NOT NULL,
+            progress_percent INTEGER NOT NULL,
+            chapter_uid INTEGER,
+            record_reading_time_seconds INTEGER,
+            finish_time INTEGER,
+            raw_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS chapters (
+            book_id TEXT NOT NULL,
+            chapter_uid INTEGER NOT NULL,
+            chapter_idx INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            level INTEGER NOT NULL,
+            word_count INTEGER,
+            raw_json TEXT NOT NULL,
+            PRIMARY KEY(book_id, chapter_uid)
+        );
+
+        CREATE TABLE IF NOT EXISTS notebook_books (
+            book_id TEXT PRIMARY KEY NOT NULL,
+            title TEXT NOT NULL,
+            author TEXT,
+            cover TEXT,
+            review_count INTEGER NOT NULL DEFAULT 0,
+            note_count INTEGER NOT NULL DEFAULT 0,
+            bookmark_count INTEGER NOT NULL DEFAULT 0,
+            total_note_count INTEGER NOT NULL DEFAULT 0,
+            sort INTEGER,
+            raw_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS highlights (
+            bookmark_id TEXT PRIMARY KEY NOT NULL,
+            book_id TEXT NOT NULL,
+            chapter_uid INTEGER,
+            chapter_title TEXT,
+            mark_text TEXT NOT NULL,
+            create_time INTEGER,
+            range_text TEXT,
+            raw_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS thoughts (
+            review_id TEXT PRIMARY KEY NOT NULL,
+            book_id TEXT NOT NULL,
+            content TEXT NOT NULL,
+            abstract_text TEXT,
+            create_time INTEGER,
+            star INTEGER,
+            chapter_name TEXT,
+            chapter_uid INTEGER,
+            range_text TEXT,
+            deep_link TEXT,
+            is_finish INTEGER,
+            raw_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS reading_stats (
+            mode TEXT NOT NULL,
+            base_time INTEGER NOT NULL,
+            total_read_time_seconds INTEGER,
+            read_days INTEGER,
+            raw_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(mode, base_time)
+        );
+
+        CREATE TABLE IF NOT EXISTS raw_cache (
+            namespace TEXT NOT NULL,
+            cache_key TEXT NOT NULL,
+            raw_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(namespace, cache_key)
+        );
+
+        CREATE TABLE IF NOT EXISTS ai_outputs (
+            feature TEXT NOT NULL,
+            scope_id TEXT NOT NULL,
+            prompt_version TEXT NOT NULL,
+            input_hash TEXT NOT NULL,
+            output_json TEXT NOT NULL,
+            source_count INTEGER,
+            provider_model TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(feature, scope_id, prompt_version, input_hash)
+        );
+
+        CREATE TABLE IF NOT EXISTS ai_feedback_records (
+            feature TEXT NOT NULL,
+            scope_id TEXT NOT NULL,
+            input_hash TEXT NOT NULL,
+            item_kind TEXT NOT NULL,
+            item_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            note TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(feature, scope_id, input_hash, item_kind, item_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_ai_feedback_records_scope_updated
+            ON ai_feedback_records(feature, scope_id, updated_at);
+
+        CREATE TABLE IF NOT EXISTS reading_item_states (
+            item_id TEXT PRIMARY KEY NOT NULL,
+            item_type TEXT NOT NULL,
+            status TEXT NOT NULL,
+            title TEXT,
+            author TEXT,
+            cover TEXT,
+            category TEXT,
+            note TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        ",
+    )?;
+    add_column_if_missing(connection, "thoughts", "abstract_text", "TEXT")?;
+    add_column_if_missing(connection, "thoughts", "chapter_uid", "INTEGER")?;
+    add_column_if_missing(connection, "thoughts", "range_text", "TEXT")?;
+    add_column_if_missing(connection, "thoughts", "deep_link", "TEXT")?;
+
+    Ok(())
+}
+
+fn add_column_if_missing(
+    connection: &Connection,
+    table_name: &str,
+    column_name: &str,
+    column_type: &str,
+) -> SqliteResult<()> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table_name})"))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<SqliteResult<Vec<_>>>()?;
+
+    if columns.iter().any(|name| name == column_name) {
+        return Ok(());
+    }
+
+    connection.execute(
+        &format!("ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"),
+        [],
+    )?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::Connection;
+
+    use super::{
+        initialize_schema, read_custom_export_directory_config,
+        write_custom_export_directory_config,
+    };
+
+    #[test]
+    fn initialize_schema_creates_core_tables() {
+        let connection = Connection::open_in_memory().expect("in-memory database should open");
+
+        initialize_schema(&connection).expect("schema should initialize");
+
+        let table_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN (
+                    'sync_state',
+                    'shelf_entries',
+                    'book_details',
+                    'book_progress',
+                    'chapters',
+                    'notebook_books',
+                    'highlights',
+                    'thoughts',
+                    'reading_stats',
+                    'raw_cache',
+                    'ai_outputs',
+                    'ai_feedback_records',
+                    'reading_item_states'
+                )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("table count should be readable");
+
+        assert_eq!(table_count, 13);
+    }
+
+    #[test]
+    fn custom_export_directory_config_round_trips() {
+        let temp_root = std::env::temp_dir().join("wxreadmaster-export-dir-config-test");
+        let _ = std::fs::remove_dir_all(&temp_root);
+        std::fs::create_dir_all(&temp_root).expect("temp root should be created");
+        let export_dir = temp_root.join("exports-target");
+
+        write_custom_export_directory_config(&temp_root, Some(&export_dir))
+            .expect("custom export directory should persist");
+        let loaded = read_custom_export_directory_config(&temp_root)
+            .expect("custom export directory should load")
+            .expect("custom export directory should be configured");
+
+        assert_eq!(loaded, export_dir);
+
+        write_custom_export_directory_config(&temp_root, None)
+            .expect("custom export directory config should clear");
+        assert!(read_custom_export_directory_config(&temp_root)
+            .expect("custom export directory config should load")
+            .is_none());
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+}

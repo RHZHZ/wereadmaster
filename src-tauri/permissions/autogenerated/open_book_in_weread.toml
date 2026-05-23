@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-open-book-in-weread"
+description = "Enables the open_book_in_weread command without any pre-configured scope."
+commands.allow = ["open_book_in_weread"]
+
+[[permission]]
+identifier = "deny-open-book-in-weread"
+description = "Denies the open_book_in_weread command without any pre-configured scope."
+commands.deny = ["open_book_in_weread"]

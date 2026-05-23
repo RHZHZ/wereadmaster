@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-latest-reading-route"
+description = "Enables the get_latest_reading_route command without any pre-configured scope."
+commands.allow = ["get_latest_reading_route"]
+
+[[permission]]
+identifier = "deny-get-latest-reading-route"
+description = "Denies the get_latest_reading_route command without any pre-configured scope."
+commands.deny = ["get_latest_reading_route"]

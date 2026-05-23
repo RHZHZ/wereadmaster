@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-save-ai-review-feedback"
+description = "Enables the save_ai_review_feedback command without any pre-configured scope."
+commands.allow = ["save_ai_review_feedback"]
+
+[[permission]]
+identifier = "deny-save-ai-review-feedback"
+description = "Denies the save_ai_review_feedback command without any pre-configured scope."
+commands.deny = ["save_ai_review_feedback"]

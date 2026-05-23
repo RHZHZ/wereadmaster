@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-similar-books"
+description = "Enables the get_similar_books command without any pre-configured scope."
+commands.allow = ["get_similar_books"]
+
+[[permission]]
+identifier = "deny-get-similar-books"
+description = "Denies the get_similar_books command without any pre-configured scope."
+commands.deny = ["get_similar_books"]

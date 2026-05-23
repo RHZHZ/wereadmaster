@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-clear-ai-output-cache"
+description = "Enables the clear_ai_output_cache command without any pre-configured scope."
+commands.allow = ["clear_ai_output_cache"]
+
+[[permission]]
+identifier = "deny-clear-ai-output-cache"
+description = "Denies the clear_ai_output_cache command without any pre-configured scope."
+commands.deny = ["clear_ai_output_cache"]
