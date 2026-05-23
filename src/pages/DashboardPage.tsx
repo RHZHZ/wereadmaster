@@ -12,7 +12,7 @@ import {
   RefreshCw,
   Sparkles
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import heroReadingDashboard from "../assets/hero-reading-dashboard.png";
 import { buildReadingHabitProfile, calculateTotalNotes, hasEnoughDataForHabitProfile } from "../lib/business-rules";
 import { formatUnixDate } from "../lib/formatters";
@@ -123,51 +123,80 @@ export function DashboardPage({
   const hasCredential = credentialStatus?.hasCredential === true;
   const summary = bookshelf?.snapshot.summary;
   const syncState = bookshelf?.syncState;
-  const shelfEntries = bookshelf?.snapshot.entries ?? [];
+  const shelfEntries = useMemo(() => bookshelf?.snapshot.entries ?? [], [bookshelf?.snapshot.entries]);
   const hasShelfData = (summary?.totalVisibleEntries ?? 0) > 0;
   const lastSyncText = formatSyncDate(syncState?.lastSuccessAt);
-  const recentEntries = getRecentEntries(shelfEntries);
-  const shelfEntryMap = new Map(shelfEntries.map((entry) => [entry.id, entry]));
-  const notesBookMap = new Map((notesOverview?.books ?? []).map((book) => [book.bookId, book]));
-  const continueItems = buildContinueItems(recentEntries, onOpenShelfEntry);
-  const reviewItems = buildReviewItems({
-    readingStates,
-    notesBooks: notesOverview?.books ?? [],
-    shelfEntryMap,
-    notesBookMap,
-    onOpenShelfEntry,
-    onOpenBookNotes,
-    onOpenReadingReview
-  });
-  const candidateItems = buildCandidateItems(readingStates, onOpenCandidateBook);
+  const notesBooks = useMemo(() => notesOverview?.books ?? [], [notesOverview?.books]);
   const monthlyStats = readingStatsCache.monthly?.stats;
-  const reviewActions = reviewSuggestion?.review.nextActions.filter(Boolean).slice(0, 3) ?? [];
-  const habitProfile = buildReadingHabitProfile(monthlyStats);
-  const canBuildProfile = hasEnoughDataForHabitProfile(monthlyStats);
-  const candidateRecommendations = buildCandidateRecommendations(candidateItems);
+
+  const shelfEntryMap = useMemo(() => new Map(shelfEntries.map((entry) => [entry.id, entry])), [shelfEntries]);
+  const notesBookMap = useMemo(() => new Map(notesBooks.map((book) => [book.bookId, book])), [notesBooks]);
+  const recentEntries = useMemo(() => getRecentEntries(shelfEntries), [shelfEntries]);
+  const continueItems = useMemo(() => buildContinueItems(recentEntries, onOpenShelfEntry), [recentEntries, onOpenShelfEntry]);
+  const reviewItems = useMemo(
+    () =>
+      buildReviewItems({
+        readingStates,
+        notesBooks,
+        shelfEntryMap,
+        notesBookMap,
+        onOpenShelfEntry,
+        onOpenBookNotes,
+        onOpenReadingReview
+      }),
+    [readingStates, notesBooks, shelfEntryMap, notesBookMap, onOpenShelfEntry, onOpenBookNotes, onOpenReadingReview]
+  );
+  const candidateItems = useMemo(() => buildCandidateItems(readingStates, onOpenCandidateBook), [readingStates, onOpenCandidateBook]);
+  const reviewActions = useMemo(() => reviewSuggestion?.review.nextActions.filter(Boolean).slice(0, 3) ?? [], [reviewSuggestion]);
+  const habitProfile = useMemo(() => buildReadingHabitProfile(monthlyStats), [monthlyStats]);
+  const canBuildProfile = useMemo(() => hasEnoughDataForHabitProfile(monthlyStats), [monthlyStats]);
+  const candidateRecommendations = useMemo(() => buildCandidateRecommendations(candidateItems), [candidateItems]);
   const dashboardRecommendations = recommendedBooks.length > 0 ? recommendedBooks : candidateRecommendations;
-  const todayActions = buildTodayActions({
-    hasCredential,
-    hasShelfData,
-    hasAiCredential: aiSettingsState?.credential.hasCredential,
-    recentEntries,
-    reviewItem: reviewItems[0],
-    reviewItems,
-    candidateItem: candidateItems[0],
-    candidateItems,
-    bookDecisionResponse: bookDecisionSession?.response,
-    reviewActions,
-    summary,
-    shelfEntries,
-    onOpenBookshelf,
-    onOpenNotes,
-    onOpenReadingReview,
-    onOpenDiscovery,
-    onOpenSettings,
-    onOpenShelfEntry,
-    onOpenReadingRoute,
-    onOpenBookDecision
-  });
+  const todayActions = useMemo(
+    () =>
+      buildTodayActions({
+        hasCredential,
+        hasShelfData,
+        hasAiCredential: aiSettingsState?.credential.hasCredential,
+        recentEntries,
+        reviewItem: reviewItems[0],
+        reviewItems,
+        candidateItem: candidateItems[0],
+        candidateItems,
+        bookDecisionResponse: bookDecisionSession?.response,
+        reviewActions,
+        summary,
+        shelfEntries,
+        onOpenBookshelf,
+        onOpenNotes,
+        onOpenReadingReview,
+        onOpenDiscovery,
+        onOpenSettings,
+        onOpenShelfEntry,
+        onOpenReadingRoute,
+        onOpenBookDecision
+      }),
+    [
+      hasCredential,
+      hasShelfData,
+      aiSettingsState?.credential.hasCredential,
+      recentEntries,
+      reviewItems,
+      candidateItems,
+      bookDecisionSession?.response,
+      reviewActions,
+      summary,
+      shelfEntries,
+      onOpenBookshelf,
+      onOpenNotes,
+      onOpenReadingReview,
+      onOpenDiscovery,
+      onOpenSettings,
+      onOpenShelfEntry,
+      onOpenReadingRoute,
+      onOpenBookDecision
+    ]
+  );
 
   useEffect(() => {
     let isMounted = true;
@@ -517,14 +546,7 @@ export function DashboardPage({
         ) : null}
 
         <div className="dashboard-queue-grid">
-          <DashboardQueueColumn
-            title="继续读"
-            count={continueItems.length}
-            items={continueItems}
-            emptyText={isLoading ? "正在读取书架缓存。" : "暂无最近阅读的电子书。"}
-            emptyActionLabel="查看书架"
-            onEmptyAction={onOpenBookshelf}
-          />
+          <DashboardQueueColumn title="继续读" count={continueItems.length} items={continueItems} emptyText={isLoading ? "正在读取书架缓存。" : "暂无最近阅读的电子书。"} emptyActionLabel="查看书架" onEmptyAction={onOpenBookshelf} />
           <DashboardQueueColumn
             title="待复盘"
             count={reviewItems.length}

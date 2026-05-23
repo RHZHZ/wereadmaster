@@ -121,3 +121,88 @@
 3. 最后优化后端落库路径。
 
 这是最低风险、也最容易看见收益的路线。
+
+## 已完成改造
+
+### 1. 同步链路计时
+
+已在前端 Tauri 调用外层增加轻量计时：
+
+- `getCredentialStatus`
+- `getBookshelf`
+- `syncShelf`
+
+已在后端同步链路增加分段计时：
+
+- `shelf.network`
+- `shelf.persist`
+- `shelf.read_cache`
+- `stats.network`
+- `stats.persist`
+- `stats.read_cache`
+
+用途：
+
+- 前端控制台用于观察一次 `invoke` 的整体耗时。
+- Tauri 控制台用于区分网络请求、缓存读取和 SQLite 写入耗时。
+
+### 2. 前端派生计算收敛
+
+已处理 [`src/pages/BookshelfPage.tsx`](../src/pages/BookshelfPage.tsx)：
+
+- 书架条目引用稳定化。
+- 分类选项、可见分类、过滤结果改为按依赖变化重算。
+
+已处理 [`src/pages/DashboardPage.tsx`](../src/pages/DashboardPage.tsx)：
+
+- 书架条目映射、笔记映射、最近阅读、阅读队列、候选推荐和今日动作改为按依赖变化重算。
+- 避免同步完成后由于无关状态变化导致总览页重复构建大对象。
+
+已处理 [`src/App.tsx`](../src/App.tsx)：
+
+- 首次读取书架和手动同步后的大状态写入改为 `startTransition`。
+- 让 React 将整包书架刷新视为非紧急更新，减少对输入和按钮反馈的抢占。
+
+### 3. 后端阻塞读写迁移
+
+已处理 [`src-tauri/src/services/shelf.rs`](../src-tauri/src/services/shelf.rs)：
+
+- `get_bookshelf` 改为异步命令路径，并通过 `spawn_blocking` 读取 SQLite。
+- `sync_shelf` 保持网络请求异步，落库、缓存写入和同步状态更新通过 `spawn_blocking` 执行。
+- `replace_shelf_entries` 在事务内复用预编译 `INSERT` 语句，减少逐条准备 SQL 的开销。
+
+已处理 [`src-tauri/src/services/stats.rs`](../src-tauri/src/services/stats.rs)：
+
+- `get_reading_stats` 改为异步命令路径，并通过 `spawn_blocking` 读取 SQLite。
+- `sync_reading_stats` 保持网络请求异步，统计落库、缓存写入和同步状态更新通过 `spawn_blocking` 执行。
+- `upsert_reading_stats` 使用预编译语句。
+
+相关命令和调用方已同步改为异步：
+
+- [`src-tauri/src/commands/shelf.rs`](../src-tauri/src/commands/shelf.rs)
+- [`src-tauri/src/commands/stats.rs`](../src-tauri/src/commands/stats.rs)
+- [`src-tauri/src/services/ai.rs`](../src-tauri/src/services/ai.rs)
+- [`src-tauri/src/commands/ai.rs`](../src-tauri/src/commands/ai.rs)
+
+## 验证记录
+
+已完成自动验证：
+
+- `npm run build`
+- `npm run test`
+- `cargo check`
+- `cargo test`
+
+待完成手工验证：
+
+1. 启动 Tauri 应用。
+2. 手动刷新书架。
+3. 切换书架筛选和搜索。
+4. 刷新阅读统计。
+5. 对照前端控制台和 Tauri 控制台中的 `[sync]` 计时日志。
+
+## 剩余风险
+
+- 如果书架数据量很大，列表本身渲染仍可能成为主要瓶颈，下一步应考虑书架列表虚拟化。
+- 当前计时使用 `console.debug` 和 Tauri 控制台输出，适合开发排查；如果生产包不希望输出调试信息，可以后续加开发环境开关。
+- `mark_syncing` / `mark_failed` 在书架和统计服务中仍有相似代码；目前为保持改动范围可控暂不抽象，后续若同步模块继续增加，再提取公共 helper。

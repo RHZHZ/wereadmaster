@@ -31,6 +31,9 @@ pub async fn sync_shelf(app: AppHandle) -> Result<BookshelfResponse, AppCommandE
 }
 
 #[tauri::command]
-pub fn get_bookshelf(app: AppHandle) -> Result<BookshelfResponse, AppCommandError> {
-    ShelfService::new(app).get_bookshelf().map_err(Into::into)
+pub async fn get_bookshelf(app: AppHandle) -> Result<BookshelfResponse, AppCommandError> {
+    ShelfService::new(app)
+        .get_bookshelf()
+        .await
+        .map_err(Into::into)
 }

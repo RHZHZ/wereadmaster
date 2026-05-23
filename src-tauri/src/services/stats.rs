@@ -11,7 +11,10 @@ use crate::{
         cache::RawCacheRepository,
         sync_state::{SyncStateRecord, SyncStateRepository},
     },
-    services::weread_gateway::{WereadApi, WereadGateway},
+    services::{
+        sync_timing::with_sync_timing,
+        weread_gateway::{WereadApi, WereadGateway},
+    },
 };
 
 const STATS_SECTION: &str = "stats";
@@ -42,84 +45,62 @@ impl StatsService {
         let mode = normalize_stats_mode(mode)?;
         let base_time = normalize_base_time(&mode, base_time)?;
         let started_at = current_unix_seconds();
-        let mut connection = self.open_connection()?;
-
-        SyncStateRepository::new(&connection)
-            .mark_syncing(STATS_SECTION, &started_at)
-            .map_err(AppError::from)?;
+        self.mark_syncing(&started_at).await?;
 
         let gateway = WereadGateway::new(self.app.clone());
-        let result = gateway
-            .call(
+        match with_sync_timing(
+            "stats.network",
+            gateway.call(
                 WereadApi::ReadingStats,
                 build_reading_stats_params(&mode, base_time),
-            )
-            .await;
-
-        match result {
+            ),
+        )
+        .await
+        {
             Ok(raw) => {
-                let completed_at = current_unix_seconds();
-                let stats = map_reading_stats_response(&mode, &raw, base_time);
-                let transaction = connection.transaction().map_err(AppError::from)?;
-                upsert_reading_stats(&transaction, &stats, &completed_at)?;
-                RawCacheRepository::new(&transaction)
-                    .put_json(
-                        STATS_CACHE_NAMESPACE,
-                        &stats_cache_key(&stats.mode, stats.base_time),
-                        &raw,
-                        &completed_at,
-                    )
-                    .map_err(AppError::from)?;
-                SyncStateRepository::new(&transaction)
-                    .mark_success(STATS_SECTION, &completed_at)
-                    .map_err(AppError::from)?;
-                transaction.commit().map_err(AppError::from)?;
-
-                Ok(ReadingStatsResponse {
-                    stats,
-                    sync_state: SyncStateRepository::new(&connection)
-                        .get(STATS_SECTION)
-                        .map_err(AppError::from)?,
-                })
+                with_sync_timing(
+                    "stats.persist",
+                    self.persist_synced_stats(raw, mode, base_time),
+                )
+                .await
             }
             Err(error) => {
                 let attempted_at = current_unix_seconds();
-                SyncStateRepository::new(&connection)
-                    .mark_failed(
-                        STATS_SECTION,
-                        &attempted_at,
-                        error.code(),
-                        &error.user_message(),
-                    )
-                    .map_err(AppError::from)?;
-
+                self.mark_failed(&attempted_at, error.code(), &error.user_message())
+                    .await?;
                 Err(error)
             }
         }
     }
 
-    pub fn get_reading_stats(
+    pub async fn get_reading_stats(
         &self,
         mode: Option<String>,
         base_time: Option<i64>,
     ) -> Result<ReadingStatsResponse, AppError> {
         let mode = normalize_stats_mode(mode)?;
         let base_time = normalize_base_time(&mode, base_time)?;
-        let connection = self.open_connection()?;
-        let stats = match base_time {
-            Some(base_time) => read_reading_stats(&connection, &mode, base_time)?,
-            None => read_latest_reading_stats(&connection, &mode)?,
-        }
-        .unwrap_or_else(|| empty_reading_stats(&mode, base_time.unwrap_or(0)));
-        let sync_state = SyncStateRepository::new(&connection)
-            .get(STATS_SECTION)
-            .map_err(AppError::from)?;
+        let app = self.app.clone();
+        with_sync_timing(
+            "stats.read_cache",
+            tauri::async_runtime::spawn_blocking(
+                move || -> Result<ReadingStatsResponse, AppError> {
+                    let connection = db::open_connection(&app).map_err(AppError::Storage)?;
+                    let stats = match base_time {
+                        Some(base_time) => read_reading_stats(&connection, &mode, base_time)?,
+                        None => read_latest_reading_stats(&connection, &mode)?,
+                    }
+                    .unwrap_or_else(|| empty_reading_stats(&mode, base_time.unwrap_or(0)));
+                    let sync_state = SyncStateRepository::new(&connection)
+                        .get(STATS_SECTION)
+                        .map_err(AppError::from)?;
 
-        Ok(ReadingStatsResponse { stats, sync_state })
-    }
-
-    fn open_connection(&self) -> Result<rusqlite::Connection, AppError> {
-        db::open_connection(&self.app).map_err(AppError::Storage)
+                    Ok(ReadingStatsResponse { stats, sync_state })
+                },
+            ),
+        )
+        .await
+        .map_err(|error| AppError::Storage(error.to_string()))?
     }
 }
 
@@ -172,8 +153,8 @@ fn upsert_reading_stats(
     stats: &ReadingStatsRecord,
     updated_at: &str,
 ) -> Result<(), AppError> {
-    connection
-        .execute(
+    let mut statement = connection
+        .prepare(
             "
             INSERT INTO reading_stats (
                 mode,
@@ -190,15 +171,18 @@ fn upsert_reading_stats(
                 raw_json = excluded.raw_json,
                 updated_at = excluded.updated_at
             ",
-            rusqlite::params![
-                &stats.mode,
-                stats.base_time,
-                stats.total_read_time_seconds,
-                stats.read_days,
-                stats.raw.to_string(),
-                updated_at
-            ],
         )
+        .map_err(AppError::from)?;
+
+    statement
+        .execute(rusqlite::params![
+            &stats.mode,
+            stats.base_time,
+            stats.total_read_time_seconds,
+            stats.read_days,
+            stats.raw.to_string(),
+            updated_at
+        ])
         .map_err(AppError::from)?;
 
     Ok(())
@@ -256,6 +240,78 @@ fn map_reading_stats_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReadingSta
 
 fn stats_cache_key(mode: &str, base_time: i64) -> String {
     format!("{mode}:{base_time}")
+}
+
+impl StatsService {
+    async fn persist_synced_stats(
+        &self,
+        raw: Value,
+        mode: String,
+        base_time: Option<i64>,
+    ) -> Result<ReadingStatsResponse, AppError> {
+        let app = self.app.clone();
+        tauri::async_runtime::spawn_blocking(move || -> Result<ReadingStatsResponse, AppError> {
+            let completed_at = current_unix_seconds();
+            let mut connection = db::open_connection(&app).map_err(AppError::Storage)?;
+            let stats = map_reading_stats_response(&mode, &raw, base_time);
+            let transaction = connection.transaction().map_err(AppError::from)?;
+            upsert_reading_stats(&transaction, &stats, &completed_at)?;
+            RawCacheRepository::new(&transaction)
+                .put_json(
+                    STATS_CACHE_NAMESPACE,
+                    &stats_cache_key(&stats.mode, stats.base_time),
+                    &raw,
+                    &completed_at,
+                )
+                .map_err(AppError::from)?;
+            SyncStateRepository::new(&transaction)
+                .mark_success(STATS_SECTION, &completed_at)
+                .map_err(AppError::from)?;
+            transaction.commit().map_err(AppError::from)?;
+
+            Ok(ReadingStatsResponse {
+                stats,
+                sync_state: SyncStateRepository::new(&connection)
+                    .get(STATS_SECTION)
+                    .map_err(AppError::from)?,
+            })
+        })
+        .await
+        .map_err(|error| AppError::Storage(error.to_string()))?
+    }
+
+    async fn mark_syncing(&self, started_at: &str) -> Result<(), AppError> {
+        let app = self.app.clone();
+        let started_at = started_at.to_string();
+        tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
+            let connection = db::open_connection(&app).map_err(AppError::Storage)?;
+            SyncStateRepository::new(&connection)
+                .mark_syncing(STATS_SECTION, &started_at)
+                .map_err(AppError::from)
+        })
+        .await
+        .map_err(|error| AppError::Storage(error.to_string()))?
+    }
+
+    async fn mark_failed(
+        &self,
+        attempted_at: &str,
+        error_code: &str,
+        error_message: &str,
+    ) -> Result<(), AppError> {
+        let app = self.app.clone();
+        let attempted_at = attempted_at.to_string();
+        let error_code = error_code.to_string();
+        let error_message = error_message.to_string();
+        tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
+            let connection = db::open_connection(&app).map_err(AppError::Storage)?;
+            SyncStateRepository::new(&connection)
+                .mark_failed(STATS_SECTION, &attempted_at, &error_code, &error_message)
+                .map_err(AppError::from)
+        })
+        .await
+        .map_err(|error| AppError::Storage(error.to_string()))?
+    }
 }
 
 fn current_unix_seconds() -> String {

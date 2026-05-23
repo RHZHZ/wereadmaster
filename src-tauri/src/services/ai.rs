@@ -903,12 +903,8 @@ impl AiService {
         }
 
         let connection = self.open_connection()?;
-        let feedback = read_ai_review_feedback(
-            &connection,
-            "book-review",
-            book_id,
-            &update_from.input_hash,
-        )?;
+        let feedback =
+            read_ai_review_feedback(&connection, "book-review", book_id, &update_from.input_hash)?;
 
         Ok(Some(BookSummaryUpdateContext {
             source_input_hash: update_from.input_hash,
@@ -1142,6 +1138,7 @@ impl AiService {
     ) -> Result<ReadingStatsAiReviewResponse, AiServiceError> {
         let stats_response = StatsService::new(self.app.clone())
             .get_reading_stats(mode, base_time)
+            .await
             .map_err(AiServiceError::from_source_stats)?;
         let review_input = build_reading_stats_review_input(&stats_response.stats)?;
         let input_hash = stable_hash_json(&review_input.payload)?;
@@ -1238,13 +1235,14 @@ impl AiService {
         )
     }
 
-    pub fn get_latest_reading_stats_review(
+    pub async fn get_latest_reading_stats_review(
         &self,
         mode: Option<String>,
         base_time: Option<i64>,
     ) -> Result<Option<ReadingStatsAiReviewResponse>, AiServiceError> {
         let stats_response = StatsService::new(self.app.clone())
             .get_reading_stats(mode, base_time)
+            .await
             .map_err(AiServiceError::from_source_stats)?;
         let review_input = build_reading_stats_review_input(&stats_response.stats)?;
         let input_hash = stable_hash_json(&review_input.payload)?;
@@ -1286,13 +1284,14 @@ impl AiService {
         Ok(None)
     }
 
-    pub fn export_reading_stats_review_markdown(
+    pub async fn export_reading_stats_review_markdown(
         &self,
         mode: Option<String>,
         base_time: Option<i64>,
     ) -> Result<ExportAiMarkdownResponse, AiServiceError> {
         let response = self
-            .get_latest_reading_stats_review(mode, base_time)?
+            .get_latest_reading_stats_review(mode, base_time)
+            .await?
             .ok_or_else(|| {
                 AiServiceError::InvalidProviderOutput(
                     "当前周期还没有可导出的 AI 复盘缓存，请先生成或读取缓存。".to_string(),
@@ -2350,7 +2349,12 @@ fn feedback_records_payload(feedback: &HashMap<String, AiFeedbackExportRecord>) 
         left.get("itemId")
             .and_then(Value::as_str)
             .unwrap_or_default()
-            .cmp(right.get("itemId").and_then(Value::as_str).unwrap_or_default())
+            .cmp(
+                right
+                    .get("itemId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+            )
     });
     records
 }
@@ -2479,7 +2483,9 @@ fn build_reading_route_input(
             let chapter_signals = chapter_signals_by_book
                 .get(&book.book_id)
                 .cloned()
-                .unwrap_or_else(|| default_chapter_signals(progress.and_then(|item| item.chapter_uid)));
+                .unwrap_or_else(|| {
+                    default_chapter_signals(progress.and_then(|item| item.chapter_uid))
+                });
             json!({
                 "bookId": book.book_id,
                 "title": book.title,
@@ -2507,7 +2513,9 @@ fn build_reading_route_input(
     let current_chapter_signals = chapter_signals_by_book
         .get(&current_book.book_id)
         .cloned()
-        .unwrap_or_else(|| default_chapter_signals(current_progress.and_then(|item| item.chapter_uid)));
+        .unwrap_or_else(|| {
+            default_chapter_signals(current_progress.and_then(|item| item.chapter_uid))
+        });
     let candidate_hash = stable_hash_json(&json!(candidates
         .iter()
         .map(|book| &book.book_id)
@@ -2711,7 +2719,9 @@ fn normalize_summary_output(
         .take(6)
         .collect(),
         reading_stage: reading_stage_value(
-            output.get("readingStage").or_else(|| value.get("readingStage")),
+            output
+                .get("readingStage")
+                .or_else(|| value.get("readingStage")),
         ),
         source_stats,
         generated_at,
@@ -5474,19 +5484,27 @@ fn ai_asset_refresh_reason(
         return Some("completed".to_string());
     }
 
-    let latest_asset_updated_at = draft.updated_at.as_ref().and_then(|value| value.parse::<i64>().ok());
+    let latest_asset_updated_at = draft
+        .updated_at
+        .as_ref()
+        .and_then(|value| value.parse::<i64>().ok());
     let notebook_updated_at = draft
         .notebook_updated_at
         .as_ref()
         .and_then(|value| value.parse::<i64>().ok());
-    if notebook_updated_at.zip(latest_asset_updated_at).is_some_and(|(notes, asset)| notes > asset) {
+    if notebook_updated_at
+        .zip(latest_asset_updated_at)
+        .is_some_and(|(notes, asset)| notes > asset)
+    {
         return Some("notes_changed".to_string());
     }
 
     if draft
         .last_read_at
         .zip(latest_asset_updated_at)
-        .is_some_and(|(last_read_at, asset)| asset - last_read_at >= AI_ASSET_STALLED_THRESHOLD_SECONDS)
+        .is_some_and(|(last_read_at, asset)| {
+            asset - last_read_at >= AI_ASSET_STALLED_THRESHOLD_SECONDS
+        })
     {
         return Some("stalled".to_string());
     }
@@ -5668,7 +5686,8 @@ fn read_ai_asset_version_detail(
         .remove(&book_id)
         .unwrap_or_else(|| AiAssetDraft::new(book_id.clone()));
     draft.updated_at = Some(cached.updated_at.clone());
-    draft.cached_reading_stage = reading_stage_value(cached.output.get("readingStage")).map(|item| item.stage);
+    draft.cached_reading_stage =
+        reading_stage_value(cached.output.get("readingStage")).map(|item| item.stage);
     draft.refresh_reason = match normalized_feature.as_str() {
         "reading-route" => None,
         "book-review" if draft.is_finished => Some("completed".to_string()),
@@ -5705,14 +5724,16 @@ fn read_ai_asset_version_detail(
     )?;
 
     let (reading_route, book_summary) = if normalized_feature == "reading-route" {
-        let route = serde_json::from_value::<ReadingRoute>(cached.output.clone()).map_err(|_| {
-            AiServiceError::InvalidProviderOutput("本地 AI 阅读指南缓存无法解析。".to_string())
-        })?;
+        let route =
+            serde_json::from_value::<ReadingRoute>(cached.output.clone()).map_err(|_| {
+                AiServiceError::InvalidProviderOutput("本地 AI 阅读指南缓存无法解析。".to_string())
+            })?;
         (Some(sanitize_cached_reading_route(route)), None)
     } else {
-        let summary = serde_json::from_value::<BookAiSummary>(cached.output.clone()).map_err(|_| {
-            AiServiceError::InvalidProviderOutput("本地 AI 复盘缓存无法解析。".to_string())
-        })?;
+        let summary =
+            serde_json::from_value::<BookAiSummary>(cached.output.clone()).map_err(|_| {
+                AiServiceError::InvalidProviderOutput("本地 AI 复盘缓存无法解析。".to_string())
+            })?;
         (None, Some(summary))
     };
 
@@ -5802,32 +5823,33 @@ fn read_previous_ai_asset_version_ref(
         .query_row(
             params![cache_feature, prompt_version, scope_id, current_updated_at],
             |row| {
-            let output_json: String = row.get(3)?;
-            let output = serde_json::from_str::<Value>(&output_json).map_err(|error| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    3,
-                    rusqlite::types::Type::Text,
-                    Box::new(error),
-                )
-            })?;
+                let output_json: String = row.get(3)?;
+                let output = serde_json::from_str::<Value>(&output_json).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        3,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })?;
 
-            Ok(AssetVersionRef {
-                feature: feature.to_string(),
-                scope_id: row.get(0)?,
-                input_hash: row.get(1)?,
-                prompt_version: row.get(2)?,
-                generated_at: string_value(output.get("generatedAt"))
-                    .unwrap_or_else(|| row.get::<_, String>(5).unwrap_or_default()),
-                updated_at: row.get(6)?,
-                source: "cache".to_string(),
-                title: match feature {
-                    "reading-route" => route_ref_title(scope_id, &output),
-                    "book-review" => Some(book_review_ref_title(None)),
-                    _ => None,
-                },
-                provider_model: row.get(4)?,
-            })
-        })
+                Ok(AssetVersionRef {
+                    feature: feature.to_string(),
+                    scope_id: row.get(0)?,
+                    input_hash: row.get(1)?,
+                    prompt_version: row.get(2)?,
+                    generated_at: string_value(output.get("generatedAt"))
+                        .unwrap_or_else(|| row.get::<_, String>(5).unwrap_or_default()),
+                    updated_at: row.get(6)?,
+                    source: "cache".to_string(),
+                    title: match feature {
+                        "reading-route" => route_ref_title(scope_id, &output),
+                        "book-review" => Some(book_review_ref_title(None)),
+                        _ => None,
+                    },
+                    provider_model: row.get(4)?,
+                })
+            },
+        )
         .optional()
         .map_err(AiServiceError::storage)?;
 
@@ -5876,28 +5898,31 @@ fn read_ai_asset_version_history(
         )
         .map_err(AiServiceError::storage)?;
     let rows = statement
-        .query_map(params![cache_feature, normalized_scope_id, prompt_version], |row| {
-            let output_json: String = row.get(4)?;
-            let output = serde_json::from_str::<Value>(&output_json).map_err(|error| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    4,
-                    rusqlite::types::Type::Text,
-                    Box::new(error),
-                )
-            })?;
+        .query_map(
+            params![cache_feature, normalized_scope_id, prompt_version],
+            |row| {
+                let output_json: String = row.get(4)?;
+                let output = serde_json::from_str::<Value>(&output_json).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        4,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })?;
 
-            Ok(AiCachedOutputRecord {
-                feature: row.get(0)?,
-                scope_id: row.get(1)?,
-                prompt_version: row.get(2)?,
-                input_hash: row.get(3)?,
-                output,
-                source_count: None,
-                provider_model: row.get(5)?,
-                created_at: row.get(6)?,
-                updated_at: row.get(7)?,
-            })
-        })
+                Ok(AiCachedOutputRecord {
+                    feature: row.get(0)?,
+                    scope_id: row.get(1)?,
+                    prompt_version: row.get(2)?,
+                    input_hash: row.get(3)?,
+                    output,
+                    source_count: None,
+                    provider_model: row.get(5)?,
+                    created_at: row.get(6)?,
+                    updated_at: row.get(7)?,
+                })
+            },
+        )
         .map_err(AiServiceError::storage)?;
     let cached_versions = rows
         .collect::<Result<Vec<_>, _>>()
@@ -5962,7 +5987,8 @@ fn ai_asset_version_summary_from_cached(
         .remove(&book_id)
         .unwrap_or_else(|| AiAssetDraft::new(book_id.clone()));
     draft.updated_at = Some(cached.updated_at.clone());
-    draft.cached_reading_stage = reading_stage_value(cached.output.get("readingStage")).map(|item| item.stage);
+    draft.cached_reading_stage =
+        reading_stage_value(cached.output.get("readingStage")).map(|item| item.stage);
     draft.refresh_reason = match feature {
         "book-review" if draft.is_finished => Some("completed".to_string()),
         _ => None,
@@ -6034,20 +6060,17 @@ fn read_ai_review_feedback(
         )
         .map_err(AiServiceError::storage)?;
     let rows = statement
-        .query_map(
-            params![identity.0, identity.1, identity.2],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    AiFeedbackExportRecord {
-                        status: row.get(2)?,
-                        note: row.get(3)?,
-                        updated_at: row.get(4)?,
-                    },
-                ))
-            },
-        )
+        .query_map(params![identity.0, identity.1, identity.2], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                AiFeedbackExportRecord {
+                    status: row.get(2)?,
+                    note: row.get(3)?,
+                    updated_at: row.get(4)?,
+                },
+            ))
+        })
         .map_err(AiServiceError::storage)?;
 
     let mut feedback = AiReviewFeedbackState::default();
@@ -6074,7 +6097,8 @@ fn save_ai_review_feedback(
     input_hash: &str,
     feedback: AiReviewFeedbackState,
 ) -> Result<AiReviewFeedbackState, AiServiceError> {
-    let (feature, scope_id, input_hash) = normalize_ai_feedback_identity(feature, scope_id, input_hash)?;
+    let (feature, scope_id, input_hash) =
+        normalize_ai_feedback_identity(feature, scope_id, input_hash)?;
     let drafts = normalize_ai_review_feedback(feedback)?;
     let transaction = connection.transaction().map_err(AiServiceError::storage)?;
 
@@ -6550,24 +6574,21 @@ mod tests {
         build_reading_stats_review_input, build_summary_input,
         cached_reading_stats_review_response, chat_completions_url, extract_chat_completion_json,
         humanize_review_text, is_empty_reading_stats, normalize_book_decision_output,
-        normalize_provider_settings,
-        normalize_reading_route_output, normalize_reading_stats_review_output,
-        normalize_summary_output, provider_network_user_message, read_ai_asset_detail,
-        read_ai_asset_version_detail, read_ai_asset_version_history,
-        read_ai_asset_summaries, read_ai_output, read_ai_review_feedback,
-        read_book_summary_export_items, read_book_summary_list, read_latest_ai_output,
-        read_local_book_notes, require_ai_credential_for_uncached_summary,
-        save_ai_review_feedback,
-        serialize_book_summary_export_index, stable_hash_json, upsert_ai_output, AiOutputUpsert,
-        AiFeedbackExportRecord, AiReviewFeedbackExport, AiReviewFeedbackState, AiService,
-        AiServiceError, BookSummaryUpdateContext,
-        BookAiSummarySource, BookAiSummarySourceStats, BookDecisionCandidateInput,
-        BookDecisionSourceStats, BookSummaryExportItem,
-        ReadingRouteBookInput, ReadingRouteRequest, ReadingRouteSourceStats,
-        ReadingStatsAiReviewSourceStats, BOOK_DECISION_PROMPT_VERSION,
-        BOOK_NOTES_SUMMARY_FEATURE, BOOK_NOTES_SUMMARY_PROMPT_VERSION, READING_ROUTE_PROMPT_VERSION,
-        READING_STATS_REVIEW_FEATURE,
-        READING_STATS_REVIEW_PROMPT_VERSION,
+        normalize_provider_settings, normalize_reading_route_output,
+        normalize_reading_stats_review_output, normalize_summary_output,
+        provider_network_user_message, read_ai_asset_detail, read_ai_asset_summaries,
+        read_ai_asset_version_detail, read_ai_asset_version_history, read_ai_output,
+        read_ai_review_feedback, read_book_summary_export_items, read_book_summary_list,
+        read_latest_ai_output, read_local_book_notes, require_ai_credential_for_uncached_summary,
+        save_ai_review_feedback, serialize_book_summary_export_index, stable_hash_json,
+        upsert_ai_output, AiFeedbackExportRecord, AiOutputUpsert, AiReviewFeedbackExport,
+        AiReviewFeedbackState, AiService, AiServiceError, BookAiSummarySource,
+        BookAiSummarySourceStats, BookDecisionCandidateInput, BookDecisionSourceStats,
+        BookSummaryExportItem, BookSummaryUpdateContext, ReadingRouteBookInput,
+        ReadingRouteRequest, ReadingRouteSourceStats, ReadingStatsAiReviewSourceStats,
+        BOOK_DECISION_PROMPT_VERSION, BOOK_NOTES_SUMMARY_FEATURE,
+        BOOK_NOTES_SUMMARY_PROMPT_VERSION, READING_ROUTE_PROMPT_VERSION,
+        READING_STATS_REVIEW_FEATURE, READING_STATS_REVIEW_PROMPT_VERSION,
     };
 
     #[test]
@@ -6757,15 +6778,30 @@ mod tests {
         .expect("reading route input should build");
 
         assert_eq!(input.payload["promptVersion"], json!("reading-route-v2.1"));
-        assert_eq!(input.payload["currentBookStage"]["stage"], json!("deepening"));
-        assert_eq!(input.payload["currentBookStage"]["label"], json!("深入推进"));
-        assert_eq!(input.payload["currentBookStage"]["progressPercent"], json!(55));
+        assert_eq!(
+            input.payload["currentBookStage"]["stage"],
+            json!("deepening")
+        );
+        assert_eq!(
+            input.payload["currentBookStage"]["label"],
+            json!("深入推进")
+        );
+        assert_eq!(
+            input.payload["currentBookStage"]["progressPercent"],
+            json!(55)
+        );
         assert_eq!(
             input.payload["chapterPolicy"]["fallback"],
             json!("章节缺失或目录未缓存时，必须回退到阅读进度、最近笔记、本地状态和已有复盘摘要。")
         );
-        assert_eq!(input.payload["books"][0]["readingStage"]["stage"], json!("deepening"));
-        assert_eq!(input.payload["books"][0]["chapterSignals"]["hasCachedChapters"], json!(false));
+        assert_eq!(
+            input.payload["books"][0]["readingStage"]["stage"],
+            json!("deepening")
+        );
+        assert_eq!(
+            input.payload["books"][0]["chapterSignals"]["hasCachedChapters"],
+            json!(false)
+        );
     }
 
     #[test]
@@ -7096,14 +7132,8 @@ mod tests {
                 updated_at: "2024-01-01T00:00:00.000Z".to_string(),
             },
         );
-        save_ai_review_feedback(
-            &mut connection,
-            "book-review",
-            "book_1",
-            "new",
-            feedback,
-        )
-        .expect("feedback should save");
+        save_ai_review_feedback(&mut connection, "book-review", "book_1", "new", feedback)
+            .expect("feedback should save");
 
         let items = read_book_summary_list(&connection).expect("summary list should read");
 
@@ -7229,8 +7259,8 @@ mod tests {
     }
 
     #[test]
-    fn ai_asset_summaries_do_not_suggest_stage_refresh_when_latest_route_stage_matches_current_stage()
-    {
+    fn ai_asset_summaries_do_not_suggest_stage_refresh_when_latest_route_stage_matches_current_stage(
+    ) {
         let connection = Connection::open_in_memory().expect("in-memory database should open");
         initialize_schema(&connection).expect("schema should initialize");
         connection
@@ -7344,7 +7374,10 @@ mod tests {
 
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].refresh_state, "suggested");
-        assert_eq!(summaries[0].refresh_reason.as_deref(), Some("notes_changed"));
+        assert_eq!(
+            summaries[0].refresh_reason.as_deref(),
+            Some("notes_changed")
+        );
     }
 
     #[test]
@@ -7539,17 +7572,35 @@ mod tests {
 
         assert_eq!(detail.book_id, "book_1");
         assert_eq!(detail.title, "深度工作");
-        assert_eq!(detail.current_guide.as_ref().map(|item| item.scope_id.as_str()), Some("book:book_1"));
-        assert_eq!(detail.main_cross_routes.len(), 1);
-        assert_eq!(detail.main_cross_routes[0].scope_id, "book:book_1:candidates:abc123");
-        assert_eq!(detail.participant_cross_routes.len(), 1);
-        assert_eq!(detail.participant_cross_routes[0].scope_id, "book:book_2:candidates:def456");
         assert_eq!(
-            detail.current_book_review.as_ref().map(|item| item.scope_id.as_str()),
+            detail
+                .current_guide
+                .as_ref()
+                .map(|item| item.scope_id.as_str()),
+            Some("book:book_1")
+        );
+        assert_eq!(detail.main_cross_routes.len(), 1);
+        assert_eq!(
+            detail.main_cross_routes[0].scope_id,
+            "book:book_1:candidates:abc123"
+        );
+        assert_eq!(detail.participant_cross_routes.len(), 1);
+        assert_eq!(
+            detail.participant_cross_routes[0].scope_id,
+            "book:book_2:candidates:def456"
+        );
+        assert_eq!(
+            detail
+                .current_book_review
+                .as_ref()
+                .map(|item| item.scope_id.as_str()),
             Some("book_1")
         );
         assert_eq!(
-            detail.current_book_review.as_ref().map(|item| item.feature.as_str()),
+            detail
+                .current_book_review
+                .as_ref()
+                .map(|item| item.feature.as_str()),
             Some("book-review")
         );
         assert_eq!(detail.main_cross_routes[0].generated_at, "130");
@@ -7719,7 +7770,10 @@ mod tests {
         );
         assert!(detail.book_summary.is_none());
         assert_eq!(
-            detail.reading_route.as_ref().map(|item| item.route_overview.as_str()),
+            detail
+                .reading_route
+                .as_ref()
+                .map(|item| item.route_overview.as_str()),
             Some("先收束主线，再整理方法论。")
         );
         assert_eq!(
@@ -7803,14 +7857,10 @@ mod tests {
         )
         .expect("summary cache should save");
 
-        let detail = read_ai_asset_version_detail(
-            &connection,
-            "book-review",
-            "book_1",
-            "summary_hash",
-        )
-        .expect("detail should read")
-        .expect("detail should exist");
+        let detail =
+            read_ai_asset_version_detail(&connection, "book-review", "book_1", "summary_hash")
+                .expect("detail should read")
+                .expect("detail should exist");
 
         assert_eq!(detail.feature, "book-review");
         assert_eq!(detail.scope_id, "book_1");
@@ -7824,7 +7874,10 @@ mod tests {
         assert_eq!(detail.refresh_reason.as_deref(), Some("completed"));
         assert_eq!(detail.reading_route, None);
         assert_eq!(
-            detail.book_summary.as_ref().map(|item| item.overview.as_str()),
+            detail
+                .book_summary
+                .as_ref()
+                .map(|item| item.overview.as_str()),
             Some("这本书最大的价值在于重建专注工作的执行边界。")
         );
         assert_eq!(
@@ -7849,9 +7902,13 @@ mod tests {
         let connection = Connection::open_in_memory().expect("in-memory database should open");
         initialize_schema(&connection).expect("schema should initialize");
 
-        let detail =
-            read_ai_asset_version_detail(&connection, "reading-route", "book:missing", "missing_hash")
-                .expect("detail should read");
+        let detail = read_ai_asset_version_detail(
+            &connection,
+            "reading-route",
+            "book:missing",
+            "missing_hash",
+        )
+        .expect("detail should read");
 
         assert!(detail.is_none());
     }
@@ -7976,9 +8033,30 @@ mod tests {
             .expect("progress should insert");
 
         for (input_hash, updated_at, overview, stage, label, progress_percent) in [
-            ("summary_hash_v1", "180", "第一版复盘", "deepening", "深入推进", 60),
-            ("summary_hash_v2", "220", "第二版复盘", "closing", "收束整理", 88),
-            ("summary_hash_v3", "240", "第三版复盘", "completed", "完成归档", 100),
+            (
+                "summary_hash_v1",
+                "180",
+                "第一版复盘",
+                "deepening",
+                "深入推进",
+                60,
+            ),
+            (
+                "summary_hash_v2",
+                "220",
+                "第二版复盘",
+                "closing",
+                "收束整理",
+                88,
+            ),
+            (
+                "summary_hash_v3",
+                "240",
+                "第三版复盘",
+                "completed",
+                "完成归档",
+                100,
+            ),
         ] {
             upsert_ai_output(
                 &connection,
@@ -8080,12 +8158,8 @@ mod tests {
         )
         .expect("summary cache should save");
 
-        let version_detail = read_ai_asset_version_detail(
-            &connection,
-            "book-review",
-            "book_1",
-            "summary_hash_v1",
-        );
+        let version_detail =
+            read_ai_asset_version_detail(&connection, "book-review", "book_1", "summary_hash_v1");
         assert_eq!(
             version_detail
                 .expect("version detail should read")
@@ -8225,14 +8299,8 @@ mod tests {
                 updated_at: "2024-01-01T00:00:00.000Z".to_string(),
             },
         );
-        save_ai_review_feedback(
-            &mut connection,
-            "book-review",
-            "book_1",
-            "hash_1",
-            feedback,
-        )
-        .expect("feedback should save");
+        save_ai_review_feedback(&mut connection, "book-review", "book_1", "hash_1", feedback)
+            .expect("feedback should save");
 
         let item = read_book_summary_export_items(&connection, Some(&["book_1".to_string()]))
             .expect("export items should read")
@@ -8329,7 +8397,8 @@ mod tests {
         let notes =
             read_local_book_notes(&connection, "book_1").expect("local notes should be readable");
 
-        let without_context = build_summary_input(&notes, None).expect("summary input should build");
+        let without_context =
+            build_summary_input(&notes, None).expect("summary input should build");
         let mut action_items = HashMap::new();
         action_items.insert(
             "action-1".to_string(),

@@ -1,6 +1,7 @@
 import {
   forwardRef,
   useDeferredValue,
+  useMemo,
   useRef,
   useState,
   startTransition,
@@ -80,16 +81,18 @@ export function BookshelfPage({
   const deferredQuery = useDeferredValue(query);
   const firstResultRef = useRef<HTMLButtonElement | null>(null);
   const hasCredential = credentialStatus?.hasCredential === true;
-  const entries = bookshelf?.snapshot.entries ?? [];
+  const entries = useMemo(() => bookshelf?.snapshot.entries ?? [], [bookshelf?.snapshot.entries]);
   const summary = bookshelf?.snapshot.summary;
-  const categoryOptions = getCategoryOptions(entries);
-  const visibleCategoryOptions = getVisibleCategoryOptions(
-    categoryOptions,
-    categoryFilter,
-    isCategoryExpanded
+  const categoryOptions = useMemo(() => getCategoryOptions(entries), [entries]);
+  const visibleCategoryOptions = useMemo(
+    () => getVisibleCategoryOptions(categoryOptions, categoryFilter, isCategoryExpanded),
+    [categoryOptions, categoryFilter, isCategoryExpanded]
   );
   const hiddenCategoryCount = Math.max(0, categoryOptions.length - visibleCategoryOptions.length);
-  const filteredEntries = filterEntries(entries, filter, categoryFilter, deferredQuery);
+  const filteredEntries = useMemo(
+    () => filterEntries(entries, filter, categoryFilter, deferredQuery),
+    [entries, filter, categoryFilter, deferredQuery]
+  );
   const hasQuery = deferredQuery.trim().length > 0;
   const { showToast } = useToast();
 

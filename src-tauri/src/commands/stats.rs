@@ -35,12 +35,13 @@ pub async fn sync_reading_stats(
 }
 
 #[tauri::command]
-pub fn get_reading_stats(
+pub async fn get_reading_stats(
     app: AppHandle,
     mode: Option<String>,
     base_time: Option<i64>,
 ) -> Result<ReadingStatsResponse, AppCommandError> {
     StatsService::new(app)
         .get_reading_stats(mode, base_time)
+        .await
         .map_err(Into::into)
 }

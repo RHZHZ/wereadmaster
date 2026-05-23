@@ -35,6 +35,7 @@ import {
   getCommandErrorMessage,
   getCredentialStatus,
   openBookInWeread,
+  withSyncTiming,
   syncShelf,
   type BookDetailResponse,
   type BookshelfResponse,
@@ -287,8 +288,8 @@ export function App() {
       setCommandError(undefined);
 
       const [credentialResult, bookshelfResult] = await Promise.allSettled([
-        getCredentialStatus(),
-        getBookshelf(),
+        withSyncTiming("getCredentialStatus", () => getCredentialStatus()),
+        withSyncTiming("getBookshelf", () => getBookshelf()),
       ]);
 
       if (!isMounted) {
@@ -302,7 +303,9 @@ export function App() {
       }
 
       if (bookshelfResult.status === "fulfilled") {
-        setBookshelf(bookshelfResult.value);
+        startTransition(() => {
+          setBookshelf(bookshelfResult.value);
+        });
       } else {
         setCommandError(getCommandErrorMessage(bookshelfResult.reason));
       }
@@ -446,8 +449,10 @@ export function App() {
     setCommandError(undefined);
 
     try {
-      const response = await syncShelf();
-      setBookshelf(response);
+      const response = await withSyncTiming("syncShelf", () => syncShelf());
+      startTransition(() => {
+        setBookshelf(response);
+      });
     } catch (error) {
       setCommandError(getCommandErrorMessage(error));
     } finally {

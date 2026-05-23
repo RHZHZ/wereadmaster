@@ -20,7 +20,7 @@ describe("settings page onboarding artwork", () => {
     );
 
     expect(markup).toContain("onboarding-local-vault");
-    expect(markup).toContain("API Key 只保存在当前设备");
+    expect(markup).toContain("API Key 来自微信读书 Skill 页面，只保存在当前设备");
     expect(markup).toContain("前端页面不会读取或展示明文");
   });
 
@@ -39,7 +39,7 @@ describe("settings page onboarding artwork", () => {
     );
 
     expect(markup).not.toContain("onboarding-local-vault");
-    expect(markup).not.toContain("API Key 只保存在当前设备");
+    expect(markup).not.toContain("API Key 来自微信读书 Skill 页面，只保存在当前设备");
   });
 
   it("shows a dedicated updates category in settings navigation", () => {

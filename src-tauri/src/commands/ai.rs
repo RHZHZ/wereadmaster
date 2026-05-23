@@ -3,11 +3,11 @@ use tauri::AppHandle;
 
 use crate::services::ai::{
     AiAssetDetail, AiAssetSummary, AiAssetVersionDetail, AiAssetVersionSummary,
-    AiCachedOutputRecord, AiCredentialValidationResult, AiService, AiServiceError, AiSettingsState,
-    AiReviewFeedbackExport, AiReviewFeedbackState, BookAiSummaryListItem, BookAiSummaryResponse,
-    BookAiSummaryUpdateContext, BookDecisionCandidateInput, BookDecisionResponse,
-    BookNotesSummariesExportOptions,
-    ExportAiBulkMarkdownResponse, ExportAiMarkdownResponse, ReadingRouteRequest, ReadingRouteResponse,
+    AiCachedOutputRecord, AiCredentialValidationResult, AiReviewFeedbackExport,
+    AiReviewFeedbackState, AiService, AiServiceError, AiSettingsState, BookAiSummaryListItem,
+    BookAiSummaryResponse, BookAiSummaryUpdateContext, BookDecisionCandidateInput,
+    BookDecisionResponse, BookNotesSummariesExportOptions, ExportAiBulkMarkdownResponse,
+    ExportAiMarkdownResponse, ReadingRouteRequest, ReadingRouteResponse,
     ReadingStatsAiReviewResponse,
 };
 
@@ -234,24 +234,26 @@ pub async fn summarize_reading_stats(
 }
 
 #[tauri::command]
-pub fn get_latest_reading_stats_review(
+pub async fn get_latest_reading_stats_review(
     app: AppHandle,
     mode: Option<String>,
     base_time: Option<i64>,
 ) -> Result<Option<ReadingStatsAiReviewResponse>, AiCommandError> {
     AiService::new(app)
         .get_latest_reading_stats_review(mode, base_time)
+        .await
         .map_err(Into::into)
 }
 
 #[tauri::command]
-pub fn export_reading_stats_review_markdown(
+pub async fn export_reading_stats_review_markdown(
     app: AppHandle,
     mode: Option<String>,
     base_time: Option<i64>,
 ) -> Result<ExportAiMarkdownResponse, AiCommandError> {
     AiService::new(app)
         .export_reading_stats_review_markdown(mode, base_time)
+        .await
         .map_err(Into::into)
 }
 

@@ -10,7 +10,10 @@ use crate::{
         cache::RawCacheRepository,
         sync_state::{SyncStateRecord, SyncStateRepository},
     },
-    services::weread_gateway::{WereadApi, WereadGateway},
+    services::{
+        sync_timing::with_sync_timing,
+        weread_gateway::{WereadApi, WereadGateway},
+    },
 };
 
 const SHELF_SECTION: &str = "shelf";
@@ -34,73 +37,111 @@ impl ShelfService {
 
     pub async fn sync_shelf(&self) -> Result<BookshelfResponse, AppError> {
         let started_at = current_unix_seconds();
-        let mut connection = self.open_connection()?;
-        {
-            let sync_repository = SyncStateRepository::new(&connection);
-            sync_repository
-                .mark_syncing(SHELF_SECTION, &started_at)
-                .map_err(AppError::from)?;
-        }
+        self.mark_syncing(&started_at).await?;
 
         let gateway = WereadGateway::new(self.app.clone());
-        let response = gateway.call(WereadApi::SyncShelf, json!({})).await;
-
-        match response {
-            Ok(raw) => {
-                let completed_at = current_unix_seconds();
-                let snapshot = map_shelf_response(&raw);
-                let transaction = connection.transaction().map_err(AppError::from)?;
-                replace_shelf_entries(&transaction, &snapshot.entries, &completed_at)?;
-                RawCacheRepository::new(&transaction)
-                    .put_json(SHELF_SECTION, SHELF_CACHE_KEY, &raw, &completed_at)
-                    .map_err(AppError::from)?;
-                SyncStateRepository::new(&transaction)
-                    .mark_success(SHELF_SECTION, &completed_at)
-                    .map_err(AppError::from)?;
-                transaction.commit().map_err(AppError::from)?;
-
-                Ok(BookshelfResponse {
-                    snapshot,
-                    sync_state: SyncStateRepository::new(&connection)
-                        .get(SHELF_SECTION)
-                        .map_err(AppError::from)?,
-                })
-            }
+        match with_sync_timing(
+            "shelf.network",
+            gateway.call(WereadApi::SyncShelf, json!({})),
+        )
+        .await
+        {
+            Ok(raw) => with_sync_timing("shelf.persist", self.persist_synced_shelf(raw)).await,
             Err(error) => {
                 let attempted_at = current_unix_seconds();
-                SyncStateRepository::new(&connection)
-                    .mark_failed(
-                        SHELF_SECTION,
-                        &attempted_at,
-                        error.code(),
-                        &error.user_message(),
-                    )
-                    .map_err(AppError::from)?;
-
+                self.mark_failed(&attempted_at, error.code(), &error.user_message())
+                    .await?;
                 Err(error)
             }
         }
     }
 
-    pub fn get_bookshelf(&self) -> Result<BookshelfResponse, AppError> {
-        let connection = self.open_connection()?;
-        let entries = read_shelf_entries(&connection)?;
-        let snapshot = BookshelfSnapshot {
-            summary: crate::mappers::shelf::summarize_entries(&entries),
-            entries,
-        };
-        let sync_state = SyncStateRepository::new(&connection)
-            .get(SHELF_SECTION)
-            .map_err(AppError::from)?;
+    pub async fn get_bookshelf(&self) -> Result<BookshelfResponse, AppError> {
+        let app = self.app.clone();
+        with_sync_timing(
+            "shelf.read_cache",
+            tauri::async_runtime::spawn_blocking(move || -> Result<BookshelfResponse, AppError> {
+                let connection = db::open_connection(&app).map_err(AppError::Storage)?;
+                let entries = read_shelf_entries(&connection)?;
+                let snapshot = BookshelfSnapshot {
+                    summary: crate::mappers::shelf::summarize_entries(&entries),
+                    entries,
+                };
+                let sync_state = SyncStateRepository::new(&connection)
+                    .get(SHELF_SECTION)
+                    .map_err(AppError::from)?;
 
-        Ok(BookshelfResponse {
-            snapshot,
-            sync_state,
-        })
+                Ok(BookshelfResponse {
+                    snapshot,
+                    sync_state,
+                })
+            }),
+        )
+        .await
+        .map_err(|error| AppError::Storage(error.to_string()))?
     }
 
-    fn open_connection(&self) -> Result<rusqlite::Connection, AppError> {
-        db::open_connection(&self.app).map_err(AppError::Storage)
+    async fn persist_synced_shelf(
+        &self,
+        raw: serde_json::Value,
+    ) -> Result<BookshelfResponse, AppError> {
+        let app = self.app.clone();
+        tauri::async_runtime::spawn_blocking(move || -> Result<BookshelfResponse, AppError> {
+            let mut connection = db::open_connection(&app).map_err(AppError::Storage)?;
+            let completed_at = current_unix_seconds();
+            let snapshot = map_shelf_response(&raw);
+            let transaction = connection.transaction().map_err(AppError::from)?;
+            replace_shelf_entries(&transaction, &snapshot.entries, &completed_at)?;
+            RawCacheRepository::new(&transaction)
+                .put_json(SHELF_SECTION, SHELF_CACHE_KEY, &raw, &completed_at)
+                .map_err(AppError::from)?;
+            SyncStateRepository::new(&transaction)
+                .mark_success(SHELF_SECTION, &completed_at)
+                .map_err(AppError::from)?;
+            transaction.commit().map_err(AppError::from)?;
+
+            Ok(BookshelfResponse {
+                snapshot,
+                sync_state: SyncStateRepository::new(&connection)
+                    .get(SHELF_SECTION)
+                    .map_err(AppError::from)?,
+            })
+        })
+        .await
+        .map_err(|error| AppError::Storage(error.to_string()))?
+    }
+
+    async fn mark_syncing(&self, started_at: &str) -> Result<(), AppError> {
+        let app = self.app.clone();
+        let started_at = started_at.to_string();
+        tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
+            let connection = db::open_connection(&app).map_err(AppError::Storage)?;
+            SyncStateRepository::new(&connection)
+                .mark_syncing(SHELF_SECTION, &started_at)
+                .map_err(AppError::from)
+        })
+        .await
+        .map_err(|error| AppError::Storage(error.to_string()))?
+    }
+
+    async fn mark_failed(
+        &self,
+        attempted_at: &str,
+        error_code: &str,
+        error_message: &str,
+    ) -> Result<(), AppError> {
+        let app = self.app.clone();
+        let attempted_at = attempted_at.to_string();
+        let error_code = error_code.to_string();
+        let error_message = error_message.to_string();
+        tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
+            let connection = db::open_connection(&app).map_err(AppError::Storage)?;
+            SyncStateRepository::new(&connection)
+                .mark_failed(SHELF_SECTION, &attempted_at, &error_code, &error_message)
+                .map_err(AppError::from)
+        })
+        .await
+        .map_err(|error| AppError::Storage(error.to_string()))?
     }
 }
 
@@ -112,42 +153,44 @@ pub(crate) fn replace_shelf_entries(
     connection
         .execute("DELETE FROM shelf_entries", [])
         .map_err(AppError::from)?;
+    let mut statement = connection
+        .prepare(
+            "
+            INSERT INTO shelf_entries (
+                id,
+                type,
+                title,
+                author,
+                cover,
+                category,
+                is_top,
+                is_secret,
+                is_finished,
+                last_read_at,
+                raw_json,
+                updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            ",
+        )
+        .map_err(AppError::from)?;
 
     for entry in entries {
-        connection
-            .execute(
-                "
-                INSERT INTO shelf_entries (
-                    id,
-                    type,
-                    title,
-                    author,
-                    cover,
-                    category,
-                    is_top,
-                    is_secret,
-                    is_finished,
-                    last_read_at,
-                    raw_json,
-                    updated_at
-                )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
-                ",
-                rusqlite::params![
-                    &entry.id,
-                    &entry.entry_type,
-                    &entry.title,
-                    &entry.author,
-                    &entry.cover,
-                    &entry.category,
-                    bool_to_int(entry.is_top),
-                    bool_to_int(entry.is_secret),
-                    entry.is_finished.map(bool_to_int),
-                    entry.last_read_at,
-                    &entry.raw_json,
-                    updated_at
-                ],
-            )
+        statement
+            .execute(rusqlite::params![
+                &entry.id,
+                &entry.entry_type,
+                &entry.title,
+                &entry.author,
+                &entry.cover,
+                &entry.category,
+                bool_to_int(entry.is_top),
+                bool_to_int(entry.is_secret),
+                entry.is_finished.map(bool_to_int),
+                entry.last_read_at,
+                &entry.raw_json,
+                updated_at
+            ])
             .map_err(AppError::from)?;
     }
 

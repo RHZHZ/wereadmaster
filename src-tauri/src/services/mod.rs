@@ -7,4 +7,5 @@ pub mod reading_state;
 pub mod settings;
 pub mod shelf;
 pub mod stats;
+pub mod sync_timing;
 pub mod weread_gateway;

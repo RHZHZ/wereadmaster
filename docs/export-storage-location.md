@@ -26,7 +26,7 @@
 
 本次构建失败不是单一“镜像不可用”：
 
-- Cargo 依赖索引层：全局 USTC crates.io 配置不可用，项目级配置已切到 TUNA sparse registry。
+- Cargo 依赖索引层：项目级配置已切到官方 crates.io sparse registry，避免依赖本机或受限镜像。
 - 原生归档层：`libsodium-sys-stable` 的构建脚本会额外访问 `download.libsodium.org` 下载 `libsodium` 归档，这不走 crates.io 镜像；若网络不稳定，可在本机临时设置 `SODIUM_DIST_DIR` 指向已有缓存目录。
 
 如果后续换机器构建，需要重新确认本机是否具备 `libsodium` 归档缓存；不建议把 `SODIUM_DIST_DIR` 这类本机绝对路径写进仓库配置。

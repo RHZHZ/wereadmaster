@@ -941,6 +941,17 @@ export async function syncReadingStats(
   return mapReadingStatsResponse(mode, response);
 }
 
+export async function withSyncTiming<T>(label: string, operation: () => Promise<T>): Promise<T> {
+  const startedAt = performance.now();
+
+  try {
+    return await operation();
+  } finally {
+    const duration = Math.round(performance.now() - startedAt);
+    console.debug(`[sync] ${label}: ${duration}ms`);
+  }
+}
+
 export async function searchBooks({
   keyword,
   scope,
