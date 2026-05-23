@@ -13,6 +13,7 @@
 - GitHub Actions 已新增 Android APK 发布流程。
 - GitHub 仓库地址已固定为 `RHZHZ/wereadmaster`。
 - updater 公钥已写入 `src-tauri/tauri.conf.json`。
+- Windows release workflow 会在安装包上传完成后，基于 release 资产地址和本地 `.sig` 文件手工生成 `latest.json`。
 - 首次正式发布前仍需把私钥配置到 GitHub Actions Secrets。
 
 ## 首次发布前准备
@@ -89,7 +90,7 @@
    ```
 
 4. GitHub Actions 会创建正式 release，并上传安装包和 updater 产物。
-5. 检查 release 中的安装包、`latest.json` 和签名产物。
+5. Windows job 会显式生成并上传 `latest.json`，检查 release 中的安装包、`latest.json` 和签名产物。
 6. 如需补充说明，直接编辑 release notes。
 
 ## 最小发布检查清单

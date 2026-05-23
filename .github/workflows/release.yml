@@ -49,7 +49,7 @@ jobs:
         id: publish
         uses: tauri-apps/tauri-action@v0.6.2
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.TAURI_RELEASE_PAT || secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
@@ -58,13 +58,72 @@ jobs:
           releaseBody: "请在发布说明中补充本次变更、兼容性和回滚说明。"
           releaseDraft: false
           prerelease: false
+          uploadUpdaterJson: false
 
-      # 上传 latest.json 到 GitHub Release
+      - name: Generate latest.json
+        env:
+          GH_TOKEN: ${{ secrets.TAURI_RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
+        run: |
+          $bundleDir = Join-Path $PWD "src-tauri/target/release/bundle/nsis"
+          $sigFile = Get-ChildItem -Path $bundleDir -Filter "*.exe.sig" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $sigFile) {
+            Write-Host "NSIS bundle directory contents:"
+            Get-ChildItem -Path $bundleDir | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize
+            throw "Could not find Windows updater signature (*.exe.sig)."
+          }
+
+          $release = gh api "repos/${{ github.repository }}/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
+          $exeAsset = $release.assets |
+            Where-Object { $_.name -match '\.exe$' } |
+            Sort-Object name |
+            Select-Object -First 1
+
+          if (-not $exeAsset) {
+            Write-Host "Release assets returned by GitHub API:"
+            $release.assets | Select-Object name, browser_download_url | Format-Table -AutoSize
+            throw "Could not find uploaded Windows installer asset (*.exe) in the GitHub release."
+          }
+
+          $version = [string] $release.tag_name
+          if ($version.StartsWith("v")) {
+            $version = $version.Substring(1)
+          }
+
+          $notes = [string] $release.body
+          if ([string]::IsNullOrWhiteSpace($notes)) {
+            $notes = "详见 GitHub Release 页面。"
+          }
+
+          $pubDate = if ([string]::IsNullOrWhiteSpace($release.published_at)) {
+            [DateTime]::UtcNow.ToString("o")
+          } else {
+            [DateTime]::Parse($release.published_at).ToUniversalTime().ToString("o")
+          }
+
+          $latestJsonPath = Join-Path $PWD "src-tauri/target/release/bundle/latest.json"
+          $latestJson = [ordered]@{
+            version = $version
+            notes = $notes
+            pub_date = $pubDate
+            platforms = @{
+              "windows-x86_64" = @{
+                signature = (Get-Content -Path $sigFile.FullName -Raw).Trim()
+                url = $exeAsset.browser_download_url
+              }
+            }
+          }
+
+          $latestJson | ConvertTo-Json -Depth 10 | Set-Content -Path $latestJsonPath -Encoding utf8
+          Write-Host "Generated latest.json:"
+          Get-Content -Path $latestJsonPath
+
       - name: Upload latest.json to Release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.TAURI_RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
         run: |
-          gh release upload "${{ inputs.tag_name || github.ref_name }}" "./src-tauri/target/release/bundle/latest.json" --clobber
+          gh release upload "$env:RELEASE_TAG" "./src-tauri/target/release/bundle/latest.json" --clobber
 
   # Android 构建任务（保持不变，正确）
   release-android:
