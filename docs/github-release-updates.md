@@ -84,6 +84,18 @@
 5. 检查 draft release 中的安装包、`latest.json` 和签名产物。
 6. 补充发布说明后发布 release。
 
+## 最小发布检查清单
+
+按这个顺序走，别再横向加需求：
+
+1. 版本号一致，且 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 同步。
+2. 本地回归通过：`npm test`、`npm run build`、`cargo check --manifest-path "src-tauri/Cargo.toml"`。
+3. 核心流程可用：同步书架、阅读指南、书籍复盘、版本历史、导出、设置页。
+4. 应用更新可见：设置页能检查到 GitHub Releases，能展示更新摘要。
+5. 发布产物齐全：安装包、`latest.json`、签名产物都在 draft release 中。
+
+如果任何一项失败，先修阻塞，再继续发版。
+
 ## 首次发布建议
 
 建议第一次使用：

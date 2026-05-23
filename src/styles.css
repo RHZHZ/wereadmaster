@@ -4440,6 +4440,30 @@ button:disabled {
   border-color: rgba(47, 111, 94, 0.38);
 }
 
+.credential-help-link {
+  width: fit-content;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #315348;
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.credential-help-link:hover {
+  text-decoration: underline;
+}
+
+.credential-help-note {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .settings-select-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

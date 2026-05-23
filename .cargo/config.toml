@@ -6,6 +6,3 @@ registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
 
 [net]
 git-fetch-with-cli = true
-
-[env]
-SODIUM_DIST_DIR = { value = "C:/Users/RHZ/.cargo/registry/src/mirrors.ustc.edu.cn-5857e57f01837ef8/libsodium-sys-stable-1.24.0", force = true }

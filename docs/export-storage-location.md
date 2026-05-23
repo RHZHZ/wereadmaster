@@ -27,9 +27,9 @@
 本次构建失败不是单一“镜像不可用”：
 
 - Cargo 依赖索引层：全局 USTC crates.io 配置不可用，项目级配置已切到 TUNA sparse registry。
-- 原生归档层：`libsodium-sys-stable` 的构建脚本会额外访问 `download.libsodium.org` 下载 `libsodium` 归档，这不走 crates.io 镜像；当前网络下该下载出现 `UnexpectedEof`/`Peer disconnected`，因此项目级 Cargo 配置通过 `SODIUM_DIST_DIR` 复用本机已有并带 `.minisig` 签名的归档缓存。
+- 原生归档层：`libsodium-sys-stable` 的构建脚本会额外访问 `download.libsodium.org` 下载 `libsodium` 归档，这不走 crates.io 镜像；若网络不稳定，可在本机临时设置 `SODIUM_DIST_DIR` 指向已有缓存目录。
 
-如果后续换机器构建，需要确保 `SODIUM_DIST_DIR` 指向的目录存在，且目录内包含 `libsodium-1.0.22-stable-msvc.zip` 和对应 `.minisig` 文件；否则可以先恢复网络直连，或准备等价的本地归档缓存。
+如果后续换机器构建，需要重新确认本机是否具备 `libsodium` 归档缓存；不建议把 `SODIUM_DIST_DIR` 这类本机绝对路径写进仓库配置。
 
 ## 验收标准
 

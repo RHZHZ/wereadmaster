@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   AlertCircle,
   Bot,
@@ -8,6 +9,7 @@ import {
   Database,
   Download,
   Eye,
+  ExternalLink,
   FolderOpen,
   HardDrive,
   Info,
@@ -94,6 +96,8 @@ type SettingsCategory = {
   heroDescription: string;
   icon: LucideIcon;
 };
+
+const WEREAD_SKILL_API_KEY_URL = "https://weread.qq.com/r/weread-skills";
 
 const settingsCategories: SettingsCategory[] = [
   {
@@ -210,6 +214,16 @@ export function SettingsPage({
   const activeCategoryConfig =
     settingsCategories.find((category) => category.id === activeCategory) ??
     settingsCategories[0];
+
+  function handleOpenWereadSkill() {
+    openUrl(WEREAD_SKILL_API_KEY_URL).catch(() => {
+      void copyTextToClipboard(WEREAD_SKILL_API_KEY_URL);
+      showToast({
+        message: "外部浏览器打开失败，已复制技能页面链接。",
+        tone: "warning",
+      });
+    });
+  }
 
   useEffect(() => {
     if (!open) {
@@ -783,8 +797,8 @@ export function SettingsPage({
                         <p className="section-kicker">首次绑定</p>
                         <h3>先把凭据安全地留在本机</h3>
                         <p>
-                          API Key 只保存在当前设备。前端页面不会读取或展示明文，
-                          后续同步只通过本地 Rust 层完成。
+                          API Key 来自微信读书 Skill 页面，只保存在当前设备。
+                          前端页面不会读取或展示明文，后续同步只通过本地 Rust 层完成。
                         </p>
                         <ul className="settings-onboarding-points">
                           <li>绑定后即可同步书架、笔记、统计和发现数据</li>
@@ -809,8 +823,19 @@ export function SettingsPage({
                   <p>
                     {credential?.hasCredential
                       ? "同步会通过本地 Rust 层读取凭据；前端只知道是否已绑定。"
-                      : "保存后即可同步书架、笔记、统计和发现数据。"}
+                      : "保存微信读书 Skill API Key 后即可同步书架、笔记、统计和发现数据。"}
                   </p>
+                  <p className="credential-help-note">
+                    会在新窗口打开技能页面；如果被拦截，链接会复制到剪贴板。
+                  </p>
+                  <button
+                    className="credential-help-link"
+                    type="button"
+                    onClick={handleOpenWereadSkill}
+                  >
+                    <ExternalLink aria-hidden="true" size={16} />
+                    获取微信读书 API Key
+                  </button>
                   <dl className="settings-dl">
                     <div>
                       <dt>验证时间</dt>
