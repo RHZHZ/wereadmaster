@@ -227,7 +227,6 @@ button:disabled {
 .app-frame[data-effective-theme="dark"] .settings-modal-nav,
 .app-frame[data-effective-theme="dark"] .settings-section,
 .app-frame[data-effective-theme="dark"] .settings-card,
-.app-frame[data-effective-theme="dark"] .settings-advanced,
 .app-frame[data-effective-theme="dark"] .settings-diagnostics,
 .app-frame[data-effective-theme="dark"] .confirm-dialog,
 .app-frame[data-effective-theme="dark"] .bulk-export-dialog,
@@ -267,7 +266,6 @@ button:disabled {
 .app-frame[data-effective-theme="dark"] .settings-preference-card,
 .app-frame[data-effective-theme="dark"] .settings-onboarding-card,
 .app-frame[data-effective-theme="dark"] .settings-maintenance-card,
-.app-frame[data-effective-theme="dark"] .settings-advanced.is-open,
 .app-frame[data-effective-theme="dark"] .settings-diagnostics.is-open,
 .app-frame[data-effective-theme="dark"] .dashboard-profile-card,
 .app-frame[data-effective-theme="dark"] .dashboard-next-review-card,
@@ -4131,9 +4129,7 @@ button:disabled {
 }
 
 .settings-hero p,
-.settings-section-heading p,
 .settings-card p,
-.settings-advanced-heading p,
 .confirm-dialog p {
   color: var(--muted);
   line-height: 1.7;
@@ -4166,6 +4162,49 @@ button:disabled {
   gap: 14px;
 }
 
+.settings-update-card {
+  gap: 14px;
+  background:
+    radial-gradient(circle at top right, rgba(202, 163, 93, 0.12), transparent 28%),
+    rgba(255, 253, 248, 0.78);
+}
+
+.settings-update-meta dd:last-child,
+.settings-update-meta .wide-row:last-child dd {
+  font-family:
+    "JetBrains Mono",
+    "Cascadia Mono",
+    "Microsoft YaHei",
+    monospace;
+  font-size: 13px;
+}
+
+.settings-update-notes {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 253, 248, 0.58);
+}
+
+.settings-update-notes-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+}
+
+.settings-update-notes-heading strong {
+  font-size: 14px;
+}
+
+.settings-update-notes p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .settings-section {
   display: grid;
   gap: 12px;
@@ -4174,23 +4213,6 @@ button:disabled {
   padding: 14px;
   background: rgba(255, 253, 248, 0.76);
   box-shadow: 0 10px 24px rgba(36, 49, 58, 0.05);
-}
-
-.settings-section-heading h3,
-.settings-advanced-heading h3 {
-  margin: 4px 0 0;
-  color: var(--ink);
-  font-size: 21px;
-}
-
-.settings-section-heading p,
-.settings-advanced-heading p {
-  margin: 6px 0 0;
-  line-height: 1.55;
-}
-
-.settings-section-body {
-  min-width: 0;
 }
 
 .settings-panel {
@@ -4468,28 +4490,7 @@ button:disabled {
   transform: rotate(180deg);
 }
 
-.settings-advanced {
-  display: grid;
-  gap: 12px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 14px;
-  background: rgba(255, 253, 248, 0.76);
-  box-shadow: 0 10px 24px rgba(36, 49, 58, 0.05);
-}
-
-.settings-advanced.is-open {
-  background: rgba(255, 253, 248, 0.78);
-}
-
-.settings-advanced-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.settings-advanced-body {
+.settings-advanced-layout {
   display: grid;
   gap: 12px;
 }
@@ -10044,7 +10045,6 @@ button:disabled {
   .reading-route-input-summary,
   .settings-modal-nav-item,
   .settings-hero,
-  .settings-advanced-heading,
   .settings-diagnostics-heading,
   .settings-diagnostics-actions,
   .sync-state-row {
@@ -10077,6 +10077,20 @@ button:disabled {
 
   .settings-modal-content {
     padding: 58px 18px 28px;
+  }
+
+  .settings-hero-actions {
+    width: 100%;
+    justify-content: stretch;
+    flex-wrap: wrap;
+  }
+
+  .settings-hero-actions > button {
+    flex: 1 1 180px;
+  }
+
+  .settings-update-card .settings-card-actions > button {
+    flex: 1 1 180px;
   }
 
   .discovery-search-form {

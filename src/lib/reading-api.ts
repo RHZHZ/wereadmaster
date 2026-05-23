@@ -1015,7 +1015,8 @@ export async function checkForAppUpdate(): Promise<AppUpdateStatus> {
     available: true,
     currentVersion: currentState.appVersion,
     latestVersion: update.version,
-    notes: update.body
+    notes: update.body,
+    publishedAt: update.date
   };
 }
 

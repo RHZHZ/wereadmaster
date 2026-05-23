@@ -56,6 +56,8 @@ cargo check --manifest-path "src-tauri/Cargo.toml"
 npm run tauri signer generate -- --ci -w "$env:USERPROFILE/.tauri/wxreadmaster.key"
 ```
 
+本地执行 `npm run tauri build` 时，会优先自动读取 `C:\Users\RHZ\.tauri\wxreadmaster.key` 并注入 `TAURI_SIGNING_PRIVATE_KEY`；如果你显式设置了同名环境变量，则以环境变量为准。
+
 完整发布说明见 `docs/github-release-updates.md`。
 
 ## 缓存策略

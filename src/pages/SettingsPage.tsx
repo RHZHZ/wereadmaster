@@ -4,11 +4,13 @@ import {
   AlertCircle,
   Bot,
   ChevronDown,
+  Copy,
   Database,
   Download,
   Eye,
   FolderOpen,
   HardDrive,
+  Info,
   KeyRound,
   Loader2,
   RefreshCw,
@@ -21,6 +23,7 @@ import {
 import onboardingLocalVault from "../assets/generated/onboarding-local-vault.png";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { useToast } from "../components/ToastProvider";
+import { copyTextToClipboard } from "../lib/clipboard";
 import { formatUnixDate } from "../lib/formatters";
 import {
   chooseCustomExportDirectory,
@@ -49,6 +52,7 @@ import {
 import type { UserPreferences } from "../lib/preferences";
 import type {
   AiSettingsState,
+  AppUpdateStatus,
   CredentialStatus,
   ExportBackupResult,
   SettingsState,
@@ -71,7 +75,8 @@ type PendingAction =
   | "clearAiOutputCache"
   | "clearCache"
   | "restoreBackup"
-  | "migrateDataDirectory";
+  | "migrateDataDirectory"
+  | "installUpdate";
 type PendingStorageMigration = {
   targetDir: string;
 };
@@ -80,11 +85,13 @@ type SettingsCategoryId =
   | "ai"
   | "appearance"
   | "export"
+  | "updates"
   | "advanced";
 type SettingsCategory = {
   id: SettingsCategoryId;
   label: string;
   description: string;
+  heroDescription: string;
   icon: LucideIcon;
 };
 
@@ -93,20 +100,47 @@ const settingsCategories: SettingsCategory[] = [
     id: "account",
     label: "账户与同步",
     description: "微信读书凭据",
+    heroDescription:
+      "管理微信读书同步凭据。已保存的 Key 只在本机安全存储中读取，前端不显示明文。",
     icon: KeyRound,
   },
-  { id: "ai", label: "AI 设置", description: "Provider 和 Key", icon: Bot },
+  {
+    id: "ai",
+    label: "AI 设置",
+    description: "Provider 和 Key",
+    heroDescription:
+      "配置用于复盘和阅读指南的 Provider；只有主动生成时才会发送当前书的本地内容。",
+    icon: Bot,
+  },
   {
     id: "appearance",
     label: "外观偏好",
     description: "主题、字号、默认入口",
+    heroDescription: "调整主题、字号和默认入口，让应用更贴合你的阅读习惯。",
     icon: Eye,
   },
-  { id: "export", label: "导出设置", description: "保存目录", icon: Download },
+  {
+    id: "export",
+    label: "导出设置",
+    description: "保存目录",
+    heroDescription:
+      "统一控制笔记、批量导出、书籍复盘和诊断信息的后续保存位置，不移动历史导出内容。",
+    icon: Download,
+  },
+  {
+    id: "updates",
+    label: "应用更新",
+    description: "版本、发布、安装",
+    heroDescription:
+      "将版本检查、发布来源和安装动作集中到单独菜单，避免和账户设置混在一起。",
+    icon: Sparkles,
+  },
   {
     id: "advanced",
     label: "高级维护",
     description: "缓存、备份、数据库、诊断",
+    heroDescription:
+      "这些操作偏排障或有数据影响，集中放在维护分类，避免和日常设置混在同一层级。",
     icon: Database,
   },
 ];
@@ -119,6 +153,11 @@ const sectionLabels: Record<string, string> = {
   discovery: "发现",
   dashboard: "总览",
 };
+
+const releaseRepository = "RHZHZ/wxreadmaster";
+const releaseFeedUrl =
+  "https://github.com/RHZHZ/wxreadmaster/releases/latest/download/latest.json";
+const releasePageUrl = "https://github.com/RHZHZ/wxreadmaster/releases";
 
 export function SettingsPage({
   open,
@@ -152,17 +191,12 @@ export function SettingsPage({
   const [isResettingExportDirectory, setIsResettingExportDirectory] =
     useState(false);
   const [isCheckingForUpdate, setIsCheckingForUpdate] = useState(false);
+  const [isInstallingUpdate, setIsInstallingUpdate] = useState(false);
   const [exportDirectoryInput, setExportDirectoryInput] = useState("");
   const [isExportingDiagnostics, setIsExportingDiagnostics] = useState(false);
   const [lastBackup, setLastBackup] = useState<ExportBackupResult>();
   const [latestUpdateStatus, setLatestUpdateStatus] = useState<
-    | {
-        available: boolean;
-        currentVersion: string;
-        latestVersion?: string;
-        notes?: string;
-      }
-    | undefined
+    AppUpdateStatus | undefined
   >();
   const [pendingStorageMigration, setPendingStorageMigration] =
     useState<PendingStorageMigration>();
@@ -433,19 +467,55 @@ export function SettingsPage({
 
       const latestVersion = updateStatus.latestVersion || "未知版本";
       showToast({
-        message: `发现新版本 ${latestVersion}，正在下载安装。`,
+        message: `发现新版本 ${latestVersion}，请先查看摘要后再安装。`,
         tone: "warning",
-      });
-
-      await downloadAndInstallAppUpdate();
-      showToast({
-        message: "更新已下载并开始安装，完成后请重新启动应用。",
-        tone: "success",
       });
     } catch (updateError) {
       setError(getCommandErrorMessage(updateError));
     } finally {
       setIsCheckingForUpdate(false);
+    }
+  }
+
+  async function handleInstallUpdate() {
+    if (!latestUpdateStatus?.available) {
+      setError("请先检查更新，确认存在可安装的新版本。");
+      return;
+    }
+
+    setIsInstallingUpdate(true);
+    setError(undefined);
+
+    try {
+      const latestVersion = latestUpdateStatus.latestVersion || "未知版本";
+      showToast({
+        message: `正在下载并安装 ${latestVersion}。`,
+        tone: "warning",
+      });
+      await downloadAndInstallAppUpdate();
+      showToast({
+        message: "更新已下载并开始安装，完成后请重新启动应用。",
+        tone: "success",
+      });
+      setPendingAction(undefined);
+    } catch (installError) {
+      setError(getCommandErrorMessage(installError));
+    } finally {
+      setIsInstallingUpdate(false);
+    }
+  }
+
+  async function handleCopyReleaseUrl() {
+    try {
+      await copyTextToClipboard(releasePageUrl);
+      showToast({
+        message: "已复制 GitHub Releases 地址。",
+        tone: "success",
+      });
+    } catch (copyError) {
+      setError(
+        copyError instanceof Error ? copyError.message : "复制仓库地址失败。",
+      );
     }
   }
 
@@ -667,22 +737,9 @@ export function SettingsPage({
             <div>
               <p className="section-kicker">本地设置</p>
               <h3>{activeCategoryConfig.label}</h3>
-              <p>{activeCategoryConfig.description}</p>
+              <p>{activeCategoryConfig.heroDescription}</p>
             </div>
             <div className="settings-hero-actions">
-              <button
-                className="secondary-action"
-                type="button"
-                onClick={() => void handleCheckForUpdate()}
-                disabled={isCheckingForUpdate || isLoading}
-              >
-                {isCheckingForUpdate ? (
-                  <Loader2 aria-hidden="true" size={16} className="spin" />
-                ) : (
-                  <Sparkles aria-hidden="true" size={16} />
-                )}
-                {isCheckingForUpdate ? "检查中" : "检查并更新"}
-              </button>
               <button
                 className="sync-button settings-refresh-button"
                 type="button"
@@ -708,11 +765,7 @@ export function SettingsPage({
 
           <div className="settings-main">
             {activeCategory === "account" ? (
-              <SettingsSection
-                kicker="账户"
-                title="账户与凭据"
-                description="管理微信读书同步凭据。已保存的 Key 只在本机安全存储中读取，前端不显示明文。"
-              >
+              <SettingsSection title="账户与同步">
                 <section
                   className="settings-card settings-panel settings-control-panel credential-card"
                   aria-label="凭据"
@@ -805,11 +858,7 @@ export function SettingsPage({
             ) : null}
 
             {activeCategory === "ai" ? (
-              <SettingsSection
-                kicker="AI"
-                title="AI 设置"
-                description="配置用于复盘和阅读指南的 Provider；只有主动生成时才会发送当前书的本地内容。"
-              >
+              <SettingsSection title="AI 设置">
                 <section
                   className="settings-card settings-panel settings-control-panel credential-card ai-settings-card"
                   aria-label="AI 设置"
@@ -933,11 +982,7 @@ export function SettingsPage({
             ) : null}
 
             {activeCategory === "appearance" ? (
-              <SettingsSection
-                kicker="偏好"
-                title="外观与使用偏好"
-                description="只保留预设主题、字号、密度和默认入口，避免自由主题色或自定义字体带来的组合维护成本。"
-              >
+              <SettingsSection title="外观与使用偏好">
                 <section
                   className="settings-card settings-panel settings-control-panel settings-preference-card"
                   aria-label="外观与使用偏好"
@@ -948,12 +993,11 @@ export function SettingsPage({
                     </span>
                     <div>
                       <p className="section-kicker">偏好</p>
-                      <h3>外观与使用偏好</h3>
+                      <h3>显示与默认行为</h3>
                     </div>
                   </div>
                   <p>
-                    这些设置只保存在本机浏览器存储中，用于界面呈现和默认入口，不会触发同步、AI
-                    或远端请求。
+                    这些设置只影响当前设备上的显示方式和默认打开位置，不会改动你的阅读数据。
                   </p>
                   <div className="settings-select-grid">
                     <PreferenceSelect
@@ -1057,11 +1101,7 @@ export function SettingsPage({
             ) : null}
 
             {activeCategory === "export" ? (
-              <SettingsSection
-                kicker="导出"
-                title="导出设置"
-                description="统一控制笔记、批量导出、书籍复盘和诊断信息的后续保存位置，不移动历史导出内容。"
-              >
+              <SettingsSection title="导出设置">
                 <section
                   className="settings-card settings-panel settings-control-panel settings-export-panel"
                   aria-label="导出保存位置"
@@ -1181,146 +1221,345 @@ export function SettingsPage({
                 </section>
               </SettingsSection>
             ) : null}
+
+            {activeCategory === "updates" ? (
+              <SettingsSection title="应用更新">
+                <section
+                  className="settings-card settings-panel settings-control-panel settings-update-card"
+                  aria-label="应用更新"
+                >
+                  <div className="settings-card-heading">
+                    <span className="settings-icon">
+                      <Sparkles aria-hidden="true" size={20} />
+                    </span>
+                    <div>
+                      <p className="section-kicker">版本更新</p>
+                      <h3>GitHub Releases 更新</h3>
+                    </div>
+                  </div>
+                  <p>
+                    先检查版本、发布时间和更新摘要，再决定是否安装；设置首页 Hero
+                    区只保留当前分类说明和刷新操作。
+                  </p>
+                  <dl className="settings-dl settings-update-meta">
+                    <div>
+                      <dt>当前版本</dt>
+                      <dd>
+                        {state?.appVersion ||
+                          latestUpdateStatus?.currentVersion ||
+                          "尚未读取"}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>检查结果</dt>
+                      <dd>{renderUpdateSummary(latestUpdateStatus)}</dd>
+                    </div>
+                    <div>
+                      <dt>最新版本</dt>
+                      <dd>{latestUpdateStatus?.latestVersion || "尚未检查"}</dd>
+                    </div>
+                    <div>
+                      <dt>发布时间</dt>
+                      <dd>
+                        {formatReleaseDate(latestUpdateStatus?.publishedAt)}
+                      </dd>
+                    </div>
+                    <div className="wide-row">
+                      <dt>发布仓库</dt>
+                      <dd>{releaseRepository}</dd>
+                    </div>
+                    <div className="wide-row">
+                      <dt>更新源</dt>
+                      <dd title={releaseFeedUrl}>{releaseFeedUrl}</dd>
+                    </div>
+                  </dl>
+                  <section
+                    className="settings-update-notes"
+                    aria-label="更新摘要"
+                  >
+                    <div className="settings-update-notes-heading">
+                      <Info aria-hidden="true" size={16} />
+                      <strong>更新摘要</strong>
+                    </div>
+                    <p>
+                      {latestUpdateStatus?.notes?.trim() ||
+                        "检查到新版本后，这里会显示 release 摘要。"}
+                    </p>
+                  </section>
+                  <div className="settings-actions settings-card-actions">
+                    <button
+                      className="secondary-action"
+                      type="button"
+                      onClick={() => void handleCheckForUpdate()}
+                      disabled={
+                        isCheckingForUpdate || isInstallingUpdate || isLoading
+                      }
+                    >
+                      {isCheckingForUpdate ? (
+                        <Loader2
+                          aria-hidden="true"
+                          size={18}
+                          className="spin"
+                        />
+                      ) : (
+                        <Sparkles aria-hidden="true" size={18} />
+                      )}
+                      {isCheckingForUpdate ? "检查中" : "检查更新"}
+                    </button>
+                    <button
+                      className="secondary-action"
+                      type="button"
+                      onClick={() => void handleCopyReleaseUrl()}
+                      disabled={isCheckingForUpdate || isInstallingUpdate}
+                    >
+                      <Copy aria-hidden="true" size={18} />
+                      复制发布地址
+                    </button>
+                    <button
+                      className="sync-button"
+                      type="button"
+                      onClick={() => setPendingAction("installUpdate")}
+                      disabled={
+                        !latestUpdateStatus?.available ||
+                        isCheckingForUpdate ||
+                        isInstallingUpdate
+                      }
+                    >
+                      {isInstallingUpdate ? "安装中" : "安装更新"}
+                    </button>
+                  </div>
+                </section>
+              </SettingsSection>
+            ) : null}
           </div>
 
           {activeCategory === "advanced" ? (
             <section
-              className="settings-advanced is-open"
+              className="settings-advanced-layout"
               aria-label="高级维护"
             >
-              <div className="settings-advanced-heading">
-                <div>
-                  <p className="section-kicker">高级维护</p>
-                  <h3>缓存、备份、数据库和诊断</h3>
-                  <p>
-                    这些操作偏排障或有数据影响，集中放在维护分类，避免和日常设置混在同一层级。
-                  </p>
-                </div>
-              </div>
-
-              <div className="settings-advanced-body">
-                <div className="settings-grid settings-maintenance-grid">
-                  <section
-                    className="settings-card settings-maintenance-card"
-                    aria-label="本地缓存"
-                  >
-                    <div className="settings-card-heading">
-                      <span className="settings-icon">
-                        <Database aria-hidden="true" size={20} />
-                      </span>
-                      <div>
-                        <p className="section-kicker">本地缓存</p>
-                        <h3>
-                          {state?.localData.cacheRowCount ?? 0} 条缓存记录
-                        </h3>
-                      </div>
+              <div className="settings-grid settings-maintenance-grid">
+                <section
+                  className="settings-card settings-maintenance-card"
+                  aria-label="本地缓存"
+                >
+                  <div className="settings-card-heading">
+                    <span className="settings-icon">
+                      <Database aria-hidden="true" size={20} />
+                    </span>
+                    <div>
+                      <p className="section-kicker">本地缓存</p>
+                      <h3>
+                        {state?.localData.cacheRowCount ?? 0} 条缓存记录
+                      </h3>
                     </div>
-                    <p>
-                      清除缓存会删除已同步的书架、详情、笔记、统计、发现缓存和同步状态，但不会移除
-                      API Key。
-                    </p>
-                    <dl className="settings-dl">
-                      <div>
-                        <dt>数据库大小</dt>
-                        <dd>
-                          {formatBytes(state?.localData.databaseSizeBytes ?? 0)}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>应用版本</dt>
-                        <dd>{state?.appVersion ?? "0.1.0"}</dd>
-                      </div>
-                    </dl>
-                    <div className="settings-actions settings-card-actions">
-                      <button
-                        className="secondary-action"
-                        type="button"
-                        onClick={() => setPendingAction("clearAiOutputCache")}
-                        disabled={isClearingAiOutputCache}
-                      >
-                        {isClearingAiOutputCache ? (
-                          <Loader2
-                            aria-hidden="true"
-                            size={18}
-                            className="spin"
-                          />
-                        ) : (
-                          <Bot aria-hidden="true" size={18} />
-                        )}
-                        {isClearingAiOutputCache
-                          ? "清理中"
-                          : "清除 AI 输出缓存"}
-                      </button>
-                      <button
-                        className="secondary-action danger-action"
-                        type="button"
-                        onClick={() => setPendingAction("clearCache")}
-                        disabled={isClearingCache || isClearingAiOutputCache}
-                      >
-                        <Trash2 aria-hidden="true" size={18} />
-                        清除本地缓存
-                      </button>
-                      <button
-                        className="sync-button"
-                        type="button"
-                        onClick={() =>
-                          setShowDiagnostics((current) => !current)
-                        }
-                      >
-                        <ChevronDown
+                  </div>
+                  <p>
+                    清除缓存会删除已同步的书架、详情、笔记、统计、发现缓存和同步状态，但不会移除
+                    API Key。
+                  </p>
+                  <dl className="settings-dl">
+                    <div>
+                      <dt>数据库大小</dt>
+                      <dd>
+                        {formatBytes(state?.localData.databaseSizeBytes ?? 0)}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>应用版本</dt>
+                      <dd>{state?.appVersion ?? "0.1.0"}</dd>
+                    </div>
+                  </dl>
+                  <div className="settings-actions settings-card-actions">
+                    <button
+                      className="secondary-action"
+                      type="button"
+                      onClick={() => setPendingAction("clearAiOutputCache")}
+                      disabled={isClearingAiOutputCache}
+                    >
+                      {isClearingAiOutputCache ? (
+                        <Loader2
                           aria-hidden="true"
                           size={18}
-                          className={showDiagnostics ? "rotate-180" : ""}
+                          className="spin"
                         />
-                        {showDiagnostics ? "收起诊断" : "查看诊断"}
-                      </button>
-                    </div>
-                  </section>
+                      ) : (
+                        <Bot aria-hidden="true" size={18} />
+                      )}
+                      {isClearingAiOutputCache
+                        ? "清理中"
+                        : "清除 AI 输出缓存"}
+                    </button>
+                    <button
+                      className="secondary-action danger-action"
+                      type="button"
+                      onClick={() => setPendingAction("clearCache")}
+                      disabled={isClearingCache || isClearingAiOutputCache}
+                    >
+                      <Trash2 aria-hidden="true" size={18} />
+                      清除本地缓存
+                    </button>
+                  </div>
+                </section>
 
-                  <section
-                    className="settings-card settings-maintenance-card"
-                    aria-label="本地数据备份"
-                  >
-                    <div className="settings-card-heading">
-                      <span className="settings-icon">
-                        <HardDrive aria-hidden="true" size={20} />
-                      </span>
-                      <div>
-                        <p className="section-kicker">备份与恢复</p>
-                        <h3>本地数据备份</h3>
-                      </div>
+                <section
+                  className="settings-card settings-maintenance-card"
+                  aria-label="本地数据备份"
+                >
+                  <div className="settings-card-heading">
+                    <span className="settings-icon">
+                      <HardDrive aria-hidden="true" size={20} />
+                    </span>
+                    <div>
+                      <p className="section-kicker">备份与恢复</p>
+                      <h3>本地数据备份</h3>
                     </div>
+                  </div>
+                  <p>
+                    备份只包含本地 SQLite 数据库及 WAL/SHM
+                    辅助文件，不包含微信读书 API Key、AI API Key
+                    或安全存储文件。
+                  </p>
+                  <dl className="settings-dl">
+                    <div className="wide-row">
+                      <dt>最近备份</dt>
+                      <dd>{lastBackup?.path || "尚未导出"}</dd>
+                    </div>
+                    <div>
+                      <dt>包含文件</dt>
+                      <dd>
+                        {lastBackup?.files.length
+                          ? lastBackup.files.join("、")
+                          : "无"}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>恢复策略</dt>
+                      <dd>验证后替换，失败回滚</dd>
+                    </div>
+                  </dl>
+                  <div className="settings-actions settings-card-actions">
+                    <button
+                      className="secondary-action"
+                      type="button"
+                      onClick={() => void handleExportBackup()}
+                      disabled={isExportingBackup || isRestoringBackup}
+                    >
+                      {isExportingBackup ? (
+                        <Loader2
+                          aria-hidden="true"
+                          size={18}
+                          className="spin"
+                        />
+                      ) : (
+                        <Download aria-hidden="true" size={18} />
+                      )}
+                      {isExportingBackup ? "导出中" : "导出本地备份"}
+                    </button>
+                    <button
+                      className="sync-button"
+                      type="button"
+                      onClick={() => setPendingAction("restoreBackup")}
+                      disabled={
+                        !lastBackup?.path ||
+                        isExportingBackup ||
+                        isRestoringBackup
+                      }
+                    >
+                      {isRestoringBackup ? "恢复中" : "恢复最近备份"}
+                    </button>
+                  </div>
+                </section>
+
+                <section
+                  className="settings-card settings-maintenance-card"
+                  aria-label="本地数据库位置"
+                >
+                  <div className="settings-card-heading">
+                    <span className="settings-icon">
+                      <FolderOpen aria-hidden="true" size={20} />
+                    </span>
+                    <div>
+                      <p className="section-kicker">高级</p>
+                      <h3>本地数据库位置</h3>
+                    </div>
+                  </div>
+                  <p>
+                    仅通过系统目录选择器迁移本地 SQLite 数据库及 WAL/SHM
+                    文件；微信读书 API Key 和 AI API Key
+                    仍保留在本机安全存储中，不会随数据库目录移动。
+                  </p>
+                  <dl className="settings-dl path-dl">
+                    <div className="wide-row">
+                      <dt>当前数据目录</dt>
+                      <dd title={state?.localData.dataDir}>
+                        {state?.localData.dataDir || "尚未读取"}
+                      </dd>
+                    </div>
+                    <div className="wide-row">
+                      <dt>默认数据目录</dt>
+                      <dd title={state?.localData.defaultDataDir}>
+                        {state?.localData.defaultDataDir || "尚未读取"}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>位置类型</dt>
+                      <dd>
+                        {state?.localData.isCustomDataDir
+                          ? "自定义目录"
+                          : "默认目录"}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>迁移后</dt>
+                      <dd>需要重启应用</dd>
+                    </div>
+                  </dl>
+                  <div className="settings-actions settings-card-actions">
+                    <button
+                      className="secondary-action"
+                      type="button"
+                      onClick={() => void handleChooseDataDirectory()}
+                      disabled={
+                        isChoosingDataDirectory || isMigratingDataDirectory
+                      }
+                    >
+                      {isChoosingDataDirectory ? (
+                        <Loader2
+                          aria-hidden="true"
+                          size={18}
+                          className="spin"
+                        />
+                      ) : (
+                        <FolderOpen aria-hidden="true" size={18} />
+                      )}
+                      {isChoosingDataDirectory ? "选择中" : "选择并迁移目录"}
+                    </button>
+                  </div>
+                </section>
+              </div>
+
+              <section
+                className={`settings-diagnostics ${showDiagnostics ? "is-open" : ""}`}
+                aria-label="本地诊断"
+              >
+                <div className="settings-diagnostics-heading">
+                  <div>
+                    <p className="section-kicker">本地诊断</p>
+                    <h3>同步状态、数据库路径和表记录数</h3>
                     <p>
-                      备份只包含本地 SQLite 数据库及 WAL/SHM
-                      辅助文件，不包含微信读书 API Key、AI API Key
-                      或安全存储文件。
+                      这些信息用于排查本机缓存问题，默认收起，避免干扰日常设置。
                     </p>
-                    <dl className="settings-dl">
-                      <div className="wide-row">
-                        <dt>最近备份</dt>
-                        <dd>{lastBackup?.path || "尚未导出"}</dd>
-                      </div>
-                      <div>
-                        <dt>包含文件</dt>
-                        <dd>
-                          {lastBackup?.files.length
-                            ? lastBackup.files.join("、")
-                            : "无"}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>恢复策略</dt>
-                        <dd>验证后替换，失败回滚</dd>
-                      </div>
-                    </dl>
-                    <div className="settings-actions settings-card-actions">
+                  </div>
+                  <div className="settings-diagnostics-actions">
+                    {showDiagnostics ? (
                       <button
                         className="secondary-action"
                         type="button"
-                        onClick={() => void handleExportBackup()}
-                        disabled={isExportingBackup || isRestoringBackup}
+                        onClick={() => void handleExportDiagnostics()}
+                        disabled={isExportingDiagnostics || isLoading}
                       >
-                        {isExportingBackup ? (
+                        {isExportingDiagnostics ? (
                           <Loader2
                             aria-hidden="true"
                             size={18}
@@ -1329,239 +1568,124 @@ export function SettingsPage({
                         ) : (
                           <Download aria-hidden="true" size={18} />
                         )}
-                        {isExportingBackup ? "导出中" : "导出本地备份"}
+                        {isExportingDiagnostics ? "导出中" : "导出诊断信息"}
                       </button>
-                      <button
-                        className="sync-button"
-                        type="button"
-                        onClick={() => setPendingAction("restoreBackup")}
-                        disabled={
-                          !lastBackup?.path ||
-                          isExportingBackup ||
-                          isRestoringBackup
-                        }
-                      >
-                        {isRestoringBackup ? "恢复中" : "恢复最近备份"}
-                      </button>
-                    </div>
-                  </section>
-
-                  <section
-                    className="settings-card settings-maintenance-card"
-                    aria-label="本地数据库位置"
-                  >
-                    <div className="settings-card-heading">
-                      <span className="settings-icon">
-                        <FolderOpen aria-hidden="true" size={20} />
-                      </span>
-                      <div>
-                        <p className="section-kicker">高级</p>
-                        <h3>本地数据库位置</h3>
-                      </div>
-                    </div>
-                    <p>
-                      仅通过系统目录选择器迁移本地 SQLite 数据库及 WAL/SHM
-                      文件；微信读书 API Key 和 AI API Key
-                      仍保留在本机安全存储中，不会随数据库目录移动。
-                    </p>
-                    <dl className="settings-dl path-dl">
-                      <div className="wide-row">
-                        <dt>当前数据目录</dt>
-                        <dd title={state?.localData.dataDir}>
-                          {state?.localData.dataDir || "尚未读取"}
-                        </dd>
-                      </div>
-                      <div className="wide-row">
-                        <dt>默认数据目录</dt>
-                        <dd title={state?.localData.defaultDataDir}>
-                          {state?.localData.defaultDataDir || "尚未读取"}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>位置类型</dt>
-                        <dd>
-                          {state?.localData.isCustomDataDir
-                            ? "自定义目录"
-                            : "默认目录"}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>迁移后</dt>
-                        <dd>需要重启应用</dd>
-                      </div>
-                    </dl>
-                    <div className="settings-actions settings-card-actions">
-                      <button
-                        className="secondary-action"
-                        type="button"
-                        onClick={() => void handleChooseDataDirectory()}
-                        disabled={
-                          isChoosingDataDirectory || isMigratingDataDirectory
-                        }
-                      >
-                        {isChoosingDataDirectory ? (
-                          <Loader2
-                            aria-hidden="true"
-                            size={18}
-                            className="spin"
-                          />
-                        ) : (
-                          <FolderOpen aria-hidden="true" size={18} />
-                        )}
-                        {isChoosingDataDirectory ? "选择中" : "选择并迁移目录"}
-                      </button>
-                    </div>
-                  </section>
+                    ) : null}
+                    <button
+                      className="sync-button"
+                      type="button"
+                      onClick={() =>
+                        setShowDiagnostics((current) => !current)
+                      }
+                    >
+                      <ChevronDown
+                        aria-hidden="true"
+                        size={18}
+                        className={showDiagnostics ? "rotate-180" : ""}
+                      />
+                      {showDiagnostics ? "收起" : "展开"}
+                    </button>
+                  </div>
                 </div>
 
-                <section
-                  className={`settings-diagnostics ${showDiagnostics ? "is-open" : ""}`}
-                  aria-label="本地诊断"
-                >
-                  <div className="settings-diagnostics-heading">
-                    <div>
-                      <p className="section-kicker">本地诊断</p>
-                      <h3>同步状态、数据库路径和表记录数</h3>
-                      <p>
-                        这些信息用于排查本机缓存问题，默认收起，避免干扰日常设置。
-                      </p>
-                    </div>
-                    <div className="settings-diagnostics-actions">
-                      {showDiagnostics ? (
-                        <button
-                          className="secondary-action"
-                          type="button"
-                          onClick={() => void handleExportDiagnostics()}
-                          disabled={isExportingDiagnostics || isLoading}
-                        >
-                          {isExportingDiagnostics ? (
-                            <Loader2
-                              aria-hidden="true"
-                              size={18}
-                              className="spin"
-                            />
-                          ) : (
-                            <Download aria-hidden="true" size={18} />
-                          )}
-                          {isExportingDiagnostics ? "导出中" : "导出诊断信息"}
-                        </button>
-                      ) : null}
-                      <button
-                        className="sync-button"
-                        type="button"
-                        onClick={() =>
-                          setShowDiagnostics((current) => !current)
-                        }
-                      >
-                        <ChevronDown
-                          aria-hidden="true"
-                          size={18}
-                          className={showDiagnostics ? "rotate-180" : ""}
-                        />
-                        {showDiagnostics ? "收起" : "展开"}
-                      </button>
-                    </div>
-                  </div>
-
-                  {showDiagnostics ? (
-                    <div className="settings-diagnostics-grid">
-                      <section
-                        className="settings-card"
-                        aria-label="数据库路径"
-                      >
-                        <div className="settings-card-heading">
-                          <span className="settings-icon">
-                            <HardDrive aria-hidden="true" size={20} />
-                          </span>
-                          <div>
-                            <p className="section-kicker">路径</p>
-                            <h3>本地数据位置</h3>
-                          </div>
+                {showDiagnostics ? (
+                  <div className="settings-diagnostics-grid">
+                    <section
+                      className="settings-card"
+                      aria-label="数据库路径"
+                    >
+                      <div className="settings-card-heading">
+                        <span className="settings-icon">
+                          <HardDrive aria-hidden="true" size={20} />
+                        </span>
+                        <div>
+                          <p className="section-kicker">路径</p>
+                          <h3>本地数据位置</h3>
                         </div>
-                        <dl className="settings-dl">
-                          <div className="wide-row">
-                            <dt>数据目录</dt>
-                            <dd>{state?.localData.dataDir || "尚未读取"}</dd>
-                          </div>
-                          <div className="wide-row">
-                            <dt>默认目录</dt>
-                            <dd>
-                              {state?.localData.defaultDataDir || "尚未读取"}
-                            </dd>
-                          </div>
-                          <div className="wide-row">
-                            <dt>数据库文件</dt>
-                            <dd>
-                              {state?.localData.databasePath || "尚未读取"}
-                            </dd>
-                          </div>
-                          <div>
-                            <dt>自定义位置</dt>
-                            <dd>
-                              {state?.localData.isCustomDataDir
-                                ? "已启用"
-                                : "未启用"}
-                            </dd>
-                          </div>
-                          <div className="wide-row">
-                            <dt>最近迁移/恢复错误</dt>
-                            <dd>
-                              {state?.localData.lastDataOperationError || "无"}
-                            </dd>
-                          </div>
-                        </dl>
-                      </section>
-
-                      <section className="settings-card" aria-label="同步状态">
-                        <div className="settings-card-heading">
-                          <span className="settings-icon">
-                            <ShieldCheck aria-hidden="true" size={20} />
-                          </span>
-                          <div>
-                            <p className="section-kicker">同步状态</p>
-                            <h3>各模块最近同步情况</h3>
-                          </div>
+                      </div>
+                      <dl className="settings-dl">
+                        <div className="wide-row">
+                          <dt>数据目录</dt>
+                          <dd>{state?.localData.dataDir || "尚未读取"}</dd>
                         </div>
-                        {state?.syncStates.length ? (
-                          <div className="sync-state-list">
-                            {state.syncStates.map((item) => (
-                              <SyncStateRow key={item.section} state={item} />
-                            ))}
-                          </div>
-                        ) : (
-                          <section className="empty-inline settings-empty">
-                            <HardDrive aria-hidden="true" size={28} />
-                            <h3>还没有同步记录</h3>
-                            <p>
-                              完成一次书架、笔记、统计或发现同步后，这里会显示本地状态。
-                            </p>
-                          </section>
-                        )}
-                      </section>
-
-                      <section
-                        className="settings-card settings-diagnostics-table-card"
-                        aria-label="缓存表"
-                      >
-                        <div className="settings-card-heading">
-                          <div>
-                            <p className="section-kicker">缓存明细</p>
-                            <h3>本地表记录数</h3>
-                          </div>
+                        <div className="wide-row">
+                          <dt>默认目录</dt>
+                          <dd>
+                            {state?.localData.defaultDataDir || "尚未读取"}
+                          </dd>
                         </div>
-                        <div className="cache-table-grid">
-                          {(state?.localData.tableCounts ?? []).map((item) => (
-                            <article key={item.table}>
-                              <span>{tableLabel(item.table)}</span>
-                              <strong>{item.rowCount}</strong>
-                            </article>
+                        <div className="wide-row">
+                          <dt>数据库文件</dt>
+                          <dd>
+                            {state?.localData.databasePath || "尚未读取"}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>自定义位置</dt>
+                          <dd>
+                            {state?.localData.isCustomDataDir
+                              ? "已启用"
+                              : "未启用"}
+                          </dd>
+                        </div>
+                        <div className="wide-row">
+                          <dt>最近迁移/恢复错误</dt>
+                          <dd>
+                            {state?.localData.lastDataOperationError || "无"}
+                          </dd>
+                        </div>
+                      </dl>
+                    </section>
+
+                    <section className="settings-card" aria-label="同步状态">
+                      <div className="settings-card-heading">
+                        <span className="settings-icon">
+                          <ShieldCheck aria-hidden="true" size={20} />
+                        </span>
+                        <div>
+                          <p className="section-kicker">同步状态</p>
+                          <h3>各模块最近同步情况</h3>
+                        </div>
+                      </div>
+                      {state?.syncStates.length ? (
+                        <div className="sync-state-list">
+                          {state.syncStates.map((item) => (
+                            <SyncStateRow key={item.section} state={item} />
                           ))}
                         </div>
-                      </section>
-                    </div>
-                  ) : null}
-                </section>
-              </div>
+                      ) : (
+                        <section className="empty-inline settings-empty">
+                          <HardDrive aria-hidden="true" size={28} />
+                          <h3>还没有同步记录</h3>
+                          <p>
+                            完成一次书架、笔记、统计或发现同步后，这里会显示本地状态。
+                          </p>
+                        </section>
+                      )}
+                    </section>
+
+                    <section
+                      className="settings-card settings-diagnostics-table-card"
+                      aria-label="缓存表"
+                    >
+                      <div className="settings-card-heading">
+                        <div>
+                          <p className="section-kicker">缓存明细</p>
+                          <h3>本地表记录数</h3>
+                        </div>
+                      </div>
+                      <div className="cache-table-grid">
+                        {(state?.localData.tableCounts ?? []).map((item) => (
+                          <article key={item.table}>
+                            <span>{tableLabel(item.table)}</span>
+                            <strong>{item.rowCount}</strong>
+                          </article>
+                        ))}
+                      </div>
+                    </section>
+                  </div>
+                ) : null}
+              </section>
             </section>
           ) : null}
 
@@ -1628,10 +1752,50 @@ export function SettingsPage({
             }}
             onConfirm={() => void handleMigrateDataDirectory()}
           />
+          <ConfirmDialog
+            open={pendingAction === "installUpdate"}
+            title="确认安装更新？"
+            description={`将从 ${releaseRepository} 的 GitHub Releases 下载并安装 ${latestUpdateStatus?.latestVersion || "新版本"}。安装完成后需要重新启动应用。`}
+            confirmLabel="确认安装"
+            isBusy={isInstallingUpdate}
+            onCancel={() => setPendingAction(undefined)}
+            onConfirm={() => void handleInstallUpdate()}
+          />
         </div>
       </section>
     </div>
   );
+}
+
+function renderUpdateSummary(status?: AppUpdateStatus): string {
+  if (!status) {
+    return "尚未检查";
+  }
+
+  if (status.available) {
+    return "发现新版本";
+  }
+
+  return "已是最新版本";
+}
+
+function formatReleaseDate(value?: string): string {
+  if (!value) {
+    return "尚未检查";
+  }
+
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(parsed);
 }
 
 function PreferenceSelect({
@@ -1664,26 +1828,15 @@ function PreferenceSelect({
 }
 
 function SettingsSection({
-  kicker,
   title,
-  description,
   children,
 }: {
-  kicker: string;
   title: string;
-  description: string;
   children: ReactNode;
 }) {
   return (
     <section className="settings-section" aria-label={`${title}分区`}>
-      <div className="settings-section-heading">
-        <div>
-          <p className="section-kicker">{kicker}</p>
-          <h3>{title}</h3>
-          <p>{description}</p>
-        </div>
-      </div>
-      <div className="settings-section-body">{children}</div>
+      {children}
     </section>
   );
 }

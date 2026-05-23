@@ -42,7 +42,7 @@ describe("settings page onboarding artwork", () => {
     expect(markup).not.toContain("API Key 只保存在当前设备");
   });
 
-  it("shows an update check action in advanced maintenance", () => {
+  it("shows a dedicated updates category in settings navigation", () => {
     const markup = renderToStaticMarkup(
       <ToastProvider>
         <SettingsPage
@@ -56,6 +56,7 @@ describe("settings page onboarding artwork", () => {
       </ToastProvider>
     );
 
-    expect(markup).toContain("检查并更新");
+    expect(markup).toContain("应用更新");
+    expect(markup).toContain("版本、发布、安装");
   });
 });

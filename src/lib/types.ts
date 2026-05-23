@@ -784,6 +784,7 @@ export type AppUpdateStatus = {
   currentVersion: string;
   latestVersion?: string;
   notes?: string;
+  publishedAt?: string;
 };
 
 export type LocalDataState = {

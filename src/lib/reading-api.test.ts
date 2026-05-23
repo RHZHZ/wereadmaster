@@ -8,9 +8,15 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn()
 }));
 
+vi.mock("@tauri-apps/plugin-updater", () => ({
+  check: vi.fn()
+}));
+
 import { invoke } from "@tauri-apps/api/core";
+import { check } from "@tauri-apps/plugin-updater";
 import {
   clearAiOutputCache,
+  checkForAppUpdate,
   chooseCustomExportDirectory,
   getAiReviewFeedback,
   getAIAssetVersionDetail,
@@ -22,10 +28,12 @@ import {
 } from "./reading-api";
 
 const invokeMock = vi.mocked(invoke);
+const checkMock = vi.mocked(check);
 
 describe("settings export directory API", () => {
   beforeEach(() => {
     invokeMock.mockReset();
+    checkMock.mockReset();
   });
 
   test("maps export location from settings state", async () => {
@@ -259,5 +267,31 @@ describe("settings export directory API", () => {
     });
     expect(loaded.actionItems["0:写一页复盘"].status).toBe("completed");
     expect(saved.actionItems["0:写一页复盘"].note).toBe("已完成");
+  });
+
+  test("maps updater metadata including release notes and publish date", async () => {
+    invokeMock.mockResolvedValue({
+      credential: { hasCredential: true },
+      syncStates: [],
+      localData: {},
+      exportData: {},
+      appVersion: "0.1.0"
+    });
+    checkMock.mockResolvedValue({
+      currentVersion: "0.1.0",
+      version: "0.1.1",
+      body: "修复检查更新交互并补充更新摘要。",
+      date: "2026-05-23T10:00:00.000Z"
+    } as Awaited<ReturnType<typeof check>>);
+
+    const status = await checkForAppUpdate();
+
+    expect(status).toEqual({
+      available: true,
+      currentVersion: "0.1.0",
+      latestVersion: "0.1.1",
+      notes: "修复检查更新交互并补充更新摘要。",
+      publishedAt: "2026-05-23T10:00:00.000Z"
+    });
   });
 });

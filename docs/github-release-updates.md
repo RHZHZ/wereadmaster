@@ -2,12 +2,12 @@
 
 ## 目标
 
-正式版本通过 GitHub Releases 分发 Windows 安装包和 Tauri updater 产物。用户在应用设置页点击“检查并更新”后，应用从配置的更新端点检查新版本，校验签名后下载并安装。
+正式版本通过 GitHub Releases 分发 Windows 安装包和 Tauri updater 产物。用户在应用设置页侧边栏进入“应用更新”菜单后，应用会先读取配置的更新端点并展示版本信息、更新摘要和发布来源；确认安装后再校验签名并下载更新。
 
 ## 当前状态
 
 - 应用内 updater 插件已接入。
-- 设置页已提供“检查并更新”入口。
+- 设置页侧边栏已提供“应用更新”菜单，内部包含“检查更新 / 安装更新”入口。
 - 构建配置已开启 `createUpdaterArtifacts`。
 - GitHub Actions 已新增 tag 触发的 Windows 发布流程。
 - GitHub 仓库地址已固定为 `RHZHZ/wxreadmaster`。
@@ -51,6 +51,12 @@
    - 不要提交到仓库
    - 不要写进 `.env`
 
+## 本地打包说明
+
+- 当前项目的 `npm run tauri ...` 已包一层本地启动脚本。
+- 当你执行 `npm run tauri build` 或 `npm run tauri bundle` 时，如果当前进程没有设置 `TAURI_SIGNING_PRIVATE_KEY`，脚本会自动尝试读取 `C:\Users\RHZ\.tauri\wxreadmaster.key`。
+- 如果你已经手动设置了 `TAURI_SIGNING_PRIVATE_KEY`，则优先使用当前环境变量，不覆盖你的显式配置。
+
 ## 发布步骤
 
 1. 同步版本号，确保以下位置一致：
@@ -86,13 +92,13 @@
 2. 先发布为 draft release。
 3. 下载并安装当前版本。
 4. 再推送一个更高版本标签，例如 `v0.1.2`。
-5. 在已安装旧版本的应用里点击“检查并更新”验证整条链路。
+5. 在已安装旧版本的应用里进入“设置 > 应用更新”，点击“检查更新”，确认摘要和版本信息无误后执行“安装更新”，验证整条链路。
 
 ## 验收标准
 
 - Release 页面包含 Windows 安装包。
 - Release 页面包含 `latest.json`。
-- 应用内点击“检查并更新”能发现高于当前版本的新版本。
+- 应用内进入“设置 > 应用更新”后能发现高于当前版本的新版本，并展示 GitHub Releases 摘要。
 - 更新下载前后不暴露签名私钥或 API Key。
 - 更新失败时应用仍保留当前版本和本地数据。
 
