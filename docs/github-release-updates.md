@@ -42,6 +42,7 @@
 
    - `TAURI_SIGNING_PRIVATE_KEY`
    - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+   - `TAURI_RELEASE_PAT`（可选；如果 `GITHUB_TOKEN` 仍报 `Resource not accessible by integration`，就改用它）
 
    如果私钥没有设置密码，`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 可以留空或先不配置。
 
@@ -50,6 +51,8 @@
    - `C:\Users\RHZ\.tauri\wxreadmaster.key` 文件全文内容
    - 不要提交到仓库
    - 不要写进 `.env`
+
+7. 如果 GitHub Actions 仍然提示 `Resource not accessible by integration`，先检查仓库 `Settings > Actions > General` 里的 `Workflow permissions` 是否为 `Read and write permissions`；如果组织策略限制了默认 token，就启用 `TAURI_RELEASE_PAT`。
 
 ## 本地打包说明
 
@@ -80,9 +83,9 @@
    git push origin v0.1.1
    ```
 
-4. GitHub Actions 会创建 draft release，并上传安装包和 updater 产物。
-5. 检查 draft release 中的安装包、`latest.json` 和签名产物。
-6. 补充发布说明后发布 release。
+4. GitHub Actions 会创建正式 release，并上传安装包和 updater 产物。
+5. 检查 release 中的安装包、`latest.json` 和签名产物。
+6. 如需补充说明，直接编辑 release notes。
 
 ## 最小发布检查清单
 
@@ -100,11 +103,33 @@
 
 建议第一次使用：
 
-1. 标签使用 `v0.1.0` 或 `v0.1.1`。
-2. 先发布为 draft release。
+1. 标签使用 `v1.0.0`。
+2. 先正式发布当前版本。
 3. 下载并安装当前版本。
-4. 再推送一个更高版本标签，例如 `v0.1.2`。
+4. 再推送一个更高版本标签，例如 `v1.0.1`。
 5. 在已安装旧版本的应用里进入“设置 > 应用更新”，点击“检查更新”，确认摘要和版本信息无误后执行“安装更新”，验证整条链路。
+
+## 首次发布模板
+
+```md
+## 变更
+
+- ...
+
+## 更新说明
+
+- 版本：v1.0.0
+- 适用平台：Windows x64
+- 更新方式：设置 > 应用更新
+
+## 兼容性
+
+- Windows 10 / 11
+
+## 回滚
+
+- 如更新异常，请回退到上一版安装包
+```
 
 ## 验收标准
 
