@@ -364,11 +364,11 @@ export function DashboardPage({
         <img src={heroReadingDashboard} alt="" />
         <div className="hero-copy">
           <p className="section-kicker">阅读资产</p>
-          <h3>把微信读书里的书架、笔记和统计收进本地桌面。</h3>
+          <h3>把微信读书里的阅读记录，沉淀成你的本地阅读资产。</h3>
           <p>
             {hasCredential
-              ? "已进入本地同步模式，数据会从本机缓存优先读取。"
-              : "先在设置里保存 API Key，之后就能同步自己的微信读书数据。"}
+              ? "这里会优先读取本机缓存，帮助你继续阅读、复盘和整理输出。"
+              : "先在设置里保存 API Key，再把自己的书架、笔记和统计同步到本机。"}
           </p>
           <div className="dashboard-quick-actions" aria-label="总览快捷入口">
             <button className="hero-action hero-action--primary" type="button" onClick={onOpenBookshelf}>
@@ -412,10 +412,10 @@ export function DashboardPage({
       <article className={`dashboard-status-strip ${hasCredential ? "is-connected" : "is-warning"}`}>
         {hasCredential ? <CheckCircle2 aria-hidden="true" size={18} /> : <KeyRound aria-hidden="true" size={18} />}
         <div>
-          <strong>{hasCredential ? "已保存本地凭据" : "需要先连接微信读书"}</strong>
+          <strong>{hasCredential ? "已连接本地阅读工作台" : "先连接微信读书，建立本地资产底座"}</strong>
           <span>
             {hasCredential
-              ? "前端只调用本地 Tauri 命令，不接触 API Key。"
+              ? "前端只调用本地 Tauri 命令，API Key 保存在本机安全存储中。"
               : "API Key 会保存到本机安全存储，前端页面不会读取明文。"}
           </span>
         </div>
@@ -477,7 +477,7 @@ export function DashboardPage({
               </ul>
             </>
           ) : (
-            <p>{statsError ? "统计暂不可用" : "同步统计后生成"}</p>
+            <p>{statsError ? "统计暂不可用" : "同步统计后，这里会生成你的近期阅读画像。"}</p>
           )}
         </article>
 
@@ -500,7 +500,7 @@ export function DashboardPage({
               ))}
             </ul>
           ) : (
-            <p>{reviewSuggestionError ? "复盘缓存暂不可用" : "生成月度复盘后，这里会显示 2-3 条下周期建议。"}</p>
+            <p>{reviewSuggestionError ? "复盘缓存暂不可用" : "生成月度复盘后，这里会显示 2-3 条下一步建议。"}</p>
           )}
         </article>
 
@@ -522,7 +522,7 @@ export function DashboardPage({
               ))}
             </div>
           ) : (
-            <p>暂无推荐</p>
+            <p>还没有本地候选或推荐缓存。</p>
           )}
         </article>
       </section>
@@ -594,7 +594,7 @@ export function DashboardPage({
           <StatusMessage
             tone="warning"
             icon={<KeyRound aria-hidden="true" size={18} />}
-            text="保存 API Key 后才能从微信读书同步。"
+            text="先保存 API Key，再把微信读书里的书架、笔记和统计同步到本机。"
           />
         ) : null}
 
@@ -602,7 +602,7 @@ export function DashboardPage({
           <StatusMessage
             tone="neutral"
             icon={<Database aria-hidden="true" size={18} />}
-            text="当前只显示本地缓存。点击同步后会写入书架缓存和同步状态。"
+            text="当前还没有本地书架缓存。点击同步后会写入书架数据和同步状态。"
           />
         ) : null}
 
@@ -636,7 +636,7 @@ export function DashboardPage({
                 <StatusMessage
                   tone="neutral"
                   icon={<BookOpen aria-hidden="true" size={18} />}
-                  text="书架里还没有可继续阅读的电子书。可以先从书架打开一本电子书查看详情。"
+                  text="本地书架里还没有可继续推进的电子书，可以先从书架打开一本书建立阅读节奏。"
                 />
               )}
             </div>

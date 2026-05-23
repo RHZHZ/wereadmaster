@@ -189,7 +189,7 @@ export function BookshelfPage({
         <div>
           <p className="section-kicker">本地缓存</p>
           <h3>我的微信读书书架</h3>
-          <p>从本机缓存读取，手动同步时才调用微信读书接口。</p>
+          <p>先把书架同步到本机，再从这里进入阅读、整理和复盘流程。</p>
         </div>
         <button className="sync-button" type="button" onClick={onSync} disabled={!hasCredential || isSyncing}>
           <RefreshCw aria-hidden="true" size={18} className={isSyncing ? "spin" : ""} />
@@ -208,7 +208,7 @@ export function BookshelfPage({
       {!hasCredential ? (
         <CredentialSetupCard
           title="先保存 API Key"
-          description="书架同步只通过本地 Tauri 命令执行。"
+          description="书架同步只通过本地 Tauri 命令执行，明文 Key 不会暴露给前端页面。"
           onOpenSettings={onOpenSettings}
         />
       ) : null}
@@ -372,8 +372,8 @@ function EmptyShelf({
         <h3>{hasCredential ? "还没有同步书架" : "书架等待连接"}</h3>
         <p>
           {hasCredential
-            ? "同步后会按电子书、有声书和文章收藏展示，计数使用微信读书书架的完整口径。"
-            : "保存 API Key 后即可把个人书架同步到本机缓存。"}
+            ? "同步后会把电子书、有声书和文章收藏写入本机缓存，作为后续复盘和整理的入口。"
+            : "保存 API Key 后即可把个人书架同步到本机缓存，开始沉淀阅读资产。"}
         </p>
         <button
           className="secondary-action"

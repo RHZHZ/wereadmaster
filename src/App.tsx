@@ -832,7 +832,7 @@ export function App() {
           <div className="brand">
             <div className="brand-mark">阅</div>
             <div className="brand-copy">
-              <p className="brand-kicker">本地优先</p>
+              <p className="brand-kicker">阅读资产</p>
               <h1>个人阅读管理</h1>
             </div>
           </div>

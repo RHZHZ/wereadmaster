@@ -688,8 +688,8 @@ export function DiscoveryPage({
             ) : (
               <section className="discovery-empty discovery-empty--compact">
                 <Compass aria-hidden="true" size={28} />
-                <h3>先同步书架，再从自己的阅读轨迹继续找书</h3>
-                <p>书架入口只读本地缓存，不会额外请求推荐接口。</p>
+                <h3>先同步书架，再沿着自己的阅读轨迹继续扩展</h3>
+                <p>发现页会优先消费本地书架线索，帮你把下一批候选书沉淀下来。</p>
               </section>
             )}
               </section>
@@ -784,8 +784,8 @@ export function DiscoveryPage({
         <section className="discovery-onboarding">
           <Compass aria-hidden="true" size={24} />
           <div>
-            <h3>发现页只做个人阅读发现</h3>
-            <p>它不会读取好友关系，也不会把搜索记录上传到自建服务器。</p>
+            <h3>发现页只做你的个人阅读扩展</h3>
+            <p>它不会读取好友关系，也不会把搜索记录上传到自建服务器，只服务你的本地候选沉淀。</p>
           </div>
           <Sparkles aria-hidden="true" size={24} />
         </section>
@@ -856,7 +856,7 @@ function CandidateDecisionBlock({
       </div>
 
       <div className="discovery-candidate-jump">
-        <p>选书决策已移到候选书架，发现页只负责保存候选。</p>
+        <p>发现页负责扩充候选，候选书架负责做取舍决策。</p>
         <button className="secondary-action" type="button" onClick={onOpenCandidateShelf}>
           去候选书架决策
         </button>

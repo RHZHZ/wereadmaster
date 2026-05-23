@@ -136,7 +136,7 @@ const settingsCategories: SettingsCategory[] = [
     label: "应用更新",
     description: "版本、发布、安装",
     heroDescription:
-      "将版本检查、发布来源和安装动作集中到单独菜单，避免和账户设置混在一起。",
+      "集中查看版本、发布来源和更新摘要，让安装动作继续保持清晰、可验证和可回退。",
     icon: Sparkles,
   },
   {
@@ -1260,12 +1260,12 @@ export function SettingsPage({
                     </span>
                     <div>
                       <p className="section-kicker">版本更新</p>
-                      <h3>GitHub Releases 更新</h3>
+                      <h3>本地阅读工作台更新</h3>
                     </div>
                   </div>
                   <p>
-                    先检查版本、发布时间和更新摘要，再决定是否安装；设置首页 Hero
-                    区只保留当前分类说明和刷新操作。
+                    先核对版本、发布时间和更新摘要，再决定是否安装。更新包来自 GitHub Releases，
+                    会在下载前后执行签名校验。
                   </p>
                   <dl className="settings-dl settings-update-meta">
                     <div>
@@ -1341,7 +1341,7 @@ export function SettingsPage({
                     </div>
                     <p>
                       {latestUpdateStatus?.notes?.trim() ||
-                        "检查到新版本后，这里会显示 release 摘要。"}
+                        "检查到新版本后，这里会显示这次版本带来的改动和影响范围。"}
                     </p>
                   </section>
                   <div className="settings-actions settings-card-actions">

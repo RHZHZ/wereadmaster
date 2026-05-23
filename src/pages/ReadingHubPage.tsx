@@ -571,7 +571,7 @@ export function ReadingHubPage({
             <div>
               <p className="section-kicker">阅读指南</p>
               <h3>按书聚合的阅读资产</h3>
-              <p>这里按书展示已生成的本书指南、跨书路线和复盘状态，不会自动调用 AI。</p>
+              <p>这里按书整理你已经沉淀下来的指南、路线和复盘资产，不会自动调用 AI。</p>
             </div>
             <div className="reading-hub-toolbar-actions">
               <label className="search-field">
@@ -623,7 +623,7 @@ export function ReadingHubPage({
                 <Loader2 aria-hidden="true" size={26} className="spin" />
                 <div>
                   <h3>正在读取本地阅读资产</h3>
-                  <p>只聚合已经生成的 AI 缓存，不读取远端笔记。</p>
+                  <p>只聚合已经生成的本地缓存，不读取远端笔记。</p>
                 </div>
               </section>
             ) : null}
@@ -631,8 +631,8 @@ export function ReadingHubPage({
             {!isLoadingAssets && assetSummaries.length === 0 ? (
               <section className="empty-inline stats-empty" aria-label="暂无阅读指南资产">
                 <Waypoints aria-hidden="true" size={28} />
-                <h3>还没有阅读指南资产</h3>
-                <p>从书籍详情生成本书阅读指南或跨书路线后，这里会按书归档展示。</p>
+                <h3>还没有沉淀阅读资产</h3>
+                <p>从书籍详情生成本书阅读指南、跨书路线或书籍复盘后，这里会按书归档展示。</p>
               </section>
             ) : null}
 
