@@ -59,15 +59,7 @@ jobs:
           releaseDraft: false
           prerelease: false
 
-      # ✅ 新增：安装 Tauri CLI（必须！否则无法执行 tauri 命令）
-      - name: Install Tauri CLI
-        run: npm install -g @tauri-apps/cli
-
-      # ✅ 新增：生成 latest.json（自动更新核心文件）
-      - name: Generate latest.json
-        run: tauri updater build --target x86_64-pc-windows-msvc
-
-      # ✅ 新增：上传 latest.json 到 GitHub Release
+      # 上传 latest.json 到 GitHub Release
       - name: Upload latest.json to Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
