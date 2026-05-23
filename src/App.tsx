@@ -6,6 +6,7 @@ import {
   Compass,
   ChevronDown,
   type LucideIcon,
+  Menu,
   PanelLeftClose,
   PanelLeftOpen,
   Library,
@@ -13,6 +14,7 @@ import {
   Settings,
   ShieldCheck,
   Waypoints,
+  X,
 } from "lucide-react";
 import { AppTitleBar } from "./components/AppTitleBar";
 import { DashboardPage } from "./pages/DashboardPage";
@@ -99,6 +101,13 @@ type ShelfSubItem = {
   icon: LucideIcon;
 };
 
+type SidebarMenuId = "shelf" | "readingReview";
+
+type SidebarMenuState = {
+  shelf: boolean;
+  readingReview: boolean;
+};
+
 const navigationItems: NavigationItem[] = [
   { id: "dashboard", label: "总览", description: "阅读状态", icon: BookOpen },
   { id: "shelf", label: "书架", description: "书籍和听书", icon: Library },
@@ -180,6 +189,33 @@ function getInitialSidebarCollapsed(): boolean {
   return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true";
 }
 
+export function createCollapsedSidebarMenuState(): SidebarMenuState {
+  return {
+    shelf: false,
+    readingReview: false,
+  };
+}
+
+export function openSidebarMenuState(menu: SidebarMenuId): SidebarMenuState {
+  return {
+    shelf: menu === "shelf",
+    readingReview: menu === "readingReview",
+  };
+}
+
+export function toggleSidebarMenuState(
+  current: SidebarMenuState,
+  menu: SidebarMenuId,
+): SidebarMenuState {
+  const nextOpen = !current[menu];
+
+  if (!nextOpen) {
+    return createCollapsedSidebarMenuState();
+  }
+
+  return openSidebarMenuState(menu);
+}
+
 export function App() {
   const [preferences, setPreferences] = useState(getInitialPreferences);
   const [systemPrefersDark, setSystemPrefersDark] = useState(
@@ -191,6 +227,7 @@ export function App() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(
     getInitialSidebarCollapsed,
   );
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [credentialStatus, setCredentialStatus] = useState<CredentialStatus>();
   const [bookshelf, setBookshelf] = useState<BookshelfResponse>();
   const [detailEntry, setDetailEntry] = useState<ShelfEntry>();
@@ -226,8 +263,9 @@ export function App() {
   const [preparedAssetUpdateIntent, setPreparedAssetUpdateIntent] =
     useState<PreparedAssetUpdate>();
   const [readingHubTab, setReadingHubTab] = useState<ReadingHubTab>("books");
-  const [isShelfMenuOpen, setIsShelfMenuOpen] = useState(false);
-  const [isReadingReviewMenuOpen, setIsReadingReviewMenuOpen] = useState(true);
+  const [sidebarMenuState, setSidebarMenuState] = useState(
+    createCollapsedSidebarMenuState,
+  );
   const [bookDetail, setBookDetail] = useState<BookDetailResponse>();
   const [bookReloadKey, setBookReloadKey] = useState(0);
   const [isBookLoading, setIsBookLoading] = useState(false);
@@ -328,6 +366,24 @@ export function App() {
   }, [isSidebarCollapsed]);
 
   useEffect(() => {
+    if (!isMobileSidebarOpen) {
+      return;
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setIsMobileSidebarOpen(false);
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isMobileSidebarOpen]);
+
+  useEffect(() => {
     const query = window.matchMedia("(prefers-color-scheme: dark)");
     const handleChange = () => setSystemPrefersDark(query.matches);
 
@@ -407,24 +463,24 @@ export function App() {
       setPreparedAssetUpdateIntent(undefined);
     }
 
+    setIsMobileSidebarOpen(false);
+    setSidebarMenuState(createCollapsedSidebarMenuState());
     startTransition(() => {
-      setIsShelfMenuOpen(
-        nextView === "shelf" ||
-          nextView === "candidateShelf" ||
-          nextView === "bookDecision",
-      );
       setActiveView(nextView);
     });
   }
 
   function handleOpenSettings() {
+    setIsMobileSidebarOpen(false);
+    setSidebarMenuState(createCollapsedSidebarMenuState());
     setIsSettingsOpen(true);
   }
 
   function handleOpenReadingReviewTab(tab: ReadingHubTab) {
+    setIsMobileSidebarOpen(false);
+    setSidebarMenuState(openSidebarMenuState("readingReview"));
     startTransition(() => {
       setReadingHubTab(tab);
-      setIsReadingReviewMenuOpen(true);
       setActiveView("readingReview");
     });
   }
@@ -432,8 +488,9 @@ export function App() {
   function handleOpenShelfTab(tab: ShelfTab) {
     const item =
       shelfSubItems.find((subItem) => subItem.id === tab) ?? shelfSubItems[0];
+    setIsMobileSidebarOpen(false);
+    setSidebarMenuState(openSidebarMenuState("shelf"));
     startTransition(() => {
-      setIsShelfMenuOpen(true);
       setActiveView(item.viewId);
     });
   }
@@ -522,8 +579,8 @@ export function App() {
 
   function handleBookDecisionGenerated(session: BookDecisionSession) {
     setBookDecisionSession(session);
+    setSidebarMenuState(openSidebarMenuState("shelf"));
     startTransition(() => {
-      setIsShelfMenuOpen(true);
       setActiveView("bookDecision");
     });
   }
@@ -686,7 +743,6 @@ export function App() {
     setBookAiBackView("readingReview");
 
     startTransition(() => {
-      setIsReadingReviewMenuOpen(true);
       setActiveView(detail.feature === "book-review" ? "bookAiSummary" : "readingRoute");
     });
   }
@@ -756,14 +812,22 @@ export function App() {
 
   return (
     <div
-      className={`app-frame ${isSidebarCollapsed ? "sidebar-collapsed" : ""}`}
+      className={`app-frame ${isSidebarCollapsed ? "sidebar-collapsed" : ""} ${
+        isMobileSidebarOpen ? "mobile-sidebar-open" : ""
+      }`}
       data-theme={preferences.themeMode}
       data-effective-theme={effectiveTheme}
       data-font-scale={preferences.fontScale}
       data-density={preferences.density}
     >
       <AppTitleBar />
-      <aside className="sidebar" aria-label="主导航">
+      <button
+        className="sidebar-scrim"
+        type="button"
+        aria-label="关闭主导航"
+        onClick={() => setIsMobileSidebarOpen(false)}
+      />
+      <aside className="sidebar" id="app-sidebar" aria-label="主导航">
         <div className="brand-row">
           <div className="brand">
             <div className="brand-mark">阅</div>
@@ -785,6 +849,15 @@ export function App() {
               <PanelLeftClose aria-hidden="true" size={18} />
             )}
           </button>
+          <button
+            className="mobile-sidebar-close"
+            type="button"
+            onClick={() => setIsMobileSidebarOpen(false)}
+            aria-label="关闭主导航"
+            title="关闭主导航"
+          >
+            <X aria-hidden="true" size={18} />
+          </button>
         </div>
 
         <nav className="nav-list">
@@ -797,14 +870,15 @@ export function App() {
               (activeView === "bookDetail" &&
                 (detailBackView === "candidateShelf" ||
                   detailBackView === "bookDecision"));
-            const showShelfSublist = item.id === "shelf" && isShelfMenuOpen;
+            const showShelfSublist =
+              item.id === "shelf" && sidebarMenuState.shelf;
             const isReadingReviewContext =
               activeView === "readingReview" ||
               (activeView === "bookAiSummary" &&
                 bookAiBackView === "readingReview");
             const showReadingReviewSublist =
               item.id === "readingReview" &&
-              (isReadingReviewMenuOpen || isReadingReviewContext);
+              sidebarMenuState.readingReview;
             const isActive =
               item.id === activeView ||
               (item.id === "shelf" && isShelfContext) ||
@@ -828,17 +902,16 @@ export function App() {
                   }`}
                   onClick={() => {
                     if (item.id === "shelf") {
-                      if (isShelfContext) {
-                        setIsShelfMenuOpen((current) => !current);
-                        return;
-                      }
-
-                      handleOpenShelfTab("wechat");
+                      setSidebarMenuState((current) =>
+                        toggleSidebarMenuState(current, "shelf"),
+                      );
                       return;
                     }
 
                     if (item.id === "readingReview") {
-                      setIsReadingReviewMenuOpen((current) => !current);
+                      setSidebarMenuState((current) =>
+                        toggleSidebarMenuState(current, "readingReview"),
+                      );
                       return;
                     }
 
@@ -957,7 +1030,17 @@ export function App() {
 
       <main className="workspace">
         <header className="topbar">
-          <div>
+          <button
+            className="mobile-sidebar-trigger"
+            type="button"
+            aria-label="打开主导航"
+            aria-controls="app-sidebar"
+            aria-expanded={isMobileSidebarOpen}
+            onClick={() => setIsMobileSidebarOpen(true)}
+          >
+            <Menu aria-hidden="true" size={20} />
+          </button>
+          <div className="topbar-title">
             <p className="section-kicker">{activeItem.description}</p>
             <h2>{activeItem.label}</h2>
           </div>

@@ -499,6 +499,12 @@ button:disabled {
   background: var(--paper);
 }
 
+.mobile-sidebar-trigger,
+.mobile-sidebar-close,
+.sidebar-scrim {
+  display: none;
+}
+
 .nav-list {
   flex: 1 1 auto;
   min-height: 0;
@@ -704,6 +710,10 @@ button:disabled {
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 24px;
+}
+
+.topbar-title {
+  min-width: 0;
 }
 
 .topbar h2 {
@@ -4066,6 +4076,7 @@ button:disabled {
   min-height: 0;
   display: grid;
   align-content: start;
+  grid-auto-rows: max-content;
   gap: 14px;
   overflow-x: hidden;
   overflow-y: auto;
@@ -4177,6 +4188,30 @@ button:disabled {
     "Microsoft YaHei",
     monospace;
   font-size: 13px;
+}
+
+.update-link-cell a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 0.14em;
+}
+
+.inline-link-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 0.14em;
+}
+
+.inline-link-button:hover {
+  color: var(--accent-strong);
 }
 
 .settings-update-notes {
@@ -9381,6 +9416,8 @@ button:disabled {
 }
 
 .app-frame[data-effective-theme="dark"] .sidebar-toggle,
+.app-frame[data-effective-theme="dark"] .mobile-sidebar-trigger,
+.app-frame[data-effective-theme="dark"] .mobile-sidebar-close,
 .app-frame[data-effective-theme="dark"] .segmented-control,
 .app-frame[data-effective-theme="dark"] .segmented-control button,
 .app-frame[data-effective-theme="dark"] .shelf-card-menu-trigger {
@@ -9390,6 +9427,8 @@ button:disabled {
 }
 
 .app-frame[data-effective-theme="dark"] .sidebar-toggle:hover,
+.app-frame[data-effective-theme="dark"] .mobile-sidebar-trigger:hover,
+.app-frame[data-effective-theme="dark"] .mobile-sidebar-close:hover,
 .app-frame[data-effective-theme="dark"] .segmented-control button:hover,
 .app-frame[data-effective-theme="dark"] .shelf-card-menu-trigger:hover,
 .app-frame[data-effective-theme="dark"] .shelf-card-menu-trigger[aria-expanded="true"] {
@@ -9715,38 +9754,70 @@ button:disabled {
 
 @media (max-width: 980px) {
   .app-frame {
-    grid-template-rows: 40px auto minmax(0, 1fr);
+    grid-template-rows: 40px minmax(0, 1fr);
     grid-template-columns: 1fr;
   }
 
   .app-frame.sidebar-collapsed {
-    grid-template-rows: 40px auto minmax(0, 1fr);
+    grid-template-rows: 40px minmax(0, 1fr);
     grid-template-columns: 1fr;
   }
 
   .sidebar {
-    grid-column: 1 / -1;
-    grid-row: 2;
-    height: auto;
-    min-height: auto;
-    position: sticky;
-    top: 0;
-    z-index: 2;
-    overflow: visible;
-    padding: 14px;
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
+    position: fixed;
+    top: 40px;
+    bottom: 0;
+    left: 0;
+    z-index: 30;
+    width: min(312px, calc(100vw - 56px));
+    height: calc(100vh - 40px);
+    min-height: 0;
+    gap: 22px;
+    overflow: hidden;
+    padding: 18px;
+    border-right: 1px solid var(--line);
+    border-bottom: 0;
+    box-shadow: 24px 0 46px rgba(36, 49, 58, 0.20);
+    transform: translateX(-104%);
+    visibility: hidden;
+    transition:
+      transform 220ms ease,
+      visibility 0s linear 220ms;
   }
 
   .app-frame.sidebar-collapsed .sidebar {
-    gap: 28px;
-    padding: 14px;
-    overflow-x: visible;
+    gap: 22px;
+    padding: 18px;
+    overflow-x: hidden;
+  }
+
+  .app-frame.mobile-sidebar-open .sidebar {
+    transform: translateX(0);
+    visibility: visible;
+    transition-delay: 0s;
+  }
+
+  .sidebar-scrim {
+    position: fixed;
+    inset: 40px 0 0;
+    z-index: 20;
+    display: block;
+    border: 0;
+    padding: 0;
+    background: rgba(36, 49, 58, 0.34);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 180ms ease;
+  }
+
+  .app-frame.mobile-sidebar-open .sidebar-scrim {
+    opacity: 1;
+    pointer-events: auto;
   }
 
   .workspace {
     grid-column: 1 / -1;
-    grid-row: 3;
+    grid-row: 2;
   }
 
   .app-frame.sidebar-collapsed .brand-row {
@@ -9769,7 +9840,7 @@ button:disabled {
   .app-frame.sidebar-collapsed .nav-item,
   .app-frame.sidebar-collapsed .nav-subitem {
     justify-content: flex-start;
-    padding: 10px;
+    padding: 12px;
   }
 
   .app-frame.sidebar-collapsed .nav-sublist {
@@ -9780,12 +9851,31 @@ button:disabled {
     display: none;
   }
 
-  .nav-list {
+  .mobile-sidebar-close,
+  .mobile-sidebar-trigger {
+    width: 40px;
+    height: 40px;
+    display: grid;
     flex: 0 0 auto;
-    min-height: auto;
-    overflow: visible;
-    scrollbar-gutter: auto;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    place-items: center;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--muted);
+    background: rgba(255, 253, 248, 0.76);
+  }
+
+  .mobile-sidebar-trigger:hover,
+  .mobile-sidebar-close:hover {
+    color: var(--ink);
+    background: var(--paper);
+  }
+
+  .nav-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+    grid-template-columns: 1fr;
   }
 
   .nav-group {
@@ -9793,11 +9883,11 @@ button:disabled {
   }
 
   .nav-sublist {
-    padding-left: 0;
+    padding-left: 16px;
   }
 
   .privacy-note {
-    display: none;
+    display: flex;
   }
 
   .dashboard-grid,
@@ -9852,6 +9942,103 @@ button:disabled {
   .settings-card-actions,
   .settings-maintenance-card > .settings-card-actions {
     justify-content: flex-start;
+  }
+
+  .settings-modal {
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .settings-modal-nav {
+    min-height: 0;
+    gap: 12px;
+    overflow: hidden;
+    padding: 14px 56px 10px 18px;
+  }
+
+  .settings-modal-nav-heading h3 {
+    font-size: 21px;
+  }
+
+  .settings-modal-nav nav {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+    scrollbar-width: none;
+  }
+
+  .settings-modal-nav nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .settings-modal-nav-item {
+    flex: 0 0 auto;
+    width: 150px;
+    min-height: 48px;
+    align-items: center;
+    flex-direction: row;
+    padding: 9px 11px;
+  }
+
+  .settings-modal-nav-item svg {
+    flex: 0 0 auto;
+  }
+
+  .settings-modal-nav-item strong,
+  .settings-modal-nav-item small {
+    white-space: normal;
+  }
+
+  .settings-modal-nav-item small {
+    display: none;
+  }
+
+  .settings-modal-content {
+    min-height: 0;
+    align-content: start;
+    grid-auto-rows: max-content;
+    gap: 12px;
+    overflow-y: auto;
+    padding: 22px 18px 28px;
+  }
+
+  .settings-hero {
+    height: auto;
+    overflow: visible;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+    min-height: 0;
+    padding: 14px;
+  }
+
+  .settings-hero h3 {
+    font-size: 22px;
+  }
+
+  .settings-hero p:not(.section-kicker) {
+    line-height: 1.55;
+  }
+
+  .settings-hero-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .settings-refresh-button {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .settings-modal-content > .status-message {
+    align-items: flex-start;
+    display: flex;
+    flex-wrap: nowrap;
+  }
+
+  .settings-modal-content > .status-message span {
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 
   .reading-hub-toolbar-actions {
@@ -9990,8 +10177,8 @@ button:disabled {
   }
 
   .topbar {
-    align-items: flex-start;
-    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
   }
 
   .topbar h2 {
@@ -9999,19 +10186,19 @@ button:disabled {
   }
 
   .nav-list {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr;
   }
 
   .nav-item {
-    padding: 10px;
+    padding: 12px;
   }
 
   .nav-item small {
-    display: none;
+    display: block;
   }
 
   .nav-subitem small {
-    display: none;
+    display: block;
   }
 
   .hero-copy {
@@ -10067,7 +10254,6 @@ button:disabled {
   .review-stage-heading,
   .review-profile-head,
   .reading-route-input-summary,
-  .settings-modal-nav-item,
   .settings-hero,
   .settings-diagnostics-heading,
   .settings-diagnostics-actions,
@@ -10091,16 +10277,56 @@ button:disabled {
     overflow-x: auto;
     border-right: 0;
     border-bottom: 1px solid var(--line);
-    padding: 18px;
+    padding: 12px 56px 9px 18px;
   }
 
   .settings-modal-nav nav {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    display: flex;
     min-width: 0;
   }
 
   .settings-modal-content {
-    padding: 58px 18px 28px;
+    padding: 18px 18px 28px;
+  }
+
+  .settings-modal-nav-heading h3 {
+    font-size: 20px;
+  }
+
+  .settings-modal-nav nav {
+    padding-bottom: 2px;
+  }
+
+  .settings-modal-nav-item {
+    width: 142px;
+    min-height: 44px;
+    flex-direction: row;
+    padding: 8px 10px;
+  }
+
+  .settings-modal-nav-item small {
+    display: none;
+  }
+
+  .settings-modal-content {
+    align-content: start;
+    grid-auto-rows: max-content;
+    gap: 10px;
+  }
+
+  .settings-hero {
+    height: auto;
+    overflow: visible;
+    gap: 8px;
+    padding: 12px;
+  }
+
+  .settings-hero h3 {
+    font-size: 21px;
+  }
+
+  .settings-hero p:not(.section-kicker) {
+    font-size: 14px;
   }
 
   .settings-hero-actions {
@@ -10110,7 +10336,7 @@ button:disabled {
   }
 
   .settings-hero-actions > button {
-    flex: 1 1 180px;
+    flex: 1 1 100%;
   }
 
   .settings-update-card .settings-card-actions > button {

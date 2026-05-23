@@ -4,6 +4,7 @@ mod db;
 mod errors;
 mod export;
 mod mappers;
+mod platform;
 mod repositories;
 mod services;
 
@@ -16,9 +17,13 @@ pub fn run() {
             std::fs::create_dir_all(&data_dir).expect("failed to create local app data directory");
             crate::db::open_connection(app.handle())
                 .expect("failed to initialize local reading database");
+
+            #[cfg(not(mobile))]
+            {
             let salt_path = data_dir.join("stronghold-salt.txt");
             app.handle()
                 .plugin(tauri_plugin_stronghold::Builder::with_argon2(&salt_path).build())?;
+            }
 
             #[cfg(desktop)]
             app.handle()

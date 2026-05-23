@@ -74,6 +74,7 @@
     "allow-save-custom-export-directory",
     "allow-reset-custom-export-directory",
     "opener:allow-open-url",
+    "opener:allow-default-urls",
     "updater:allow-check",
     "updater:allow-download",
     "updater:allow-download-and-install",

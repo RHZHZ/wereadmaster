@@ -10,7 +10,8 @@
 - 设置页侧边栏已提供“应用更新”菜单，内部包含“检查更新 / 安装更新”入口。
 - 构建配置已开启 `createUpdaterArtifacts`。
 - GitHub Actions 已新增 tag 触发的 Windows 发布流程。
-- GitHub 仓库地址已固定为 `RHZHZ/wxreadmaster`。
+- GitHub Actions 已新增 Android APK 发布流程。
+- GitHub 仓库地址已固定为 `RHZHZ/wereadmaster`。
 - updater 公钥已写入 `src-tauri/tauri.conf.json`。
 - 首次正式发布前仍需把私钥配置到 GitHub Actions Secrets。
 
@@ -31,7 +32,7 @@
      "plugins": {
        "updater": {
          "endpoints": [
-           "https://github.com/RHZHZ/wxreadmaster/releases/latest/download/latest.json"
+           "https://github.com/RHZHZ/wereadmaster/releases/latest/download/latest.json"
          ]
        }
      }
@@ -43,6 +44,9 @@
    - `TAURI_SIGNING_PRIVATE_KEY`
    - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
    - `TAURI_RELEASE_PAT`（可选；如果 `GITHUB_TOKEN` 仍报 `Resource not accessible by integration`，就改用它）
+   - `ANDROID_KEY_BASE64`
+   - `ANDROID_KEY_ALIAS`
+   - `ANDROID_KEY_PASSWORD`
 
    如果私钥没有设置密码，`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 可以留空或先不配置。
 
@@ -53,6 +57,7 @@
    - 不要写进 `.env`
 
 7. 如果 GitHub Actions 仍然提示 `Resource not accessible by integration`，先检查仓库 `Settings > Actions > General` 里的 `Workflow permissions` 是否为 `Read and write permissions`；如果组织策略限制了默认 token，就启用 `TAURI_RELEASE_PAT`。
+8. Android 不是走 Google Play 也可以发 APK，但必须提供自己的 keystore；建议把 keystore 先转成 base64 存到 `ANDROID_KEY_BASE64`，并由 CI 直接上传到同一个 release。
 
 ## 本地打包说明
 
@@ -79,8 +84,8 @@
 3. 创建并推送版本标签：
 
    ```powershell
-   git tag v0.1.1
-   git push origin v0.1.1
+   git tag v1.0.1
+   git push origin v1.0.1
    ```
 
 4. GitHub Actions 会创建正式 release，并上传安装包和 updater 产物。
@@ -130,6 +135,15 @@
 
 - 如更新异常，请回退到上一版安装包
 ```
+
+## Android 发布说明
+
+- 目标产物：APK
+- 分发方式：直接下载安装
+- 签名方式：自有 keystore
+- 不依赖 Google Play
+- 需要在 GitHub Actions Secrets 中提供 Android 签名材料
+- APK 由 Android job 构建后，直接上传到 GitHub Release
 
 ## 验收标准
 

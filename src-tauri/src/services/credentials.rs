@@ -5,7 +5,8 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
-use tauri_plugin_stronghold::{kdf::KeyDerivation, stronghold::Stronghold};
+
+use crate::platform::stronghold::{Client, kdf::KeyDerivation, stronghold::Stronghold};
 
 const CLIENT_PATH: &[u8] = b"weread-credentials";
 const API_KEY_RECORD: &[u8] = b"weread-api-key";
@@ -83,13 +84,11 @@ impl CredentialService {
             .get(API_KEY_RECORD)
             .map_err(CredentialServiceError::storage)?
             .is_some();
-        let metadata = match store
-            .get(METADATA_RECORD)
-            .map_err(CredentialServiceError::storage)?
-        {
-            Some(bytes) => serde_json::from_slice::<CredentialMetadata>(&bytes).unwrap_or_default(),
-            None => CredentialMetadata::default(),
-        };
+        let metadata = load_credential_metadata(
+            store
+                .get(METADATA_RECORD)
+                .map_err(CredentialServiceError::storage)?,
+        );
 
         drop(stronghold);
 
@@ -214,7 +213,7 @@ impl CredentialService {
         }
     }
 
-    fn open_client(&self) -> Result<(Stronghold, iota_stronghold::Client), CredentialServiceError> {
+    fn open_client(&self) -> Result<(Stronghold, Client), CredentialServiceError> {
         let data_dir = self
             .app
             .path()
@@ -241,6 +240,12 @@ fn current_unix_seconds() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs().to_string())
         .unwrap_or_else(|_| "0".to_string())
+}
+
+fn load_credential_metadata(bytes: Option<Vec<u8>>) -> CredentialMetadata {
+    bytes
+        .and_then(|bytes| serde_json::from_slice::<CredentialMetadata>(&bytes).ok())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

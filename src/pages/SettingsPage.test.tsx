@@ -59,4 +59,22 @@ describe("settings page onboarding artwork", () => {
     expect(markup).toContain("应用更新");
     expect(markup).toContain("版本、发布、安装");
   });
+
+  it("keeps update destination metadata available for the updates category", () => {
+    const markup = renderToStaticMarkup(
+      <ToastProvider>
+        <SettingsPage
+          open
+          credentialStatus={{ hasCredential: true }}
+          onCredentialChange={() => undefined}
+          preferences={DEFAULT_USER_PREFERENCES}
+          onPreferencesChange={() => undefined}
+          onClose={() => undefined}
+        />
+      </ToastProvider>
+    );
+
+    expect(markup).toContain("应用更新");
+    expect(markup).toContain("版本、发布、安装");
+  });
 });

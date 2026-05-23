@@ -11,7 +11,6 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use tauri::{AppHandle, Manager};
-use tauri_plugin_stronghold::{kdf::KeyDerivation, stronghold::Stronghold};
 
 use crate::{
     db,
@@ -22,6 +21,7 @@ use crate::{
         serialize_reading_stats_review_markdown, BookAiSummaryMarkdownOptions,
     },
     mappers::{notes::BookNotesRecord, stats::ReadingStatsRecord},
+    platform::stronghold::{Client, kdf::KeyDerivation, stronghold::Stronghold},
     services::{notes::NotesService, stats::StatsService},
 };
 
@@ -1779,7 +1779,7 @@ impl AiService {
         }
     }
 
-    fn open_client(&self) -> Result<(Stronghold, iota_stronghold::Client), AiServiceError> {
+    fn open_client(&self) -> Result<(Stronghold, Client), AiServiceError> {
         let data_dir = self
             .app
             .path()

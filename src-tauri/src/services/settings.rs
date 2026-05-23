@@ -7,7 +7,6 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
-use tauri_plugin_dialog::DialogExt;
 
 use crate::{
     db::{self, DATABASE_FILE_NAME},
@@ -355,14 +354,10 @@ impl SettingsService {
         &self,
         target_dir: Option<String>,
     ) -> Result<ChooseDataDirectoryResponse, AppError> {
-        let selected_dir = select_custom_data_directory(target_dir.as_deref(), || {
-            self.app
-                .dialog()
-                .file()
-                .set_title("选择本地数据库迁移目录")
-                .blocking_pick_folder()
-                .and_then(|path| path.into_path().ok())
-        })?;
+        let selected_dir = select_custom_data_directory(
+            target_dir.as_deref(),
+            || pick_folder(&self.app, "选择本地数据库迁移目录"),
+        )?;
 
         Ok(ChooseDataDirectoryResponse {
             path: selected_dir.map(|path| path.display().to_string()),
@@ -454,13 +449,7 @@ impl SettingsService {
     pub fn choose_custom_export_directory(
         &self,
     ) -> Result<ChooseExportDirectoryResponse, AppError> {
-        let selected_dir = self
-            .app
-            .dialog()
-            .file()
-            .set_title("选择导出保存位置")
-            .blocking_pick_folder()
-            .and_then(|path| path.into_path().ok());
+        let selected_dir = pick_folder(&self.app, "选择导出保存位置");
 
         let Some(path) = selected_dir else {
             return Ok(ChooseExportDirectoryResponse { path: None });
@@ -572,6 +561,22 @@ impl SettingsService {
     fn open_connection(&self) -> Result<rusqlite::Connection, AppError> {
         db::open_connection(&self.app).map_err(AppError::Storage)
     }
+}
+
+#[cfg(not(mobile))]
+fn pick_folder(app: &AppHandle, title: &str) -> Option<PathBuf> {
+    use tauri_plugin_dialog::DialogExt;
+
+    app.dialog()
+        .file()
+        .set_title(title)
+        .blocking_pick_folder()
+        .and_then(|path| path.into_path().ok())
+}
+
+#[cfg(mobile)]
+fn pick_folder(_app: &AppHandle, _title: &str) -> Option<PathBuf> {
+    None
 }
 
 fn clear_cache_tables(connection: &rusqlite::Connection) -> Result<u64, AppError> {

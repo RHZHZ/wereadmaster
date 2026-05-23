@@ -158,10 +158,12 @@ const sectionLabels: Record<string, string> = {
   dashboard: "总览",
 };
 
-const releaseRepository = "RHZHZ/wxreadmaster";
+const releaseAuthor = "RHZ";
 const releaseFeedUrl =
-  "https://github.com/RHZHZ/wxreadmaster/releases/latest/download/latest.json";
-const releasePageUrl = "https://github.com/RHZHZ/wxreadmaster/releases";
+  "https://github.com/RHZHZ/wereadmaster/releases/latest/download/latest.json";
+const releaseRepositoryUrl = "https://github.com/RHZHZ/wereadmaster";
+const releasePageUrl = "https://github.com/RHZHZ/wereadmaster/releases";
+const releaseAuthorUrl = "https://github.com/RHZHZ";
 
 export function SettingsPage({
   open,
@@ -215,14 +217,27 @@ export function SettingsPage({
     settingsCategories.find((category) => category.id === activeCategory) ??
     settingsCategories[0];
 
+  async function handleOpenExternalLink(url: string, fallbackLabel: string) {
+    try {
+      await openUrl(url);
+    } catch {
+      try {
+        await copyTextToClipboard(url);
+        showToast({
+          message: `外部浏览器打开失败，已复制${fallbackLabel}链接。`,
+          tone: "warning",
+        });
+      } catch {
+        showToast({
+          message: `外部浏览器打开失败，请手动访问${fallbackLabel}链接。`,
+          tone: "warning",
+        });
+      }
+    }
+  }
+
   function handleOpenWereadSkill() {
-    openUrl(WEREAD_SKILL_API_KEY_URL).catch(() => {
-      void copyTextToClipboard(WEREAD_SKILL_API_KEY_URL);
-      showToast({
-        message: "外部浏览器打开失败，已复制技能页面链接。",
-        tone: "warning",
-      });
-    });
+    void handleOpenExternalLink(WEREAD_SKILL_API_KEY_URL, "技能页面");
   }
 
   useEffect(() => {
@@ -516,20 +531,6 @@ export function SettingsPage({
       setError(getCommandErrorMessage(installError));
     } finally {
       setIsInstallingUpdate(false);
-    }
-  }
-
-  async function handleCopyReleaseUrl() {
-    try {
-      await copyTextToClipboard(releasePageUrl);
-      showToast({
-        message: "已复制 GitHub Releases 地址。",
-        tone: "success",
-      });
-    } catch (copyError) {
-      setError(
-        copyError instanceof Error ? copyError.message : "复制仓库地址失败。",
-      );
     }
   }
 
@@ -1289,9 +1290,41 @@ export function SettingsPage({
                         {formatReleaseDate(latestUpdateStatus?.publishedAt)}
                       </dd>
                     </div>
-                    <div className="wide-row">
-                      <dt>发布仓库</dt>
-                      <dd>{releaseRepository}</dd>
+                    <div>
+                      <dt>作者</dt>
+                      <dd className="update-link-cell">
+                        <button
+                          className="inline-link-button"
+                          type="button"
+                          onClick={() =>
+                            void handleOpenExternalLink(
+                              releaseAuthorUrl,
+                              "作者主页"
+                            )
+                          }
+                        >
+                          作者 @{releaseAuthor}
+                          <ExternalLink aria-hidden="true" size={14} />
+                        </button>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>项目地址</dt>
+                      <dd className="update-link-cell">
+                        <button
+                          className="inline-link-button"
+                          type="button"
+                          onClick={() =>
+                            void handleOpenExternalLink(
+                              releaseRepositoryUrl,
+                              "项目地址"
+                            )
+                          }
+                        >
+                          RHZHZ/wereadmaster
+                          <ExternalLink aria-hidden="true" size={14} />
+                        </button>
+                      </dd>
                     </div>
                     <div className="wide-row">
                       <dt>更新源</dt>
@@ -1330,15 +1363,6 @@ export function SettingsPage({
                         <Sparkles aria-hidden="true" size={18} />
                       )}
                       {isCheckingForUpdate ? "检查中" : "检查更新"}
-                    </button>
-                    <button
-                      className="secondary-action"
-                      type="button"
-                      onClick={() => void handleCopyReleaseUrl()}
-                      disabled={isCheckingForUpdate || isInstallingUpdate}
-                    >
-                      <Copy aria-hidden="true" size={18} />
-                      复制发布地址
                     </button>
                     <button
                       className="sync-button"
@@ -1780,7 +1804,7 @@ export function SettingsPage({
           <ConfirmDialog
             open={pendingAction === "installUpdate"}
             title="确认安装更新？"
-            description={`将从 ${releaseRepository} 的 GitHub Releases 下载并安装 ${latestUpdateStatus?.latestVersion || "新版本"}。安装完成后需要重新启动应用。`}
+            description={`将从 ${releasePageUrl} 下载并安装 ${latestUpdateStatus?.latestVersion || "新版本"}。安装完成后需要重新启动应用。`}
             confirmLabel="确认安装"
             isBusy={isInstallingUpdate}
             onCancel={() => setPendingAction(undefined)}
