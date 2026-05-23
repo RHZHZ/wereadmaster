@@ -40,5 +40,5 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "个人阅读管理 ${{ github.ref_name }}"
           releaseBody: "请在发布说明中补充本次变更、兼容性和回滚说明。"
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
