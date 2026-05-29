@@ -1,4 +1,5 @@
-import { startTransition, useEffect, useState } from "react";
+import { startTransition, useEffect, useRef, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   BarChart3,
   BookOpen,
@@ -6,6 +7,7 @@ import {
   Compass,
   ChevronDown,
   type LucideIcon,
+  FileText,
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
@@ -17,9 +19,13 @@ import {
   X,
 } from "lucide-react";
 import { AppTitleBar } from "./components/AppTitleBar";
+import { AppUpdateDialog } from "./components/AppUpdateDialog";
+import { useToast } from "./components/ToastProvider";
 import { DashboardPage } from "./pages/DashboardPage";
 import { BookshelfPage } from "./pages/BookshelfPage";
 import { CandidateBookshelfPage } from "./pages/CandidateBookshelfPage";
+import { LocalLibraryPage } from "./pages/LocalLibraryPage";
+import { LocalReaderPage } from "./pages/LocalReaderPage";
 import { BookDecisionPage } from "./pages/BookDecisionPage";
 import { BookDetailPage } from "./pages/BookDetailPage";
 import { NotesPage } from "./pages/NotesPage";
@@ -29,14 +35,21 @@ import { ReadingRoutePage } from "./pages/ReadingRoutePage";
 import { StatisticsPage } from "./pages/StatisticsPage";
 import { ReadingHubPage } from "./pages/ReadingHubPage";
 import { DiscoveryPage } from "./pages/DiscoveryPage";
-import { SettingsPage } from "./pages/SettingsPage";
+import { SettingsPage, type SettingsCategoryId } from "./pages/SettingsPage";
 import type { BookDecisionSession } from "./pages/book-decision-input-model";
+import {
+  type ReadingStatsCache,
+  upsertReadingStatsCache,
+} from "./pages/reading-stats-period";
 import {
   getBookDetail,
   getBookshelf,
   getCommandErrorMessage,
   getCredentialStatus,
+  getAppUpdateRuntime,
   openBookInWeread,
+  prepareAppUpdate,
+  downloadPreparedAppUpdate,
   withSyncTiming,
   syncShelf,
   type BookDetailResponse,
@@ -49,7 +62,11 @@ import {
   writeUserPreferences,
   type UserPreferences,
 } from "./lib/preferences";
+import { APP_UPDATE_RELEASE_PAGE_URL } from "./lib/app-update-config";
 import type {
+  AppUpdateNoticeState,
+  AppUpdateRuntime,
+  AppUpdateStatus,
   BookNotes,
   CredentialStatus,
   NotebookBook,
@@ -59,14 +76,27 @@ import type {
   AIAssetVersionDetail,
   PreparedAssetUpdate,
 } from "./lib/types";
+import {
+  markAppUpdateChecked,
+  markAppUpdateDismissed,
+  markAppUpdateReviewed,
+  pruneAppUpdateNoticeState,
+  readAppUpdateNoticeState,
+  shouldAutoCheckForAppUpdate,
+  shouldAutoShowAppUpdateDialog,
+  shouldShowAppUpdateBadge,
+  writeAppUpdateNoticeState
+} from "./lib/app-updates";
 
 type ReadingHubTab = "books" | "guides" | "report";
-type ShelfTab = "wechat" | "candidate";
+type ShelfTab = "wechat" | "candidate" | "local";
 
 type ViewId =
   | "dashboard"
   | "shelf"
   | "candidateShelf"
+  | "localLibrary"
+  | "localReader"
   | "bookDecision"
   | "bookDetail"
   | "notes"
@@ -95,7 +125,7 @@ type ReadingReviewSubItem = {
 
 type ShelfSubItem = {
   id: ShelfTab;
-  viewId: Extract<ViewId, "shelf" | "candidateShelf">;
+  viewId: Extract<ViewId, "shelf" | "candidateShelf" | "localLibrary">;
   label: string;
   description: string;
   icon: LucideIcon;
@@ -138,6 +168,13 @@ const shelfSubItems: ShelfSubItem[] = [
     description: "本地候选",
     icon: Compass,
   },
+  {
+    id: "local",
+    viewId: "localLibrary",
+    label: "本地书库",
+    description: "EPUB/TXT",
+    icon: FileText,
+  },
 ];
 
 const readingReviewSubItems: ReadingReviewSubItem[] = [
@@ -154,6 +191,12 @@ type PreparedAssetBook = {
   author?: string;
   cover?: string;
   category?: string;
+};
+
+type AppUpdateInstallProgress = {
+  phase: "downloading" | "installing";
+  downloadedBytes: number;
+  totalBytes?: number;
 };
 
 function extractPreparedRouteCandidateBookIds(detail: AIAssetVersionDetail): string[] | undefined {
@@ -247,11 +290,11 @@ export function App() {
   const [bookNotesCache, setBookNotesCache] = useState<
     Record<string, BookNotes>
   >({});
-  const [readingStatsCache, setReadingStatsCache] = useState<
-    Partial<Record<ReadingStatsMode, ReadingStatsResponse>>
-  >({});
+  const [readingStatsCache, setReadingStatsCache] =
+    useState<ReadingStatsCache>({});
   const [bookDecisionSession, setBookDecisionSession] =
     useState<BookDecisionSession>();
+  const [selectedLocalBookId, setSelectedLocalBookId] = useState<string>();
   const [selectedNotebookBook, setSelectedNotebookBook] =
     useState<NotebookBook>();
   const [bookNotesBackView, setBookNotesBackView] = useState<
@@ -276,6 +319,21 @@ export function App() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [commandError, setCommandError] = useState<string>();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settingsPreferredCategory, setSettingsPreferredCategory] =
+    useState<SettingsCategoryId>();
+  const [appUpdateRuntime, setAppUpdateRuntime] = useState<AppUpdateRuntime>();
+  const [appUpdateStatus, setAppUpdateStatus] = useState<AppUpdateStatus>();
+  const [isCheckingForAppUpdate, setIsCheckingForAppUpdate] = useState(false);
+  const [isInstallingAppUpdate, setIsInstallingAppUpdate] = useState(false);
+  const [isAppUpdateDialogOpen, setIsAppUpdateDialogOpen] = useState(false);
+  const [appUpdateNoticeState, setAppUpdateNoticeState] =
+    useState<AppUpdateNoticeState>(readAppUpdateNoticeState);
+  const [appUpdateProgress, setAppUpdateProgress] =
+    useState<AppUpdateInstallProgress>();
+  const pendingAppUpdateRef = useRef<
+    Awaited<ReturnType<typeof prepareAppUpdate>>["update"]
+  >(null);
+  const { showToast } = useToast();
   const activeDetailEntry = detailEntry;
   const effectiveTheme =
     preferences.themeMode === "system"
@@ -306,17 +364,31 @@ export function App() {
         : activeView === "readingReview"
           ? (readingReviewSubItems.find((item) => item.id === readingHubTab) ??
             readingReviewSubItems[0])
-          : activeView === "candidateShelf"
-            ? (shelfSubItems.find((item) => item.viewId === "candidateShelf") ??
-              navigationItems[1])
+            : activeView === "candidateShelf"
+              ? (shelfSubItems.find((item) => item.viewId === "candidateShelf") ??
+                navigationItems[1])
+            : activeView === "localLibrary"
+              ? (shelfSubItems.find((item) => item.viewId === "localLibrary") ??
+                navigationItems[1])
+            : activeView === "localReader"
+              ? {
+                  label: "本地阅读",
+                  description: "TXT 阅读器",
+                  icon: FileText,
+                }
             : activeView === "bookDecision"
               ? {
                   label: "选书决策",
                   description: "候选取舍",
                   icon: Compass,
                 }
-            : (navigationItems.find((item) => item.id === activeView) ??
-              navigationItems[0]);
+             : (navigationItems.find((item) => item.id === activeView) ??
+               navigationItems[0]);
+  const hasPendingAppUpdate = shouldShowAppUpdateBadge(
+    appUpdateStatus,
+    appUpdateNoticeState,
+  );
+  const appUpdateProgressLabel = formatAppUpdateProgress(appUpdateProgress);
 
   useEffect(() => {
     let isMounted = true;
@@ -403,6 +475,218 @@ export function App() {
     setPreferences(normalized);
   }
 
+  function persistAppUpdateNoticeState(nextState: AppUpdateNoticeState) {
+    const normalized = writeAppUpdateNoticeState(
+      window.localStorage,
+      nextState,
+    );
+    setAppUpdateNoticeState(normalized);
+    return normalized;
+  }
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadAppUpdateRuntimeState() {
+      try {
+        const runtime = await getAppUpdateRuntime();
+        if (!isMounted) {
+          return;
+        }
+
+        setAppUpdateRuntime(runtime);
+        setAppUpdateNoticeState((current) => {
+          const next = pruneAppUpdateNoticeState(current, runtime.currentVersion);
+          writeAppUpdateNoticeState(window.localStorage, next);
+          return next;
+        });
+      } catch {
+        // 更新能力读取失败时静默降级，避免影响主界面加载。
+      }
+    }
+
+    void loadAppUpdateRuntimeState();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  async function handleCheckForAppUpdate({
+    source = "manual",
+    openDialogOnAvailable = false,
+  }: {
+    source?: "manual" | "auto";
+    openDialogOnAvailable?: boolean;
+  } = {}) {
+    setIsCheckingForAppUpdate(true);
+
+    try {
+      const runtime = appUpdateRuntime ?? (await getAppUpdateRuntime());
+      setAppUpdateRuntime(runtime);
+
+      const prepared = await prepareAppUpdate(runtime);
+      pendingAppUpdateRef.current = prepared.update;
+      setAppUpdateStatus(prepared.status);
+      persistAppUpdateNoticeState(
+        markAppUpdateChecked(appUpdateNoticeState),
+      );
+
+      if (!prepared.status.available) {
+        setIsAppUpdateDialogOpen(false);
+        if (source === "manual") {
+          showToast({
+            message: `当前已是最新版本 ${prepared.status.currentVersion}。`,
+            tone: "success",
+          });
+        }
+        return prepared.status;
+      }
+
+      if (source === "manual") {
+        showToast({
+          message: prepared.status.supportsNativeUpdater
+            ? `发现新版本 ${prepared.status.latestVersion || "未知版本"}，请先查看摘要后再安装。`
+            : `发现新版本 ${prepared.status.latestVersion || "未知版本"}，请先查看摘要，再前往下载。`,
+          tone: "warning",
+        });
+      }
+
+      if (
+        openDialogOnAvailable &&
+        shouldAutoShowAppUpdateDialog(prepared.status, appUpdateNoticeState)
+      ) {
+        setIsAppUpdateDialogOpen(true);
+      }
+
+      return prepared.status;
+    } finally {
+      setIsCheckingForAppUpdate(false);
+    }
+  }
+
+  async function handleInstallAppUpdate() {
+    setIsInstallingAppUpdate(true);
+    setAppUpdateProgress(undefined);
+
+    try {
+      const supportsNativeUpdater =
+        appUpdateStatus?.supportsNativeUpdater ??
+        appUpdateRuntime?.supportsNativeUpdater ??
+        false;
+
+      if (!supportsNativeUpdater) {
+        await openUrl(APP_UPDATE_RELEASE_PAGE_URL);
+        setIsAppUpdateDialogOpen(false);
+        showToast({
+          message: `已打开 ${appUpdateStatus?.latestVersion || "最新版本"} 发布页，请按系统提示下载安装包。`,
+          tone: "success",
+        });
+        return;
+      }
+
+      let preparedUpdate = pendingAppUpdateRef.current;
+
+      if (!preparedUpdate) {
+        const prepared = await prepareAppUpdate(appUpdateRuntime);
+        pendingAppUpdateRef.current = prepared.update;
+        setAppUpdateStatus(prepared.status);
+        preparedUpdate = prepared.update;
+
+        if (!preparedUpdate) {
+          throw new Error("请先检查更新，确认存在可安装的新版本。");
+        }
+      }
+
+      showToast({
+        message: `正在下载并安装 ${appUpdateStatus?.latestVersion || "新版本"}。`,
+        tone: "warning",
+      });
+
+      await downloadPreparedAppUpdate(preparedUpdate, (event) => {
+        if (event.event === "Started") {
+          setAppUpdateProgress({
+            phase: "downloading",
+            downloadedBytes: 0,
+            totalBytes: event.data.contentLength,
+          });
+          return;
+        }
+
+        if (event.event === "Progress") {
+          setAppUpdateProgress((current) => ({
+            phase: "downloading",
+            downloadedBytes:
+              (current?.downloadedBytes ?? 0) + event.data.chunkLength,
+            totalBytes: current?.totalBytes,
+          }));
+          return;
+        }
+
+        setAppUpdateProgress((current) =>
+          current
+            ? {
+                ...current,
+                phase: "installing",
+              }
+            : {
+                phase: "installing",
+                downloadedBytes: 0,
+              },
+        );
+      });
+
+      setIsAppUpdateDialogOpen(false);
+      showToast({
+        message: "更新已下载并开始安装，完成后请重新启动应用。",
+        tone: "success",
+      });
+    } finally {
+      setIsInstallingAppUpdate(false);
+    }
+  }
+
+  function handleViewAppUpdate() {
+    handleOpenSettings("updates");
+    setIsAppUpdateDialogOpen(false);
+  }
+
+  function handleDismissAppUpdateDialog() {
+    persistAppUpdateNoticeState(
+      markAppUpdateDismissed(
+        appUpdateNoticeState,
+        appUpdateStatus?.latestVersion,
+      ),
+    );
+    setIsAppUpdateDialogOpen(false);
+  }
+
+  function handleReviewedAppUpdate() {
+    persistAppUpdateNoticeState(
+      markAppUpdateReviewed(
+        appUpdateNoticeState,
+        appUpdateStatus?.latestVersion,
+      ),
+    );
+  }
+
+  useEffect(() => {
+    if (!appUpdateRuntime || !shouldAutoCheckForAppUpdate(appUpdateNoticeState)) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      void handleCheckForAppUpdate({
+        source: "auto",
+        openDialogOnAvailable: true,
+      }).catch(() => undefined);
+    }, 5000);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [appUpdateNoticeState, appUpdateRuntime]);
+
   useEffect(() => {
     let isMounted = true;
 
@@ -470,9 +754,10 @@ export function App() {
     });
   }
 
-  function handleOpenSettings() {
+  function handleOpenSettings(preferredCategory?: SettingsCategoryId) {
     setIsMobileSidebarOpen(false);
     setSidebarMenuState(createCollapsedSidebarMenuState());
+    setSettingsPreferredCategory(preferredCategory);
     setIsSettingsOpen(true);
   }
 
@@ -492,6 +777,15 @@ export function App() {
     setSidebarMenuState(openSidebarMenuState("shelf"));
     startTransition(() => {
       setActiveView(item.viewId);
+    });
+  }
+
+  function handleOpenLocalBook(bookId: string) {
+    setIsMobileSidebarOpen(false);
+    setSidebarMenuState(openSidebarMenuState("shelf"));
+    setSelectedLocalBookId(bookId);
+    startTransition(() => {
+      setActiveView("localReader");
     });
   }
 
@@ -780,10 +1074,10 @@ export function App() {
     mode: ReadingStatsMode,
     response: ReadingStatsResponse,
   ) {
-    setReadingStatsCache((current) => ({
-      ...current,
-      [mode]: response,
-    }));
+    void mode;
+    setReadingStatsCache((current) =>
+      upsertReadingStatsCache(current, response),
+    );
   }
 
   async function handleOpenBookInWeread(chapterUid?: number) {
@@ -830,10 +1124,12 @@ export function App() {
       <aside className="sidebar" id="app-sidebar" aria-label="主导航">
         <div className="brand-row">
           <div className="brand">
-            <div className="brand-mark">阅</div>
+            <div className="brand-mark" aria-hidden="true">
+              <img src="/app-icon.png" alt="" />
+            </div>
             <div className="brand-copy">
-              <p className="brand-kicker">阅读资产</p>
-              <h1>个人阅读管理</h1>
+              <p className="brand-kicker">WxReadMaster</p>
+              <h1>阅读资产库</h1>
             </div>
           </div>
           <button
@@ -866,6 +1162,8 @@ export function App() {
             const isShelfContext =
               activeView === "shelf" ||
               activeView === "candidateShelf" ||
+              activeView === "localLibrary" ||
+              activeView === "localReader" ||
               activeView === "bookDecision" ||
               (activeView === "bookDetail" &&
                 (detailBackView === "candidateShelf" ||
@@ -935,7 +1233,12 @@ export function App() {
                 >
                   <Icon aria-hidden="true" size={20} strokeWidth={1.8} />
                   <span>
-                    <strong>{item.label}</strong>
+                    <strong>
+                      {item.label}
+                      {item.id === "settings" && hasPendingAppUpdate ? (
+                        <i className="app-update-badge" aria-hidden="true" />
+                      ) : null}
+                    </strong>
                     <small>{item.description}</small>
                   </span>
                   {item.id === "readingReview" || item.id === "shelf" ? (
@@ -955,6 +1258,8 @@ export function App() {
                         activeView === subItem.viewId ||
                         (activeView === "bookDetail" &&
                           detailBackView === subItem.viewId) ||
+                        (subItem.viewId === "localLibrary" &&
+                          activeView === "localReader") ||
                         (subItem.viewId === "candidateShelf" &&
                           activeView === "bookDecision");
 
@@ -1028,23 +1333,25 @@ export function App() {
         </div>
       </aside>
 
-      <main className="workspace">
-        <header className="topbar">
-          <button
-            className="mobile-sidebar-trigger"
-            type="button"
-            aria-label="打开主导航"
-            aria-controls="app-sidebar"
-            aria-expanded={isMobileSidebarOpen}
-            onClick={() => setIsMobileSidebarOpen(true)}
-          >
-            <Menu aria-hidden="true" size={20} />
-          </button>
-          <div className="topbar-title">
-            <p className="section-kicker">{activeItem.description}</p>
-            <h2>{activeItem.label}</h2>
-          </div>
-        </header>
+      <main className={`workspace ${activeView === "localReader" ? "workspace--local-reader" : ""}`}>
+        {activeView !== "localReader" ? (
+          <header className="topbar">
+            <button
+              className="mobile-sidebar-trigger"
+              type="button"
+              aria-label="打开主导航"
+              aria-controls="app-sidebar"
+              aria-expanded={isMobileSidebarOpen}
+              onClick={() => setIsMobileSidebarOpen(true)}
+            >
+              <Menu aria-hidden="true" size={20} />
+            </button>
+            <div className="topbar-title">
+              <p className="section-kicker">{activeItem.description}</p>
+              <h2>{activeItem.label}</h2>
+            </div>
+          </header>
+        ) : null}
 
         {activeView === "dashboard" ? (
           <DashboardPage
@@ -1092,6 +1399,18 @@ export function App() {
             onOpenDiscovery={() => handleNavigate("discovery")}
             onOpenBookDetail={handleOpenCandidateShelfBook}
             onBookDecisionGenerated={handleBookDecisionGenerated}
+          />
+        ) : null}
+        {activeView === "localLibrary" ? (
+          <LocalLibraryPage
+            onOpenBook={handleOpenLocalBook}
+            wereadEntries={bookshelf?.snapshot.entries}
+          />
+        ) : null}
+        {activeView === "localReader" && selectedLocalBookId ? (
+          <LocalReaderPage
+            bookId={selectedLocalBookId}
+            onBack={() => handleNavigate("localLibrary")}
           />
         ) : null}
         {activeView === "bookDecision" ? (
@@ -1222,6 +1541,9 @@ export function App() {
             onOpenBookSummary={handleOpenBookAiSummaryFromHub}
             onPrepareAssetUpdate={handlePrepareAssetUpdate}
             onOpenNotes={() => handleNavigate("notes")}
+            onOpenReadingAssets={() => setReadingHubTab("guides")}
+            onOpenReadingReport={() => setReadingHubTab("report")}
+            onOpenCandidateShelf={() => handleNavigate("candidateShelf")}
             notesOverview={notesOverview}
             onNotesOverviewChange={setNotesOverview}
           />
@@ -1248,8 +1570,80 @@ export function App() {
         onLocalCacheCleared={handleLocalCacheCleared}
         preferences={preferences}
         onPreferencesChange={handlePreferencesChange}
-        onClose={() => setIsSettingsOpen(false)}
+        onClose={() => {
+          setIsSettingsOpen(false);
+          setSettingsPreferredCategory(undefined);
+        }}
+        preferredCategory={settingsPreferredCategory}
+        appUpdateStatus={appUpdateStatus}
+        hasPendingAppUpdate={hasPendingAppUpdate}
+        isCheckingForAppUpdate={isCheckingForAppUpdate}
+        isInstallingAppUpdate={isInstallingAppUpdate}
+        appUpdateProgressLabel={appUpdateProgressLabel}
+        onCheckForAppUpdate={async () => {
+          await handleCheckForAppUpdate();
+          return;
+        }}
+        onInstallAppUpdate={handleInstallAppUpdate}
+        onViewAppUpdate={handleReviewedAppUpdate}
+      />
+      <AppUpdateDialog
+        open={isAppUpdateDialogOpen}
+        status={appUpdateStatus}
+        isInstalling={isInstallingAppUpdate}
+        progressLabel={appUpdateProgressLabel}
+        onClose={handleDismissAppUpdateDialog}
+        onLater={handleDismissAppUpdateDialog}
+        onViewDetails={handleViewAppUpdate}
+        onInstall={() => {
+          void handleInstallAppUpdate().catch((error) => {
+            showToast({
+              message: getCommandErrorMessage(error),
+              tone: "warning",
+            });
+          });
+        }}
       />
     </div>
   );
+}
+
+function formatAppUpdateProgress(
+  progress?: AppUpdateInstallProgress,
+): string | undefined {
+  if (!progress) {
+    return undefined;
+  }
+
+  if (progress.phase === "installing") {
+    return "更新包已下载完成，正在启动安装。";
+  }
+
+  if (!progress.totalBytes || progress.totalBytes <= 0) {
+    return `正在下载更新包，已接收 ${formatBytes(progress.downloadedBytes)}。`;
+  }
+
+  const percent = Math.min(
+    100,
+    Math.round((progress.downloadedBytes / progress.totalBytes) * 100),
+  );
+  return `正在下载更新包：${percent}%（${formatBytes(progress.downloadedBytes)} / ${formatBytes(progress.totalBytes)}）`;
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 B";
+  }
+
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unitIndex = 0;
+
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  const digits = unitIndex === 0 ? 0 : value >= 100 ? 0 : value >= 10 ? 1 : 2;
+  return `${value.toFixed(digits)} ${units[unitIndex]}`;
 }

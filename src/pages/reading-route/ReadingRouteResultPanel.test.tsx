@@ -23,6 +23,7 @@ describe("reading route result panel", () => {
     expect(markup).toContain("待处理");
     expect(markup).toContain("记录反馈");
     expect(markup).toContain("复制行动清单");
+    expect(markup).toContain("结构化约束：JSON Schema");
   });
 
   test("formats action checklist with completion markers", () => {
@@ -107,6 +108,7 @@ function createRoute(): ReadingRoute {
     },
     generatedAt: "1710000000",
     promptVersion: "reading-route-v2.1",
+    responseFormat: "json_schema",
     basisNotice: "基于当前书和本地状态生成。"
   };
 }

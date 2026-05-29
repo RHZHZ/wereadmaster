@@ -17,6 +17,8 @@ import { BookHeader } from "../components/BookHeader";
 import { ChapterList } from "../components/ChapterList";
 import { useToast } from "../components/ToastProvider";
 import { formatUnixDate } from "../lib/formatters";
+import { listLocalBooks } from "../lib/local-reader-api";
+import type { LocalBook } from "../lib/local-reader-types";
 import {
   getCommandErrorMessage,
   getReadingItemState,
@@ -24,6 +26,19 @@ import {
   upsertReadingItemState,
   type BookDetailResponse
 } from "../lib/reading-api";
+import {
+  findReadingAssetLinkPair,
+  getReadingAssetLinkStorage,
+  readReadingAssetLinks,
+  setReadingAssetLinkPairLinked,
+  writeReadingAssetLinks,
+  type ReadingAssetLinkPair
+} from "../lib/reading-asset-links";
+import {
+  buildLikelySourceVersionPair,
+  findLikelyLocalBookMatch,
+  type SourceVersionPair
+} from "../lib/source-version-matches";
 import type { ReadingItemState, ReadingItemStatus, ShelfEntry } from "../lib/types";
 
 type BookDetailPageProps = {
@@ -34,6 +49,7 @@ type BookDetailPageProps = {
   error?: string;
   linkMessage?: string;
   backLabel?: string;
+  localBooks?: LocalBook[];
   onBack: () => void;
   onRetry: () => void;
   onOpenBook: () => void;
@@ -57,6 +73,7 @@ export function BookDetailPage({
   error,
   linkMessage,
   backLabel = "返回书架",
+  localBooks,
   onBack,
   onRetry,
   onOpenBook,
@@ -67,9 +84,14 @@ export function BookDetailPage({
   onOpenReadingRoute
 }: BookDetailPageProps) {
   const [readingState, setReadingState] = useState<ReadingItemState>();
+  const [loadedLocalBooks, setLoadedLocalBooks] = useState<LocalBook[]>([]);
+  const [assetLinks, setAssetLinks] = useState<ReadingAssetLinkPair[]>(() =>
+    readReadingAssetLinks(getReadingAssetLinkStorage())
+  );
   const [isStateLoading, setIsStateLoading] = useState(false);
   const [stateError, setStateError] = useState<string>();
   const { showToast } = useToast();
+  const effectiveLocalBooks = localBooks ?? loadedLocalBooks;
 
   useEffect(() => {
     if (!shelfEntry?.id || shelfEntry.type !== "book") {
@@ -105,6 +127,55 @@ export function BookDetailPage({
       isMounted = false;
     };
   }, [shelfEntry?.id, shelfEntry?.type]);
+
+  useEffect(() => {
+    if (localBooks || !shelfEntry?.id || shelfEntry.type !== "book") {
+      return;
+    }
+
+    let isMounted = true;
+
+    async function loadLocalBooks() {
+      try {
+        const books = await listLocalBooks();
+        if (isMounted) {
+          setLoadedLocalBooks(books);
+        }
+      } catch {
+        if (isMounted) {
+          setLoadedLocalBooks([]);
+        }
+      }
+    }
+
+    void loadLocalBooks();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [localBooks, shelfEntry?.id, shelfEntry?.type]);
+
+  const localBookMatch =
+    shelfEntry && detailResponse
+      ? findLikelyLocalBookMatch(
+          {
+            type: shelfEntry.type,
+            title: detailResponse.detail.title || shelfEntry.title,
+            author: detailResponse.detail.author || shelfEntry.author
+          },
+          effectiveLocalBooks
+        )
+      : undefined;
+  const sourceVersionPair =
+    shelfEntry && detailResponse && localBookMatch
+      ? buildLikelySourceVersionPair(localBookMatch, {
+          id: shelfEntry.id,
+          type: shelfEntry.type,
+          title: detailResponse.detail.title || shelfEntry.title,
+          author: detailResponse.detail.author || shelfEntry.author
+        })
+      : undefined;
+  const isSourceVersionLinked = Boolean(findReadingAssetLinkPair(assetLinks, sourceVersionPair));
 
   async function handleStatusChange(status: ReadingItemStatus) {
     if (!shelfEntry || !detailResponse) {
@@ -192,6 +263,22 @@ export function BookDetailPage({
     }
   }
 
+  function handleToggleSourceVersionLink(pair: SourceVersionPair, isLinked: boolean) {
+    if (!setReadingAssetLinkPairLinked([], pair, true)) {
+      showToast({ message: "无法建立版本关联，请稍后重试。", tone: "error" });
+      return;
+    }
+
+    setAssetLinks((current) => {
+      const next = setReadingAssetLinkPairLinked(current, pair, !isLinked);
+      return writeReadingAssetLinks(getReadingAssetLinkStorage(), next ?? current);
+    });
+    showToast({
+      message: isLinked ? "已取消本地版本和微信版本的关联。" : "已关联为同一本书的两个来源版本。",
+      tone: isLinked ? "neutral" : "success"
+    });
+  }
+
   if (!shelfEntry) {
     return (
       <section className="tool-panel" aria-label="未选择书籍">
@@ -253,6 +340,15 @@ export function BookDetailPage({
             onFindSimilar={onFindSimilar}
           />
 
+          {localBookMatch ? (
+            <LocalVersionNotice
+              book={localBookMatch}
+              sourceVersionPair={sourceVersionPair}
+              isSourceVersionLinked={isSourceVersionLinked}
+              onToggleSourceVersionLink={handleToggleSourceVersionLink}
+            />
+          ) : null}
+
           <BookActionPanel
             shelfEntry={shelfEntry}
             detailResponse={detailResponse}
@@ -306,6 +402,42 @@ export function BookDetailPage({
           </div>
         </>
       ) : null}
+    </section>
+  );
+}
+
+function LocalVersionNotice({
+  book,
+  sourceVersionPair,
+  isSourceVersionLinked,
+  onToggleSourceVersionLink
+}: {
+  book: LocalBook;
+  sourceVersionPair?: SourceVersionPair;
+  isSourceVersionLinked: boolean;
+  onToggleSourceVersionLink: (pair: SourceVersionPair, isLinked: boolean) => void;
+}) {
+  return (
+    <section className="book-source-boundary-card" aria-label="疑似本地版本">
+      <Layers3 aria-hidden="true" size={20} />
+      <div>
+        <strong>可能存在本地版本</strong>
+        <p>
+          本地书库中有《{book.title}》。这只是来源提示，不会合并微信读书笔记、本地划线、进度或 AI 缓存。
+        </p>
+      </div>
+      <div className="book-source-boundary-actions">
+        <span>{isSourceVersionLinked ? "已关联本地版本" : "本地版本"}</span>
+        {sourceVersionPair ? (
+          <button
+            className="book-source-link-button"
+            type="button"
+            onClick={() => onToggleSourceVersionLink(sourceVersionPair, isSourceVersionLinked)}
+          >
+            {isSourceVersionLinked ? "取消关联" : "关联版本"}
+          </button>
+        ) : null}
+      </div>
     </section>
   );
 }
@@ -395,13 +527,13 @@ function BookActionPanel({
         <ActionButton
           icon={<NotebookPen aria-hidden="true" size={18} />}
           title="查看笔记"
-          description="进入这本书的划线、想法和章节视图"
+          description="进入划线、想法和章节视图，确认复盘输入范围"
           onClick={onOpenNotes}
         />
         <ActionButton
           icon={<Sparkles aria-hidden="true" size={18} />}
           title="AI 复盘"
-          description="读取本地缓存；生成仍需手动点击"
+          description="把本书划线和想法整理成结构化复盘；生成仍需手动点击"
           onClick={onOpenAiSummary}
         />
         <ActionButton
@@ -413,7 +545,7 @@ function BookActionPanel({
         <ActionButton
           icon={<BookMarked aria-hidden="true" size={18} />}
           title="本书阅读指南"
-          description="先规划这本书；可加入候选书扩展路线"
+          description="先规划这本书下一步；可加入候选书扩展路线"
           onClick={onOpenReadingRoute}
         />
       </div>

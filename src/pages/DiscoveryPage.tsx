@@ -30,7 +30,6 @@ import type {
   CredentialStatus,
   Recommendation,
   RecommendationResult,
-  ReadingStatsMode,
   SearchBooksResult,
   SearchResult,
   SearchScope,
@@ -40,11 +39,15 @@ import {
   buildCandidateMap,
   isSavedCandidateState
 } from "./candidate-books";
+import {
+  getLatestReadingStatsResponse,
+  type ReadingStatsCache
+} from "./reading-stats-period";
 
 type DiscoveryPageProps = {
   credentialStatus?: CredentialStatus;
   bookshelf?: BookshelfResponse;
-  readingStatsCache: Partial<Record<ReadingStatsMode, ReadingStatsResponse>>;
+  readingStatsCache: ReadingStatsCache;
   seedBook?: SearchResult;
   initialQuery?: { keyword: string; nonce: number };
   onOpenSettings: () => void;
@@ -78,6 +81,10 @@ const scopeOptions: Array<{ scope: SearchScope; label: string; description: stri
 const primaryScopeCount = 5;
 const RECENT_SEARCHES_KEY = "wxreadmaster.discoveryRecentSearches";
 const themeSuggestions = ["AI", "心理学", "时间管理", "科幻", "历史", "听书"];
+
+function normalizeBookId(bookId: string | number | null | undefined): string {
+  return bookId == null ? "" : String(bookId);
+}
 
 export function DiscoveryPage({
   credentialStatus,
@@ -116,10 +123,12 @@ export function DiscoveryPage({
   const visibleScopeOptions = showAllScopes ? scopeOptions : scopeOptions.slice(0, primaryScopeCount);
   const currentScopeIsHidden = !visibleScopeOptions.some((option) => option.scope === scope);
   const shelfSeedSections = buildShelfSeedSections(bookshelf, readingStatsCache);
-  const shelfItemIds = new Set((bookshelf?.snapshot.entries ?? []).map((entry) => entry.id));
-  const candidateIds = new Set(candidateMap.keys());
+  const shelfItemIds = new Set((bookshelf?.snapshot.entries ?? []).map((entry) => normalizeBookId(entry.id)));
+  const candidateIds = new Set([...candidateMap.keys()].map((bookId) => normalizeBookId(bookId)));
   const candidateBooks = [...candidateMap.values()].slice(0, 6);
-  const compactSeedBooks = shelfSeedSections.flatMap((section) => section.items.slice(0, 2)).slice(0, 4);
+  const compactSeedBooks = uniqueSearchResults(
+    shelfSeedSections.flatMap((section) => section.items.slice(0, 2))
+  ).slice(0, 4);
   const compactThemeSuggestions = themeSuggestions.slice(0, 4);
   const compactRecentSearches = recentSearches.slice(0, 4);
   const isSimilarMode = Boolean(similarSeed);
@@ -172,7 +181,10 @@ export function DiscoveryPage({
   }, [hasCredential, recommendations, isLoadingRecommendations]);
 
   useEffect(() => {
-    if (!seedBook || seedBook.bookId === similarSeed?.bookId) {
+    if (
+      !seedBook ||
+      normalizeBookId(seedBook.bookId) === normalizeBookId(similarSeed?.bookId)
+    ) {
       return;
     }
 
@@ -364,16 +376,18 @@ export function DiscoveryPage({
   }
 
   async function handleSaveCandidate(book: SearchResult) {
-    if (candidateIds.has(book.bookId) || shelfItemIds.has(book.bookId)) {
+    const normalizedBookId = normalizeBookId(book.bookId);
+
+    if (candidateIds.has(normalizedBookId) || shelfItemIds.has(normalizedBookId)) {
       return;
     }
 
-    setSavingCandidateIds((current) => new Set(current).add(book.bookId));
+    setSavingCandidateIds((current) => new Set(current).add(normalizedBookId));
     setError(undefined);
 
     try {
       await upsertReadingItemState({
-        itemId: book.bookId,
+        itemId: normalizedBookId,
         itemType: "candidate",
         status: "toRead",
         title: book.title,
@@ -382,7 +396,7 @@ export function DiscoveryPage({
         category: book.category,
         note: "发现页保存的本地候选"
       });
-      setCandidateMap((current) => new Map(current).set(book.bookId, mapBookToCandidate(book)));
+      setCandidateMap((current) => new Map(current).set(normalizedBookId, mapBookToCandidate(book)));
       showToast({ message: `已保存《${book.title}》到本地候选`, tone: "success" });
     } catch (candidateError) {
       const message = getCommandErrorMessage(candidateError);
@@ -391,7 +405,7 @@ export function DiscoveryPage({
     } finally {
       setSavingCandidateIds((current) => {
         const next = new Set(current);
-        next.delete(book.bookId);
+        next.delete(normalizedBookId);
         return next;
       });
     }
@@ -618,7 +632,7 @@ export function DiscoveryPage({
                   <h3>从已读内容继续扩展</h3>
                   <div className="starter-tags">
                     {compactSeedBooks.map((seed) => (
-                      <button key={`compact-seed-${seed.bookId}-${seed.title}`} type="button" onClick={() => void loadSimilar(seed)}>
+                      <button key={`compact-seed-${normalizeBookId(seed.bookId)}-${seed.title}`} type="button" onClick={() => void loadSimilar(seed)}>
                         {seed.title}
                       </button>
                     ))}
@@ -663,7 +677,7 @@ export function DiscoveryPage({
 
             {shelfSeedSections.length > 0 ? (
               <div className="shelf-seed-sections">
-                {shelfSeedSections.map((section) => (
+                      {shelfSeedSections.map((section) => (
                   <section key={section.title} className="shelf-seed-section">
                     <div className="shelf-seed-section-head">
                       <strong>{section.title}</strong>
@@ -672,7 +686,7 @@ export function DiscoveryPage({
                     <div className="shelf-seed-grid">
                       {section.items.map((seed) => (
                         <button
-                          key={`${section.title}-${seed.bookId}-${seed.title}`}
+                          key={`${section.title}-${normalizeBookId(seed.bookId)}-${seed.title}`}
                           type="button"
                           className="shelf-seed-card"
                           onClick={() => handleShelfSeedClick(seed, section.action)}
@@ -734,7 +748,7 @@ export function DiscoveryPage({
                     <h3>从已读内容继续扩展</h3>
                     <div className="starter-tags">
                       {compactSeedBooks.map((seed) => (
-                        <button key={`default-seed-${seed.bookId}-${seed.title}`} type="button" onClick={() => void loadSimilar(seed)}>
+                        <button key={`default-seed-${normalizeBookId(seed.bookId)}-${seed.title}`} type="button" onClick={() => void loadSimilar(seed)}>
                           {seed.title}
                         </button>
                       ))}
@@ -818,7 +832,7 @@ function getInitialRecentSearches(): string[] {
 
 function mapBookToCandidate(book: SearchResult): SearchResult {
   return {
-    bookId: book.bookId,
+    bookId: normalizeBookId(book.bookId),
     title: book.title,
     author: book.author,
     cover: book.cover,
@@ -848,7 +862,7 @@ function CandidateDecisionBlock({
       <h3>已保存的下一批书</h3>
       <div className="discovery-assist-list">
         {candidateBooks.slice(0, 4).map((book) => (
-          <button key={book.bookId} type="button" onClick={() => onOpenBook(book)}>
+          <button key={normalizeBookId(book.bookId)} type="button" onClick={() => onOpenBook(book)}>
             <strong>{book.title}</strong>
             <small>{book.author || book.category || "本地候选"}</small>
           </button>
@@ -867,7 +881,7 @@ function CandidateDecisionBlock({
 
 function buildShelfSeedSections(
   bookshelf?: BookshelfResponse,
-  readingStatsCache: Partial<Record<ReadingStatsMode, ReadingStatsResponse>> = {}
+  readingStatsCache: ReadingStatsCache = {}
 ): ShelfSeedSection[] {
   const entries = bookshelf?.snapshot.entries ?? [];
   const books = entries.filter((entry) => entry.type === "book");
@@ -875,10 +889,12 @@ function buildShelfSeedSections(
     .slice()
     .sort((left, right) => (right.lastReadAt ?? 0) - (left.lastReadAt ?? 0))
     .slice(0, 2);
-  const monthlyStats = readingStatsCache.monthly?.stats ?? readingStatsCache.overall?.stats;
+  const monthlyStats =
+    getLatestReadingStatsResponse(readingStatsCache, "monthly")?.stats ??
+    getLatestReadingStatsResponse(readingStatsCache, "overall")?.stats;
   const longest = (monthlyStats?.longestItems ?? [])
     .map((item) => ({
-      bookId: item.id,
+      bookId: normalizeBookId(item.id),
       title: item.title,
       author: item.author,
       cover: item.cover,
@@ -926,12 +942,27 @@ function buildShelfSeedSections(
 
 function mapShelfEntryToSearchResult(entry: BookshelfResponse["snapshot"]["entries"][number]): SearchResult {
   return {
-    bookId: entry.id,
+    bookId: normalizeBookId(entry.id),
     title: entry.title,
     author: entry.author,
     cover: entry.cover,
     category: entry.category
   };
+}
+
+function uniqueSearchResults(items: SearchResult[]): SearchResult[] {
+  const seen = new Set<string>();
+
+  return items.filter((item) => {
+    const normalizedBookId = normalizeBookId(item.bookId);
+
+    if (seen.has(normalizedBookId)) {
+      return false;
+    }
+
+    seen.add(normalizedBookId);
+    return true;
+  });
 }
 
 function mergeSearchResults(
@@ -1000,7 +1031,7 @@ function mergeBooks<T extends SearchResult>(current: T[], next: T[]): T[] {
   const merged: T[] = [];
 
   [...current, ...next].forEach((book) => {
-    const key = `${book.bookId}-${book.searchIdx ?? ""}`;
+    const key = `${normalizeBookId(book.bookId)}-${book.searchIdx ?? ""}`;
     if (seen.has(key)) {
       return;
     }

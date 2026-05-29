@@ -5,6 +5,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use base64::{engine::general_purpose, Engine as _};
+use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
@@ -49,6 +51,10 @@ const BACKUP_MANIFEST_FILE_NAME: &str = "manifest.json";
 const BACKUP_KIND: &str = "wxreadmaster-local-data-backup";
 const BACKUP_SCHEMA_VERSION: u32 = 1;
 const DATA_OPERATION_STATE_FILE_NAME: &str = "local-data-operation-state.json";
+const APP_UPDATE_RELEASE_FEED_URL: &str =
+    "https://github.com/RHZHZ/wereadmaster/releases/latest/download/latest.json";
+const MAX_EXPORT_IMAGE_BASE64_LENGTH: usize = 32 * 1024 * 1024;
+const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -58,6 +64,7 @@ pub struct SettingsStateResponse {
     pub local_data: LocalDataState,
     pub export_data: ExportDataState,
     pub app_version: String,
+    pub supports_native_updater: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -105,6 +112,14 @@ pub struct ClearAiOutputCacheResponse {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportDiagnosticsResponse {
+    pub file_name: String,
+    pub path: String,
+    pub exported_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportImageResponse {
     pub file_name: String,
     pub path: String,
     pub exported_at: String,
@@ -164,6 +179,14 @@ pub struct ResetExportDirectoryResponse {
     pub state: SettingsStateResponse,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteAppUpdateManifestResponse {
+    pub version: String,
+    pub notes: Option<String>,
+    pub published_at: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BackupManifest {
@@ -179,6 +202,13 @@ struct BackupManifest {
 struct DataOperationState {
     last_error: Option<String>,
     last_error_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RemoteAppUpdateManifestRecord {
+    version: Option<String>,
+    notes: Option<String>,
+    pub_date: Option<String>,
 }
 
 pub struct SettingsService {
@@ -205,6 +235,7 @@ impl SettingsService {
             local_data: self.local_data_state(&connection)?,
             export_data: self.export_data_state()?,
             app_version: env!("CARGO_PKG_VERSION").to_string(),
+            supports_native_updater: cfg!(desktop),
         })
     }
 
@@ -259,6 +290,30 @@ impl SettingsService {
 
         Ok(ExportDiagnosticsResponse {
             file_name,
+            path: path.to_string_lossy().to_string(),
+            exported_at,
+        })
+    }
+
+    pub fn export_report_image(
+        &self,
+        file_name: String,
+        png_base64: String,
+    ) -> Result<ExportImageResponse, AppError> {
+        let exported_at = current_unix_seconds();
+        let image_bytes = decode_png_base64(&png_base64)?;
+        let file_name = sanitize_png_file_name(&file_name);
+        let export_dir = db::active_export_dir(&self.app).map_err(AppError::Storage)?;
+        fs::create_dir_all(&export_dir).map_err(|error| AppError::Storage(error.to_string()))?;
+
+        let path = next_available_export_path(&export_dir, &file_name);
+        fs::write(&path, image_bytes).map_err(|error| AppError::Storage(error.to_string()))?;
+
+        Ok(ExportImageResponse {
+            file_name: path
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or(file_name),
             path: path.to_string_lossy().to_string(),
             exported_at,
         })
@@ -354,10 +409,9 @@ impl SettingsService {
         &self,
         target_dir: Option<String>,
     ) -> Result<ChooseDataDirectoryResponse, AppError> {
-        let selected_dir = select_custom_data_directory(
-            target_dir.as_deref(),
-            || pick_folder(&self.app, "选择本地数据库迁移目录"),
-        )?;
+        let selected_dir = select_custom_data_directory(target_dir.as_deref(), || {
+            pick_folder(&self.app, "选择本地数据库迁移目录")
+        })?;
 
         Ok(ChooseDataDirectoryResponse {
             path: selected_dir.map(|path| path.display().to_string()),
@@ -495,6 +549,35 @@ impl SettingsService {
 
         Ok(ResetExportDirectoryResponse {
             state: self.settings_state()?,
+        })
+    }
+
+    pub async fn remote_app_update_manifest() -> Result<RemoteAppUpdateManifestResponse, AppError> {
+        let response = HttpClient::new()
+            .get(APP_UPDATE_RELEASE_FEED_URL)
+            .send()
+            .await
+            .map_err(|error| AppError::Gateway(format!("无法连接 GitHub 更新源：{error}")))?;
+
+        if !response.status().is_success() {
+            return Err(AppError::Gateway(format!(
+                "GitHub 更新源返回异常状态：{}。",
+                response.status()
+            )));
+        }
+
+        let manifest = response
+            .json::<RemoteAppUpdateManifestRecord>()
+            .await
+            .map_err(|error| AppError::Gateway(format!("更新清单解析失败：{error}")))?;
+
+        let version = normalize_optional_string(manifest.version)
+            .ok_or_else(|| AppError::Gateway("更新清单缺少版本号。".to_string()))?;
+
+        Ok(RemoteAppUpdateManifestResponse {
+            version,
+            notes: normalize_optional_string(manifest.notes),
+            published_at: normalize_optional_string(manifest.pub_date),
         })
     }
 
@@ -713,6 +796,130 @@ fn validate_export_directory(path: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
+fn decode_png_base64(value: &str) -> Result<Vec<u8>, AppError> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(AppError::InvalidPayload(
+            "阅读报告图片内容不能为空。".to_string(),
+        ));
+    }
+
+    if value.len() > MAX_EXPORT_IMAGE_BASE64_LENGTH {
+        return Err(AppError::InvalidPayload(
+            "阅读报告图片过大，已取消导出。".to_string(),
+        ));
+    }
+
+    let payload = if value.to_ascii_lowercase().starts_with("data:") {
+        let (header, payload) = value.split_once(',').ok_or_else(|| {
+            AppError::InvalidPayload("阅读报告图片内容不是有效的 PNG 数据。".to_string())
+        })?;
+        let header = header.to_ascii_lowercase();
+        if !header.starts_with("data:image/png") || !header.contains(";base64") {
+            return Err(AppError::InvalidPayload(
+                "阅读报告图片格式无效，仅支持 PNG。".to_string(),
+            ));
+        }
+
+        payload
+    } else {
+        value
+    };
+
+    let bytes = general_purpose::STANDARD.decode(payload).map_err(|_| {
+        AppError::InvalidPayload("阅读报告图片内容不是有效的 PNG 数据。".to_string())
+    })?;
+
+    if !bytes.starts_with(PNG_SIGNATURE) {
+        return Err(AppError::InvalidPayload(
+            "阅读报告图片格式无效，仅支持 PNG。".to_string(),
+        ));
+    }
+
+    Ok(bytes)
+}
+
+fn sanitize_png_file_name(value: &str) -> String {
+    let sanitized = value
+        .trim()
+        .chars()
+        .map(|character| match character {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            character if character.is_control() => '_',
+            character => character,
+        })
+        .collect::<String>();
+    let sanitized = sanitized
+        .trim_matches(|character| matches!(character, '.' | ' ' | '_' | '\t' | '\n' | '\r'));
+    let stem = if sanitized.to_ascii_lowercase().ends_with(".png") {
+        &sanitized[..sanitized.len() - 4]
+    } else {
+        sanitized
+    }
+    .trim_matches(|character| matches!(character, '.' | ' ' | '_'));
+    let mut stem = if stem.is_empty() {
+        "reading-report".to_string()
+    } else {
+        stem.chars().take(120).collect::<String>()
+    };
+
+    if is_reserved_windows_file_stem(&stem) {
+        stem = format!("wxreadmaster-{stem}");
+    }
+
+    format!("{stem}.png")
+}
+
+fn is_reserved_windows_file_stem(value: &str) -> bool {
+    matches!(
+        value.to_ascii_uppercase().as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    )
+}
+
+fn next_available_export_path(export_dir: &Path, file_name: &str) -> PathBuf {
+    let path = export_dir.join(file_name);
+    if !path.exists() {
+        return path;
+    }
+
+    let stem = Path::new(file_name)
+        .file_stem()
+        .map(|value| value.to_string_lossy().to_string())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "reading-report".to_string());
+
+    for index in 1.. {
+        let candidate = export_dir.join(format!("{stem} ({index}).png"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+
+    unreachable!("unbounded candidate search should always return");
+}
+
 fn validate_writable_directory(path: &Path, message: &str) -> Result<(), AppError> {
     fs::create_dir_all(path).map_err(|_| AppError::InvalidPayload(message.to_string()))?;
     let probe = path.join(format!(
@@ -721,6 +928,17 @@ fn validate_writable_directory(path: &Path, message: &str) -> Result<(), AppErro
     ));
     fs::write(&probe, b"ok").map_err(|_| AppError::InvalidPayload(message.to_string()))?;
     fs::remove_file(&probe).map_err(|error| AppError::Storage(error.to_string()))
+}
+
+fn normalize_optional_string(value: Option<String>) -> Option<String> {
+    value.and_then(|text| {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
 }
 
 fn build_export_data_state(
@@ -1092,7 +1310,7 @@ fn current_unix_seconds() -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::{fs, path::Path};
 
     use rusqlite::Connection;
     use serde_json::json;
@@ -1104,12 +1322,53 @@ mod tests {
 
     use super::{
         build_export_data_state, clear_ai_output_cache, clear_cache_tables, current_unix_seconds,
-        local_backup_file_manifest, local_data_migration_file_manifest, read_data_operation_state,
-        sanitize_diagnostic_text, select_custom_data_directory, serialize_diagnostics_markdown,
+        decode_png_base64, local_backup_file_manifest, local_data_migration_file_manifest,
+        next_available_export_path, read_data_operation_state, sanitize_diagnostic_text,
+        sanitize_png_file_name, select_custom_data_directory, serialize_diagnostics_markdown,
         table_count, validate_backup_manifest, validate_custom_data_directory,
         write_data_operation_state, DataOperationState, ExportDataState, LocalDataState,
         SettingsStateResponse, TableCountRecord,
     };
+
+    #[test]
+    fn decode_png_base64_accepts_png_data_url_only() {
+        let png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+
+        let bytes = decode_png_base64(png).expect("png data url should decode");
+
+        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert!(decode_png_base64("data:text/plain;base64,SGVsbG8=").is_err());
+        assert!(decode_png_base64("SGVsbG8=").is_err());
+    }
+
+    #[test]
+    fn sanitize_png_file_name_blocks_path_traversal_and_reserved_names() {
+        assert_eq!(
+            sanitize_png_file_name("../2026:05*阅读报告"),
+            "2026_05_阅读报告.png"
+        );
+        assert_eq!(sanitize_png_file_name("CON.png"), "wxreadmaster-CON.png");
+        assert_eq!(sanitize_png_file_name("report.PnG"), "report.png");
+        assert_eq!(sanitize_png_file_name(""), "reading-report.png");
+    }
+
+    #[test]
+    fn next_available_export_path_preserves_existing_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "wxreadmaster-export-test-{}",
+            current_unix_seconds()
+        ));
+        fs::create_dir_all(&dir).expect("test export dir should be created");
+        fs::write(dir.join("report.png"), b"old").expect("existing report should be created");
+
+        let path = next_available_export_path(&dir, "report.png");
+
+        assert_eq!(
+            path.file_name().and_then(|value| value.to_str()),
+            Some("report (1).png")
+        );
+        fs::remove_dir_all(dir).expect("test export dir should be removed");
+    }
 
     #[test]
     fn table_count_reads_known_cache_table() {
@@ -1335,6 +1594,7 @@ mod tests {
                 is_custom_export_dir: true,
             },
             app_version: "0.1.0".to_string(),
+            supports_native_updater: true,
         };
 
         let markdown = serialize_diagnostics_markdown(&state, "130");

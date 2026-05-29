@@ -1,6 +1,7 @@
 import { useDeferredValue, useEffect, useState } from "react";
 import { AlertCircle, BookOpen, Download, Loader2, Search, X } from "lucide-react";
 import { ExportFailurePanel } from "../components/ExportFailurePanel";
+import { getExportAssetBoundary } from "../lib/export-asset-boundaries";
 import { exportBookNotesSummariesMarkdown, getCommandErrorMessage } from "../lib/reading-api";
 import { formatAiTimestamp } from "../lib/formatters";
 import type { BookAiSummaryListItem, ExportAiBulkMarkdownResponse } from "../lib/types";
@@ -30,6 +31,7 @@ export function filterBookAiSummaryItems(
 }
 
 export function BookReviewExportDialog({ items, onClose, onExportComplete }: BookReviewExportDialogProps) {
+  const exportBoundary = getExportAssetBoundary("bookReview");
   const [step, setStep] = useState<BookReviewExportStep>("select");
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
@@ -134,7 +136,7 @@ export function BookReviewExportDialog({ items, onClose, onExportComplete }: Boo
           <div>
             <p className="section-kicker">书籍复盘导出</p>
             <h3>选择要导出的复盘</h3>
-            <p>只导出本地已生成的 AI 复盘，不会静默生成、不请求远端笔记。</p>
+            <p>{exportBoundary.summary}</p>
           </div>
           <button className="dialog-close" type="button" onClick={onClose} aria-label="关闭书籍复盘导出">
             <X aria-hidden="true" size={18} />
@@ -272,7 +274,12 @@ export function BookReviewExportDialog({ items, onClose, onExportComplete }: Boo
               </label>
               <article>
                 <strong>本地缓存边界</strong>
-                <p>本次导出不会同步微信读书远端，也不会自动生成新的 AI 复盘。</p>
+                <p>{exportBoundary.behavior}</p>
+                <ul className="asset-boundary-list">
+                  <li>来源：{exportBoundary.source}</li>
+                  <li>包含：{exportBoundary.includes.join("；")}</li>
+                  <li>不包含：{exportBoundary.excludes.join("；")}</li>
+                </ul>
               </article>
             </section>
           ) : null}

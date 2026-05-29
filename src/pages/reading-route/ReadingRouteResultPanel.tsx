@@ -13,7 +13,7 @@ import {
   type AiActionFeedbackRecord
 } from "../../lib/ai-action-items";
 import { copyTextToClipboard } from "../../lib/clipboard";
-import { formatAiTimestamp } from "../../lib/formatters";
+import { formatAiResponseFormat, formatAiTimestamp } from "../../lib/formatters";
 import type {
   ReadingRoute,
   ReadingRouteBookInput,
@@ -244,6 +244,7 @@ export function ReadingRouteResultPanel({
           <div className="ai-summary-meta">
             <span>生成时间：{formatAiTimestamp(route.generatedAt) || "尚未生成"}</span>
             <span>Prompt：{route.promptVersion ?? "reading-route-v2.1"}</span>
+            {route.responseFormat ? <span>{formatAiResponseFormat(route.responseFormat)}</span> : null}
             {routeResponse?.providerModel ? <span>模型：{routeResponse.providerModel}</span> : null}
             {routeResponse?.cachedUpdatedAt ? (
               <span>缓存更新：{formatAiTimestamp(routeResponse.cachedUpdatedAt)}</span>

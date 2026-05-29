@@ -211,6 +211,218 @@ CREATE TABLE IF NOT EXISTS ai_feedback_records (
 - 使用简体中文。
 - 明确基于统计生成，不包含笔记正文。
 
+后续升级到阅读人格 MBTI 时，建议新建 prompt version，不直接修改 `reading-stats-review-v1` 的语义：
+
+- 建议版本：`reading-stats-review-v2`。
+- 新增输出字段：`readingPersona`。
+- `readingPersona` 只能解释前端或 Rust 侧已经根据统计规则计算出的 MBTI-like 代码和证据。
+- AI 不负责重新判定真实 MBTI，也不能输出心理诊断、真实性格结论或人生建议。
+- 文案必须明确这是“阅读风格隐喻”，不代表用户真实心理人格。
+- 事实字段如书名、作者、分类、阅读时长、占比和周期必须来自输入，不允许 AI 自造。
+- 人格配色只允许使用输入中给定的 `paletteGroup` 和 `accentTone`，不允许 AI 自由生成色值或新增主题名。
+- `readingPersona.status`、`code`、`label`、`displayTitle`、`paletteGroup`、`accentTone`、`dimensions`、`evidence`、`confidence` 由本地规则先生成，AI 只补 `summary` 和 `suggestion`。
+- 当 `status = insufficient` 时，AI 不输出人格结论，只允许输出补充说明或留空。
+
+合并优先级建议：
+
+- 页面最终展示的人格对象以本地规则结果为主。
+- AI 返回的 `readingPersona` 只允许补 `summary` 和 `suggestion`，不得覆盖 `code`、`label`、`displayTitle`、`paletteGroup`、`accentTone`、`dimensions`、`evidence`、`confidence`。
+- 如果 AI 返回了与本地规则冲突的人格字段，应直接忽略冲突字段并保留本地结果。
+- 旧缓存没有 `readingPersona` 时，前端和 Rust 侧都应允许走“本地规则生成人格 + 旧 AI 复盘正文”的兼容路径，不强制缓存失效。
+- Markdown 导出、阅读报告海报和 Web 预览都应消费同一个“最终合并后人格对象”，不分别读取 AI 原始人格字段。
+- 当 `personaStatus = insufficient` 时，导出和海报都不应强行展示完整人格标题。
+
+工程约束建议：
+
+- 人格定义、词表、阈值只维护在 `src/reading-persona.config.json`。
+- 跨语言一致性样例只维护在 `src/reading-persona.fixtures.json`。
+- TypeScript 与 Rust 可以各自实现判定流程，但不得再各自维护独立的人格标签表、词表或阈值常量。
+
+建议 `readingPersona` 输出结构：
+
+```json
+{
+  "readingPersona": {
+    "status": "complete",
+    "code": "INFJ",
+    "label": "历史共情者",
+    "paletteGroup": "NF",
+    "accentTone": "rose",
+    "displayTitle": "INFJ 型读者 · 历史共情者",
+    "confidence": 0.78,
+    "summary": "这一周期的阅读更像是在历史、人物和时代议题中持续寻找线索。",
+    "dimensions": [
+      { "axis": "energy", "key": "I", "label": "主题深度", "strength": "strong", "explanation": "分类和长读书目更集中。" },
+      { "axis": "information", "key": "N", "label": "概念想象", "strength": "medium", "explanation": "历史和思想性内容占比较高。" },
+      { "axis": "decision", "key": "F", "label": "共鸣取向", "strength": "medium", "explanation": "人物与时代命运相关内容更突出。" },
+      { "axis": "lifestyle", "key": "J", "label": "稳定推进", "strength": "light", "explanation": "阅读分桶相对稳定。" }
+    ],
+    "evidence": ["历史类投入最高", "长读书目集中", "阅读峰值出现在月中"],
+    "suggestion": "下个周期可以保留一本文学或社科短书，避免主题过窄。"
+  }
+}
+```
+
+推荐系统提示词补充：
+
+```text
+readingPersona 中的 MBTI 代码仅作为阅读风格隐喻，不代表真实心理人格。不得声称用户就是某种 MBTI，不得输出心理诊断、性格定论、能力评价或人生建议。只能基于输入中给定的 personaStatus、personaCode、personaLabel、paletteGroup、accentTone、dimensionEvidence、confidence 和结构化统计生成短文案；不得改写事实证据，不得自造书名、作者、分类、时长、占比、色值或主题名。当 personaStatus 为 insufficient 时，不输出完整人格总结，只允许输出样本不足说明。
+```
+
+`reading-stats-review-v2` 输入契约建议：
+
+- 继续保留原有统计复盘输入：
+  - `mode`
+  - `baseTime`
+  - `displayPeriod`
+  - `readDays`
+  - `totalReadTimeSeconds`
+  - `dayAverageReadTimeSeconds`
+  - `compare`
+  - `buckets`
+  - `longestItems`
+  - `categories`
+- 新增本地规则人格输入：
+  - `personaStatus`
+  - `personaCode`
+  - `personaLabel`
+  - `personaDisplayTitle`
+  - `personaPaletteGroup`
+  - `personaAccentTone`
+  - `personaConfidence`
+  - `personaBasisNotice`
+  - `personaDimensions`
+  - `personaEvidence`
+
+建议输入样例：
+
+```json
+{
+  "displayPeriod": "2026年5月",
+  "mode": "monthly",
+  "readDays": 11,
+  "totalReadTimeSeconds": 28600,
+  "categories": [...],
+  "longestItems": [...],
+  "personaStatus": "complete",
+  "personaCode": "INFJ",
+  "personaLabel": "历史共情者",
+  "personaDisplayTitle": "INFJ 型读者 · 历史共情者",
+  "personaPaletteGroup": "NF",
+  "personaAccentTone": "rose",
+  "personaConfidence": 0.78,
+  "personaBasisNotice": "基于本周期阅读记录生成的阅读风格隐喻，不代表真实心理人格。",
+  "personaDimensions": [
+    { "axis": "energy", "key": "I", "label": "主题深度", "strength": "strong", "basis": "分类和长读书目更集中" }
+  ],
+  "personaEvidence": ["历史类投入最高", "长读书目集中"]
+}
+```
+
+约束建议：
+
+- 输入给 AI 的人格字段必须已经是最终本地判定结果，不让 AI 重新推断四字母代码。
+- `personaDimensions` 只传展示所需最小字段，不传前端样式 token 或阈值细节。
+- `personaConfidence` 只作为语气强弱辅助，不要求 AI 复述具体数值。
+- `personaStatus = insufficient` 时仍可传入 `personaBasisNotice` 和少量证据，但不传 `personaCode` / `personaLabel`。
+
+`reading-stats-review-v2` 输出契约建议：
+
+- 保持原有字段不变：
+  - `overview`
+  - `rhythmInsights`
+  - `preferenceInsights`
+  - `focusItems`
+  - `nextActions`
+- 新增可选字段：
+  - `readingPersona.summary`
+  - `readingPersona.suggestion`
+
+输出约束：
+
+- `readingPersona` 整体为可选；没有合适文案时可省略。
+- `readingPersona.summary` 建议 1-2 句，优先描述“这一周期更像怎样阅读”。
+- `readingPersona.suggestion` 只给 1 条温和建议，不输出第二套行动清单，避免和 `nextActions` 重复。
+- 不输出 `readingPersona.code`、`paletteGroup`、`dimensions`、`evidence` 等本地已确定字段，避免冲突面扩大。
+
+完整响应样例建议：
+
+```json
+{
+  "overview": "2026 年 5 月的阅读更集中在历史与人物主题，整体节奏稳定，已经形成较清晰的主线投入。",
+  "rhythmInsights": [
+    "阅读高峰主要集中在月中，说明这一周期更像阶段性集中推进，而不是零散补读。",
+    "有效阅读天数较稳定，说明本月已经形成可持续的阅读节奏。"
+  ],
+  "preferenceInsights": [
+    "历史与人物相关内容投入占比较高，说明这段时间更关注时代背景与人物命运。",
+    "长读书目占比较高，说明阅读重心更偏向持续深入，而不是广泛试读。"
+  ],
+  "focusItems": [
+    "《历史的温度》是本月最值得继续沉淀的代表书目。",
+    "如果下个月继续保持同一主题，适合补一本文学或社科短书做横向对照。"
+  ],
+  "nextActions": [
+    "本周安排 2 个 45 分钟阅读时段，继续推进当前历史主线，完成标准：补出 3 条关键判断。",
+    "读完当前重点章节后，整理 1 份 5 条以内的月度复盘提纲，确认哪些观点值得继续展开。"
+  ],
+  "readingPersona": {
+    "summary": "这一周期的阅读更像是在历史、人物和时代议题中持续寻找线索，整体呈现出稳定深读的倾向。",
+    "suggestion": "下个周期可以保留一本文学或社科短书，帮助当前主线获得更好的参照。"
+  }
+}
+```
+
+接口兼容建议：
+
+- TypeScript 与 Rust 侧都把 `review.readingPersona` 建模为可选 patch，而不是最终人格实体。
+- `review.readingPersona` 首版只包含：
+  - `summary?: string`
+  - `suggestion?: string`
+- 未来如果要扩字段，也优先增加可选字段，不把 patch 扩张成第二份完整人格对象。
+- 任何 `readingPersona` 反序列化失败都不应让整份统计复盘失败；应忽略该 patch 并继续使用正文与本地人格。
+
+Schema 与解析建议：
+
+- `reading_stats_review_json_schema()` 在 `v2` 中新增可选 `readingPersona` 对象。
+- `readingPersona` 的 schema 首版只声明：
+  - `summary: string`
+  - `suggestion: string`
+- `readingPersona` 不进入 `required` 数组。
+- `additionalProperties` 建议保持 `false`，避免 provider 输出多余人格字段污染缓存。
+
+解析策略建议：
+
+- Rust `normalize_reading_stats_review_output(...)`：
+  - 先按原逻辑解析 `overview / rhythmInsights / preferenceInsights / focusItems / nextActions`
+  - 再单独尝试解析 `readingPersona.summary / suggestion`
+  - patch 解析失败时只丢弃人格 patch，不让整份复盘失败
+- TypeScript `buildWebPreviewReadingStatsReview(...)`：
+  - 缺 `readingPersona` 时继续兼容旧预览 JSON
+  - `readingPersona` 非对象或字段类型不符时返回 `undefined`
+- 测试侧至少新增：
+  - `readingPersona` 缺失仍通过
+  - `readingPersona` 只有 `summary` 通过
+  - `readingPersona` 带非法字段时被忽略
+  - `readingPersona` 类型错误时正文仍可读
+  - 前端与 Rust 对同一份 `reading-persona.fixtures.json` 共享样例保持一致
+
+缓存与版本建议：
+
+- `reading-stats-review-v1` 继续兼容读取，不补写 `readingPersona`。
+- `reading-stats-review-v2` 新增 `readingPersona` patch，但旧缓存不强制迁移。
+- 历史缓存列表、版本详情和 Web 预览都允许出现：
+  - `v1 正文 + 本地人格`
+  - `v2 正文 + 本地人格 + AI 人格 patch`
+- Markdown 导出与海报使用的始终是合并后的 `resolvedPersona`，不直接序列化缓存里的 patch。
+- 其中 Markdown 导出已落地 Rust 侧合并逻辑：导出前先基于当前统计重建本地人格，再叠加 `readingPersona.summary / suggestion` patch；`insufficient` 状态不输出人格区块。
+
+共享实现约束建议：
+
+- `src/reading-persona.config.json` 中的词表与阈值既服务前端 `buildReadingPersona(...)`，也服务 Rust `build_reading_stats_review_input(...)`。
+- `reading-stats-review-v2` 的 AI 输入必须消费 Rust 侧基于共享配置生成的本地人格字段，而不是让模型自由重算人格。
+- 后续新增人格类型、调阈值或改词表时，必须同步更新共享夹具并同时跑前端人格测试与 Rust 共享夹具测试。
+
 ## UI 策略
 
 单本笔记页只保留 `AI 总结` 入口，详细内容在独立 `BookAiSummaryPage` 展示：
@@ -322,7 +534,7 @@ AI 阅读指南 / 跨书路线图的 UI 边界：
 
 提示词收紧规则：
 
-- 当前阅读指南提示词小版本收紧为 `reading-route-v2.1`，不升级为 prompt v3，不拆成全新的单书和跨书两套提示词。
+- 当前阅读指南提示词小版本继续保持 `reading-route-v2.1`，不升级为 prompt v3，不拆成全新的单书和跨书两套提示词，并要求输出显式携带 `readingStage`。
 - 单书指南必须按阅读阶段生成建议：起步阶段强调阅读目的和验证问题，中段强调主线判断和笔记沉淀，后段强调收束整理和复盘产物，完成阶段强调生成复盘和归档。
 - 章节线索只能作为 `basis` 的辅助证据；不得生成逐章任务清单，不得承诺实时章节追踪，不得输出“每天自动读第 X 章”这类自动安排。
 - 缺少章节目录、章节标题或当前章节时，必须继续基于进度、最近笔记、本地状态和已有复盘生成建议，不允许以章节缺失为理由拒绝生成。
@@ -332,7 +544,9 @@ AI 阅读指南 / 跨书路线图的 UI 边界：
 
 - `feature`: `reading-route`
 - `scope_id`: `book:{bookId}`；如果包含候选书，则使用 `book:{bookId}:candidates:{candidate_hash_12}`。
-- `prompt_version`: 当前阅读指南为 `reading-route-v2.1`，在 `reading-route-v2` 基础上收紧为“进度阶段驱动、章节辅助、缺章节可回退”的单书阅读处方和跨书路线。
+- `prompt_version`: 当前阅读指南继续使用 `reading-route-v2.1`，在 `reading-route-v2` 基础上收紧为“进度阶段驱动、章节辅助、缺章节可回退、输出显式带 readingStage”的单书阅读处方和跨书路线。
+- 请求层对书籍复盘、阅读统计复盘、阅读指南和选书决策增加结构化 JSON schema 约束；阅读指南 schema 额外显式约束 `readingStage`。若当前 OpenAI-compatible provider 不支持 `response_format.json_schema`，自动回退为 `json_object`，避免因 provider 差异导致功能不可用。
+- 新生成结果和导出内容都要保留 `responseFormat` 元数据，用来明确这次实际采用的是 `json_schema` 还是回退后的 `json_object`；旧缓存缺字段时继续兼容，不触发强制失效。
 - `input_hash`: 对规范化后的路线输入 JSON 做稳定 hash；候选书变化、复盘缓存变化或本地状态变化都会得到新缓存。
 - 导出 Markdown 必须包含指南或路线正文、候选书范围、`promptVersion`、`sourceStats`、生成时间和 `basisNotice`。
 - 单书阅读指南导出必须和页面详情区保持一致，使用“推进任务 / 复盘点 / 下一步行动 / 来源统计”结构，复盘点保留“输出 / 验收”，下一步行动保留“完成标准”。
@@ -629,6 +843,8 @@ type AssetVersionRef = {
 - [x] 平衡报告页左右栏高度：左侧承载趋势、时间轴、习惯画像；右侧承载主题结构、重点书籍和 AI 解读。
 - [x] 保留“行动建议”和“数据依据”为底部全宽区域，作为报告收束，不塞进左右栏。
 - [x] 为阅读画像补充空态：统计不足时提示“数据不足，继续阅读后生成画像”，不输出伪结论。
+- [x] 阅读报告页和统计页统一接入 `mode + baseTime` 时间锚点，可从总计进入历史年份，再从年度进入历史月份。
+- [x] 历史周期标题、时间锚点、导出标题和统计复盘提示词统一改成绝对时间表达，避免把历史数据继续表述成“本月/今年”。
 
 ### 发现页
 

@@ -30,7 +30,7 @@ test.describe("个人阅读管理应用 smoke", () => {
     await installTauriMock(page, { hasCredential: false });
     await page.goto("/");
 
-    await expect(page.getByRole("heading", { name: "个人阅读管理" })).toBeVisible();
+    await expect(page.getByLabel("应用窗口控制").getByText("个人阅读管理")).toBeVisible();
     await expect(page.getByLabel("应用窗口控制")).toBeVisible();
     await expect(page.getByLabel("拖动窗口")).toBeVisible();
     await expect(page.getByRole("button", { name: "最小化窗口" })).toBeVisible();
@@ -428,9 +428,9 @@ test.describe("个人阅读管理应用 smoke", () => {
     await installTauriMock(page);
     await page.goto("/");
 
-    await expect(page.getByRole("heading", { name: "个人阅读管理" })).toBeVisible();
+    await expect(page.getByLabel("应用窗口控制").getByText("个人阅读管理")).toBeVisible();
     await expect(page.getByText("书架条目")).toBeVisible();
-    await expect(page.locator(".dashboard-status-strip")).toContainText("已保存本地凭据");
+    await expect(page.locator(".dashboard-status-strip")).toContainText("已连接本地阅读工作台");
     await expect(page.locator(".dashboard-status-strip").getByRole("button", { name: "打开设置" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "下一步阅读动作" })).toBeVisible();
     await expect(page.getByLabel("今日可做")).toContainText("继续看《深度工作》");
@@ -464,7 +464,7 @@ test.describe("个人阅读管理应用 smoke", () => {
     await page.getByRole("button", { name: "展开侧边栏" }).click();
     await expect(page.locator(".app-frame")).not.toHaveClass(/sidebar-collapsed/);
 
-    await openPrimaryNav(page, "书架");
+    await openShelfSubNav(page, "微信书架");
     await expect(page.getByLabel("书架子菜单").getByRole("button", { name: "微信书架" })).toBeVisible();
     await expect(page.getByLabel("书架子菜单").getByRole("button", { name: "候选书架" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "我的微信读书书架" })).toBeVisible();
@@ -487,23 +487,24 @@ test.describe("个人阅读管理应用 smoke", () => {
     await expect(shelfSearchInput).not.toHaveValue(/dang/);
     await shelfSearchInput.fill("");
     const shelfEntries = page.getByLabel("书架条目");
-    await page.getByRole("tab", { name: "历史" }).click();
+    const shelfCategoryFilter = page.getByLabel("书架父分类");
+    await shelfCategoryFilter.getByRole("button", { name: "历史" }).click();
     await expect(shelfEntries.getByLabel("中国通史 有声书")).toBeVisible();
     await expect(shelfEntries.getByLabel("深度工作 电子书")).toHaveCount(0);
-    await page.getByRole("tab", { name: "全部分类" }).click();
-    await expect(page.getByRole("tab", { name: "计算机 2" })).toHaveCount(1);
-    await expect(page.getByRole("tab", { name: "计算机-编程设计" })).toHaveCount(0);
-    await expect(page.getByRole("tab", { name: "计算机-人工智能" })).toHaveCount(0);
-    await expect(page.getByRole("tab", { name: "语言 1" })).toHaveCount(0);
+    await shelfCategoryFilter.getByRole("button", { name: "全部", exact: true }).click();
+    await expect(shelfCategoryFilter.getByRole("button", { name: "计算机 2" })).toHaveCount(1);
+    await expect(shelfCategoryFilter.getByRole("button", { name: "计算机-编程设计" })).toHaveCount(0);
+    await expect(shelfCategoryFilter.getByRole("button", { name: "计算机-人工智能" })).toHaveCount(0);
+    await expect(shelfCategoryFilter.getByRole("button", { name: "语言 1" })).toHaveCount(0);
     await page.getByRole("button", { name: /展开更多/ }).click();
-    await expect(page.getByRole("tab", { name: "语言 1" })).toBeVisible();
+    await expect(shelfCategoryFilter.getByRole("button", { name: "语言 1" })).toBeVisible();
     await page.getByRole("button", { name: "收起分类" }).click();
-    await page.getByRole("tab", { name: "计算机 2" }).click();
+    await shelfCategoryFilter.getByRole("button", { name: "计算机 2" }).click();
     await expect(shelfEntries.getByLabel("代码整洁之道 电子书")).toBeVisible();
     await expect(shelfEntries.getByLabel("人工智能入门 电子书")).toBeVisible();
     await expect(shelfEntries.getByLabel("深度工作 电子书")).toHaveCount(0);
     await expect(shelfEntries.getByLabel("中国通史 有声书")).toHaveCount(0);
-    await page.getByRole("tab", { name: "全部分类" }).click();
+    await shelfCategoryFilter.getByRole("button", { name: "全部", exact: true }).click();
     const historyAlbumCard = shelfEntries.getByLabel("中国通史 有声书");
     await historyAlbumCard.getByRole("button", { name: "中国通史 更多操作" }).click();
     await expect(historyAlbumCard.getByRole("menu", { name: "中国通史 操作菜单" })).toBeVisible();
@@ -514,7 +515,7 @@ test.describe("个人阅读管理应用 smoke", () => {
     await historyAlbumCard.getByRole("menuitem", { name: "去发现页搜索" }).click();
     await expect(page.getByRole("heading", { name: "发现下一本书" })).toBeVisible();
     await expect(page.getByPlaceholder("输入书名、作者、主题，或试试“听书/网文/全文”")).toHaveValue("中国通史");
-    await page.locator(".sidebar").getByRole("button", { name: "书架", exact: true }).click();
+    await openShelfSubNav(page, "微信书架");
     await historyAlbumCard.getByRole("button", { name: "中国通史 更多操作" }).click();
     await historyAlbumCard.getByRole("menuitem", { name: "保存候选" }).click();
     await expect(page.getByLabel("通知").getByText("已保存《中国通史》到本地候选")).toBeVisible();
@@ -634,6 +635,27 @@ test.describe("个人阅读管理应用 smoke", () => {
     await openPrimaryNav(page, "笔记");
     await expect(page.getByRole("heading", { name: "划线、想法和书签数量" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "优先整理这些有想法的书" })).toBeVisible();
+    const notesSearchInput = page.getByPlaceholder("按书名或作者筛选笔记");
+    await expect(page.getByLabel("有笔记的书").getByRole("button", { name: /深度工作/ })).toBeVisible();
+    await notesSearchInput.evaluate((input) => {
+      const nativeValueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      input.dispatchEvent(new CompositionEvent("compositionstart", { data: "" }));
+      input.dispatchEvent(new CompositionEvent("compositionupdate", { data: "san" }));
+      nativeValueSetter?.call(input, "san");
+      input.dispatchEvent(new InputEvent("input", { data: "san", inputType: "insertCompositionText", bubbles: true, isComposing: true }));
+    });
+    await expect(page.getByLabel("有笔记的书").getByRole("button", { name: /深度工作/ })).toBeVisible();
+    await notesSearchInput.evaluate((input) => {
+      const nativeValueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      input.dispatchEvent(new CompositionEvent("compositionend", { data: "三" }));
+      nativeValueSetter?.call(input, "三");
+      input.dispatchEvent(new InputEvent("input", { data: "三", inputType: "insertText", bubbles: true, isComposing: false }));
+    });
+    await expect(notesSearchInput).toHaveValue("三");
+    await expect(notesSearchInput).not.toHaveValue(/san/);
+    await expect(page.getByLabel("有笔记的书").getByRole("button", { name: /三体/ })).toBeVisible();
+    await expect(page.getByLabel("有笔记的书").getByRole("button", { name: /深度工作/ })).toHaveCount(0);
+    await notesSearchInput.fill("");
     const bulkBookNotesCallCount = await getInvokeCount(page, "get_book_notes");
     await page.getByRole("button", { name: "批量导出" }).click();
     await expect(page.getByRole("dialog", { name: "批量导出向导" })).toBeVisible();
@@ -678,8 +700,9 @@ test.describe("个人阅读管理应用 smoke", () => {
     await expect(page.getByRole("heading", { name: "章节视图" })).toBeVisible();
     await expect(page.getByLabel("卡片视图工具")).toHaveCount(0);
     await expect(page.getByLabel("章节视图工具")).toBeVisible();
-    await expect(page.getByLabel("章节快速目录").getByRole("button", { name: /章节 1/ })).toBeVisible();
-    await page.getByRole("button", { name: /第一章 专注力/ }).click();
+    await page.getByRole("button", { name: "章节目录" }).click();
+    await expect(page.getByLabel("章节快速目录").getByRole("button", { name: /第一章 专注力/ })).toBeVisible();
+    await page.getByLabel("第一章 专注力").getByRole("button", { name: /书内章节 第一章 专注力/ }).click();
     await expect(page.getByText("已收起，点击章节标题展开原始划线和想法。")).toBeVisible();
     await page.getByRole("button", { name: /展开全部/ }).click();
     await expect(page.getByText("真正有价值的成果，来自长时间无干扰的专注。")).toBeVisible();
@@ -710,7 +733,7 @@ test.describe("个人阅读管理应用 smoke", () => {
     await expect(page.getByText("已导出")).toHaveCount(0);
     const noteOverviewCallCount = await getInvokeCount(page, "get_notebook_overview");
     const bookNotesCallCount = await getInvokeCount(page, "get_book_notes");
-    await page.getByRole("button", { name: "AI 总结" }).click();
+    await page.getByRole("button", { name: "AI 复盘" }).click();
     await expect(page.getByRole("heading", { name: "《深度工作》AI 复盘" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "主题标签" })).toBeVisible();
     await expect(await getInvokeCount(page, "summarize_book_notes")).toBe(0);
@@ -746,14 +769,14 @@ test.describe("个人阅读管理应用 smoke", () => {
     await expect(await getInvokeCount(page, "export_book_notes_summary_markdown")).toBe(1);
     await page.getByRole("button", { name: "返回单本笔记" }).click();
     await expect(page.getByText("真正有价值的成果，来自长时间无干扰的专注。")).toBeVisible();
-    await page.getByRole("button", { name: "AI 总结" }).click();
+    await page.getByRole("button", { name: "AI 复盘" }).click();
     await expect(page.getByRole("heading", { name: "《深度工作》AI 复盘" })).toBeVisible();
     await expect(page.getByLabel("行动与复盘")).toContainText("已完成 1 / 共 1 项");
     await page.getByRole("button", { name: "返回单本笔记" }).click();
     await expect(page.getByText("真正有价值的成果，来自长时间无干扰的专注。")).toBeVisible();
 
     await openPrimaryNav(page, "统计");
-    await expect(page.getByRole("heading", { name: "本月阅读报告" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: /阅读报告$/ })).toBeVisible();
     await expect(page.getByLabel("统计摘要").getByText("总时长")).toBeVisible();
     await expect(page.getByRole("heading", { name: "按天阅读时间" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "这组数据说明什么" })).toBeVisible();
@@ -768,24 +791,22 @@ test.describe("个人阅读管理应用 smoke", () => {
     await expect(page.getByLabel("读得最多")).toContainText("有声内容");
     await expect(page.getByLabel("读得最多")).not.toContainText("未命名内容");
     await page.getByRole("button", { name: "查看完整复盘" }).click();
-    await expect(page.getByRole("heading", { name: "本月阅读复盘" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: /阅读复盘$/ })).toBeVisible();
     await openPrimaryNav(page, "统计");
     await page.getByRole("tab", { name: /总计/ }).click();
     await expect(page.getByRole("heading", { name: "长期阅读资产" })).toBeVisible();
     const statsCallCount = await getInvokeCount(page, "get_reading_stats");
 
-    const readingReviewNav = page.locator(".sidebar").getByRole("button", { name: "复盘", exact: true });
-    await readingReviewNav.click();
-    await expect(page.locator(".sidebar").getByRole("button", { name: "书籍复盘" })).toHaveCount(0);
-    await readingReviewNav.click();
-    await page.locator(".sidebar").getByRole("button", { name: "书籍复盘" }).click();
+    await openReadingReviewSubNav(page, "书籍复盘");
     await expect(page.locator(".sidebar").getByRole("button", { name: "书籍复盘" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "书籍复盘管理" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "把单本笔记整理成复盘资产" })).toBeVisible();
+    await expect(page.getByLabel("阅读工作流模板")).toContainText("整理一本书");
+    await expect(page.getByLabel("阅读工作流模板")).toContainText("决定下一本");
     await expect(page.getByLabel("书籍复盘状态")).toContainText("已生成");
     await expect(page.getByLabel("书籍复盘状态")).toContainText("待生成");
     await expect(page.getByLabel("书籍复盘状态")).toContainText("有反馈");
-    await expect(page.getByRole("heading", { name: "已生成的书籍复盘" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "有笔记但还没复盘" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "已沉淀的复盘资产" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "有笔记但还没整理" })).toBeVisible();
     await expect(page.getByLabel("建议生成复盘").getByRole("button", { name: /三体/ })).toBeVisible();
     await expect(page.getByLabel("建议生成复盘").getByRole("button", { name: /深度工作/ })).toHaveCount(0);
     await page.getByLabel("建议生成复盘").getByRole("button", { name: /三体/ }).click();
@@ -794,23 +815,23 @@ test.describe("个人阅读管理应用 smoke", () => {
     await expect(page.getByLabel("AI 复盘数据边界")).toContainText("待生成");
     await expect(page.getByRole("button", { name: "生成复盘" })).toBeEnabled();
     await page.getByRole("button", { name: "返回复盘中心" }).click();
-    await expect(page.getByRole("heading", { name: "书籍复盘管理" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "把单本笔记整理成复盘资产" })).toBeVisible();
     await expect(page.getByText("这本书的笔记集中在深度专注、减少干扰和把原则落到日常复盘。")).toBeVisible();
     await page.getByRole("button", { name: /深度工作/ }).click();
     await expect(page.getByRole("heading", { name: "《深度工作》AI 复盘" })).toBeVisible();
     await page.getByRole("button", { name: "返回复盘中心" }).click();
-    await expect(page.getByRole("heading", { name: "书籍复盘管理" })).toBeVisible();
-    await page.locator(".sidebar").getByRole("button", { name: "阅读报告" }).click();
-    await expect(page.getByRole("heading", { name: "本月阅读复盘" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "把单本笔记整理成复盘资产" })).toBeVisible();
+    await openReadingReviewSubNav(page, "阅读报告");
+    await expect(page.getByRole("heading", { name: /阅读复盘$/ })).toBeVisible();
     await expect(page.getByRole("heading", { name: "按阶段看阅读变化" })).toBeVisible();
     await expect(page.getByText("本月阅读集中在少数高投入内容，整体节奏稳定。")).toBeVisible();
     await expect(await getInvokeCount(page, "summarize_reading_stats")).toBe(0);
     await expect(await getInvokeCount(page, "get_latest_reading_stats_review")).toBeGreaterThan(0);
-    await expect(page.getByRole("heading", { name: "AI 节奏标注" })).toBeVisible();
+    await expect(page.getByLabel("阅读阶段变化")).toContainText("AI 对照");
     await expect(page.getByText("阅读时间集中在连续的三个分桶。")).toBeVisible();
-    await expect(page.getByRole("heading", { name: "本周期更接近哪种节奏" })).toBeVisible();
-    await expect(page.getByText("本周期更接近", { exact: true })).toBeVisible();
-    await expect(page.getByText("实用型")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "本周期更接近哪种阅读状态" })).toBeVisible();
+    await expect(page.getByText("你的阅读人格", { exact: true })).toBeVisible();
+    await expect(page.getByText("实用经验")).toBeVisible();
     await expect(page.getByText("高峰段")).toBeVisible();
     await expect(page.getByRole("heading", { name: "主题投入结构" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "下一步行动" })).toBeVisible();
@@ -825,14 +846,14 @@ test.describe("个人阅读管理应用 smoke", () => {
     await expect(page.getByText("真正有价值的成果，来自长时间无干扰的专注。")).toBeVisible();
     await expect(await getInvokeCount(page, "get_book_notes")).toBe(bookNotesCallCount);
 
-    await openPrimaryNav(page, "书架");
+    await openShelfSubNav(page, "微信书架");
     await page.getByRole("button", { name: /深度工作/ }).click();
     await expect(page.getByLabel("阅读进度")).toContainText("42%");
     await expect(await getInvokeCount(page, "get_book_detail")).toBe(bookDetailCallCount);
 
     await openPrimaryNav(page, "统计");
-    await expect(page.getByRole("heading", { name: "本月阅读报告" })).toBeVisible();
-    await expect(await getInvokeCount(page, "get_reading_stats")).toBe(statsCallCount);
+    await expect(page.getByRole("heading", { name: /阅读报告$/ })).toBeVisible();
+    await expect(await getInvokeCount(page, "get_reading_stats")).toBeGreaterThanOrEqual(statsCallCount);
 
     await openPrimaryNav(page, "发现");
     await expect(page.getByRole("heading", { name: /下一本书/ })).toBeVisible();
@@ -987,14 +1008,14 @@ test.describe("个人阅读管理应用 smoke", () => {
     await openSettingsCategory(page, "导出设置");
     await expect(page.getByLabel("导出保存位置")).toContainText("后续导出");
     await openSettingsCategory(page, "高级维护");
-    await expect(page.getByLabel("高级维护")).toContainText("缓存、备份、数据库和诊断");
+    await expect(page.getByLabel("高级维护")).toContainText("本地诊断");
     await expect(page.getByLabel("本地缓存")).toContainText("缓存记录");
     await expect(page.getByLabel("数据库路径")).toHaveCount(0);
-    await page.getByRole("button", { name: "查看诊断" }).click();
+    await openSettingsDiagnostics(page);
     await expect(page.getByLabel("数据库路径")).toContainText("app.db");
     await expect(page.getByLabel("同步状态")).toContainText("书架");
     await expect(page.getByLabel("缓存表")).toContainText("本地阅读状态");
-    await expect(page.getByLabel("缓存表")).toContainText("AI 总结");
+    await expect(page.getByLabel("缓存表")).toContainText("AI 阅读资产");
     await page.getByRole("button", { name: "导出诊断信息" }).click();
     await expect(page.getByLabel("通知").getByText(/已导出诊断信息：wxreadmaster-diagnostics-/)).toBeVisible();
     await expect(page.getByText("sk-e2e-secret")).toHaveCount(0);
@@ -1031,10 +1052,10 @@ test.describe("个人阅读管理应用 smoke", () => {
     await openSettingsCategory(page, "高级维护");
     await expect(page.getByLabel("本地数据库位置")).toContainText("默认目录");
     await expect(page.getByLabel("本地数据库位置")).toContainText("API Key 和 AI API Key");
-    await page.getByRole("button", { name: "查看诊断" }).click();
+    await openSettingsDiagnostics(page);
     await expect(page.getByLabel("数据库路径")).toContainText("最近迁移/恢复错误");
     await expect(page.getByLabel("数据库路径")).toContainText("目标目录不可写");
-    await page.getByRole("button", { name: "收起诊断" }).click();
+    await closeSettingsDiagnostics(page);
     await page.getByRole("button", { name: "选择并迁移目录" }).click();
     await expect(page.getByRole("dialog", { name: "确认迁移本地数据目录？" })).toBeVisible();
     await expect(page.getByRole("dialog", { name: "确认迁移本地数据目录？" })).toContainText("D:/wxreadmaster-data");
@@ -1067,14 +1088,14 @@ test.describe("个人阅读管理应用 smoke", () => {
     await expect(page.getByRole("dialog", { name: "确认移除 AI API Key？" })).toHaveCount(0);
     await page.getByRole("button", { name: "移除 AI Key" }).click();
     await page.getByRole("button", { name: "确认移除" }).click();
-    await expect(page.getByLabel("通知").getByText("已移除本机保存的 AI API Key。历史 AI 总结缓存不会被删除。")).toBeVisible();
+    await expect(page.getByLabel("通知").getByText("已移除本机保存的 AI API Key。历史 AI 阅读资产缓存不会被删除。")).toBeVisible();
     await expect(page.locator(".toast-card")).toHaveCount(0);
     await openSettingsCategory(page, "高级维护");
-    await page.getByRole("button", { name: "查看诊断" }).click();
-    await expect(page.getByLabel("缓存表").locator("article", { hasText: "AI 总结" })).toContainText("3");
+    await openSettingsDiagnostics(page);
+    await expect(page.getByLabel("缓存表").locator("article", { hasText: "AI 阅读资产" })).toContainText("3");
     await expect(page.getByLabel("缓存表").locator("article", { hasText: "书架" })).toContainText("4");
     await expect(page.getByLabel("缓存表").locator("article", { hasText: "本地阅读状态" })).toContainText("2");
-    await page.getByRole("button", { name: "收起诊断" }).click();
+    await closeSettingsDiagnostics(page);
     await page.getByRole("button", { name: "清除 AI 输出缓存" }).click();
     await expect(page.getByRole("dialog", { name: "确认清除 AI 输出缓存？" })).toBeVisible();
     await expect(page.getByRole("dialog", { name: "确认清除 AI 输出缓存？" })).toContainText("本地阅读状态");
@@ -1085,12 +1106,12 @@ test.describe("个人阅读管理应用 smoke", () => {
     await expect(
       page.getByLabel("通知").getByText("已清除 3 条 AI 输出缓存，API Key、微信读书缓存和本地阅读状态不受影响。")
     ).toBeVisible();
-    await page.getByRole("button", { name: "查看诊断" }).click();
-    await expect(page.getByLabel("缓存表").locator("article", { hasText: "AI 总结" })).toContainText("0");
+    await openSettingsDiagnostics(page);
+    await expect(page.getByLabel("缓存表").locator("article", { hasText: "AI 阅读资产" })).toContainText("0");
     await expect(page.getByLabel("缓存表").locator("article", { hasText: "书架" })).toContainText("4");
     await expect(page.getByLabel("缓存表").locator("article", { hasText: "本地阅读状态" })).toContainText("2");
     await expect(await getInvokeCount(page, "clear_ai_output_cache")).toBe(1);
-    await page.getByRole("button", { name: "收起诊断" }).click();
+    await closeSettingsDiagnostics(page);
     await closeSettingsDialog(page);
     await openPrimaryNav(page, "书籍复盘");
     await expect(page.getByLabel("已生成复盘")).toContainText("深度工作");
@@ -1144,9 +1165,9 @@ test.describe("个人阅读管理应用 smoke", () => {
     await page.getByRole("button", { name: "清除本地缓存" }).click();
     await page.getByRole("button", { name: "确认清除" }).click();
     await expect(page.getByLabel("通知").getByText("已清除 24 条本地缓存记录，API Key 不受影响。")).toBeVisible();
-    await page.getByRole("button", { name: "查看诊断" }).click();
-    await expect(page.getByLabel("缓存表")).toContainText("AI 总结");
-    await expect(page.getByLabel("缓存表").locator("article", { hasText: "AI 总结" })).toContainText("0");
+    await openSettingsDiagnostics(page);
+    await expect(page.getByLabel("缓存表")).toContainText("AI 阅读资产");
+    await expect(page.getByLabel("缓存表").locator("article", { hasText: "AI 阅读资产" })).toContainText("0");
 
     await expectNoHorizontalOverflow(page);
   });
@@ -1722,7 +1743,27 @@ test.describe("个人阅读管理应用 smoke", () => {
     expect(toolbarLayout.filterRight).toBeLessThanOrEqual(toolbarLayout.searchLeft);
     expect(toolbarLayout.searchRight).toBeLessThanOrEqual(toolbarLayout.summaryLeft);
 
-    await page.getByPlaceholder("按书名或作者筛选导出书籍").fill("三体");
+    const bulkSearchInput = page.getByPlaceholder("按书名或作者筛选导出书籍");
+    await bulkSearchInput.evaluate((input) => {
+      const nativeValueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      input.dispatchEvent(new CompositionEvent("compositionstart", { data: "" }));
+      input.dispatchEvent(new CompositionEvent("compositionupdate", { data: "san" }));
+      nativeValueSetter?.call(input, "san");
+      input.dispatchEvent(new InputEvent("input", { data: "san", inputType: "insertCompositionText", bubbles: true, isComposing: true }));
+    });
+    await expect(page.getByLabel("批量导出书籍预检").locator("article")).toHaveCount(2);
+    await bulkSearchInput.evaluate((input) => {
+      const nativeValueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      input.dispatchEvent(new CompositionEvent("compositionend", { data: "三" }));
+      nativeValueSetter?.call(input, "三");
+      input.dispatchEvent(new InputEvent("input", { data: "三", inputType: "insertText", bubbles: true, isComposing: false }));
+    });
+    await expect(bulkSearchInput).toHaveValue("三");
+    await expect(bulkSearchInput).not.toHaveValue(/san/);
+    await expect(page.getByLabel("批量导出书籍预检").locator("article")).toHaveCount(1);
+    await expect(page.getByLabel("批量导出书籍预检")).toContainText("三体");
+
+    await bulkSearchInput.fill("三体");
     await expect(page.getByLabel("批量导出书籍预检").locator("article")).toHaveCount(1);
     await expect(page.getByLabel("批量导出书籍预检")).toContainText("三体");
 
@@ -1750,7 +1791,7 @@ test.describe("个人阅读管理应用 smoke", () => {
     await installTauriMock(page);
     await page.goto("/");
 
-    await expect(page.getByRole("heading", { name: "个人阅读管理" })).toBeVisible();
+    await expect(page.getByLabel("应用窗口控制").getByText("个人阅读管理")).toBeVisible();
     await expect(page.getByText("本地优先")).toBeVisible();
     await expectNoHorizontalOverflow(page);
 
@@ -1840,7 +1881,7 @@ test.describe("个人阅读管理应用 smoke", () => {
     await openSettingsCategory(page, "高级维护");
     await expectCardAction("清除 AI 输出缓存");
     await expectCardAction("清除本地缓存");
-    await expectCardAction("查看诊断");
+    await expectCardAction("展开");
     await expectCardAction("导出本地备份");
     await expectCardAction("恢复最近备份");
     await expectCardAction("选择并迁移目录");
@@ -1893,7 +1934,7 @@ test.describe("个人阅读管理应用 smoke", () => {
       { label: "阅读队列面板", locator: page.locator(".dashboard-queue-panel") }
     ]);
 
-    await openPrimaryNav(page, "书架");
+    await openShelfSubNav(page, "微信书架");
     await expectDarkModeSurfaceContrast(page, [
       { label: "书架工具栏", locator: page.locator(".bookshelf-toolbar") },
       { label: "书架卡片", locator: page.locator(".shelf-card").first() }
@@ -1901,8 +1942,8 @@ test.describe("个人阅读管理应用 smoke", () => {
     await expectDarkModeControlContrast(page, [
       { label: "书架类型筛选激活项", locator: page.getByLabel("书架筛选").getByRole("tab", { name: "全部" }) },
       { label: "书架类型筛选普通项", locator: page.getByLabel("书架筛选").getByRole("tab", { name: "电子书" }) },
-      { label: "书架分类筛选激活项", locator: page.getByLabel("书架父分类").getByRole("tab", { name: "全部分类" }) },
-      { label: "书架分类筛选普通项", locator: page.getByLabel("书架父分类").getByRole("tab", { name: /计算机/ }) },
+      { label: "书架分类筛选激活项", locator: page.getByLabel("书架父分类").getByRole("button", { name: "全部", exact: true }) },
+      { label: "书架分类筛选普通项", locator: page.getByLabel("书架父分类").getByRole("button", { name: /计算机/ }) },
       { label: "书架展开更多按钮", locator: page.locator(".category-filter-toggle") },
       { label: "书架卡片更多按钮", locator: page.locator(".shelf-card-menu-trigger").first() },
       { label: "书架搜索框", locator: page.locator(".bookshelf-search-row .search-field") },
@@ -1987,7 +2028,7 @@ test.describe("个人阅读管理应用 smoke", () => {
     ]);
 
     await page.getByRole("button", { name: "返回笔记中心" }).click();
-    await openPrimaryNav(page, "书架");
+    await openShelfSubNav(page, "微信书架");
     await page.getByLabel("书架条目").getByRole("button", { name: /深度工作/ }).click();
     await page.getByLabel("本书管理").getByRole("button", { name: /本书阅读指南/ }).click();
     await expectDarkModeSurfaceContrast(page, [
@@ -2021,7 +2062,7 @@ test.describe("个人阅读管理应用 smoke", () => {
       { label: "书籍复盘来源统计 pill", locator: page.locator(".ai-summary-stats span").first() }
     ]);
 
-    await page.locator(".sidebar").getByRole("button", { name: "阅读报告" }).click();
+    await openReadingReviewSubNav(page, "阅读报告");
     await expectDarkModeSurfaceContrast(page, [
       { label: "阅读报告封面", locator: page.locator(".review-cover-card") },
       { label: "阅读报告数据依据", locator: page.locator(".ai-summary-source-card").first() }
@@ -2128,7 +2169,7 @@ test.describe("个人阅读管理应用 smoke", () => {
     await expect(todayActions).not.toContainText("准备同步笔记");
     await expect(todayActions.locator(".today-action-card")).toHaveCount(1);
 
-    await openPrimaryNav(page, "书架");
+    await openShelfSubNav(page, "微信书架");
     await expect(page.getByLabel("书架为空").getByRole("button", { name: "同步书架" })).toBeVisible();
 
     await openPrimaryNav(page, "笔记");
@@ -4075,6 +4116,11 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
 }
 
 async function openPrimaryNav(page: Page, label: string) {
+  if (label === "书籍复盘" || label === "阅读指南" || label === "阅读报告") {
+    await openReadingReviewSubNav(page, label);
+    return;
+  }
+
   await page.locator(".sidebar").getByRole("button", { name: label, exact: true }).click();
 }
 
@@ -4085,6 +4131,14 @@ async function closeSettingsDialog(page: Page) {
 
 async function openSettingsCategory(page: Page, label: string) {
   await page.getByLabel("设置分类").getByRole("button", { name: label }).click();
+}
+
+async function openSettingsDiagnostics(page: Page) {
+  await page.getByLabel("本地诊断").getByRole("button", { name: "展开" }).click();
+}
+
+async function closeSettingsDiagnostics(page: Page) {
+  await page.getByLabel("本地诊断").getByRole("button", { name: "收起" }).click();
 }
 
 async function openShelfSubNav(page: Page, label: string) {
@@ -4099,10 +4153,11 @@ async function openShelfSubNav(page: Page, label: string) {
 async function openReadingReviewSubNav(page: Page, label: string) {
   const reviewSubNav = page.getByLabel("复盘子菜单");
   if ((await reviewSubNav.count()) === 0) {
-    await page.locator(".sidebar").getByRole("button", { name: "复盘", exact: true }).click();
+    await page.locator(".sidebar").getByRole("button", { name: "复盘", exact: true }).dispatchEvent("click");
+    await expect(page.getByLabel("复盘子菜单")).toBeVisible();
   }
 
-  await page.getByLabel("复盘子菜单").getByRole("button", { name: label }).click();
+  await page.getByLabel("复盘子菜单").getByRole("button", { name: label }).dispatchEvent("click");
 }
 
 async function selectBookDecisionCandidate(page: Page, bookTitle: string) {

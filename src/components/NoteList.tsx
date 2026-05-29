@@ -10,15 +10,18 @@ type NoteListProps = {
 type ChapterFilter = "all" | "thoughts";
 
 const DEFAULT_EXPANDED_GROUP_COUNT = 1;
+const CHAPTER_DIRECTORY_PANEL_ID = "note-chapter-directory-panel";
 
 export function NoteList({ groups }: NoteListProps) {
   const [chapterFilter, setChapterFilter] = useState<ChapterFilter>("all");
+  const [isDirectoryOpen, setIsDirectoryOpen] = useState(false);
   const [expandedGroupKeys, setExpandedGroupKeys] = useState<Set<string>>(() =>
     getDefaultExpandedGroupKeys(groups)
   );
 
   useEffect(() => {
     setChapterFilter("all");
+    setIsDirectoryOpen(false);
     setExpandedGroupKeys(getDefaultExpandedGroupKeys(groups));
   }, [groups]);
 
@@ -59,6 +62,15 @@ export function NoteList({ groups }: NoteListProps) {
     setExpandedGroupKeys(new Set(visibleGroups.map(getGroupKey)));
   }
 
+  function handleChangeFilter(nextFilter: ChapterFilter) {
+    setChapterFilter(nextFilter);
+    setIsDirectoryOpen(false);
+  }
+
+  function handleToggleDirectory() {
+    setIsDirectoryOpen((currentValue) => !currentValue);
+  }
+
   function handleJumpToGroup(group: ChapterNoteGroup) {
     const groupKey = getGroupKey(group);
     setExpandedGroupKeys((currentKeys) => new Set(currentKeys).add(groupKey));
@@ -85,12 +97,27 @@ export function NoteList({ groups }: NoteListProps) {
                   role="tab"
                   aria-selected={chapterFilter === item.id}
                   className={chapterFilter === item.id ? "is-active" : ""}
-                  onClick={() => setChapterFilter(item.id as ChapterFilter)}
+                  onClick={() => handleChangeFilter(item.id as ChapterFilter)}
                 >
                   {item.label}
                 </button>
               ))}
             </div>
+            <button
+              className="sync-button"
+              type="button"
+              aria-controls={visibleGroups.length > 0 ? CHAPTER_DIRECTORY_PANEL_ID : undefined}
+              aria-expanded={isDirectoryOpen && visibleGroups.length > 0}
+              disabled={visibleGroups.length === 0}
+              onClick={handleToggleDirectory}
+            >
+              {isDirectoryOpen && visibleGroups.length > 0 ? (
+                <ListCollapse aria-hidden="true" size={17} />
+              ) : (
+                <ListTree aria-hidden="true" size={17} />
+              )}
+              章节目录
+            </button>
             <button className="sync-button" type="button" onClick={handleToggleAllVisibleGroups}>
               {isAllVisibleExpanded ? (
                 <ListCollapse aria-hidden="true" size={17} />
@@ -102,8 +129,8 @@ export function NoteList({ groups }: NoteListProps) {
           </div>
         </div>
 
-        {visibleGroups.length > 0 ? (
-          <nav className="note-chapter-index" aria-label="章节快速目录">
+        {isDirectoryOpen && visibleGroups.length > 0 ? (
+          <nav className="note-chapter-directory" id={CHAPTER_DIRECTORY_PANEL_ID} aria-label="章节快速目录">
             {visibleGroups.map((group) => {
               const groupKey = getGroupKey(group);
               return (
@@ -113,7 +140,7 @@ export function NoteList({ groups }: NoteListProps) {
                   type="button"
                   onClick={() => handleJumpToGroup(group)}
                 >
-                  <span>{group.chapterUid ? `章节 ${group.chapterUid}` : "全书"}</span>
+                  <span>{getChapterIndexTitle(group)}</span>
                   <small>{group.highlights.length} 划线 · {group.thoughts.length} 想法</small>
                 </button>
               );
@@ -150,7 +177,7 @@ export function NoteList({ groups }: NoteListProps) {
               onClick={() => handleToggleGroup(group)}
             >
               <div className="note-group-heading-main">
-                <p className="section-kicker">{group.chapterUid ? `章节 ${group.chapterUid}` : "全书"}</p>
+                <p className="section-kicker">{getChapterScopeLabel(group)}</p>
                 <h3>{group.title}</h3>
               </div>
               <span className="note-group-count">
@@ -217,6 +244,18 @@ function getGroupKey(group: ChapterNoteGroup): string {
 
 function getGroupDomId(groupKey: string): string {
   return `note-group-${groupKey.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+}
+
+function getChapterIndexTitle(group: ChapterNoteGroup): string {
+  if (group.chapterUid) {
+    return group.title || "未命名章节";
+  }
+
+  return "全书";
+}
+
+function getChapterScopeLabel(group: ChapterNoteGroup): string {
+  return group.chapterUid ? "书内章节" : "全书";
 }
 
 function HighlightCard({ highlight }: { highlight: Highlight }) {

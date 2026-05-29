@@ -6,8 +6,9 @@ use crate::{
     services::settings::{
         ChooseDataDirectoryResponse, ChooseExportDirectoryResponse, ClearAiOutputCacheResponse,
         ClearLocalCacheResponse, ExportBackupResponse, ExportDiagnosticsResponse,
-        MigrateDataDirectoryResponse, ResetExportDirectoryResponse, RestoreBackupResponse,
-        SaveExportDirectoryResponse, SettingsService, SettingsStateResponse,
+        ExportImageResponse, MigrateDataDirectoryResponse, RemoteAppUpdateManifestResponse,
+        ResetExportDirectoryResponse, RestoreBackupResponse, SaveExportDirectoryResponse,
+        SettingsService, SettingsStateResponse,
     },
 };
 
@@ -35,6 +36,14 @@ pub fn get_settings_state(app: AppHandle) -> Result<SettingsStateResponse, AppCo
 }
 
 #[tauri::command]
+pub async fn get_remote_app_update_manifest(
+) -> Result<RemoteAppUpdateManifestResponse, AppCommandError> {
+    SettingsService::remote_app_update_manifest()
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
 pub fn clear_local_cache(
     app: AppHandle,
     confirm: bool,
@@ -58,6 +67,17 @@ pub fn clear_ai_output_cache(
 pub fn export_diagnostics(app: AppHandle) -> Result<ExportDiagnosticsResponse, AppCommandError> {
     SettingsService::new(app)
         .export_diagnostics()
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn export_report_image(
+    app: AppHandle,
+    file_name: String,
+    png_base64: String,
+) -> Result<ExportImageResponse, AppCommandError> {
+    SettingsService::new(app)
+        .export_report_image(file_name, png_base64)
         .map_err(Into::into)
 }
 

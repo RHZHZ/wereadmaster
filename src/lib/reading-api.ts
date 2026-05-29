@@ -1,6 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { check } from "@tauri-apps/plugin-updater";
+import {
+  check,
+  type DownloadEvent,
+  type Update
+} from "@tauri-apps/plugin-updater";
 import type {
   AiCachedOutputRecord,
   AIAssetDetail,
@@ -39,6 +43,7 @@ import type {
   ExportBackupResult,
   ChooseExportDirectoryResult,
   ExportDiagnosticsResult,
+  ExportImageResult,
   ExportAiBulkMarkdownResponse,
   ExportAiMarkdownResponse,
   Highlight,
@@ -52,6 +57,7 @@ import type {
   ReadingCategory,
   ReadingRouteRequest,
   ReadingRouteResponse,
+  ReadingPersonaPatch,
   ReadingStatsAiReviewResponse,
   Recommendation,
   RecommendationResult,
@@ -73,10 +79,15 @@ import type {
   SyncStatus,
   RestoreBackupResult,
   ResetExportDirectoryResult,
+  AppUpdateRuntime,
   AppUpdateStatus,
   Thought
 } from "./types";
 import { calculateTotalNotes } from "./business-rules";
+import type {
+  LocalReaderAiQuestionRequest,
+  LocalReaderAiQuestionResponse
+} from "./local-reader-ai-requests";
 
 type ShelfEntryRecord = {
   id?: unknown;
@@ -169,6 +180,7 @@ type NotebookBookRecord = {
   readingProgress?: unknown;
   markedStatus?: unknown;
   sort?: unknown;
+  rawJson?: unknown;
 };
 
 type NotebookOverviewResponseRecord = {
@@ -309,6 +321,33 @@ type ReadingStatsRecord = {
 type ReadingStatsResponseRecord = {
   stats?: ReadingStatsRecord;
   syncState?: SyncState;
+  source?: unknown;
+};
+
+type WebReadingPreviewStatsRowRecord = {
+  mode?: unknown;
+  baseTime?: unknown;
+  rawJson?: unknown;
+  updatedAt?: unknown;
+};
+
+type WebReadingPreviewReviewRowRecord = {
+  scopeId?: unknown;
+  promptVersion?: unknown;
+  inputHash?: unknown;
+  outputJson?: unknown;
+  sourceCount?: unknown;
+  providerModel?: unknown;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+};
+
+type WebReadingPreviewDataRecord = {
+  exportedAt?: unknown;
+  dbPath?: unknown;
+  statsSyncState?: unknown;
+  statsRows?: unknown[];
+  reviewRows?: unknown[];
 };
 
 type DiscoveryBookRecord = {
@@ -380,6 +419,13 @@ type SettingsStateResponseRecord = {
     isCustomExportDir?: unknown;
   };
   appVersion?: unknown;
+  supportsNativeUpdater?: unknown;
+};
+
+type RemoteAppUpdateManifestResponseRecord = {
+  version?: unknown;
+  notes?: unknown;
+  publishedAt?: unknown;
 };
 
 type ClearLocalCacheResponseRecord = {
@@ -393,6 +439,12 @@ type ClearAiOutputCacheResponseRecord = {
 };
 
 type ExportDiagnosticsResponseRecord = {
+  fileName?: unknown;
+  path?: unknown;
+  exportedAt?: unknown;
+};
+
+type ExportImageResponseRecord = {
   fileName?: unknown;
   path?: unknown;
   exportedAt?: unknown;
@@ -494,7 +546,10 @@ export type ExportBookNotesMarkdownResponse = {
 export type ReadingStatsResponse = {
   stats: ReadingStats;
   syncState?: SyncState;
+  source?: ReadingStatsResponseSource;
 };
+
+export type ReadingStatsResponseSource = "cache" | "synced" | "empty";
 
 export type SearchBooksResponse = {
   result: SearchBooksResult;
@@ -512,7 +567,45 @@ export type SimilarBooksResponse = {
 };
 
 export async function getAiSettingsState(): Promise<AiSettingsState> {
+  const preview = await loadWebReadingPreviewData();
+  if (preview) {
+    return buildWebPreviewAiSettingsState(preview.exportedAt);
+  }
+
+  if (!hasTauriRuntime()) {
+    return {
+      credential: {
+        hasCredential: false
+      },
+      provider: {
+        baseUrl: "",
+        model: ""
+      }
+    };
+  }
+
   return invoke<AiSettingsState>("get_ai_settings_state");
+}
+
+export async function canAskLocalReaderSelectionQuestion(): Promise<boolean> {
+  if (!hasTauriRuntime()) {
+    return false;
+  }
+
+  const settings = await getAiSettingsState();
+  return settings.credential.hasCredential;
+}
+
+export async function askLocalReaderSelectionQuestion(
+  request: LocalReaderAiQuestionRequest
+): Promise<LocalReaderAiQuestionResponse> {
+  if (!hasTauriRuntime()) {
+    throw new Error("本地阅读器 AI 提问需要在桌面应用中使用。");
+  }
+
+  return invoke<LocalReaderAiQuestionResponse>("ask_local_reader_selection_question", {
+    request
+  });
 }
 
 export async function validateAiCredential({
@@ -716,6 +809,16 @@ export async function summarizeReadingStats({
   baseTime?: number;
   regenerate?: boolean;
 }): Promise<ReadingStatsAiReviewResponse> {
+  const preview = await loadWebReadingPreviewData(regenerate);
+  if (preview) {
+    const cached = findWebPreviewReadingStatsReview(preview, mode, baseTime);
+    if (cached) {
+      return cached;
+    }
+
+    throw new Error("Web 预览只支持查看已缓存复盘；当前周期请在桌面应用中生成。");
+  }
+
   return invoke<ReadingStatsAiReviewResponse>("summarize_reading_stats", {
     mode,
     baseTime,
@@ -730,6 +833,11 @@ export async function getLatestReadingStatsReview({
   mode: ReadingStatsMode;
   baseTime?: number;
 }): Promise<ReadingStatsAiReviewResponse | undefined> {
+  const preview = await loadWebReadingPreviewData();
+  if (preview) {
+    return findWebPreviewReadingStatsReview(preview, mode, baseTime);
+  }
+
   const response = await invoke<ReadingStatsAiReviewResponse | null>(
     "get_latest_reading_stats_review",
     { mode, baseTime }
@@ -745,6 +853,10 @@ export async function exportReadingStatsReviewMarkdown({
   mode: ReadingStatsMode;
   baseTime?: number;
 }): Promise<ExportAiMarkdownResponse> {
+  if (await loadWebReadingPreviewData()) {
+    throw new Error("Web 预览只支持查看已缓存复盘，导出请在桌面应用中执行。");
+  }
+
   return invoke<ExportAiMarkdownResponse>("export_reading_stats_review_markdown", {
     mode,
     baseTime
@@ -812,6 +924,20 @@ export async function exportBookDecisionMarkdown(
 }
 
 export async function getCredentialStatus(): Promise<CredentialStatus> {
+  const preview = await loadWebReadingPreviewData();
+  if (preview) {
+    return {
+      hasCredential: true,
+      lastValidatedAt: preview.exportedAt
+    };
+  }
+
+  if (!hasTauriRuntime()) {
+    return {
+      hasCredential: false
+    };
+  }
+
   return invoke<CredentialStatus>("get_credential_status");
 }
 
@@ -828,11 +954,37 @@ export async function removeCredential(confirm: boolean): Promise<CredentialStat
 }
 
 export async function getBookshelf(): Promise<BookshelfResponse> {
+  const preview = await loadWebReadingPreviewData();
+  if (preview) {
+    if (!supportsWebPreviewDashboardData(preview)) {
+      throw createMissingWebPreviewDataError("总览");
+    }
+
+    return buildWebPreviewBookshelfResponse(preview);
+  }
+
+  if (!hasTauriRuntime()) {
+    throw createMissingWebPreviewDataError("总览");
+  }
+
   const response = await invoke<BookshelfResponseRecord>("get_bookshelf");
   return mapBookshelfResponse(response);
 }
 
 export async function syncShelf(): Promise<BookshelfResponse> {
+  const preview = await loadWebReadingPreviewData(true);
+  if (preview) {
+    if (!supportsWebPreviewDashboardData(preview)) {
+      throw createMissingWebPreviewDataError("总览");
+    }
+
+    return buildWebPreviewBookshelfResponse(preview);
+  }
+
+  if (!hasTauriRuntime()) {
+    throw createMissingWebPreviewDataError("总览");
+  }
+
   const response = await invoke<BookshelfResponseRecord>("sync_shelf");
   return mapBookshelfResponse(response);
 }
@@ -850,6 +1002,19 @@ export async function openBookInWeread(
 }
 
 export async function listReadingItemStates(): Promise<ReadingItemState[]> {
+  const preview = await loadWebReadingPreviewData();
+  if (preview) {
+    if (!supportsWebPreviewDashboardData(preview)) {
+      throw createMissingWebPreviewDataError("本地队列");
+    }
+
+    return buildWebPreviewReadingItemStates(preview);
+  }
+
+  if (!hasTauriRuntime()) {
+    throw createMissingWebPreviewDataError("本地队列");
+  }
+
   const response = await invoke<ReadingItemStateRecord[]>("list_reading_item_states");
   return response.map(mapReadingItemState).filter((state): state is ReadingItemState => Boolean(state));
 }
@@ -874,6 +1039,19 @@ export async function removeReadingItemState(itemId: string): Promise<ReadingIte
 }
 
 export async function getNotebookOverview(count = 100): Promise<NotebookOverviewResponse> {
+  const preview = await loadWebReadingPreviewData(true);
+  if (preview) {
+    if (!supportsWebPreviewDashboardData(preview)) {
+      throw createMissingWebPreviewDataError("笔记");
+    }
+
+    return buildWebPreviewNotebookOverviewResponse(preview);
+  }
+
+  if (!hasTauriRuntime()) {
+    throw createMissingWebPreviewDataError("笔记");
+  }
+
   const response = await invoke<NotebookOverviewResponseRecord>("get_notebook_overview", {
     count
   });
@@ -923,6 +1101,15 @@ export async function getReadingStats(
   mode: ReadingStatsMode = "monthly",
   baseTime?: number
 ): Promise<ReadingStatsResponse> {
+  const preview = await loadWebReadingPreviewData();
+  if (preview) {
+    return buildWebPreviewReadingStatsResponse(preview, mode, baseTime);
+  }
+
+  if (!hasTauriRuntime()) {
+    throw createMissingWebPreviewDataError("统计");
+  }
+
   const response = await invoke<ReadingStatsResponseRecord>("get_reading_stats", {
     mode,
     baseTime
@@ -934,6 +1121,15 @@ export async function syncReadingStats(
   mode: ReadingStatsMode = "monthly",
   baseTime?: number
 ): Promise<ReadingStatsResponse> {
+  const preview = await loadWebReadingPreviewData(true);
+  if (preview) {
+    return buildWebPreviewReadingStatsResponse(preview, mode, baseTime);
+  }
+
+  if (!hasTauriRuntime()) {
+    throw createMissingWebPreviewDataError("统计");
+  }
+
   const response = await invoke<ReadingStatsResponseRecord>("sync_reading_stats", {
     mode,
     baseTime
@@ -1011,34 +1207,139 @@ export async function getSettingsState(): Promise<SettingsState> {
   return mapSettingsState(response);
 }
 
-export async function checkForAppUpdate(): Promise<AppUpdateStatus> {
+export async function getAppUpdateRuntime(): Promise<AppUpdateRuntime> {
   const currentState = await getSettingsState();
+  return {
+    currentVersion: currentState.appVersion,
+    supportsNativeUpdater: currentState.supportsNativeUpdater
+  };
+}
+
+export async function prepareAppUpdate(
+  runtime?: AppUpdateRuntime
+): Promise<{ status: AppUpdateStatus; update: Update | null }> {
+  const currentRuntime = runtime ?? (await getAppUpdateRuntime());
+
+  if (!currentRuntime.supportsNativeUpdater) {
+    const manifest = await fetchAppUpdateManifest();
+    const latestVersion = manifest.version;
+
+    return {
+      status: {
+        available: compareAppVersions(latestVersion, currentRuntime.currentVersion) > 0,
+        currentVersion: currentRuntime.currentVersion,
+        supportsNativeUpdater: false,
+        latestVersion,
+        notes: manifest.notes,
+        publishedAt: manifest.publishedAt
+      },
+      update: null
+    };
+  }
+
   const update = await check();
 
   if (!update) {
     return {
-      available: false,
-      currentVersion: currentState.appVersion
+      status: {
+        available: false,
+        currentVersion: currentRuntime.currentVersion,
+        supportsNativeUpdater: true
+      },
+      update: null
     };
   }
 
   return {
-    available: true,
-    currentVersion: currentState.appVersion,
-    latestVersion: update.version,
-    notes: update.body,
-    publishedAt: update.date
+    status: {
+      available: true,
+      currentVersion: currentRuntime.currentVersion,
+      supportsNativeUpdater: true,
+      latestVersion: update.version,
+      notes: update.body,
+      publishedAt: update.date
+    },
+    update
   };
 }
 
+export async function checkForAppUpdate(): Promise<AppUpdateStatus> {
+  const prepared = await prepareAppUpdate();
+  return prepared.status;
+}
+
+export async function downloadPreparedAppUpdate(
+  update: Update,
+  onEvent?: (event: DownloadEvent) => void
+): Promise<void> {
+  await update.downloadAndInstall(onEvent);
+}
+
 export async function downloadAndInstallAppUpdate(): Promise<void> {
-  const update = await check();
+  const prepared = await prepareAppUpdate();
+  const update = prepared.update;
 
   if (!update) {
     return;
   }
 
-  await update.downloadAndInstall();
+  await downloadPreparedAppUpdate(update);
+}
+
+async function fetchAppUpdateManifest(): Promise<{
+  version: string;
+  notes?: string;
+  publishedAt?: string;
+}> {
+  const payload = await invoke<RemoteAppUpdateManifestResponseRecord>(
+    "get_remote_app_update_manifest"
+  );
+  const version = stringValue(payload.version);
+
+  if (!version) {
+    throw new Error("更新源缺少版本号。");
+  }
+
+  return {
+    version,
+    notes: stringValue(payload.notes),
+    publishedAt: stringValue(payload.publishedAt)
+  };
+}
+
+function compareAppVersions(left: string, right: string): number {
+  const leftSegments = parseAppVersionSegments(left);
+  const rightSegments = parseAppVersionSegments(right);
+  const maxLength = Math.max(leftSegments.length, rightSegments.length);
+
+  for (let index = 0; index < maxLength; index += 1) {
+    const leftValue = leftSegments[index] ?? 0;
+    const rightValue = rightSegments[index] ?? 0;
+
+    if (leftValue > rightValue) {
+      return 1;
+    }
+
+    if (leftValue < rightValue) {
+      return -1;
+    }
+  }
+
+  return 0;
+}
+
+function parseAppVersionSegments(version: string): number[] {
+  return normalizeAppVersion(version)
+    .split(/[+-]/, 1)[0]
+    .split(".")
+    .map((segment) => {
+      const matched = segment.match(/\d+/);
+      return matched ? Number.parseInt(matched[0], 10) : 0;
+    });
+}
+
+function normalizeAppVersion(version: string): string {
+  return version.trim().replace(/^[vV]/, "");
 }
 
 export async function clearLocalCache(confirm: boolean): Promise<ClearLocalCacheResult> {
@@ -1062,6 +1363,19 @@ export async function exportDiagnostics(): Promise<ExportDiagnosticsResult> {
 
   return {
     fileName: stringValue(response.fileName) || "wxreadmaster-diagnostics.md",
+    path: stringValue(response.path) || "",
+    exportedAt: stringValue(response.exportedAt) || ""
+  };
+}
+
+export async function exportReportImage(fileName: string, pngBase64: string): Promise<ExportImageResult> {
+  const response = await invoke<ExportImageResponseRecord>("export_report_image", {
+    fileName,
+    pngBase64
+  });
+
+  return {
+    fileName: stringValue(response.fileName) || fileName,
     path: stringValue(response.path) || "",
     exportedAt: stringValue(response.exportedAt) || ""
   };
@@ -1149,6 +1463,678 @@ export async function resetCustomExportDirectory(): Promise<ResetExportDirectory
   return {
     state: mapSettingsState(response.state ?? {})
   };
+}
+
+const WEB_READING_PREVIEW_DATA_URL = "/.codex-temp/reading-preview-data.json";
+
+let webReadingPreviewDataPromise: Promise<WebReadingPreviewData | undefined> | undefined;
+
+type WebReadingPreviewData = {
+  schemaVersion?: number;
+  exportedAt?: string;
+  statsSyncState?: SyncState;
+  shelfSyncState?: SyncState;
+  notesSyncState?: SyncState;
+  shelfEntries: ShelfEntryRecord[];
+  readingItemStates: ReadingItemStateRecord[];
+  notebookBooks: NotebookBookRecord[];
+  statsRows: WebReadingPreviewStatsRow[];
+  reviewRows: WebReadingPreviewReviewRow[];
+};
+
+type WebReadingPreviewStatsRow = {
+  mode: ReadingStatsMode;
+  baseTime: number;
+  rawJson: string;
+  updatedAt?: string;
+};
+
+type WebReadingPreviewReviewRow = {
+  scopeId: string;
+  promptVersion: string;
+  inputHash: string;
+  outputJson: string;
+  sourceCount?: number;
+  providerModel?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+async function loadWebReadingPreviewData(
+  forceRefresh = false
+): Promise<WebReadingPreviewData | undefined> {
+  if (hasTauriRuntime() || typeof fetch !== "function") {
+    return undefined;
+  }
+
+  if (!forceRefresh && webReadingPreviewDataPromise) {
+    return webReadingPreviewDataPromise;
+  }
+
+  webReadingPreviewDataPromise = fetchWebReadingPreviewData(forceRefresh);
+  return webReadingPreviewDataPromise;
+}
+
+async function fetchWebReadingPreviewData(
+  forceRefresh: boolean
+): Promise<WebReadingPreviewData | undefined> {
+  const cacheBuster = forceRefresh ? `?t=${Date.now()}` : "";
+
+  try {
+    const response = await fetch(`${WEB_READING_PREVIEW_DATA_URL}${cacheBuster}`, {
+      cache: "no-store"
+    });
+
+    if (!response.ok) {
+      return undefined;
+    }
+
+    return normalizeWebReadingPreviewData(await response.json());
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeWebReadingPreviewData(value: unknown): WebReadingPreviewData | undefined {
+  const record = asUnknownRecord(value);
+  if (!record) {
+    return undefined;
+  }
+
+  return {
+    schemaVersion: numberValue(record.schemaVersion),
+    exportedAt: stringValue(record.exportedAt),
+    statsSyncState: normalizePreviewSyncState(record.statsSyncState),
+    shelfSyncState: normalizePreviewSyncState(record.shelfSyncState),
+    notesSyncState: normalizePreviewSyncState(record.notesSyncState),
+    shelfEntries: (Array.isArray(record.shelfEntries) ? record.shelfEntries : [])
+      .map(normalizeWebPreviewShelfEntryRecord)
+      .filter(isDefined),
+    readingItemStates: (Array.isArray(record.readingItemStates) ? record.readingItemStates : [])
+      .map(normalizeWebPreviewReadingItemStateRecord)
+      .filter(isDefined),
+    notebookBooks: (Array.isArray(record.notebookBooks) ? record.notebookBooks : [])
+      .map(normalizeWebPreviewNotebookBookRecord)
+      .filter(isDefined),
+    statsRows: (Array.isArray(record.statsRows) ? record.statsRows : [])
+      .map(normalizeWebReadingPreviewStatsRow)
+      .filter(isDefined),
+    reviewRows: (Array.isArray(record.reviewRows) ? record.reviewRows : [])
+      .map(normalizeWebReadingPreviewReviewRow)
+      .filter(isDefined)
+  };
+}
+
+function normalizeWebPreviewShelfEntryRecord(value: unknown): ShelfEntryRecord | undefined {
+  const record = asUnknownRecord(value);
+  if (!record) {
+    return undefined;
+  }
+
+  const id = stringValue(record.id);
+  const type = stringValue(record.type);
+  const title = stringValue(record.title);
+  const rawJson = stringValue(record.rawJson ?? record.raw_json);
+  if (!id || !type || !title || !rawJson) {
+    return undefined;
+  }
+
+  return {
+    id,
+    type,
+    title,
+    author: stringValue(record.author),
+    cover: stringValue(record.cover),
+    category: stringValue(record.category),
+    isTop: record.isTop ?? record.is_top,
+    isSecret: record.isSecret ?? record.is_secret,
+    isFinished: record.isFinished ?? record.is_finished,
+    lastReadAt: numberValue(record.lastReadAt ?? record.last_read_at),
+    rawJson
+  };
+}
+
+function normalizeWebPreviewReadingItemStateRecord(
+  value: unknown
+): ReadingItemStateRecord | undefined {
+  const record = asUnknownRecord(value);
+  if (!record) {
+    return undefined;
+  }
+
+  const itemId = stringValue(record.itemId ?? record.item_id);
+  const itemType = stringValue(record.itemType ?? record.item_type);
+  const status = stringValue(record.status);
+  if (!itemId || !itemType || !status) {
+    return undefined;
+  }
+
+  return {
+    itemId,
+    itemType,
+    status,
+    title: stringValue(record.title),
+    author: stringValue(record.author),
+    cover: stringValue(record.cover),
+    category: stringValue(record.category),
+    note: stringValue(record.note),
+    createdAt: stringValue(record.createdAt ?? record.created_at),
+    updatedAt: stringValue(record.updatedAt ?? record.updated_at)
+  };
+}
+
+function normalizeWebPreviewNotebookBookRecord(value: unknown): NotebookBookRecord | undefined {
+  const record = asUnknownRecord(value);
+  if (!record) {
+    return undefined;
+  }
+
+  const bookId = stringValue(record.bookId ?? record.book_id);
+  const title = stringValue(record.title);
+  const rawJson = stringValue(record.rawJson ?? record.raw_json);
+  if (!bookId || !title || !rawJson) {
+    return undefined;
+  }
+
+  return {
+    bookId,
+    title,
+    author: stringValue(record.author),
+    cover: stringValue(record.cover),
+    reviewCount: numberValue(record.reviewCount ?? record.review_count),
+    noteCount: numberValue(record.noteCount ?? record.note_count),
+    bookmarkCount: numberValue(record.bookmarkCount ?? record.bookmark_count),
+    totalNoteCount: numberValue(record.totalNoteCount ?? record.total_note_count),
+    readingProgress: numberValue(record.readingProgress ?? record.reading_progress),
+    markedStatus: numberValue(record.markedStatus ?? record.marked_status),
+    sort: numberValue(record.sort),
+    rawJson
+  };
+}
+
+function normalizeWebReadingPreviewStatsRow(
+  value: unknown
+): WebReadingPreviewStatsRow | undefined {
+  const record = asUnknownRecord(value);
+  if (!record) {
+    return undefined;
+  }
+
+  const mode = normalizeStatsMode(record.mode);
+  const rawJson = stringValue(record.rawJson);
+  const baseTime = Math.trunc(numberValue(record.baseTime) ?? Number.NaN);
+  if (!mode || !rawJson || !Number.isFinite(baseTime)) {
+    return undefined;
+  }
+
+  return {
+    mode,
+    baseTime,
+    rawJson,
+    updatedAt: stringValue(record.updatedAt)
+  };
+}
+
+function normalizeWebReadingPreviewReviewRow(
+  value: unknown
+): WebReadingPreviewReviewRow | undefined {
+  const record = asUnknownRecord(value);
+  if (!record) {
+    return undefined;
+  }
+
+  const scopeId = stringValue(record.scopeId);
+  const promptVersion = stringValue(record.promptVersion);
+  const inputHash = stringValue(record.inputHash);
+  const outputJson = stringValue(record.outputJson);
+  if (!scopeId || !promptVersion || !inputHash || !outputJson) {
+    return undefined;
+  }
+
+  return {
+    scopeId,
+    promptVersion,
+    inputHash,
+    outputJson,
+    sourceCount: numberValue(record.sourceCount),
+    providerModel: stringValue(record.providerModel),
+    createdAt: stringValue(record.createdAt),
+    updatedAt: stringValue(record.updatedAt)
+  };
+}
+
+function buildWebPreviewAiSettingsState(exportedAt?: string): AiSettingsState {
+  return {
+    credential: {
+      hasCredential: true,
+      lastValidatedAt: exportedAt
+    },
+    provider: {
+      baseUrl: "web-preview",
+      model: "preview-readonly"
+    }
+  };
+}
+
+function supportsWebPreviewDashboardData(preview: WebReadingPreviewData): boolean {
+  return (preview.schemaVersion ?? 0) >= 2;
+}
+
+function buildWebPreviewBookshelfResponse(preview: WebReadingPreviewData): BookshelfResponse {
+  const entries = preview.shelfEntries.map(mapShelfEntry);
+
+  return {
+    snapshot: {
+      entries,
+      summary: mapSummary(undefined, entries)
+    },
+    syncState: preview.shelfSyncState
+  };
+}
+
+function buildWebPreviewReadingItemStates(preview: WebReadingPreviewData): ReadingItemState[] {
+  return preview.readingItemStates
+    .map(mapReadingItemState)
+    .filter((state): state is ReadingItemState => Boolean(state));
+}
+
+function buildWebPreviewNotebookOverviewResponse(
+  preview: WebReadingPreviewData
+): NotebookOverviewResponse {
+  const books = preview.notebookBooks.map((book, index) => mapNotebookBook(book, index));
+
+  return {
+    books,
+    summary: {
+      totalBookCount: books.length,
+      totalNoteCount: books.reduce((total, book) => total + book.totalNoteCount, 0)
+    },
+    syncState: preview.notesSyncState
+  };
+}
+
+function buildWebPreviewReadingStatsResponse(
+  preview: WebReadingPreviewData,
+  mode: ReadingStatsMode,
+  baseTime?: number
+): ReadingStatsResponse {
+  const row = findWebReadingPreviewStatsRow(preview.statsRows, mode, baseTime);
+
+  return {
+    stats: row ? mapWebPreviewReadingStats(row) : createEmptyReadingStats(mode, baseTime),
+    syncState: preview.statsSyncState,
+    source: row ? "cache" : "empty"
+  };
+}
+
+function findWebReadingPreviewStatsRow(
+  rows: WebReadingPreviewStatsRow[],
+  mode: ReadingStatsMode,
+  baseTime?: number
+): WebReadingPreviewStatsRow | undefined {
+  const normalizedBaseTime = normalizePreviewBaseTime(mode, baseTime);
+  if (mode === "overall") {
+    return rows.find((row) => row.mode === "overall" && row.baseTime === 0);
+  }
+
+  if (normalizedBaseTime > 0) {
+    const exact = rows.find((row) => row.mode === mode && row.baseTime === normalizedBaseTime);
+    if (exact) {
+      return exact;
+    }
+
+    const targetIdentity = buildPreviewPeriodIdentity(mode, normalizedBaseTime);
+    return rows.find(
+      (row) =>
+        row.mode === mode && buildPreviewPeriodIdentity(row.mode, row.baseTime) === targetIdentity
+    );
+  }
+
+  const currentAnchor = currentPreviewAnchor(mode);
+  let matched: WebReadingPreviewStatsRow | undefined;
+
+  for (const row of rows) {
+    if (row.mode !== mode || row.baseTime > currentAnchor) {
+      continue;
+    }
+
+    if (!matched || row.baseTime > matched.baseTime) {
+      matched = row;
+    }
+  }
+
+  return matched;
+}
+
+function mapWebPreviewReadingStats(row: WebReadingPreviewStatsRow): ReadingStats {
+  const raw = parseRawJson(row.rawJson);
+  const record = asUnknownRecord(raw);
+
+  return {
+    mode: row.mode,
+    baseTime: Math.trunc(numberValue(record?.baseTime) ?? row.baseTime),
+    readDays: nonNegativeNumberValue(record?.readDays),
+    totalReadTimeSeconds: nonNegativeNumberValue(record?.totalReadTime),
+    dayAverageReadTimeSeconds: nonNegativeNumberValue(record?.dayAverageReadTime),
+    compare: numberValue(record?.compare),
+    buckets: mapWebPreviewReadingBuckets(record?.readTimes),
+    longestItems: mapWebPreviewReadingRankItems(record?.readLongest),
+    categories: mapWebPreviewReadingCategories(record?.preferCategory),
+    raw
+  };
+}
+
+function mapWebPreviewReadingBuckets(value: unknown): ReadingTimeBucket[] {
+  const record = asUnknownRecord(value);
+  if (!record) {
+    return [];
+  }
+
+  return Object.entries(record)
+    .map(([startTime, seconds]) => {
+      const parsedStartTime = numberValue(startTime);
+      const readTimeSeconds = nonNegativeNumberValue(seconds);
+      if (!parsedStartTime || readTimeSeconds === undefined) {
+        return undefined;
+      }
+
+      return {
+        startTime: parsedStartTime,
+        readTimeSeconds
+      };
+    })
+    .filter(isDefined)
+    .sort((left, right) => left.startTime - right.startTime);
+}
+
+function mapWebPreviewReadingRankItems(value: unknown): ReadingRankItem[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.map(mapWebPreviewReadingRankItem).filter(isDefined);
+}
+
+function mapWebPreviewReadingRankItem(value: unknown): ReadingRankItem | undefined {
+  const record = asUnknownRecord(value);
+  if (!record) {
+    return undefined;
+  }
+
+  const album = asUnknownRecord(record.albumInfo);
+  const book = asUnknownRecord(record.book);
+  const source = album ?? book ?? record;
+  const type: "album" | "book" = album ? "album" : "book";
+  const title =
+    firstDefinedString(source, ["title", "name", "albumName", "bookName"]) ??
+    firstDefinedString(record, ["title", "name", "albumName", "bookName"]) ??
+    (type === "album" ? "有声内容" : "未命名书籍");
+
+  return {
+    id:
+      (type === "album"
+        ? firstDefinedString(source, ["albumId", "id", "bookId"]) ??
+          firstDefinedString(record, ["albumId", "id", "bookId"])
+        : firstDefinedString(source, ["bookId", "id"]) ??
+          firstDefinedString(record, ["bookId", "id"])) ?? title,
+    title,
+    author:
+      firstDefinedString(source, ["author", "authorName"]) ??
+      firstDefinedString(record, ["author", "authorName"]),
+    cover:
+      firstDefinedString(source, ["cover", "coverUrl"]) ??
+      firstDefinedString(record, ["cover", "coverUrl"]),
+    type,
+    readTimeSeconds: nonNegativeNumberValue(record.readTime) ?? 0,
+    tags: toStringArray(record.tags)
+  };
+}
+
+function mapWebPreviewReadingCategories(value: unknown): ReadingCategory[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.map(mapWebPreviewReadingCategory).filter(isDefined);
+}
+
+function mapWebPreviewReadingCategory(value: unknown): ReadingCategory | undefined {
+  const record = asUnknownRecord(value);
+  if (!record) {
+    return undefined;
+  }
+
+  const title = firstDefinedString(record, ["categoryTitle", "title", "name"]);
+  if (!title) {
+    return undefined;
+  }
+
+  return {
+    categoryId: stringValue(record.categoryId),
+    title,
+    parentTitle: firstDefinedString(record, ["parentCategoryTitle", "parentTitle"]),
+    value: numberValue(record.val) ?? numberValue(record.value),
+    readingTimeSeconds:
+      nonNegativeNumberValue(record.readingTime) ??
+      nonNegativeNumberValue(record.readingTimeSeconds),
+    readingCount: nonNegativeNumberValue(record.readingCount)
+  };
+}
+
+function createEmptyReadingStats(mode: ReadingStatsMode, baseTime?: number): ReadingStats {
+  return {
+    mode,
+    baseTime: mode === "overall" ? 0 : normalizePreviewBaseTime(mode, baseTime),
+    buckets: [],
+    longestItems: [],
+    categories: []
+  };
+}
+
+function findWebPreviewReadingStatsReview(
+  preview: WebReadingPreviewData,
+  mode: ReadingStatsMode,
+  baseTime?: number
+): ReadingStatsAiReviewResponse | undefined {
+  const normalizedBaseTime = normalizePreviewBaseTime(mode, baseTime);
+  const scopeId = mode === "overall" ? "overall:0" : `${mode}:${normalizedBaseTime}`;
+  const row =
+    preview.reviewRows.find((review) => review.scopeId === scopeId) ??
+    (normalizedBaseTime <= 0 ? selectLatestWebPreviewReviewRow(preview.reviewRows, mode) : undefined);
+  if (!row) {
+    return undefined;
+  }
+
+  const output = asUnknownRecord(parseRawJson(row.outputJson));
+  const scope = parseWebPreviewScopeId(row.scopeId);
+  const resolvedMode = scope?.mode ?? mode;
+  const resolvedBaseTime = scope?.baseTime ?? normalizePreviewBaseTime(resolvedMode, baseTime);
+
+  return {
+    mode: resolvedMode,
+    baseTime: resolvedBaseTime,
+    promptVersion: row.promptVersion,
+    inputHash: row.inputHash,
+    providerModel: row.providerModel,
+    source: "cache",
+    review: {
+      overview: stringValue(output?.overview) || "",
+      rhythmInsights: toStringArray(output?.rhythmInsights),
+      preferenceInsights: toStringArray(output?.preferenceInsights),
+      focusItems: toStringArray(output?.focusItems),
+      nextActions: toStringArray(output?.nextActions),
+      readingPersona: normalizeReadingPersonaPatch(output?.readingPersona),
+      sourceStats: normalizeWebPreviewReviewSourceStats(output?.sourceStats, resolvedMode, resolvedBaseTime),
+      generatedAt: stringValue(output?.generatedAt) ?? row.createdAt ?? row.updatedAt ?? preview.exportedAt ?? "",
+      promptVersion: stringValue(output?.promptVersion) ?? row.promptVersion,
+      responseFormat: normalizeAiResponseFormat(output?.responseFormat),
+      basisNotice: stringValue(output?.basisNotice) || "基于已导出的统计缓存，仅供 Web 预览。"
+    },
+    cachedUpdatedAt: row.updatedAt
+  };
+}
+
+function selectLatestWebPreviewReviewRow(
+  rows: WebReadingPreviewReviewRow[],
+  mode: ReadingStatsMode
+): WebReadingPreviewReviewRow | undefined {
+  const currentAnchor = currentPreviewAnchor(mode);
+  let matched: WebReadingPreviewReviewRow | undefined;
+  let matchedBaseTime = Number.NEGATIVE_INFINITY;
+
+  for (const row of rows) {
+    const scope = parseWebPreviewScopeId(row.scopeId);
+    if (!scope || scope.mode !== mode || scope.baseTime > currentAnchor) {
+      continue;
+    }
+
+    if (!matched || scope.baseTime > matchedBaseTime) {
+      matched = row;
+      matchedBaseTime = scope.baseTime;
+    }
+  }
+
+  return matched;
+}
+
+function normalizeWebPreviewReviewSourceStats(
+  value: unknown,
+  mode: ReadingStatsMode,
+  baseTime: number
+) {
+  const record = asUnknownRecord(value);
+
+  return {
+    mode: normalizeStatsMode(record?.mode) ?? mode,
+    baseTime: Math.trunc(numberValue(record?.baseTime) ?? baseTime),
+    readDays: nonNegativeNumberValue(record?.readDays),
+    totalReadTimeSeconds: nonNegativeNumberValue(record?.totalReadTimeSeconds),
+    dayAverageReadTimeSeconds: nonNegativeNumberValue(record?.dayAverageReadTimeSeconds),
+    bucketCount: nonNegativeNumberValue(record?.bucketCount) ?? 0,
+    longestItemCount: nonNegativeNumberValue(record?.longestItemCount) ?? 0,
+    categoryCount: nonNegativeNumberValue(record?.categoryCount) ?? 0
+  };
+}
+
+function parseWebPreviewScopeId(scopeId: string): { mode: ReadingStatsMode; baseTime: number } | undefined {
+  const [rawMode, rawBaseTime] = scopeId.split(":");
+  const mode = normalizeStatsMode(rawMode);
+  const baseTime = Math.trunc(numberValue(rawBaseTime) ?? Number.NaN);
+  if (!mode || !Number.isFinite(baseTime)) {
+    return undefined;
+  }
+
+  return {
+    mode,
+    baseTime
+  };
+}
+
+function normalizePreviewBaseTime(mode: ReadingStatsMode, baseTime?: number): number {
+  if (mode === "overall") {
+    return 0;
+  }
+
+  const value = Math.trunc(numberValue(baseTime) ?? 0);
+  return value > 0 ? value : 0;
+}
+
+function currentPreviewAnchor(mode: ReadingStatsMode): number {
+  if (mode === "overall") {
+    return 0;
+  }
+
+  const now = new Date();
+  if (mode === "annually") {
+    return Math.floor(new Date(now.getFullYear(), 0, 1).getTime() / 1000);
+  }
+
+  if (mode === "monthly") {
+    return Math.floor(new Date(now.getFullYear(), now.getMonth(), 1).getTime() / 1000);
+  }
+
+  const weekDay = now.getDay();
+  const mondayOffset = weekDay === 0 ? -6 : 1 - weekDay;
+  return Math.floor(
+    new Date(now.getFullYear(), now.getMonth(), now.getDate() + mondayOffset).getTime() / 1000
+  );
+}
+
+function buildPreviewPeriodIdentity(mode: ReadingStatsMode, baseTime: number): string {
+  if (mode === "overall" || baseTime <= 0) {
+    return `${mode}:0`;
+  }
+
+  const date = new Date(baseTime * 1000);
+  const year = date.getFullYear();
+  const month = date.getMonth() + 1;
+  const day = date.getDate();
+
+  if (mode === "annually") {
+    return `${mode}:${year}`;
+  }
+
+  if (mode === "monthly") {
+    return `${mode}:${year}-${month}`;
+  }
+
+  return `${mode}:${year}-${month}-${day}`;
+}
+
+function normalizePreviewSyncState(value: unknown): SyncState | undefined {
+  const record = asUnknownRecord(value);
+  if (!record) {
+    return undefined;
+  }
+
+  const section = stringValue(record.section);
+  if (!section) {
+    return undefined;
+  }
+
+  return normalizeSyncState({
+    section: section as SyncState["section"],
+    status: (stringValue(record.status) || "idle") as SyncState["status"],
+    lastSuccessAt: stringValue(record.lastSuccessAt),
+    lastAttemptAt: stringValue(record.lastAttemptAt),
+    errorCode: stringValue(record.errorCode),
+    errorMessage: stringValue(record.errorMessage)
+  });
+}
+
+function normalizeAiResponseFormat(value: unknown): "json_schema" | "json_object" | undefined {
+  if (value === "json_schema" || value === "json_object") {
+    return value;
+  }
+
+  return undefined;
+}
+
+function normalizeReadingPersonaPatch(value: unknown): ReadingPersonaPatch | undefined {
+  const record = asUnknownRecord(value);
+  if (!record) {
+    return undefined;
+  }
+
+  const summary = stringValue(record.summary);
+  const suggestion = stringValue(record.suggestion);
+  if (!summary && !suggestion) {
+    return undefined;
+  }
+
+  return {
+    summary,
+    suggestion
+  };
+}
+
+function hasTauriRuntime(): boolean {
+  const runtime = globalThis as Record<string, unknown>;
+  return Boolean(runtime.__TAURI__ || runtime.__TAURI_INTERNALS__);
+}
+
+function createMissingWebPreviewDataError(section: string): Error {
+  return new Error(`Web 预览未找到${section}预览数据，请先运行 npm run export:reading-preview-data。`);
 }
 
 export function getCommandErrorMessage(error: unknown): string {
@@ -1400,8 +2386,17 @@ function mapReadingStatsResponse(
 ): ReadingStatsResponse {
   return {
     stats: mapReadingStats(fallbackMode, response.stats),
-    syncState: normalizeSyncState(response.syncState)
+    syncState: normalizeSyncState(response.syncState),
+    source: normalizeReadingStatsResponseSource(response.source) ?? "cache"
   };
+}
+
+function normalizeReadingStatsResponseSource(value: unknown): ReadingStatsResponseSource | undefined {
+  if (value === "cache" || value === "synced" || value === "empty") {
+    return value;
+  }
+
+  return undefined;
 }
 
 function mapSearchBooksResponse(
@@ -1486,7 +2481,8 @@ function mapSettingsState(response: SettingsStateResponseRecord): SettingsState 
       defaultExportDir: stringValue(response.exportData?.defaultExportDir) || "",
       isCustomExportDir: booleanValue(response.exportData?.isCustomExportDir)
     },
-    appVersion: stringValue(response.appVersion) || "0.1.0"
+    appVersion: stringValue(response.appVersion) || "0.1.0",
+    supportsNativeUpdater: booleanValue(response.supportsNativeUpdater)
   };
 }
 
@@ -1849,6 +2845,32 @@ function parseRawJson(value: unknown): unknown {
   }
 }
 
+function asUnknownRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
+}
+
+function firstDefinedString(
+  value: Record<string, unknown> | undefined,
+  keys: string[]
+): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  for (const key of keys) {
+    const candidate = stringValue(value[key]);
+    if (candidate) {
+      return candidate;
+    }
+  }
+
+  return undefined;
+}
+
+function toStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(stringValue).filter(isDefined) : [];
+}
+
 function stringValue(value: unknown): string | undefined {
   if (typeof value === "string" && value.trim()) {
     return value;
@@ -1872,6 +2894,11 @@ function numberValue(value: unknown): number | undefined {
   }
 
   return undefined;
+}
+
+function nonNegativeNumberValue(value: unknown): number | undefined {
+  const parsed = numberValue(value);
+  return parsed === undefined ? undefined : Math.max(0, parsed);
 }
 
 function booleanValue(value: unknown): boolean {

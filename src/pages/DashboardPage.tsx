@@ -14,8 +14,10 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import heroReadingDashboard from "../assets/hero-reading-dashboard.png";
-import { buildReadingHabitProfile, calculateTotalNotes, hasEnoughDataForHabitProfile } from "../lib/business-rules";
+import { PersonaIllustration } from "../components/PersonaIllustration";
+import { buildReadingPersona, calculateTotalNotes, resolveReadingPersona } from "../lib/business-rules";
 import { formatUnixDate } from "../lib/formatters";
+import { getPersonaVisual } from "../lib/persona-visuals";
 import {
   getCommandErrorMessage,
   getAiSettingsState,
@@ -32,12 +34,19 @@ import type {
   BookDecisionResponse,
   CredentialStatus,
   NotebookBook,
+  ReadingPersona,
   ReadingItemState,
+  ReadingStats,
   ReadingStatsAiReviewResponse,
   ReadingStatsMode,
   SearchResult,
   ShelfEntry
 } from "../lib/types";
+import { hasReadingStatsData } from "../features/reading-stats/reading-stats-view-helpers";
+import {
+  getLatestReadingStatsResponse,
+  type ReadingStatsCache
+} from "./reading-stats-period";
 
 type DashboardPageProps = {
   credentialStatus?: CredentialStatus;
@@ -61,7 +70,7 @@ type DashboardPageProps = {
   };
   onOpenBookDecision: () => void;
   notesOverview?: NotebookOverviewResponse;
-  readingStatsCache: Partial<Record<ReadingStatsMode, ReadingStatsResponse>>;
+  readingStatsCache: ReadingStatsCache;
   onReadingStatsCacheChange: (mode: ReadingStatsMode, response: ReadingStatsResponse) => void;
 };
 
@@ -127,7 +136,7 @@ export function DashboardPage({
   const hasShelfData = (summary?.totalVisibleEntries ?? 0) > 0;
   const lastSyncText = formatSyncDate(syncState?.lastSuccessAt);
   const notesBooks = useMemo(() => notesOverview?.books ?? [], [notesOverview?.books]);
-  const monthlyStats = readingStatsCache.monthly?.stats;
+  const monthlyStats = getLatestReadingStatsResponse(readingStatsCache, "monthly")?.stats;
 
   const shelfEntryMap = useMemo(() => new Map(shelfEntries.map((entry) => [entry.id, entry])), [shelfEntries]);
   const notesBookMap = useMemo(() => new Map(notesBooks.map((book) => [book.bookId, book])), [notesBooks]);
@@ -148,8 +157,24 @@ export function DashboardPage({
   );
   const candidateItems = useMemo(() => buildCandidateItems(readingStates, onOpenCandidateBook), [readingStates, onOpenCandidateBook]);
   const reviewActions = useMemo(() => reviewSuggestion?.review.nextActions.filter(Boolean).slice(0, 3) ?? [], [reviewSuggestion]);
-  const habitProfile = useMemo(() => buildReadingHabitProfile(monthlyStats), [monthlyStats]);
-  const canBuildProfile = useMemo(() => hasEnoughDataForHabitProfile(monthlyStats), [monthlyStats]);
+  const hasMonthlyStatsData = hasReadingStatsData(monthlyStats);
+  const localPersona = useMemo(() => buildReadingPersona(monthlyStats), [monthlyStats]);
+  const overviewPersona = useMemo(
+    () => resolveReadingPersona(localPersona, reviewSuggestion?.review.readingPersona),
+    [localPersona, reviewSuggestion?.review.readingPersona]
+  );
+  const overviewPersonaDimensions = useMemo(
+    () => overviewPersona.dimensions.slice(0, 4),
+    [overviewPersona.dimensions]
+  );
+  const overviewPersonaSnapshot = useMemo(
+    () => buildDashboardPersonaSnapshot(overviewPersona, monthlyStats),
+    [overviewPersona, monthlyStats]
+  );
+  const overviewPersonaVisual = useMemo(
+    () => overviewPersona.status === "insufficient" ? undefined : getPersonaVisual(overviewPersona),
+    [overviewPersona]
+  );
   const candidateRecommendations = useMemo(() => buildCandidateRecommendations(candidateItems), [candidateItems]);
   const dashboardRecommendations = recommendedBooks.length > 0 ? recommendedBooks : candidateRecommendations;
   const todayActions = useMemo(
@@ -296,7 +321,7 @@ export function DashboardPage({
     let isMounted = true;
 
     async function loadMonthlyStats() {
-      if (!hasCredential || readingStatsCache.monthly) {
+      if (!hasCredential || monthlyStats) {
         return;
       }
 
@@ -318,7 +343,7 @@ export function DashboardPage({
     return () => {
       isMounted = false;
     };
-  }, [hasCredential, onReadingStatsCacheChange, readingStatsCache.monthly]);
+  }, [hasCredential, monthlyStats, onReadingStatsCacheChange]);
 
   useEffect(() => {
     let isMounted = true;
@@ -454,30 +479,81 @@ export function DashboardPage({
       </article>
 
       <section className="dashboard-insight-grid" aria-label="近期阅读摘要">
-        <article className="dashboard-profile-card">
+        <article
+          className={`dashboard-profile-card is-persona${overviewPersona.status === "provisional" ? " is-provisional" : ""}${
+            overviewPersona.accentTone ? ` is-${overviewPersona.accentTone}` : ""
+          }`}
+        >
           <div className="dashboard-mini-heading">
-            <p className="section-kicker">近期画像</p>
+            <p className="section-kicker">阅读人格</p>
             <button className="text-button" type="button" onClick={onOpenReadingReview}>
               复盘
               <ArrowRight aria-hidden="true" size={15} />
             </button>
           </div>
-          {habitProfile && canBuildProfile ? (
+          {hasMonthlyStatsData ? (
             <>
-              <strong>{habitProfile.primaryLabel}</strong>
-              <small>
-                {habitProfile.secondaryLabels.length > 0
-                  ? `兼有 ${habitProfile.secondaryLabels.join(" / ")}`
-                  : "本周期更接近"}
-              </small>
-              <ul>
-                {habitProfile.evidence.slice(0, 2).map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
+              {overviewPersona.status === "insufficient" ? (
+                <>
+                  <div className="dashboard-profile-hero">
+                    <div className="dashboard-profile-code-block is-empty" aria-hidden="true">
+                      <span className="dashboard-profile-code">--</span>
+                    </div>
+                    <div className="dashboard-profile-identity">
+                      <strong className="dashboard-profile-title">样本积累中</strong>
+                      <p className="dashboard-profile-subtitle">继续积累本月阅读样本</p>
+                    </div>
+                  </div>
+                  <p className="dashboard-profile-summary">{overviewPersonaSnapshot}</p>
+                </>
+              ) : (
+                <>
+                  <div className="dashboard-profile-hero">
+                    {overviewPersonaVisual ? (
+                      <div className="dashboard-profile-visual-card" aria-label={overviewPersonaVisual.ariaLabel}>
+                        <PersonaIllustration visual={overviewPersonaVisual} />
+                        <span className="dashboard-profile-code-pill">{overviewPersona.code ?? "阅读"}</span>
+                      </div>
+                    ) : (
+                      <div className="dashboard-profile-code-block" aria-label={`${overviewPersona.code ?? "阅读"} 人格代码`}>
+                        <span className="dashboard-profile-code">{overviewPersona.code ?? "--"}</span>
+                      </div>
+                    )}
+                    <div className="dashboard-profile-identity">
+                      <strong className="dashboard-profile-title">{overviewPersona.label}</strong>
+                      {overviewPersonaDimensions.length > 0 ? (
+                        <div className="dashboard-profile-dimensions is-compact" aria-label="阅读人格维度">
+                          {overviewPersonaDimensions.map((dimension) => (
+                            <span
+                              key={`${dimension.axis}-${dimension.key}`}
+                              className="dashboard-profile-dimension"
+                              title={dimension.basis}
+                            >
+                              <b>{dimension.key}</b>
+                              <span>{dimension.label}</span>
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                  <p className="dashboard-profile-summary">{overviewPersonaSnapshot}</p>
+                </>
+              )}
+              <div className="dashboard-profile-footer">
+                <div className="dashboard-profile-chip-row" aria-label="阅读人格状态">
+                  <span className="dashboard-profile-badge">基于本地</span>
+                  <span className="dashboard-profile-badge">
+                    {formatDashboardPersonaBadge(overviewPersona)}
+                  </span>
+                </div>
+                <p className="dashboard-profile-footnote">
+                  阅读风格隐喻，不代表真实心理人格。
+                </p>
+              </div>
             </>
           ) : (
-            <p>{statsError ? "统计暂不可用" : "同步统计后，这里会生成你的近期阅读画像。"}</p>
+            <p>{statsError ? "统计暂不可用" : "同步统计后，这里会生成最近一个月的阅读人格。"}</p>
           )}
         </article>
 
@@ -850,7 +926,7 @@ function buildTodayActions({
     return [
       {
         title: "先连接微信读书",
-        description: "保存 API Key 后才能同步书架、笔记和统计。",
+        description: "保存 API Key 后，才能把书架、笔记和统计沉淀到本地。",
         tone: "gold",
         icon: <KeyRound aria-hidden="true" size={18} />,
         onClick: onOpenSettings
@@ -862,7 +938,7 @@ function buildTodayActions({
     return [
       {
         title: "同步书架缓存",
-        description: "先把微信读书资产写入本地，再开始管理。",
+        description: "先把微信读书资产写入本地，再整理复盘、候选和导出内容。",
         tone: "green",
         icon: <RefreshCw aria-hidden="true" size={18} />,
         onClick: onOpenBookshelf
@@ -876,7 +952,7 @@ function buildTodayActions({
   if (latestBook) {
     weightedActions.push({
       title: `继续看《${latestBook.title}》`,
-      description: formatRecentMeta(latestBook),
+      description: `${formatRecentMeta(latestBook)} · 继续推进这本书的阅读资产`,
       tone: "green",
       icon: <BookOpen aria-hidden="true" size={18} />,
       onClick: () => onOpenShelfEntry(latestBook),
@@ -889,7 +965,7 @@ function buildTodayActions({
     if (firstBook) {
       weightedActions.push({
         title: `打开《${firstBook.title}》阅读指南`,
-        description: "没有最近阅读记录，先用本书指南明确下一步推进方式。",
+        description: "没有最近阅读记录，先用本书指南明确下一步阅读和整理方式。",
         tone: "green",
         icon: <BookMarked aria-hidden="true" size={18} />,
         onClick: () => onOpenReadingRoute(firstBook),
@@ -913,7 +989,7 @@ function buildTodayActions({
   for (const item of reviewItems) {
     weightedActions.push({
       title: `复盘《${item.title}》`,
-      description: item.meta,
+      description: `${item.meta} · 把本书笔记整理成结构化复盘`,
       tone: "gold",
       icon: <Sparkles aria-hidden="true" size={18} />,
       onClick: item.onClick,
@@ -926,7 +1002,7 @@ function buildTodayActions({
   if (reviewItems.length === 0) {
     weightedActions.push({
       title: "去笔记中心同步笔记",
-      description: "先同步有划线和想法的书，再决定哪些需要复盘。",
+      description: "先同步有划线和想法的书，再挑出适合整理成复盘的内容。",
       tone: "blue",
       icon: <BookMarked aria-hidden="true" size={18} />,
       onClick: onOpenNotes,
@@ -952,7 +1028,7 @@ function buildTodayActions({
   for (const item of candidateItems) {
     weightedActions.push({
       title: `查看候选《${item.title}》`,
-      description: item.meta,
+      description: `${item.meta} · 需要时再进入候选书架做下一本取舍`,
       tone: "blue",
       icon: <Compass aria-hidden="true" size={18} />,
       onClick: item.onClick,
@@ -965,7 +1041,7 @@ function buildTodayActions({
   if (candidateItems.length === 0) {
     weightedActions.push({
       title: "去发现页保存候选",
-      description: "先沉淀本地候选，再用候选书架做取舍决策。",
+      description: "先沉淀本地候选，再用候选书架生成选书决策。",
       tone: "muted",
       icon: <Compass aria-hidden="true" size={18} />,
       onClick: onOpenDiscovery,
@@ -978,7 +1054,7 @@ function buildTodayActions({
     if (hasAiCredential === false) {
       weightedActions.push({
         title: "配置 AI Provider",
-        description: "生成或查看 AI 复盘前，先在本机保存 Provider 和 Key。",
+        description: "生成复盘、指南、统计解读或选书决策前，先在本机保存 Provider 和 Key。",
         tone: "gold",
         icon: <KeyRound aria-hidden="true" size={18} />,
         onClick: onOpenSettings,
@@ -988,7 +1064,7 @@ function buildTodayActions({
     } else {
       weightedActions.push({
         title: "查看书籍复盘",
-        description: "查看已生成复盘，或处理有笔记但还没复盘的书。",
+        description: "查看已沉淀的复盘资产，或处理有笔记但还没整理的书。",
         tone: "gold",
         icon: <Sparkles aria-hidden="true" size={18} />,
         onClick: onOpenReadingReview,
@@ -1002,7 +1078,7 @@ function buildTodayActions({
   if (nextStatsAction) {
     weightedActions.push({
       title: "执行统计建议",
-      description: nextStatsAction,
+      description: `${nextStatsAction} · 来自已生成的周期阅读复盘`,
       tone: "gold",
       icon: <BarChart3 aria-hidden="true" size={18} />,
       onClick: onOpenReadingReview,
@@ -1056,6 +1132,51 @@ function formatRecentMeta(entry: RecentBookEntry): string {
   ].filter(Boolean);
 
   return parts.join(" · ") || "电子书";
+}
+
+function formatDashboardPersonaBadge(persona: ReadingPersona): string {
+  if (persona.status === "insufficient") {
+    return "待稳定";
+  }
+
+  return persona.status === "provisional" ? "本月倾向" : "本月";
+}
+
+function buildDashboardPersonaSnapshot(persona: ReadingPersona, stats?: ReadingStats): string {
+  if (persona.status === "insufficient") {
+    return "先继续积累本月阅读样本，再生成稳定的人格判断。";
+  }
+
+  const topCategory = stats?.categories
+    .slice()
+    .sort((left, right) => categoryValue(right) - categoryValue(left))[0];
+  const topCategoryTitle = topCategory?.title?.trim();
+  const energyKey = persona.dimensions.find((item) => item.axis === "energy")?.key;
+  const lifestyleKey = persona.dimensions.find((item) => item.axis === "lifestyle")?.key;
+
+  if (topCategoryTitle && energyKey === "I" && lifestyleKey === "J") {
+    return `本月更偏向围绕${topCategoryTitle}主线稳定深读。`;
+  }
+
+  if (topCategoryTitle && energyKey === "I") {
+    return `本月更偏向围绕${topCategoryTitle}主线持续推进。`;
+  }
+
+  if (topCategoryTitle && lifestyleKey === "J") {
+    return `本月更偏向围绕${topCategoryTitle}主线稳定推进。`;
+  }
+
+  if (topCategoryTitle) {
+    return `本月更偏向围绕${topCategoryTitle}主线展开阅读。`;
+  }
+
+  return persona.status === "provisional"
+    ? "这段时间已经出现较清晰的阅读倾向。"
+    : "本月已经形成较稳定的阅读气质。";
+}
+
+function categoryValue(category: NonNullable<ReadingStats["categories"]>[number]): number {
+  return category.readingTimeSeconds ?? category.value ?? category.readingCount ?? 0;
 }
 
 function MetricCard({ label, value, detail }: { label: string; value: string; detail: string }) {

@@ -6,7 +6,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
-use crate::platform::stronghold::{Client, kdf::KeyDerivation, stronghold::Stronghold};
+use crate::platform::stronghold::{kdf::KeyDerivation, stronghold::Stronghold, Client};
 
 const CLIENT_PATH: &[u8] = b"weread-credentials";
 const API_KEY_RECORD: &[u8] = b"weread-api-key";

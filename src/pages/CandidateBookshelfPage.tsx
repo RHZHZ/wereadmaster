@@ -48,11 +48,12 @@ import {
   type BookDecisionSession,
   type ReferenceFactor
 } from "./book-decision-input-model";
+import { type ReadingStatsCache } from "./reading-stats-period";
 
 type CandidateBookshelfPageProps = {
   credentialStatus?: CredentialStatus;
   bookshelf?: BookshelfResponse;
-  readingStatsCache: Partial<Record<ReadingStatsMode, ReadingStatsResponse>>;
+  readingStatsCache: ReadingStatsCache;
   onOpenSettings: () => void;
   onOpenDiscovery: () => void;
   onOpenBookDetail: (book: SearchResult) => void;
@@ -350,7 +351,7 @@ export function CandidateBookshelfPage({
             <div>
               <p className="section-kicker">选书决策</p>
               <h3>把候选池推进到下一步行动</h3>
-              <p>从这里直接确认候选书、目标和参考因子；生成成功后再进入结果页查看和导出。</p>
+              <p>从这里确认本地候选、目标和参考因子，生成“下一本读什么、为什么暂缓其他书、接下来怎么读”的决策记录。</p>
             </div>
             <button className="secondary-action" type="button" onClick={handleOpenDecisionDialog}>
               {isGenerating ? <Loader2 aria-hidden="true" size={18} className="spin" /> : <Sparkles aria-hidden="true" size={18} />}

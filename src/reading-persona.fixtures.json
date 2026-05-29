@@ -1,0 +1,185 @@
+[
+  {
+    "id": "stable-istj",
+    "stats": {
+      "mode": "monthly",
+      "baseTime": 1725955200,
+      "readDays": 12,
+      "totalReadTimeSeconds": 18900,
+      "dayAverageReadTimeSeconds": 1575,
+      "compare": 0.18,
+      "buckets": [
+        { "startTime": 1725696000, "readTimeSeconds": 1800 },
+        { "startTime": 1725782400, "readTimeSeconds": 3600 },
+        { "startTime": 1725868800, "readTimeSeconds": 2400 }
+      ],
+      "longestItems": [
+        {
+          "id": "book-deep-work",
+          "title": "深度工作",
+          "author": "卡尔·纽波特",
+          "type": "book",
+          "readTimeSeconds": 7200,
+          "tags": ["效率", "专注"]
+        }
+      ],
+      "categories": [
+        {
+          "categoryId": "efficiency",
+          "title": "效率",
+          "parentTitle": "非虚构",
+          "readingTimeSeconds": 9000,
+          "readingCount": 3
+        },
+        {
+          "categoryId": "sci-fi",
+          "title": "科幻",
+          "parentTitle": "文学",
+          "readingTimeSeconds": 5400,
+          "readingCount": 2
+        }
+      ]
+    },
+    "expected": {
+      "status": "complete",
+      "code": "ISTJ",
+      "label": "秩序型读者",
+      "displayTitle": "ISTJ 型读者 · 秩序型读者",
+      "paletteGroup": "SJ",
+      "accentTone": "moss",
+      "dimensionKeys": ["I", "S", "T", "J"],
+      "confidence": 0.88,
+      "evidenceCount": 3
+    }
+  },
+  {
+    "id": "historical-infj",
+    "stats": {
+      "mode": "monthly",
+      "baseTime": 1725955200,
+      "readDays": 10,
+      "totalReadTimeSeconds": 21600,
+      "dayAverageReadTimeSeconds": 2160,
+      "compare": 0.12,
+      "buckets": [
+        { "startTime": 1725696000, "readTimeSeconds": 3600 },
+        { "startTime": 1725782400, "readTimeSeconds": 4200 },
+        { "startTime": 1725868800, "readTimeSeconds": 3900 }
+      ],
+      "longestItems": [
+        {
+          "id": "history-book",
+          "title": "历史的温度",
+          "author": "张玮",
+          "type": "book",
+          "readTimeSeconds": 8400,
+          "tags": ["历史", "人物"]
+        },
+        {
+          "id": "biography-book",
+          "title": "万历十五年",
+          "author": "黄仁宇",
+          "type": "book",
+          "readTimeSeconds": 4800,
+          "tags": ["历史", "传记"]
+        }
+      ],
+      "categories": [
+        {
+          "categoryId": "history",
+          "title": "历史",
+          "parentTitle": "历史读物",
+          "readingTimeSeconds": 12000,
+          "readingCount": 2
+        },
+        {
+          "categoryId": "biography",
+          "title": "人物传记",
+          "parentTitle": "人文社科",
+          "readingTimeSeconds": 6000,
+          "readingCount": 1
+        }
+      ]
+    },
+    "expected": {
+      "status": "complete",
+      "code": "INFJ",
+      "label": "历史共情者",
+      "displayTitle": "INFJ 型读者 · 历史共情者",
+      "paletteGroup": "NF",
+      "accentTone": "rose",
+      "dimensionKeys": ["I", "N", "F", "J"],
+      "confidence": 0.88,
+      "evidenceCount": 3
+    }
+  },
+  {
+    "id": "emerging-infp",
+    "stats": {
+      "mode": "monthly",
+      "baseTime": 1725955200,
+      "readDays": 2,
+      "totalReadTimeSeconds": 7200,
+      "dayAverageReadTimeSeconds": 3600,
+      "compare": 0.08,
+      "buckets": [
+        { "startTime": 1725696000, "readTimeSeconds": 2700 },
+        { "startTime": 1725868800, "readTimeSeconds": 4500 }
+      ],
+      "longestItems": [
+        {
+          "id": "concept-book",
+          "title": "三体",
+          "author": "刘慈欣",
+          "type": "book",
+          "readTimeSeconds": 4200,
+          "tags": ["科幻"]
+        }
+      ],
+      "categories": [
+        {
+          "categoryId": "scifi",
+          "title": "科幻",
+          "parentTitle": "文学",
+          "readingTimeSeconds": 4200,
+          "readingCount": 1
+        },
+        {
+          "categoryId": "history",
+          "title": "历史",
+          "parentTitle": "历史读物",
+          "readingTimeSeconds": 2400,
+          "readingCount": 1
+        }
+      ]
+    },
+    "expected": {
+      "status": "provisional",
+      "code": "INFP",
+      "label": "故事漫游者",
+      "displayTitle": "INFP 型读者 · 故事漫游者",
+      "paletteGroup": "NF",
+      "accentTone": "rose",
+      "dimensionKeys": ["I", "N", "F", "P"],
+      "confidence": 0.88,
+      "evidenceCount": 2
+    }
+  },
+  {
+    "id": "insufficient-sample",
+    "stats": {
+      "mode": "weekly",
+      "baseTime": 1725955200,
+      "readDays": 1,
+      "totalReadTimeSeconds": 900,
+      "buckets": [],
+      "longestItems": [],
+      "categories": []
+    },
+    "expected": {
+      "status": "insufficient",
+      "dimensionKeys": [],
+      "evidenceCount": 0
+    }
+  }
+]

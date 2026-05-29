@@ -1,0 +1,238 @@
+{
+  "basisNotice": "基于本周期阅读记录生成的阅读风格隐喻，不代表真实心理人格。",
+  "fallbackLabel": "阅读观察者",
+  "definitions": {
+    "INTJ": {
+      "label": "知识建筑师",
+      "paletteGroup": "NT",
+      "accentTone": "bluegreen"
+    },
+    "INTP": {
+      "label": "概念拆解者",
+      "paletteGroup": "NT",
+      "accentTone": "bluegreen"
+    },
+    "ENTJ": {
+      "label": "系统规划者",
+      "paletteGroup": "NT",
+      "accentTone": "bluegreen"
+    },
+    "ENTP": {
+      "label": "观点辩手",
+      "paletteGroup": "NT",
+      "accentTone": "bluegreen"
+    },
+    "INFJ": {
+      "label": "历史共情者",
+      "paletteGroup": "NF",
+      "accentTone": "rose"
+    },
+    "INFP": {
+      "label": "故事漫游者",
+      "paletteGroup": "NF",
+      "accentTone": "rose"
+    },
+    "ENFJ": {
+      "label": "意义连接者",
+      "paletteGroup": "NF",
+      "accentTone": "rose"
+    },
+    "ENFP": {
+      "label": "灵感采集者",
+      "paletteGroup": "NF",
+      "accentTone": "rose"
+    },
+    "ISTJ": {
+      "label": "秩序型读者",
+      "paletteGroup": "SJ",
+      "accentTone": "moss"
+    },
+    "ISFJ": {
+      "label": "温故守护者",
+      "paletteGroup": "SJ",
+      "accentTone": "moss"
+    },
+    "ESTJ": {
+      "label": "实用管理者",
+      "paletteGroup": "SJ",
+      "accentTone": "moss"
+    },
+    "ESFJ": {
+      "label": "生活观察者",
+      "paletteGroup": "SJ",
+      "accentTone": "moss"
+    },
+    "ISTP": {
+      "label": "技能实验者",
+      "paletteGroup": "SP",
+      "accentTone": "amber"
+    },
+    "ISFP": {
+      "label": "审美沉浸者",
+      "paletteGroup": "SP",
+      "accentTone": "amber"
+    },
+    "ESTP": {
+      "label": "行动派读者",
+      "paletteGroup": "SP",
+      "accentTone": "amber"
+    },
+    "ESFP": {
+      "label": "情绪体验家",
+      "paletteGroup": "SP",
+      "accentTone": "amber"
+    }
+  },
+  "categoryTokens": {
+    "practical": [
+      "经济",
+      "理财",
+      "财经",
+      "管理",
+      "职场",
+      "工具",
+      "计算机",
+      "科技",
+      "产品",
+      "运营",
+      "效率",
+      "方法",
+      "投资",
+      "商业",
+      "沟通",
+      "学习",
+      "成长"
+    ],
+    "conceptual": [
+      "历史",
+      "文学",
+      "小说",
+      "哲学",
+      "科幻",
+      "社会",
+      "社科",
+      "思想",
+      "艺术",
+      "传记",
+      "文化",
+      "人文",
+      "故事",
+      "悬疑",
+      "推理",
+      "奇幻"
+    ],
+    "analytical": [
+      "计算机",
+      "科技",
+      "商业",
+      "制度",
+      "管理",
+      "方法",
+      "产品",
+      "运营",
+      "理财",
+      "投资",
+      "效率",
+      "策略",
+      "经济",
+      "思维"
+    ],
+    "resonant": [
+      "人物",
+      "传记",
+      "文学",
+      "小说",
+      "社会",
+      "历史",
+      "故事",
+      "艺术",
+      "情感",
+      "心理",
+      "命运",
+      "人文",
+      "文化"
+    ]
+  },
+  "thresholds": {
+    "stableBucketMultiplier": 0.6,
+    "axisBiasMultiplier": 1.15,
+    "status": {
+      "complete": {
+        "minTotalReadTimeSeconds": 14400,
+        "minReadDays": 4,
+        "minActiveBucketCount": 3,
+        "minCategoryCount": 2
+      },
+      "provisional": {
+        "minTotalReadTimeSeconds": 5400,
+        "minReadDays": 2,
+        "minStableDimensionCount": 2
+      }
+    },
+    "energy": {
+      "introverted": {
+        "minTop3CategoryShare": 0.72,
+        "minAuthorConcentration": 0.45,
+        "minTopItemShare": 0.35
+      },
+      "breadthStrength": {
+        "strong": {
+          "maxTop3CategoryShare": 0.55,
+          "maxAuthorConcentration": 0.3,
+          "maxTopItemShare": 0.22
+        },
+        "medium": {
+          "maxTop3CategoryShare": 0.62,
+          "maxTopItemShare": 0.3
+        }
+      }
+    },
+    "lifestyle": {
+      "planned": {
+        "minReadDays": 8,
+        "minStableBucketShare": 0.45,
+        "minTopItemShare": 0.33,
+        "minCompare": -0.35
+      },
+      "exploratory": {
+        "maxReadDays": 4,
+        "maxActiveBucketCount": 2
+      },
+      "judgingStrength": {
+        "readDaysScale": 10
+      },
+      "perceivingStrength": {
+        "strong": {
+          "maxReadDays": 2,
+          "maxActiveBucketCount": 1
+        },
+        "medium": {
+          "maxReadDays": 4,
+          "maxActiveBucketCount": 2
+        }
+      }
+    },
+    "strength": {
+      "ratio": {
+        "strong": 1.6,
+        "medium": 1.3
+      },
+      "delta": {
+        "strong": 0.12,
+        "medium": 0.04
+      },
+      "confidence": {
+        "strong": 0.88,
+        "medium": 0.74,
+        "light": 0.6
+      }
+    },
+    "evidence": {
+      "provisionalMaxItems": 2,
+      "defaultMaxItems": 4
+    },
+    "suggestion": {
+      "introvertedMinTopCategoryShare": 0.45
+    }
+  }
+}

@@ -5,8 +5,8 @@ use chrono::{Datelike, Local, Timelike};
 use crate::{
     mappers::notes::{BookNotesRecord, ChapterNoteGroup, HighlightRecord, ThoughtRecord},
     services::ai::{
-        AiFeedbackExportRecord, AiReviewFeedbackExport, BookAiSummaryResponse, BookDecision,
-        BookDecisionResponse, ReadingRoute,
+        AiFeedbackExportRecord, AiResponseFormatKind, AiReviewFeedbackExport,
+        BookAiSummaryResponse, BookDecision, BookDecisionResponse, ReadingPersona, ReadingRoute,
         ReadingRouteBookStep, ReadingRouteCheckpoint, ReadingRouteResponse,
         ReadingStatsAiReviewResponse,
     },
@@ -148,6 +148,7 @@ pub fn serialize_book_ai_summary_markdown_with_options(
         "- Prompt 版本：{}",
         inline_text(&summary.prompt_version)
     );
+    write_response_format_meta(&mut markdown, summary.response_format);
     if let Some(provider_model) = response.provider_model.as_deref() {
         let _ = writeln!(markdown, "- 模型：{}", inline_text(provider_model));
     }
@@ -161,6 +162,19 @@ pub fn serialize_book_ai_summary_markdown_with_options(
         let _ = writeln!(markdown, "> {}", inline_text(error_message));
     }
     let _ = writeln!(markdown);
+    write_export_boundary_section(
+        &mut markdown,
+        "本地 AI 复盘缓存和本地反馈状态",
+        &[
+            "复盘概览、关键观点、行动项和复盘问题",
+            "按导出设置包含的行动反馈、复盘问题反馈和代表性摘录",
+        ],
+        &[
+            "未生成复盘的书",
+            "微信读书 API Key、AI API Key、数据库路径和原始接口响应",
+        ],
+        "导出不会同步微信读书远端，也不会自动生成新的 AI 复盘。",
+    );
 
     write_paragraph_section(&mut markdown, "概览", &summary.overview);
     write_string_list_section(
@@ -189,13 +203,13 @@ pub fn serialize_book_ai_summary_markdown_with_options(
     );
     if options.include_action_feedback {
         if let Some(feedback) = review_feedback {
-        write_ai_feedback_section(
-            &mut markdown,
-            "行动反馈记录",
-            &summary.action_items,
-            &feedback.action_items,
-            action_feedback_status_label,
-        );
+            write_ai_feedback_section(
+                &mut markdown,
+                "行动反馈记录",
+                &summary.action_items,
+                &feedback.action_items,
+                action_feedback_status_label,
+            );
         }
     }
 
@@ -212,13 +226,13 @@ pub fn serialize_book_ai_summary_markdown_with_options(
                 for line in item.quote.lines() {
                     let _ = writeln!(markdown, "> {}", line.trim());
                 }
-            let _ = writeln!(markdown);
-            let _ = writeln!(markdown, "- 理由：{}", inline_text(&item.reason));
-            if let Some(chapter) = item.chapter.as_deref() {
-                let _ = writeln!(markdown, "- 章节：{}", inline_text(chapter));
-            }
-            let _ = writeln!(markdown, "- 笔记类型：{}", inline_text(&item.note_type));
-            let _ = writeln!(markdown);
+                let _ = writeln!(markdown);
+                let _ = writeln!(markdown, "- 理由：{}", inline_text(&item.reason));
+                if let Some(chapter) = item.chapter.as_deref() {
+                    let _ = writeln!(markdown, "- 章节：{}", inline_text(chapter));
+                }
+                let _ = writeln!(markdown, "- 笔记类型：{}", inline_text(&item.note_type));
+                let _ = writeln!(markdown);
             }
         }
     }
@@ -231,13 +245,13 @@ pub fn serialize_book_ai_summary_markdown_with_options(
     );
     if options.include_reflection_feedback {
         if let Some(feedback) = review_feedback {
-        write_ai_feedback_section(
-            &mut markdown,
-            "复盘问题反馈记录",
-            &summary.reflection_questions,
-            &feedback.reflection_questions,
-            reflection_feedback_status_label,
-        );
+            write_ai_feedback_section(
+                &mut markdown,
+                "复盘问题反馈记录",
+                &summary.reflection_questions,
+                &feedback.reflection_questions,
+                reflection_feedback_status_label,
+            );
         }
     }
 
@@ -279,6 +293,7 @@ pub fn serialize_book_ai_summary_markdown_with_options(
 
 pub fn serialize_reading_stats_review_markdown(
     response: &ReadingStatsAiReviewResponse,
+    reading_persona: Option<&ReadingPersona>,
     exported_at: &str,
 ) -> String {
     let review = &response.review;
@@ -286,7 +301,7 @@ pub fn serialize_reading_stats_review_markdown(
     let _ = writeln!(
         markdown,
         "# {}",
-        heading_text(&reading_review_title(&response.mode))
+        heading_text(&reading_review_title(&response.mode, response.base_time))
     );
     let _ = writeln!(markdown);
     let _ = writeln!(
@@ -313,6 +328,7 @@ pub fn serialize_reading_stats_review_markdown(
         "- Prompt 版本：{}",
         inline_text(&review.prompt_version)
     );
+    write_response_format_meta(&mut markdown, review.response_format);
     if let Some(provider_model) = response.provider_model.as_deref() {
         let _ = writeln!(markdown, "- 模型：{}", inline_text(provider_model));
     }
@@ -326,6 +342,13 @@ pub fn serialize_reading_stats_review_markdown(
         let _ = writeln!(markdown, "> {}", inline_text(error_message));
     }
     let _ = writeln!(markdown);
+    write_export_boundary_section(
+        &mut markdown,
+        "本地结构化阅读统计缓存和本地规则生成的阅读倾向数据",
+        &["周期概览、节奏洞察、偏好洞察、重点内容和下一步行动"],
+        &["笔记正文、书籍全文、原始接口响应、API Key 和数据库路径"],
+        "导出只写出本地已有阅读报告缓存，不会同步微信读书远端，也不会重新生成 AI 复盘。",
+    );
 
     write_paragraph_section(&mut markdown, "概览", &review.overview);
     write_string_list_section(
@@ -352,6 +375,7 @@ pub fn serialize_reading_stats_review_markdown(
         &review.next_actions,
         "这次复盘没有输出行动建议。",
     );
+    write_reading_persona_section(&mut markdown, reading_persona);
 
     let _ = writeln!(markdown, "## 数据依据");
     let _ = writeln!(markdown);
@@ -393,6 +417,82 @@ pub fn serialize_reading_stats_review_markdown(
     markdown
 }
 
+fn write_reading_persona_section(markdown: &mut String, reading_persona: Option<&ReadingPersona>) {
+    let Some(persona) = reading_persona else {
+        return;
+    };
+    if persona.status == "insufficient" {
+        return;
+    }
+
+    let is_provisional = persona.status == "provisional";
+    let title = if is_provisional {
+        "阅读倾向（临时）"
+    } else {
+        "阅读人格"
+    };
+    let dimension_label = if is_provisional {
+        "当前倾向"
+    } else {
+        "人格类型"
+    };
+    let dimensions = if is_provisional {
+        persona.dimensions.iter().take(2).collect::<Vec<_>>()
+    } else {
+        persona.dimensions.iter().collect::<Vec<_>>()
+    };
+    let evidence = if is_provisional {
+        persona.evidence.iter().take(2).cloned().collect::<Vec<_>>()
+    } else {
+        persona.evidence.clone()
+    };
+
+    let _ = writeln!(markdown, "## {title}");
+    let _ = writeln!(markdown);
+    if let Some(display_title) = persona.display_title.as_deref() {
+        let _ = writeln!(
+            markdown,
+            "- {dimension_label}：{}",
+            inline_text(display_title)
+        );
+    }
+    if let Some(summary) = persona.summary.as_deref() {
+        let _ = writeln!(markdown, "- 说明：{}", inline_text(summary));
+    }
+    let _ = writeln!(markdown);
+
+    if !dimensions.is_empty() {
+        let _ = writeln!(markdown, "### 维度解释");
+        let _ = writeln!(markdown);
+        for item in dimensions {
+            let _ = writeln!(
+                markdown,
+                "- {}：{}",
+                inline_text(&item.label),
+                inline_text(&item.basis)
+            );
+        }
+        let _ = writeln!(markdown);
+    }
+
+    write_string_list_section(
+        markdown,
+        "观察证据",
+        &evidence,
+        "当前还没有足够证据支撑这一判断。",
+    );
+
+    if let Some(suggestion) = persona.suggestion.as_deref() {
+        let _ = writeln!(markdown, "### 温和建议");
+        let _ = writeln!(markdown);
+        let _ = writeln!(markdown, "- {}", inline_text(suggestion));
+        let _ = writeln!(markdown);
+    }
+
+    let _ = writeln!(markdown, "> {}", inline_text(&persona.basis_notice));
+    let _ = writeln!(markdown);
+}
+
 pub fn serialize_reading_route_markdown(
     response: &ReadingRouteResponse,
     exported_at: &str,
@@ -426,6 +526,7 @@ pub fn serialize_reading_route_markdown(
         "- Prompt 版本：{}",
         inline_text(&route.prompt_version)
     );
+    write_response_format_meta(&mut markdown, route.response_format);
     if let Some(provider_model) = response.provider_model.as_deref() {
         let _ = writeln!(markdown, "- 模型：{}", inline_text(provider_model));
     }
@@ -439,6 +540,13 @@ pub fn serialize_reading_route_markdown(
         let _ = writeln!(markdown, "> {}", inline_text(error_message));
     }
     let _ = writeln!(markdown);
+    write_export_boundary_section(
+        &mut markdown,
+        "当前书、用户确认的候选书、已生成资产引用和本地统计信号",
+        &["指南总览、推进任务、复盘点、下一步行动和来源统计"],
+        &["未选择的候选书、书籍全文、远端写回和后台阅读安排"],
+        "导出只写出本地已有阅读指南缓存，不会重新调用 AI，也不会自动调整阅读计划。",
+    );
 
     write_paragraph_section(
         &mut markdown,
@@ -570,12 +678,17 @@ pub fn serialize_book_decision_markdown(
     let _ = writeln!(markdown);
     let _ = writeln!(markdown, "- Scope：{}", inline_text(&response.scope_id));
     let _ = writeln!(markdown, "- 导出时间：{exported_at}");
-    let _ = writeln!(markdown, "- 生成时间：{}", inline_text(&decision.generated_at));
+    let _ = writeln!(
+        markdown,
+        "- 生成时间：{}",
+        inline_text(&decision.generated_at)
+    );
     let _ = writeln!(
         markdown,
         "- Prompt 版本：{}",
         inline_text(&decision.prompt_version)
     );
+    write_response_format_meta(&mut markdown, decision.response_format);
     if let Some(provider_model) = response.provider_model.as_deref() {
         let _ = writeln!(markdown, "- 模型：{}", inline_text(provider_model));
     }
@@ -589,6 +702,13 @@ pub fn serialize_book_decision_markdown(
         let _ = writeln!(markdown, "> {}", inline_text(error_message));
     }
     let _ = writeln!(markdown);
+    write_export_boundary_section(
+        &mut markdown,
+        "本地候选书架、已生成资产引用和本地统计信号",
+        &["推荐结论、推荐顺序、暂缓项、下一步行动和来源统计"],
+        &["输入范围外的书籍推荐、远端写回、API Key 和数据库路径"],
+        "导出只写出本地已有选书决策缓存，不会重新调用 AI，也不会修改候选书架。",
+    );
 
     write_paragraph_section(&mut markdown, "推荐结论", &decision.decision_overview);
     write_book_decision_candidates(&mut markdown, decision);
@@ -621,7 +741,11 @@ fn write_book_decision_candidates(markdown: &mut String, decision: &BookDecision
             if let Some(author) = candidate.author.as_deref() {
                 let _ = writeln!(markdown, "- 作者：{}", inline_text(author));
             }
-            let _ = writeln!(markdown, "- 为什么现在读：{}", inline_text(&candidate.why_now));
+            let _ = writeln!(
+                markdown,
+                "- 为什么现在读：{}",
+                inline_text(&candidate.why_now)
+            );
             let _ = writeln!(markdown, "- 取舍理由：{}", inline_text(&candidate.tradeoff));
             let _ = writeln!(
                 markdown,
@@ -659,6 +783,35 @@ fn write_book_decision_candidates(markdown: &mut String, decision: &BookDecision
         }
         let _ = writeln!(markdown);
     }
+}
+
+fn write_response_format_meta(
+    markdown: &mut String,
+    response_format: Option<AiResponseFormatKind>,
+) {
+    if let Some(response_format) = response_format {
+        let _ = writeln!(
+            markdown,
+            "- 结构化约束：{}",
+            inline_text(response_format.as_str())
+        );
+    }
+}
+
+fn write_export_boundary_section(
+    markdown: &mut String,
+    source: &str,
+    includes: &[&str],
+    excludes: &[&str],
+    behavior: &str,
+) {
+    let _ = writeln!(markdown, "## 数据边界");
+    let _ = writeln!(markdown);
+    let _ = writeln!(markdown, "- 数据来源：{}", inline_text(source));
+    let _ = writeln!(markdown, "- 包含：{}", inline_text(&includes.join("；")));
+    let _ = writeln!(markdown, "- 不包含：{}", inline_text(&excludes.join("；")));
+    let _ = writeln!(markdown, "- 导出行为：{}", inline_text(behavior));
+    let _ = writeln!(markdown);
 }
 
 fn write_book_decision_source_stats(markdown: &mut String, decision: &BookDecision) {
@@ -1195,7 +1348,11 @@ fn write_ai_feedback_section(
         has_feedback = true;
         let _ = writeln!(markdown, "{}. {}", index + 1, inline_text(item));
         let _ = writeln!(markdown, "   - 状态：{}", status_label(&feedback.status));
-        if let Some(note) = feedback.note.as_deref().filter(|note| !note.trim().is_empty()) {
+        if let Some(note) = feedback
+            .note
+            .as_deref()
+            .filter(|note| !note.trim().is_empty())
+        {
             let _ = writeln!(markdown, "   - 记录：");
             for line in note.lines() {
                 if line.trim().is_empty() {
@@ -1397,27 +1554,44 @@ fn sanitize_block_id(value: &str) -> String {
     }
 }
 
-fn reading_review_title(mode: &str) -> String {
+fn reading_review_title(mode: &str, base_time: i64) -> String {
+    if mode == "overall" || base_time <= 0 {
+        return "长期阅读画像".to_string();
+    }
+
+    let Some(datetime) = chrono::DateTime::from_timestamp(base_time, 0) else {
+        return match mode {
+            "weekly" => "周度阅读复盘".to_string(),
+            "annually" => "年度阅读复盘".to_string(),
+            _ => "月度阅读复盘".to_string(),
+        };
+    };
+    let local = datetime.with_timezone(&Local);
+
     match mode {
-        "weekly" => "本周阅读复盘".to_string(),
-        "annually" => "年度阅读复盘".to_string(),
-        "overall" => "长期阅读画像".to_string(),
-        _ => "本月阅读复盘".to_string(),
+        "weekly" => format!(
+            "{}-{:02}-{:02} 当周阅读复盘",
+            local.year(),
+            local.month(),
+            local.day()
+        ),
+        "annually" => format!("{} 年度阅读复盘", local.year()),
+        _ => format!("{} 年 {} 月阅读复盘", local.year(), local.month()),
     }
 }
 
 fn reading_review_period_label(mode: &str) -> String {
     match mode {
-        "weekly" => "本周".to_string(),
-        "annually" => "今年".to_string(),
+        "weekly" => "周度".to_string(),
+        "annually" => "年度".to_string(),
         "overall" => "总计".to_string(),
-        _ => "本月".to_string(),
+        _ => "月度".to_string(),
     }
 }
 
 fn reading_review_anchor_label(mode: &str, base_time: i64) -> String {
     if mode == "overall" || base_time <= 0 {
-        return "总计".to_string();
+        return "全部历史".to_string();
     }
 
     let Some(datetime) = chrono::DateTime::from_timestamp(base_time, 0) else {
@@ -1456,10 +1630,11 @@ mod tests {
             build_book_notes_record, HighlightRecord, NotebookBookRecord, ThoughtRecord,
         },
         services::ai::{
-            AiFeedbackExportRecord, AiReviewFeedbackExport, BookAiRepresentativeQuote,
-            BookAiSummary, BookAiSummaryResponse, BookAiSummarySource, BookAiSummarySourceStats,
-            BookDecision, BookDecisionDeferredCandidate, BookDecisionResponse,
-            BookDecisionSourceStats, BookDecisionTopCandidate, ReadingRoute, ReadingRouteBookStep,
+            AiFeedbackExportRecord, AiResponseFormatKind, AiReviewFeedbackExport,
+            BookAiRepresentativeQuote, BookAiSummary, BookAiSummaryResponse, BookAiSummarySource,
+            BookAiSummarySourceStats, BookDecision, BookDecisionDeferredCandidate,
+            BookDecisionResponse, BookDecisionSourceStats, BookDecisionTopCandidate,
+            ReadingPersona, ReadingPersonaDimension, ReadingRoute, ReadingRouteBookStep,
             ReadingRouteCheckpoint, ReadingRouteResponse, ReadingRouteSourceStats,
             ReadingStatsAiReview, ReadingStatsAiReviewResponse, ReadingStatsAiReviewSourceStats,
         },
@@ -1611,20 +1786,30 @@ mod tests {
                 },
                 generated_at: "100".to_string(),
                 prompt_version: "book-notes-summary-v3".to_string(),
+                response_format: Some(AiResponseFormatKind::JsonSchema),
                 basis_notice: "基于本地笔记生成。".to_string(),
             },
             cached_updated_at: Some("120".to_string()),
             error_message: None,
         };
 
-        let markdown =
-            serialize_book_ai_summary_markdown("b1", "深度工作", Some("卡尔"), &response, "130", None);
+        let markdown = serialize_book_ai_summary_markdown(
+            "b1",
+            "深度工作",
+            Some("卡尔"),
+            &response,
+            "130",
+            None,
+        );
 
         assert!(markdown.contains("# 深度工作 AI 总结"));
         assert!(markdown.contains("## 关键观点"));
         assert!(markdown.contains("## 代表性摘录"));
         assert!(markdown.contains("原文摘录"));
+        assert!(markdown.contains("## 数据边界"));
+        assert!(markdown.contains("导出不会同步微信读书远端"));
         assert!(markdown.contains("## 来源统计"));
+        assert!(markdown.contains("- 结构化约束：json_schema"));
     }
 
     #[test]
@@ -1654,6 +1839,7 @@ mod tests {
                 },
                 generated_at: "100".to_string(),
                 prompt_version: "book-notes-summary-v3".to_string(),
+                response_format: Some(AiResponseFormatKind::JsonSchema),
                 basis_notice: "基于本地笔记生成。".to_string(),
             },
             cached_updated_at: None,
@@ -1730,6 +1916,7 @@ mod tests {
                 },
                 generated_at: "100".to_string(),
                 prompt_version: "book-notes-summary-v3".to_string(),
+                response_format: Some(AiResponseFormatKind::JsonObject),
                 basis_notice: "基于本地笔记生成。".to_string(),
             },
             cached_updated_at: None,
@@ -1794,6 +1981,7 @@ mod tests {
                 preference_insights: vec!["偏好洞察".to_string()],
                 focus_items: vec!["重点内容".to_string()],
                 next_actions: vec!["行动建议".to_string()],
+                reading_persona: None,
                 source_stats: ReadingStatsAiReviewSourceStats {
                     mode: "monthly".to_string(),
                     base_time: 1_725_955_200,
@@ -1806,19 +1994,118 @@ mod tests {
                 },
                 generated_at: "100".to_string(),
                 prompt_version: "reading-stats-review-v1".to_string(),
+                response_format: Some(AiResponseFormatKind::JsonSchema),
                 basis_notice: "基于结构化阅读统计生成。".to_string(),
             },
             cached_updated_at: Some("120".to_string()),
             error_message: Some("当前统计已变化。".to_string()),
         };
+        let persona = ReadingPersona {
+            status: "complete".to_string(),
+            code: Some("INFJ".to_string()),
+            label: Some("历史共情者".to_string()),
+            display_title: Some("INFJ 型读者 · 历史共情者".to_string()),
+            palette_group: Some("NF".to_string()),
+            accent_tone: Some("rose".to_string()),
+            basis_notice: "基于本周期阅读记录生成的阅读风格隐喻，不代表真实心理人格。".to_string(),
+            dimensions: vec![
+                ReadingPersonaDimension {
+                    axis: "energy".to_string(),
+                    key: "I".to_string(),
+                    label: "主题深度".to_string(),
+                    strength: "strong".to_string(),
+                    basis: "注意力更集中在少数主线和作者上，说明这一周期更接近持续深挖。"
+                        .to_string(),
+                },
+                ReadingPersonaDimension {
+                    axis: "information".to_string(),
+                    key: "N".to_string(),
+                    label: "概念想象".to_string(),
+                    strength: "medium".to_string(),
+                    basis: "主题偏向历史和文学，说明这段时间更在意概念、背景和长期脉络。"
+                        .to_string(),
+                },
+            ],
+            evidence: vec![
+                "历史 是当前投入最多的主题，约占分类投入的 63%。".to_string(),
+                "本周期活跃阅读 12 天，稳定分布的高活跃时间段约占 58%。".to_string(),
+            ],
+            confidence: Some(0.81),
+            summary: Some("这一周期更像围绕历史主线持续推进。".to_string()),
+            suggestion: Some("下个周期可以补一本文学短书，增加横向参照。".to_string()),
+        };
 
-        let markdown = serialize_reading_stats_review_markdown(&response, "130");
+        let markdown = serialize_reading_stats_review_markdown(&response, Some(&persona), "130");
 
-        assert!(markdown.contains("# 本月阅读复盘"));
+        assert!(markdown.contains("# 2024 年 9 月阅读复盘"));
+        assert!(markdown.contains("- 周期：月度"));
+        assert!(markdown.contains("- 周期基点：2024年09月"));
         assert!(markdown.contains("## 节奏洞察"));
         assert!(markdown.contains("## 下一步行动"));
+        assert!(markdown.contains("## 阅读人格"));
+        assert!(markdown.contains("INFJ 型读者 · 历史共情者"));
+        assert!(markdown.contains("### 维度解释"));
+        assert!(markdown.contains("### 温和建议"));
         assert!(markdown.contains("当前统计已变化。"));
+        assert!(markdown.contains("## 数据边界"));
+        assert!(markdown.contains("本地结构化阅读统计缓存"));
         assert!(markdown.contains("## 数据依据"));
+        assert!(markdown.contains("- 结构化约束：json_schema"));
+    }
+
+    #[test]
+    fn reading_stats_review_markdown_export_skips_insufficient_persona_section() {
+        let response = ReadingStatsAiReviewResponse {
+            mode: "monthly".to_string(),
+            base_time: 1_725_955_200,
+            prompt_version: "reading-stats-review-v2".to_string(),
+            input_hash: "hash".to_string(),
+            provider_model: None,
+            source: BookAiSummarySource::Cache,
+            review: ReadingStatsAiReview {
+                overview: "样本较少。".to_string(),
+                rhythm_insights: vec![],
+                preference_insights: vec![],
+                focus_items: vec![],
+                next_actions: vec![],
+                reading_persona: None,
+                source_stats: ReadingStatsAiReviewSourceStats {
+                    mode: "monthly".to_string(),
+                    base_time: 1_725_955_200,
+                    read_days: Some(1),
+                    total_read_time_seconds: Some(600),
+                    day_average_read_time_seconds: Some(600),
+                    bucket_count: 1,
+                    longest_item_count: 1,
+                    category_count: 1,
+                },
+                generated_at: "100".to_string(),
+                prompt_version: "reading-stats-review-v2".to_string(),
+                response_format: Some(AiResponseFormatKind::JsonSchema),
+                basis_notice: "基于结构化阅读统计生成。".to_string(),
+            },
+            cached_updated_at: None,
+            error_message: None,
+        };
+        let persona = ReadingPersona {
+            status: "insufficient".to_string(),
+            code: None,
+            label: None,
+            display_title: None,
+            palette_group: None,
+            accent_tone: None,
+            basis_notice: "基于本周期阅读记录生成的阅读风格隐喻，不代表真实心理人格。".to_string(),
+            dimensions: vec![],
+            evidence: vec![],
+            confidence: None,
+            summary: Some("本期阅读样本较少，继续阅读后再生成阅读人格。".to_string()),
+            suggestion: None,
+        };
+
+        let markdown = serialize_reading_stats_review_markdown(&response, Some(&persona), "130");
+
+        assert!(!markdown.contains("## 阅读人格"));
+        assert!(!markdown.contains("## 阅读倾向（临时）"));
     }
 
     #[test]
@@ -1864,6 +2151,7 @@ mod tests {
                 },
                 generated_at: "100".to_string(),
                 prompt_version: "reading-route-v2.1".to_string(),
+                response_format: Some(AiResponseFormatKind::JsonSchema),
                 basis_notice: "基于当前书生成。".to_string(),
             },
             cached_updated_at: Some("120".to_string()),
@@ -1885,6 +2173,9 @@ mod tests {
         assert!(!markdown.contains("阅读路线"));
         assert!(!markdown.contains("路线总览"));
         assert!(!markdown.contains("## 阅读顺序"));
+        assert!(markdown.contains("## 数据边界"));
+        assert!(markdown.contains("未选择的候选书"));
+        assert!(markdown.contains("- 结构化约束：json_schema"));
     }
 
     #[test]
@@ -1923,6 +2214,7 @@ mod tests {
                 },
                 generated_at: "100".to_string(),
                 prompt_version: "book-decision-v1".to_string(),
+                response_format: Some(AiResponseFormatKind::JsonObject),
                 basis_notice: "只基于本地候选和结构化信号生成。".to_string(),
             },
             cached_updated_at: Some("120".to_string()),
@@ -1940,6 +2232,9 @@ mod tests {
         assert!(markdown.contains("- 长期主义：当前更适合低启动成本任务。"));
         assert!(markdown.contains("## 下一步行动"));
         assert!(markdown.contains("今天安排 45 分钟读第 2 章。"));
+        assert!(markdown.contains("## 数据边界"));
+        assert!(markdown.contains("输入范围外的书籍推荐"));
         assert!(markdown.contains("## 来源统计"));
+        assert!(markdown.contains("- 结构化约束：json_object"));
     }
 }

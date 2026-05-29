@@ -4,6 +4,7 @@ test-results/
 src-tauri/target/
 src-tauri/target-codex-check/
 .playwright-mcp/
+.codex-temp/
 .idea/
 .vscode/
 .venv/
@@ -21,4 +22,5 @@ src-tauri/target-codex-check/
 /settings-advanced-actions-after.png
 /settings-advanced-compact.png
 /window-chrome-check.png
+/\.codex-temp/reading-preview-data.json
 /wxreadmaster

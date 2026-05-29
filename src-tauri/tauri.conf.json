@@ -32,7 +32,7 @@
     "createUpdaterArtifacts": true,
     "targets": ["nsis"],
     "category": "Productivity",
-    "icon": ["icons/icon-v2.ico"]
+    "icon": ["icons/icon-v3.ico"]
   },
   "plugins": {
     "updater": {

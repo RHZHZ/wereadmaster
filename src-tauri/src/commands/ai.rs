@@ -7,7 +7,8 @@ use crate::services::ai::{
     AiReviewFeedbackState, AiService, AiServiceError, AiSettingsState, BookAiSummaryListItem,
     BookAiSummaryResponse, BookAiSummaryUpdateContext, BookDecisionCandidateInput,
     BookDecisionResponse, BookNotesSummariesExportOptions, ExportAiBulkMarkdownResponse,
-    ExportAiMarkdownResponse, ReadingRouteRequest, ReadingRouteResponse,
+    ExportAiMarkdownResponse, LocalReaderSelectionQuestionInput,
+    LocalReaderSelectionQuestionResponse, ReadingRouteRequest, ReadingRouteResponse,
     ReadingStatsAiReviewResponse,
 };
 
@@ -321,5 +322,16 @@ pub fn export_book_decision_markdown(
 ) -> Result<ExportAiMarkdownResponse, AiCommandError> {
     AiService::new(app)
         .export_book_decision_markdown(candidates, goal)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn ask_local_reader_selection_question(
+    app: AppHandle,
+    request: LocalReaderSelectionQuestionInput,
+) -> Result<LocalReaderSelectionQuestionResponse, AiCommandError> {
+    AiService::new(app)
+        .ask_local_reader_selection_question(request)
+        .await
         .map_err(Into::into)
 }

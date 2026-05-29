@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 use serde::Serialize;
 use serde_json::Value;
 
@@ -241,10 +243,18 @@ pub fn group_notes_by_chapter(
         groups[index].thoughts.push(thought.clone());
     }
 
-    groups
+    let mut visible_groups = groups
         .into_iter()
         .filter(|group| !group.highlights.is_empty() || !group.thoughts.is_empty())
-        .collect()
+        .collect::<Vec<_>>();
+
+    for group in &mut visible_groups {
+        group.highlights.sort_by(compare_highlight_position);
+        group.thoughts.sort_by(compare_thought_position);
+    }
+
+    visible_groups.sort_by(|left, right| compare_chapter_group_order(left, right, chapters));
+    visible_groups
 }
 
 fn map_notebook_book(value: &Value) -> Option<NotebookBookRecord> {
@@ -407,6 +417,70 @@ fn find_or_create_group(
     groups.len() - 1
 }
 
+fn compare_chapter_group_order(
+    left: &ChapterNoteGroup,
+    right: &ChapterNoteGroup,
+    chapters: &[NoteChapterRecord],
+) -> Ordering {
+    chapter_group_sort_key(left, chapters).cmp(&chapter_group_sort_key(right, chapters))
+}
+
+fn chapter_group_sort_key<'group>(
+    group: &'group ChapterNoteGroup,
+    chapters: &[NoteChapterRecord],
+) -> (i64, i64, i64, &'group str) {
+    if let Some(uid) = group.chapter_uid {
+        if let Some((index, chapter)) = chapters
+            .iter()
+            .enumerate()
+            .find(|(_, chapter)| chapter.chapter_uid == uid)
+        {
+            return (0, chapter.chapter_idx, index as i64, group.title.as_str());
+        }
+
+        return (1, uid, 0, group.title.as_str());
+    }
+
+    (2, i64::MAX, 0, group.title.as_str())
+}
+
+fn compare_highlight_position(left: &HighlightRecord, right: &HighlightRecord) -> Ordering {
+    note_sort_key(&left.range_text, left.create_time, &left.bookmark_id).cmp(&note_sort_key(
+        &right.range_text,
+        right.create_time,
+        &right.bookmark_id,
+    ))
+}
+
+fn compare_thought_position(left: &ThoughtRecord, right: &ThoughtRecord) -> Ordering {
+    note_sort_key(&left.range_text, left.create_time, &left.review_id).cmp(&note_sort_key(
+        &right.range_text,
+        right.create_time,
+        &right.review_id,
+    ))
+}
+
+fn note_sort_key<'id>(
+    range_text: &Option<String>,
+    create_time: Option<i64>,
+    id: &'id str,
+) -> (i64, i64, &'id str) {
+    (
+        range_start(range_text).unwrap_or(i64::MAX),
+        create_time.unwrap_or(i64::MAX),
+        id,
+    )
+}
+
+fn range_start(range_text: &Option<String>) -> Option<i64> {
+    range_text
+        .as_deref()?
+        .split(|character: char| !character.is_ascii_digit())
+        .find(|part| !part.is_empty())?
+        .parse()
+        .ok()
+}
+
 fn object_child<'value>(value: &'value Value, key: &str) -> Option<&'value Value> {
     value.get(key).filter(|child| child.is_object())
 }
@@ -448,7 +522,10 @@ fn boolish_value(value: &Value) -> bool {
 mod tests {
     use serde_json::json;
 
-    use super::{map_bookmark_list_response, map_mine_reviews_page, map_notebook_overview_page};
+    use super::{
+        group_notes_by_chapter, map_bookmark_list_response, map_mine_reviews_page,
+        map_notebook_overview_page, HighlightRecord, NoteChapterRecord, ThoughtRecord,
+    };
 
     #[test]
     fn notebook_total_count_uses_reviews_highlights_and_bookmarks() {
@@ -514,5 +591,111 @@ mod tests {
         assert_eq!(page.thoughts[0].abstract_text, Some("依附原文".to_string()));
         assert_eq!(page.thoughts[0].chapter_uid, Some(7));
         assert_eq!(page.thoughts[0].range_text, Some("12-34".to_string()));
+    }
+
+    #[test]
+    fn chapter_groups_follow_chapter_order_and_note_position() {
+        let chapters = vec![
+            chapter(550, 3, "后记"),
+            chapter(424, 1, "第一章"),
+            chapter(548, 2, "第二章"),
+        ];
+        let highlights = vec![
+            highlight("h550-late", Some(550), "后记", Some("900-920"), Some(1)),
+            highlight("h424", Some(424), "第一章", Some("30-40"), Some(2)),
+            highlight("h550-early", Some(550), "后记", Some("100-120"), Some(3)),
+        ];
+        let thoughts = vec![thought("t548", Some(548), "第二章", Some("50-60"), Some(4))];
+
+        let groups = group_notes_by_chapter(&chapters, &highlights, &thoughts);
+
+        assert_eq!(
+            groups
+                .iter()
+                .map(|group| group.chapter_uid)
+                .collect::<Vec<_>>(),
+            vec![Some(424), Some(548), Some(550)]
+        );
+        assert_eq!(
+            groups[2]
+                .highlights
+                .iter()
+                .map(|highlight| highlight.bookmark_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["h550-early", "h550-late"]
+        );
+    }
+
+    #[test]
+    fn chapter_groups_fall_back_to_chapter_uid_when_chapter_catalog_is_missing() {
+        let highlights = vec![
+            highlight("h550", Some(550), "后记", Some("900-920"), Some(1)),
+            highlight("h424", Some(424), "第一章", Some("30-40"), Some(2)),
+        ];
+
+        let groups = group_notes_by_chapter(&[], &highlights, &[]);
+
+        assert_eq!(
+            groups
+                .iter()
+                .map(|group| group.chapter_uid)
+                .collect::<Vec<_>>(),
+            vec![Some(424), Some(550)]
+        );
+    }
+
+    fn chapter(chapter_uid: i64, chapter_idx: i64, title: &str) -> NoteChapterRecord {
+        NoteChapterRecord {
+            book_id: "b1".to_string(),
+            chapter_uid,
+            chapter_idx,
+            title: title.to_string(),
+            word_count: None,
+            level: 1,
+            raw_json: "{}".to_string(),
+        }
+    }
+
+    fn highlight(
+        bookmark_id: &str,
+        chapter_uid: Option<i64>,
+        chapter_title: &str,
+        range_text: Option<&str>,
+        create_time: Option<i64>,
+    ) -> HighlightRecord {
+        HighlightRecord {
+            bookmark_id: bookmark_id.to_string(),
+            book_id: "b1".to_string(),
+            chapter_uid,
+            chapter_title: Some(chapter_title.to_string()),
+            mark_text: "划线".to_string(),
+            create_time,
+            range_text: range_text.map(str::to_string),
+            deep_link: None,
+            raw_json: "{}".to_string(),
+        }
+    }
+
+    fn thought(
+        review_id: &str,
+        chapter_uid: Option<i64>,
+        chapter_name: &str,
+        range_text: Option<&str>,
+        create_time: Option<i64>,
+    ) -> ThoughtRecord {
+        ThoughtRecord {
+            review_id: review_id.to_string(),
+            book_id: "b1".to_string(),
+            content: "想法".to_string(),
+            abstract_text: None,
+            create_time,
+            star: None,
+            chapter_name: Some(chapter_name.to_string()),
+            chapter_uid,
+            range_text: range_text.map(str::to_string),
+            deep_link: None,
+            is_finish: None,
+            raw_json: "{}".to_string(),
+        }
     }
 }

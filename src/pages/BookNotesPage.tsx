@@ -257,7 +257,11 @@ export function BookNotesPage({
         <div>
           <p className="section-kicker">单本笔记</p>
           <h3>{displayBook?.title || notes?.bookId || targetBookId}</h3>
-          <p>{displayBook?.author || "划线和想法会按章节分组展示。"}</p>
+          <p>
+            {displayBook?.author
+              ? `${displayBook.author} · 可导出 Markdown，也可手动整理成复盘。`
+              : "划线和想法会按章节分组展示，可导出 Markdown，也可手动整理成复盘。"}
+          </p>
           <div className="book-notes-actions">
             <button
               className="secondary-action"
@@ -292,7 +296,7 @@ export function BookNotesPage({
               disabled={!notes || isLoading || isExporting}
             >
               <Sparkles aria-hidden="true" size={18} />
-              AI 总结
+              AI 复盘
             </button>
           </div>
         </div>

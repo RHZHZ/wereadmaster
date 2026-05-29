@@ -20,9 +20,9 @@ pub fn run() {
 
             #[cfg(not(mobile))]
             {
-            let salt_path = data_dir.join("stronghold-salt.txt");
-            app.handle()
-                .plugin(tauri_plugin_stronghold::Builder::with_argon2(&salt_path).build())?;
+                let salt_path = data_dir.join("stronghold-salt.txt");
+                app.handle()
+                    .plugin(tauri_plugin_stronghold::Builder::with_argon2(&salt_path).build())?;
             }
 
             #[cfg(desktop)]
@@ -61,6 +61,7 @@ pub fn run() {
             commands::ai::summarize_book_decision,
             commands::ai::get_latest_book_decision,
             commands::ai::export_book_decision_markdown,
+            commands::ai::ask_local_reader_selection_question,
             commands::credentials::get_credential_status,
             commands::credentials::validate_credential,
             commands::credentials::save_credential,
@@ -81,14 +82,23 @@ pub fn run() {
             commands::discovery::get_recommendations,
             commands::discovery::get_similar_books,
             commands::discovery::get_public_reviews,
+            commands::local_books::import_local_book,
+            commands::local_books::choose_local_book_file,
+            commands::local_books::list_local_books,
+            commands::local_books::get_local_book,
+            commands::local_books::get_local_book_text,
+            commands::local_books::get_local_reading_progress,
+            commands::local_books::save_local_reading_progress,
             commands::reading_state::list_reading_item_states,
             commands::reading_state::get_reading_item_state,
             commands::reading_state::upsert_reading_item_state,
             commands::reading_state::remove_reading_item_state,
             commands::settings::get_settings_state,
+            commands::settings::get_remote_app_update_manifest,
             commands::settings::clear_local_cache,
             commands::settings::clear_ai_output_cache,
             commands::settings::export_diagnostics,
+            commands::settings::export_report_image,
             commands::settings::export_local_data_backup,
             commands::settings::restore_local_data_backup,
             commands::settings::choose_custom_data_directory,

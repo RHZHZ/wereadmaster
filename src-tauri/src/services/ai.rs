@@ -1,7 +1,9 @@
 use std::{
+    cmp::Ordering,
     collections::{HashMap, HashSet},
     fmt::{self, Write as _},
     fs,
+    sync::OnceLock,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -20,20 +22,25 @@ use crate::{
         serialize_book_decision_markdown, serialize_reading_route_markdown,
         serialize_reading_stats_review_markdown, BookAiSummaryMarkdownOptions,
     },
-    mappers::{notes::BookNotesRecord, stats::ReadingStatsRecord},
-    platform::stronghold::{Client, kdf::KeyDerivation, stronghold::Stronghold},
+    mappers::{
+        notes::BookNotesRecord,
+        stats::{ReadingCategoryRecord, ReadingStatsRecord},
+    },
+    platform::stronghold::{kdf::KeyDerivation, stronghold::Stronghold, Client},
     services::{notes::NotesService, stats::StatsService},
 };
 
 pub const BOOK_NOTES_SUMMARY_PROMPT_VERSION: &str = "book-notes-summary-v3";
-pub const READING_STATS_REVIEW_PROMPT_VERSION: &str = "reading-stats-review-v1";
+pub const READING_STATS_REVIEW_PROMPT_VERSION: &str = "reading-stats-review-v2";
 pub const READING_ROUTE_PROMPT_VERSION: &str = "reading-route-v2.1";
 pub const BOOK_DECISION_PROMPT_VERSION: &str = "book-decision-v1";
+pub const LOCAL_READER_SELECTION_QA_PROMPT_VERSION: &str = "local-reader-selection-qa-v1";
 
 pub const BOOK_NOTES_SUMMARY_FEATURE: &str = "book-notes-summary";
 const READING_STATS_REVIEW_FEATURE: &str = "reading-stats-review";
 const READING_ROUTE_FEATURE: &str = "reading-route";
 const BOOK_DECISION_FEATURE: &str = "book-decision";
+const LOCAL_READER_SELECTION_QA_FEATURE: &str = "local-reader-selection-qa";
 const AI_JSON_MAX_TOKENS: u16 = 4096;
 const CLIENT_PATH: &[u8] = b"ai-credentials";
 const API_KEY_RECORD: &[u8] = b"ai-api-key";
@@ -51,10 +58,205 @@ const MAX_STATS_RANK_ITEMS: usize = 12;
 const MAX_STATS_CATEGORIES: usize = 12;
 const MAX_ROUTE_CANDIDATES: usize = 8;
 const MAX_BOOK_DECISION_CANDIDATES: usize = 8;
+const MAX_LOCAL_READER_SELECTED_TEXT_CHARS: usize = 2_000;
+const MAX_LOCAL_READER_QUESTION_CHARS: usize = 600;
+const MAX_LOCAL_READER_ANSWER_CHARS: usize = 8_000;
+const MAX_LOCAL_READER_LIST_ITEM_CHARS: usize = 500;
+const MAX_LOCAL_READER_FOLLOW_UP_QUESTIONS: usize = 3;
 const AI_REQUEST_TIMEOUT_SECONDS: u64 = 60;
+static READING_PERSONA_CONFIG: OnceLock<ReadingPersonaConfig> = OnceLock::new();
 
 fn default_true() -> bool {
     true
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadingPersonaConfig {
+    basis_notice: String,
+    fallback_label: String,
+    definitions: HashMap<String, ReadingPersonaDefinitionConfig>,
+    category_tokens: ReadingPersonaCategoryTokensConfig,
+    thresholds: ReadingPersonaThresholdsConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadingPersonaDefinitionConfig {
+    label: String,
+    palette_group: String,
+    accent_tone: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadingPersonaCategoryTokensConfig {
+    practical: Vec<String>,
+    conceptual: Vec<String>,
+    analytical: Vec<String>,
+    resonant: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadingPersonaThresholdsConfig {
+    stable_bucket_multiplier: f64,
+    axis_bias_multiplier: f64,
+    status: ReadingPersonaStatusThresholdsConfig,
+    energy: ReadingPersonaEnergyThresholdsConfig,
+    lifestyle: ReadingPersonaLifestyleThresholdsConfig,
+    strength: ReadingPersonaStrengthThresholdsConfig,
+    evidence: ReadingPersonaEvidenceThresholdsConfig,
+    suggestion: ReadingPersonaSuggestionThresholdsConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadingPersonaStatusThresholdsConfig {
+    complete: ReadingPersonaCompleteStatusThresholdConfig,
+    provisional: ReadingPersonaProvisionalStatusThresholdConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadingPersonaCompleteStatusThresholdConfig {
+    min_total_read_time_seconds: f64,
+    min_read_days: i64,
+    min_active_bucket_count: usize,
+    min_category_count: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadingPersonaProvisionalStatusThresholdConfig {
+    min_total_read_time_seconds: f64,
+    min_read_days: i64,
+    min_stable_dimension_count: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadingPersonaEnergyThresholdsConfig {
+    introverted: ReadingPersonaIntrovertedThresholdConfig,
+    breadth_strength: ReadingPersonaBreadthStrengthThresholdConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadingPersonaIntrovertedThresholdConfig {
+    min_top3_category_share: f64,
+    min_author_concentration: f64,
+    min_top_item_share: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadingPersonaBreadthStrengthThresholdConfig {
+    strong: ReadingPersonaBreadthStrongThresholdConfig,
+    medium: ReadingPersonaBreadthMediumThresholdConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadingPersonaBreadthStrongThresholdConfig {
+    max_top3_category_share: f64,
+    max_author_concentration: f64,
+    max_top_item_share: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadingPersonaBreadthMediumThresholdConfig {
+    max_top3_category_share: f64,
+    max_top_item_share: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadingPersonaLifestyleThresholdsConfig {
+    planned: ReadingPersonaPlannedThresholdConfig,
+    exploratory: ReadingPersonaExploratoryThresholdConfig,
+    judging_strength: ReadingPersonaJudgingStrengthThresholdConfig,
+    perceiving_strength: ReadingPersonaPerceivingStrengthThresholdConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadingPersonaPlannedThresholdConfig {
+    min_read_days: i64,
+    min_stable_bucket_share: f64,
+    min_top_item_share: f64,
+    min_compare: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadingPersonaExploratoryThresholdConfig {
+    max_read_days: i64,
+    max_active_bucket_count: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadingPersonaJudgingStrengthThresholdConfig {
+    read_days_scale: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadingPersonaPerceivingStrengthThresholdConfig {
+    strong: ReadingPersonaPerceivingThresholdLevelConfig,
+    medium: ReadingPersonaPerceivingThresholdLevelConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadingPersonaPerceivingThresholdLevelConfig {
+    max_read_days: i64,
+    max_active_bucket_count: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadingPersonaStrengthThresholdsConfig {
+    ratio: ReadingPersonaStrengthRatioThresholdConfig,
+    delta: ReadingPersonaStrengthDeltaThresholdConfig,
+    confidence: ReadingPersonaStrengthConfidenceThresholdConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadingPersonaStrengthRatioThresholdConfig {
+    strong: f64,
+    medium: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadingPersonaStrengthDeltaThresholdConfig {
+    strong: f64,
+    medium: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadingPersonaStrengthConfidenceThresholdConfig {
+    strong: f64,
+    medium: f64,
+    light: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadingPersonaEvidenceThresholdsConfig {
+    provisional_max_items: usize,
+    default_max_items: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadingPersonaSuggestionThresholdsConfig {
+    introverted_min_top_category_share: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,6 +328,7 @@ pub struct BookAiSummary {
     pub source_stats: BookAiSummarySourceStats,
     pub generated_at: String,
     pub prompt_version: String,
+    pub response_format: Option<AiResponseFormatKind>,
     pub basis_notice: String,
 }
 
@@ -145,6 +348,28 @@ pub enum BookAiSummarySource {
     Generated,
     StaleCache,
     Empty,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AiResponseFormatKind {
+    JsonSchema,
+    JsonObject,
+}
+
+impl AiResponseFormatKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::JsonSchema => "json_schema",
+            Self::JsonObject => "json_object",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProviderJsonResult {
+    value: Value,
+    response_format: AiResponseFormatKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -189,10 +414,46 @@ pub struct ReadingStatsAiReview {
     pub preference_insights: Vec<String>,
     pub focus_items: Vec<String>,
     pub next_actions: Vec<String>,
+    pub reading_persona: Option<ReadingPersonaPatch>,
     pub source_stats: ReadingStatsAiReviewSourceStats,
     pub generated_at: String,
     pub prompt_version: String,
+    pub response_format: Option<AiResponseFormatKind>,
     pub basis_notice: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingPersonaPatch {
+    pub summary: Option<String>,
+    pub suggestion: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingPersonaDimension {
+    pub axis: String,
+    pub key: String,
+    pub label: String,
+    pub strength: String,
+    pub basis: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingPersona {
+    pub status: String,
+    pub code: Option<String>,
+    pub label: Option<String>,
+    pub display_title: Option<String>,
+    pub palette_group: Option<String>,
+    pub accent_tone: Option<String>,
+    pub basis_notice: String,
+    pub dimensions: Vec<ReadingPersonaDimension>,
+    pub evidence: Vec<String>,
+    pub confidence: Option<f64>,
+    pub summary: Option<String>,
+    pub suggestion: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -280,6 +541,7 @@ pub struct ReadingRoute {
     pub source_stats: ReadingRouteSourceStats,
     pub generated_at: String,
     pub prompt_version: String,
+    pub response_format: Option<AiResponseFormatKind>,
     pub basis_notice: String,
 }
 
@@ -349,6 +611,7 @@ pub struct BookDecision {
     pub source_stats: BookDecisionSourceStats,
     pub generated_at: String,
     pub prompt_version: String,
+    pub response_format: Option<AiResponseFormatKind>,
     pub basis_notice: String,
 }
 
@@ -361,6 +624,62 @@ pub struct BookDecisionResponse {
     pub provider_model: Option<String>,
     pub source: BookAiSummarySource,
     pub decision: BookDecision,
+    pub cached_updated_at: Option<String>,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceItemInput {
+    pub source: String,
+    pub source_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalReaderSelectionBookInput {
+    pub title: String,
+    pub author: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalReaderSelectionInput {
+    pub text: String,
+    pub start_offset: i64,
+    pub end_offset: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalReaderSelectionQuestionInput {
+    pub source_item: SourceItemInput,
+    pub book: LocalReaderSelectionBookInput,
+    pub selection: LocalReaderSelectionInput,
+    pub question: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalReaderSelectionAnswer {
+    pub answer: String,
+    pub key_points: Vec<String>,
+    pub follow_up_questions: Vec<String>,
+    pub generated_at: String,
+    pub prompt_version: String,
+    pub response_format: Option<AiResponseFormatKind>,
+    pub basis_notice: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalReaderSelectionQuestionResponse {
+    pub source_item: SourceItemInput,
+    pub prompt_version: String,
+    pub input_hash: String,
+    pub provider_model: Option<String>,
+    pub source: BookAiSummarySource,
+    pub answer: LocalReaderSelectionAnswer,
     pub cached_updated_at: Option<String>,
     pub error_message: Option<String>,
 }
@@ -848,11 +1167,12 @@ impl AiService {
         let api_key = require_ai_credential_for_uncached_summary(self.read_api_key())?;
         let result = request_book_notes_summary(&api_key, &provider, &summary_input.payload).await;
         let generated_summary = match result {
-            Ok(value) => normalize_summary_output(
-                value,
+            Ok(result) => normalize_summary_output(
+                result.value,
                 source_stats,
                 current_unix_seconds(),
                 BOOK_NOTES_SUMMARY_PROMPT_VERSION,
+                result.response_format,
             )?,
             Err(error) => {
                 if let Some(cached) = self.latest_cached_output(
@@ -1184,19 +1504,22 @@ impl AiService {
 
         let provider = self.settings_state()?.provider;
         let api_key = self.read_api_key()?;
-        let result = request_ai_json(
+        let result = request_ai_json_with_schema_fallback(
             &api_key,
             &provider,
             reading_stats_review_system_prompt(),
             &review_input.payload,
+            "reading_stats_review_response",
+            reading_stats_review_json_schema(),
         )
         .await;
         let generated_review = match result {
-            Ok(value) => normalize_reading_stats_review_output(
-                value,
+            Ok(result) => normalize_reading_stats_review_output(
+                result.value,
                 source_stats,
                 current_unix_seconds(),
                 READING_STATS_REVIEW_PROMPT_VERSION,
+                result.response_format,
             )?,
             Err(error) => {
                 if let Some(cached) = self.latest_cached_output(
@@ -1297,8 +1620,20 @@ impl AiService {
                     "当前周期还没有可导出的 AI 复盘缓存，请先生成或读取缓存。".to_string(),
                 )
             })?;
+        let stats_response = StatsService::new(self.app.clone())
+            .get_reading_stats(Some(response.mode.clone()), Some(response.base_time))
+            .await
+            .map_err(AiServiceError::from_source_stats)?;
+        let resolved_persona = resolve_reading_persona(
+            &stats_response.stats,
+            response.review.reading_persona.as_ref(),
+        );
         let exported_at = current_unix_seconds();
-        let markdown = serialize_reading_stats_review_markdown(&response, &exported_at);
+        let markdown = serialize_reading_stats_review_markdown(
+            &response,
+            Some(&resolved_persona),
+            &exported_at,
+        );
         let period_label = match response.mode.as_str() {
             "weekly" => "weekly-reading-review",
             "annually" => "annual-reading-review",
@@ -1329,6 +1664,7 @@ impl AiService {
                     &route_input.scope_id,
                     &input_hash,
                     cached,
+                    Some(route_input.current_stage.clone()),
                     None,
                 );
             }
@@ -1343,6 +1679,7 @@ impl AiService {
                     &route_input.scope_id,
                     &input_hash,
                     cached,
+                    Some(route_input.current_stage.clone()),
                     Some("当前指南输入较上次生成有变化，已先展示最近一次缓存；如需更新，请点击重新生成。".to_string()),
                 );
             }
@@ -1350,20 +1687,24 @@ impl AiService {
 
         let provider = self.settings_state()?.provider;
         let api_key = self.read_api_key()?;
-        let result = request_ai_json(
+        let result = request_ai_json_with_schema_fallback(
             &api_key,
             &provider,
             reading_route_system_prompt(),
             &route_input.payload,
+            "reading_route_response",
+            reading_route_json_schema(),
         )
         .await;
         let generated_route = match result {
-            Ok(value) => normalize_reading_route_output(
-                value,
+            Ok(result) => normalize_reading_route_output(
+                result.value,
                 route_input.allowed_book_ids,
                 route_input.source_stats.clone(),
+                Some(route_input.current_stage.clone()),
                 current_unix_seconds(),
                 READING_ROUTE_PROMPT_VERSION,
+                result.response_format,
             )?,
             Err(error) => {
                 if let Some(cached) = self.latest_cached_output(
@@ -1376,6 +1717,7 @@ impl AiService {
                         &route_input.scope_id,
                         &input_hash,
                         cached,
+                        Some(route_input.current_stage.clone()),
                         Some(error.user_message()),
                     );
                 }
@@ -1399,6 +1741,7 @@ impl AiService {
             &route_input.scope_id,
             &input_hash,
             cached,
+            Some(route_input.current_stage.clone()),
             None,
         )
         .map(|mut response| {
@@ -1426,6 +1769,7 @@ impl AiService {
                 &route_input.scope_id,
                 &input_hash,
                 cached,
+                Some(route_input.current_stage.clone()),
                 None,
             )
             .map(Some);
@@ -1441,6 +1785,7 @@ impl AiService {
                 &route_input.scope_id,
                 &input_hash,
                 cached,
+                Some(route_input.current_stage.clone()),
                 Some("当前指南输入较上次生成有变化，已先展示最近一次缓存；如需更新，请点击重新生成。".to_string()),
             )
             .map(Some);
@@ -1517,20 +1862,23 @@ impl AiService {
 
         let provider = self.settings_state()?.provider;
         let api_key = self.read_api_key()?;
-        let result = request_ai_json(
+        let result = request_ai_json_with_schema_fallback(
             &api_key,
             &provider,
             book_decision_system_prompt(),
             &decision_input.payload,
+            "book_decision_response",
+            book_decision_json_schema(),
         )
         .await;
         let generated_decision = match result {
-            Ok(value) => normalize_book_decision_output(
-                value,
+            Ok(result) => normalize_book_decision_output(
+                result.value,
                 decision_input.allowed_book_ids,
                 decision_input.source_stats.clone(),
                 current_unix_seconds(),
                 BOOK_DECISION_PROMPT_VERSION,
+                result.response_format,
             )?,
             Err(error) => {
                 if let Some(cached) = self.latest_cached_output(
@@ -1638,6 +1986,68 @@ impl AiService {
             &exported_at,
             markdown,
         )
+    }
+
+    pub async fn ask_local_reader_selection_question(
+        &self,
+        request: LocalReaderSelectionQuestionInput,
+    ) -> Result<LocalReaderSelectionQuestionResponse, AiServiceError> {
+        let question_input = build_local_reader_selection_question_input(request)?;
+        let input_hash = stable_hash_json(&question_input.payload)?;
+
+        if let Some(cached) = self.get_cached_output(
+            LOCAL_READER_SELECTION_QA_FEATURE.to_string(),
+            question_input.scope_id.clone(),
+            LOCAL_READER_SELECTION_QA_PROMPT_VERSION.to_string(),
+            input_hash.clone(),
+        )? {
+            return cached_local_reader_selection_question_response(
+                question_input.source_item,
+                &input_hash,
+                cached,
+                None,
+            );
+        }
+
+        let provider = self.settings_state()?.provider;
+        let api_key = self.read_api_key()?;
+        let result = request_ai_json_with_schema_fallback(
+            &api_key,
+            &provider,
+            local_reader_selection_question_system_prompt(),
+            &question_input.payload,
+            "local_reader_selection_question_response",
+            local_reader_selection_question_json_schema(),
+        )
+        .await?;
+        let generated_answer = normalize_local_reader_selection_answer_output(
+            result.value,
+            current_unix_seconds(),
+            LOCAL_READER_SELECTION_QA_PROMPT_VERSION,
+            result.response_format,
+        )?;
+
+        let cached = self.upsert_cached_output(AiOutputUpsert {
+            feature: LOCAL_READER_SELECTION_QA_FEATURE.to_string(),
+            scope_id: question_input.scope_id.clone(),
+            prompt_version: LOCAL_READER_SELECTION_QA_PROMPT_VERSION.to_string(),
+            input_hash: input_hash.clone(),
+            output: serde_json::to_value(&generated_answer).map_err(AiServiceError::storage)?,
+            source_count: Some(1),
+            provider_model: Some(provider.model.clone()),
+        })?;
+
+        cached_local_reader_selection_question_response(
+            question_input.source_item,
+            &input_hash,
+            cached,
+            None,
+        )
+        .map(|mut response| {
+            response.source = BookAiSummarySource::Generated;
+            response.provider_model = Some(provider.model);
+            response
+        })
     }
 
     pub(crate) fn upsert_cached_output(
@@ -1863,6 +2273,58 @@ struct ReadingStatsReviewInput {
     source_stats: ReadingStatsAiReviewSourceStats,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadingPersonaInput {
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    palette_group: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    accent_tone: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    confidence: Option<f64>,
+    basis_notice: String,
+    dimensions: Vec<ReadingPersonaDimensionInput>,
+    evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadingPersonaDimensionInput {
+    axis: String,
+    key: String,
+    label: String,
+    strength: String,
+    basis: String,
+}
+
+#[derive(Debug, Clone)]
+struct ReadingPersonaSignals {
+    total_read_time_seconds: f64,
+    read_days: i64,
+    category_count: usize,
+    active_bucket_count: usize,
+    stable_bucket_share: f64,
+    top_category_title: Option<String>,
+    top_category_share: f64,
+    top3_category_share: f64,
+    top_item_title: Option<String>,
+    top_item_share: f64,
+    author_concentration: f64,
+    compare: f64,
+    practical_score: f64,
+    conceptual_score: f64,
+    analytical_score: f64,
+    resonant_score: f64,
+    top_signals_text: String,
+}
+
 #[derive(Debug, Clone)]
 struct ReadingRouteInput {
     book_id: String,
@@ -1870,6 +2332,7 @@ struct ReadingRouteInput {
     payload: Value,
     source_stats: ReadingRouteSourceStats,
     allowed_book_ids: HashSet<String>,
+    current_stage: ReadingStageSignal,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1899,12 +2362,27 @@ struct BookDecisionInput {
     allowed_book_ids: HashSet<String>,
 }
 
+#[derive(Debug, Clone)]
+struct LocalReaderSelectionQuestionBuildInput {
+    source_item: SourceItemInput,
+    scope_id: String,
+    payload: Value,
+}
+
 async fn request_book_notes_summary(
     api_key: &str,
     provider: &AiProviderSettings,
     input: &Value,
-) -> Result<Value, AiServiceError> {
-    request_ai_json(api_key, provider, book_notes_summary_system_prompt(), input).await
+) -> Result<ProviderJsonResult, AiServiceError> {
+    request_ai_json_with_schema_fallback(
+        api_key,
+        provider,
+        book_notes_summary_system_prompt(),
+        input,
+        "book_notes_summary_response",
+        book_notes_summary_json_schema(),
+    )
+    .await
 }
 
 async fn request_ai_json(
@@ -1912,7 +2390,63 @@ async fn request_ai_json(
     provider: &AiProviderSettings,
     system_prompt: &str,
     input: &Value,
-) -> Result<Value, AiServiceError> {
+) -> Result<ProviderJsonResult, AiServiceError> {
+    request_ai_json_with_response_format(
+        api_key,
+        provider,
+        system_prompt,
+        input,
+        default_json_object_response_format(),
+        AiResponseFormatKind::JsonObject,
+    )
+    .await
+}
+
+async fn request_ai_json_with_schema_fallback(
+    api_key: &str,
+    provider: &AiProviderSettings,
+    system_prompt: &str,
+    input: &Value,
+    schema_name: &str,
+    schema: Value,
+) -> Result<ProviderJsonResult, AiServiceError> {
+    let schema_response_format = json!({
+        "type": "json_schema",
+        "json_schema": {
+            "name": schema_name,
+            "strict": true,
+            "schema": schema
+        }
+    });
+
+    match request_ai_json_with_response_format(
+        api_key,
+        provider,
+        system_prompt,
+        input,
+        schema_response_format,
+        AiResponseFormatKind::JsonSchema,
+    )
+    .await
+    {
+        Ok(value) => Ok(value),
+        Err(AiServiceError::ProviderResponse(message))
+            if is_unsupported_json_schema_response(&message) =>
+        {
+            request_ai_json(api_key, provider, system_prompt, input).await
+        }
+        Err(error) => Err(error),
+    }
+}
+
+async fn request_ai_json_with_response_format(
+    api_key: &str,
+    provider: &AiProviderSettings,
+    system_prompt: &str,
+    input: &Value,
+    response_format: Value,
+    response_format_kind: AiResponseFormatKind,
+) -> Result<ProviderJsonResult, AiServiceError> {
     let client = HttpClient::builder()
         .timeout(std::time::Duration::from_secs(AI_REQUEST_TIMEOUT_SECONDS))
         .build()
@@ -1924,6 +2458,7 @@ async fn request_ai_json(
             &provider.model,
             system_prompt,
             input,
+            response_format,
         ))
         .send()
         .await
@@ -1937,7 +2472,10 @@ async fn request_ai_json(
         }
     })?;
 
-    extract_chat_completion_json(status, value)
+    extract_chat_completion_json(status, value).map(|value| ProviderJsonResult {
+        value,
+        response_format: response_format_kind,
+    })
 }
 
 async fn request_ai_connection_test(
@@ -1999,12 +2537,17 @@ async fn request_ai_connection_test(
     )))
 }
 
-fn build_chat_completion_payload(model: &str, system_prompt: &str, input: &Value) -> Value {
+fn build_chat_completion_payload(
+    model: &str,
+    system_prompt: &str,
+    input: &Value,
+    response_format: Value,
+) -> Value {
     json!({
         "model": model,
         "temperature": 0.2,
         "max_tokens": AI_JSON_MAX_TOKENS,
-        "response_format": { "type": "json_object" },
+        "response_format": response_format,
         "messages": [
             {
                 "role": "system",
@@ -2035,15 +2578,19 @@ fn book_notes_summary_system_prompt() -> &'static str {
 }
 
 fn reading_stats_review_system_prompt() -> &'static str {
-    "你是个人阅读数据复盘助手。只基于用户提供的微信读书结构化统计生成复盘，不编造未提供的阅读记录、书籍内容或评分，不输出内部 ID。必须使用简体中文，只输出一个顶层 JSON 对象，不要 Markdown。顶层字段名必须使用英文 camelCase，且必须包含 overview、rhythmInsights、preferenceInsights、focusItems、nextActions。overview 必须是字符串，写 2-4 句；rhythmInsights 为 2-5 条阅读节奏洞察；preferenceInsights 为 2-5 条偏好洞察；focusItems 为 2-5 条值得关注的书籍、类别或时间变化；nextActions 为 2-5 条可执行建议。所有结论都必须能从统计字段推导，不能引用笔记正文，因为输入不包含笔记。严禁输出原始秒数字段名、原始秒数值或 Unix 时间戳；时间长度必须写成人类可读中文，例如“1小时58分钟”“6分钟”，日期必须写成“5月6日”“2026年5月”这类格式。优先使用输入里已经提供的 display 字段，不要复述 technical/raw 字段名。"
+    "你是个人阅读数据复盘助手。只基于用户提供的微信读书结构化统计生成复盘，不编造未提供的阅读记录、书籍内容或评分，不输出内部 ID。必须使用简体中文，只输出一个顶层 JSON 对象，不要 Markdown。顶层字段名必须使用英文 camelCase，且必须包含 overview、rhythmInsights、preferenceInsights、focusItems、nextActions。overview 必须是字符串，写 2-4 句；rhythmInsights 为 2-5 条阅读节奏洞察；preferenceInsights 为 2-5 条偏好洞察；focusItems 为 2-5 条值得关注的书籍、类别或时间变化；nextActions 为 2-5 条可执行建议。如果输入中提供了 personaStatus、personaCode、personaLabel、personaDisplayTitle、personaPaletteGroup、personaAccentTone、personaConfidence、personaBasisNotice、personaDimensions、personaEvidence，这些字段已经由本地规则预先计算，你只能基于这些现成字段补充解释，不得重算、改写或否定本地给出的人格代码和证据。可以额外返回可选 readingPersona 对象；如果返回，该对象只能包含 summary 和 suggestion 两个字符串字段。readingPersona 里的 MBTI 表达只能作为阅读风格隐喻，不代表真实心理人格，不得输出心理诊断、真实性格定论、能力评价或人生建议；当 personaStatus 为 insufficient 或统计样本不足时，可以省略 readingPersona，或只说明依据有限。readingPersona.summary 建议写 1-2 句，描述这一周期更像怎样阅读；readingPersona.suggestion 只给 1 条温和建议，不要重复 nextActions。所有结论都必须能从统计字段推导，不能引用笔记正文，因为输入不包含笔记。严禁输出原始秒数字段名、原始秒数值或 Unix 时间戳；时间长度必须写成人类可读中文，例如“1小时58分钟”“6分钟”，日期必须写成“5月6日”“2026年5月”这类格式。优先使用输入里已经提供的 display 字段，不要复述 technical/raw 字段名。如果输入里提供了 displayPeriod，优先直接使用这个周期名称，不要改写成“本月”“今年”“当前周期”这类相对时间。"
 }
 
 fn reading_route_system_prompt() -> &'static str {
-    "你是个人阅读指南规划助手。只基于用户提供的当前书、用户显式选择的候选书、已生成复盘摘要、结构化统计信号和本地状态生成建议，不编造未提供的书籍内容，不输出内部 ID 以外的隐私信息，不假装写回微信读书。必须使用简体中文，只输出一个顶层 JSON 对象，不要 Markdown。字段必须使用英文 camelCase，且必须包含 routeOverview、books、dependencies、reviewCheckpoints、nextActions。routeOverview 必须是非空字符串，只写 1 句、60 字以内的主线结论，不写免责声明，不解释输入来源，不使用“目前只有/因此/由于缺少”这类过程说明；候选书为 0 时生成单本书阅读指南，必须像阅读处方：写清下一段先读哪里、带着什么问题读、读完交付什么；候选书大于 0 时生成跨书阅读路线图，聚焦多本书的先后关系。必须按输入里的 readingStage 进度阶段生成建议：starting/起步强调阅读目的和验证问题，framing/建立主线强调是否继续读和早期判断，deepening/深入推进强调核心问题和笔记沉淀，closing/收束整理强调复盘框架和输出产物，completed/完成归档强调生成复盘和归档。章节只能作为辅助依据；缺少章节、目录未缓存或 currentChapter 不可用时，必须回退到进度百分比、最近笔记、本地状态和已有复盘摘要继续生成，不得拒绝生成。不得生成逐章任务清单，不得承诺实时章节追踪，不得输出“每天自动读第 X 章”或后台自动安排。books 是推进步骤数组，每项必须包含 bookId、title、author、order、role、readingPurpose、estimatedEffort、localStatus、basis；只允许使用输入中出现的 bookId。单本书时 books[0].readingPurpose 必须是具体阅读任务，不写“建立习惯、沉淀模板、长期投入、可复用方法论”等空泛话术；estimatedEffort 必须包含明确时长或阅读时段；basis 优先写进度阶段、最近笔记、复盘依据和可用章节线索，能落到“当前进度/下一段/最近笔记章节”这类范围，但不能把章节作为强制任务。dependencies 是跨书依赖关系数组，每项包含 fromBookId、toBookId、reason；没有候选书或没有依赖返回空数组。reviewCheckpoints 是复盘点数组，每项包含 timing、question、suggestedOutput；单本书时 question 必须是一个可在阅读中验证的具体问题，suggestedOutput 必须包含数量或格式和验收标准，例如“写 3 条...并为每条...”。nextActions 是 2-5 条可执行下一步；每条以动词开头，并包含时间、范围或完成标准中的至少两项。所有依据必须来自输入里的摘要、候选书、统计或本地状态；如果候选书不足，把补充候选作为 nextActions，不要写进 routeOverview。"
+    "你是个人阅读指南规划助手。只基于用户提供的当前书、用户显式选择的候选书、已生成复盘摘要、结构化统计信号和本地状态生成建议，不编造未提供的书籍内容，不输出内部 ID 以外的隐私信息，不假装写回微信读书。必须使用简体中文，只输出一个顶层 JSON 对象，不要 Markdown。字段必须使用英文 camelCase，且必须包含 routeOverview、books、dependencies、reviewCheckpoints、nextActions、readingStage。readingStage 必须是对象，且必须包含 stage、label、progressPercent；其中 stage 和 label 必须与输入里的 currentBookStage 保持一致，progressPercent 必须使用当前书对应的进度值，不得自造新的阶段。routeOverview 必须是非空字符串，只写 1 句、60 字以内的主线结论，不写免责声明，不解释输入来源，不使用“目前只有/因此/由于缺少”这类过程说明；候选书为 0 时生成单本书阅读指南，必须像阅读处方：写清下一段先读哪里、带着什么问题读、读完交付什么；候选书大于 0 时生成跨书阅读路线图，聚焦多本书的先后关系。必须按输入里的 readingStage 进度阶段生成建议：starting/起步强调阅读目的和验证问题，framing/建立主线强调是否继续读和早期判断，deepening/深入推进强调核心问题和笔记沉淀，closing/收束整理强调复盘框架和输出产物，completed/完成归档强调生成复盘和归档。章节只能作为辅助依据；缺少章节、目录未缓存或 currentChapter 不可用时，必须回退到进度百分比、最近笔记、本地状态和已有复盘摘要继续生成，不得拒绝生成。不得生成逐章任务清单，不得承诺实时章节追踪，不得输出“每天自动读第 X 章”或后台自动安排。books 是推进步骤数组，每项必须包含 bookId、title、author、order、role、readingPurpose、estimatedEffort、localStatus、basis；只允许使用输入中出现的 bookId。单本书时 books[0].readingPurpose 必须是具体阅读任务，不写“建立习惯、沉淀模板、长期投入、可复用方法论”等空泛话术；estimatedEffort 必须包含明确时长或阅读时段；basis 优先写进度阶段、最近笔记、复盘依据和可用章节线索，能落到“当前进度/下一段/最近笔记章节”这类范围，但不能把章节作为强制任务。dependencies 是跨书依赖关系数组，每项包含 fromBookId、toBookId、reason；没有候选书或没有依赖返回空数组。reviewCheckpoints 是复盘点数组，每项包含 timing、question、suggestedOutput；单本书时 question 必须是一个可在阅读中验证的具体问题，suggestedOutput 必须包含数量或格式和验收标准，例如“写 3 条...并为每条...”。nextActions 是 2-5 条可执行下一步；每条以动词开头，并包含时间、范围或完成标准中的至少两项。所有依据必须来自输入里的摘要、候选书、统计或本地状态；如果候选书不足，把补充候选作为 nextActions，不要写进 routeOverview。"
 }
 
 fn book_decision_system_prompt() -> &'static str {
     "你是个人选书决策助手。只基于用户提供的本地候选书、已生成复盘摘要、结构化统计信号和本地状态做取舍，不编造未提供的书籍内容，不推荐输入之外的书，不假装读取微信读书远端或写回微信读书。必须使用简体中文，只输出一个顶层 JSON 对象，不要 Markdown。字段必须使用英文 camelCase，且必须包含 decisionOverview、topCandidates、deferredCandidates、nextActions。输入里的 decisionGoal 是本次选书目标，必须影响 whyNow、tradeoff、estimatedEffort 和 nextActions 的侧重点，但不能扩大数据来源。decisionOverview 必须是 1-2 句，回答“下一本为什么先读它”。topCandidates 最多 3 本，每项必须包含 bookId、title、author、rank、whyNow、tradeoff、estimatedEffort、prerequisiteAction、reviewTrigger、basis；只允许使用输入中出现的 bookId。whyNow 必须说明为什么现在读，tradeoff 必须说明为什么暂缓其他选择或这个选择的代价，estimatedEffort 必须包含明确时长或阅读时段，prerequisiteAction 必须是读前动作，reviewTrigger 必须说明读到什么节点后产出什么复盘。deferredCandidates 是暂缓项数组，每项包含 bookId、title、reason。nextActions 是 2-5 条用户能直接照做的中文动作，必须包含打开详情、安排阅读时段、读后输出或复盘触发中的至少两类；每条必须是完整中文句子，不得输出 openDetails、scheduleReadingBlock、postReadReview 等内部动作码或驼峰命名 token。不要输出评分排行榜、年度计划、泛推荐书单或空泛话术。"
+}
+
+fn local_reader_selection_question_system_prompt() -> &'static str {
+    "你是本地阅读器里的选区问答助手。只基于用户提供的 selectedText 和 question 回答，不假装读过整本书，不补写未提供的上下文，不读取或输出本地路径、文件 hash、数据库路径、API Key、微信凭据或微信读书数据。必须使用简体中文，只输出一个顶层 JSON 对象，不要 Markdown。字段必须使用英文 camelCase，且必须包含 answer、keyPoints、followUpQuestions。answer 写 2-5 句，明确说明结论只来自选中文本；keyPoints 为 1-5 条要点；followUpQuestions 为 0-3 个后续问题。如果问题超出选中文本能支持的范围，必须直接说明“仅凭选中文本无法判断”，并给出用户可以继续选择哪些上下文来追问。"
 }
 
 fn extract_chat_completion_json(status: StatusCode, value: Value) -> Result<Value, AiServiceError> {
@@ -2089,6 +2636,256 @@ fn extract_chat_completion_json(status: StatusCode, value: Value) -> Result<Valu
     parse_provider_json_content(&content).map_err(|_| {
         AiServiceError::InvalidProviderOutput("AI 返回内容不是有效 JSON。".to_string())
     })
+}
+
+fn default_json_object_response_format() -> Value {
+    json!({ "type": "json_object" })
+}
+
+fn book_notes_summary_json_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["overview", "keyIdeas", "myFocus", "actionItems", "themeTags", "representativeQuotes", "reflectionQuestions"],
+        "properties": {
+            "overview": { "type": "string" },
+            "keyIdeas": {
+                "type": "array",
+                "items": { "type": "string" }
+            },
+            "myFocus": {
+                "type": "array",
+                "items": { "type": "string" }
+            },
+            "actionItems": {
+                "type": "array",
+                "items": { "type": "string" }
+            },
+            "themeTags": {
+                "type": "array",
+                "items": { "type": "string" }
+            },
+            "representativeQuotes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["quote", "reason", "noteType"],
+                    "properties": {
+                        "quote": { "type": "string" },
+                        "reason": { "type": "string" },
+                        "chapter": { "type": "string" },
+                        "noteType": {
+                            "type": "string",
+                            "enum": ["划线", "想法"]
+                        }
+                    }
+                }
+            },
+            "reflectionQuestions": {
+                "type": "array",
+                "items": { "type": "string" }
+            }
+        }
+    })
+}
+
+fn reading_stats_review_json_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["overview", "rhythmInsights", "preferenceInsights", "focusItems", "nextActions"],
+        "properties": {
+            "overview": { "type": "string" },
+            "rhythmInsights": {
+                "type": "array",
+                "items": { "type": "string" }
+            },
+            "preferenceInsights": {
+                "type": "array",
+                "items": { "type": "string" }
+            },
+            "focusItems": {
+                "type": "array",
+                "items": { "type": "string" }
+            },
+            "nextActions": {
+                "type": "array",
+                "items": { "type": "string" }
+            },
+            "readingPersona": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "summary": { "type": "string" },
+                    "suggestion": { "type": "string" }
+                }
+            }
+        }
+    })
+}
+
+fn reading_route_json_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["routeOverview", "books", "dependencies", "reviewCheckpoints", "nextActions", "readingStage"],
+        "properties": {
+            "routeOverview": { "type": "string" },
+            "books": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["bookId", "title", "order", "role", "readingPurpose", "estimatedEffort", "basis"],
+                    "properties": {
+                        "bookId": { "type": "string" },
+                        "title": { "type": "string" },
+                        "author": { "type": "string" },
+                        "order": { "type": "integer" },
+                        "role": { "type": "string" },
+                        "readingPurpose": { "type": "string" },
+                        "estimatedEffort": { "type": "string" },
+                        "localStatus": { "type": "string" },
+                        "basis": { "type": "string" }
+                    }
+                }
+            },
+            "dependencies": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["fromBookId", "toBookId", "reason"],
+                    "properties": {
+                        "fromBookId": { "type": "string" },
+                        "toBookId": { "type": "string" },
+                        "reason": { "type": "string" }
+                    }
+                }
+            },
+            "reviewCheckpoints": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["timing", "question", "suggestedOutput"],
+                    "properties": {
+                        "timing": { "type": "string" },
+                        "question": { "type": "string" },
+                        "suggestedOutput": { "type": "string" }
+                    }
+                }
+            },
+            "nextActions": {
+                "type": "array",
+                "items": { "type": "string" }
+            },
+            "readingStage": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["stage", "label", "progressPercent"],
+                "properties": {
+                    "stage": {
+                        "type": "string",
+                        "enum": ["starting", "framing", "deepening", "closing", "completed"]
+                    },
+                    "label": { "type": "string" },
+                    "progressPercent": { "type": "integer" },
+                    "refreshReason": {
+                        "type": "string",
+                        "enum": ["stage_changed", "notes_changed", "stalled", "completed"]
+                    }
+                }
+            }
+        }
+    })
+}
+
+fn book_decision_json_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["decisionOverview", "topCandidates", "deferredCandidates", "nextActions"],
+        "properties": {
+            "decisionOverview": { "type": "string" },
+            "topCandidates": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["bookId", "title", "rank", "whyNow", "tradeoff", "estimatedEffort", "prerequisiteAction", "reviewTrigger", "basis"],
+                    "properties": {
+                        "bookId": { "type": "string" },
+                        "title": { "type": "string" },
+                        "author": { "type": "string" },
+                        "rank": { "type": "integer" },
+                        "whyNow": { "type": "string" },
+                        "tradeoff": { "type": "string" },
+                        "estimatedEffort": { "type": "string" },
+                        "prerequisiteAction": { "type": "string" },
+                        "reviewTrigger": { "type": "string" },
+                        "basis": { "type": "string" }
+                    }
+                }
+            },
+            "deferredCandidates": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["bookId", "title", "reason"],
+                    "properties": {
+                        "bookId": { "type": "string" },
+                        "title": { "type": "string" },
+                        "reason": { "type": "string" }
+                    }
+                }
+            },
+            "nextActions": {
+                "type": "array",
+                "items": { "type": "string" }
+            }
+        }
+    })
+}
+
+fn local_reader_selection_question_json_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["answer", "keyPoints", "followUpQuestions"],
+        "properties": {
+            "answer": { "type": "string" },
+            "keyPoints": {
+                "type": "array",
+                "items": { "type": "string" }
+            },
+            "followUpQuestions": {
+                "type": "array",
+                "items": { "type": "string" }
+            }
+        }
+    })
+}
+
+fn is_unsupported_json_schema_response(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    let mentions_schema = message.contains("json_schema")
+        || message.contains("response_format")
+        || message.contains("response format");
+    let mentions_incompatibility = message.contains("unsupported")
+        || message.contains("not supported")
+        || message.contains("does not support")
+        || message.contains("not support")
+        || message.contains("invalid parameter")
+        || message.contains("unknown parameter")
+        || message.contains("invalid type")
+        || message.contains("only supports");
+
+    mentions_schema && mentions_incompatibility
 }
 
 fn parse_provider_json_content(content: &str) -> Result<Value, serde_json::Error> {
@@ -2415,7 +3212,8 @@ fn build_reading_stats_review_input(
             })
         })
         .collect::<Vec<_>>();
-    let payload = json!({
+    let persona = build_reading_persona_input(stats);
+    let mut payload = json!({
         "promptVersion": READING_STATS_REVIEW_PROMPT_VERSION,
         "basis": "基于微信读书结构化阅读统计生成，不包含笔记正文、全书全文或原始 API 响应。",
         "mode": stats.mode,
@@ -2435,11 +3233,848 @@ fn build_reading_stats_review_input(
         "longestItems": longest_items,
         "categories": categories
     });
+    merge_reading_persona_into_payload(&mut payload, persona)?;
 
     Ok(ReadingStatsReviewInput {
         payload,
         source_stats,
     })
+}
+
+fn reading_persona_config() -> &'static ReadingPersonaConfig {
+    READING_PERSONA_CONFIG.get_or_init(|| {
+        serde_json::from_str(include_str!("../../../src/reading-persona.config.json"))
+            .expect("reading persona config should be valid JSON")
+    })
+}
+
+fn reading_persona_basis_notice() -> &'static str {
+    reading_persona_config().basis_notice.as_str()
+}
+
+fn reading_persona_thresholds() -> &'static ReadingPersonaThresholdsConfig {
+    &reading_persona_config().thresholds
+}
+
+fn merge_reading_persona_into_payload(
+    payload: &mut Value,
+    persona: ReadingPersonaInput,
+) -> Result<(), AiServiceError> {
+    let Some(record) = payload.as_object_mut() else {
+        return Err(AiServiceError::InvalidProviderOutput(
+            "阅读复盘输入必须是 JSON 对象。".to_string(),
+        ));
+    };
+
+    record.insert("personaStatus".to_string(), Value::String(persona.status));
+    if let Some(code) = persona.code {
+        record.insert("personaCode".to_string(), Value::String(code));
+    }
+    if let Some(label) = persona.label {
+        record.insert("personaLabel".to_string(), Value::String(label));
+    }
+    if let Some(display_title) = persona.display_title {
+        record.insert(
+            "personaDisplayTitle".to_string(),
+            Value::String(display_title),
+        );
+    }
+    if let Some(palette_group) = persona.palette_group {
+        record.insert(
+            "personaPaletteGroup".to_string(),
+            Value::String(palette_group),
+        );
+    }
+    if let Some(accent_tone) = persona.accent_tone {
+        record.insert("personaAccentTone".to_string(), Value::String(accent_tone));
+    }
+    if let Some(confidence) = persona.confidence {
+        record.insert("personaConfidence".to_string(), json!(confidence));
+    }
+    record.insert(
+        "personaBasisNotice".to_string(),
+        Value::String(persona.basis_notice),
+    );
+    record.insert(
+        "personaDimensions".to_string(),
+        serde_json::to_value(persona.dimensions).map_err(AiServiceError::storage)?,
+    );
+    record.insert(
+        "personaEvidence".to_string(),
+        serde_json::to_value(persona.evidence).map_err(AiServiceError::storage)?,
+    );
+
+    Ok(())
+}
+
+pub fn resolve_reading_persona(
+    stats: &ReadingStatsRecord,
+    patch: Option<&ReadingPersonaPatch>,
+) -> ReadingPersona {
+    let mut persona = build_local_reading_persona(stats);
+    let Some(patch) = patch else {
+        return persona;
+    };
+
+    let summary = normalize_reading_persona_text(patch.summary.as_deref());
+    let suggestion = normalize_reading_persona_text(patch.suggestion.as_deref());
+
+    if persona.status == "insufficient" {
+        persona.summary = summary;
+        persona.suggestion = None;
+        return persona;
+    }
+
+    if summary.is_some() {
+        persona.summary = summary;
+    }
+    if suggestion.is_some() {
+        persona.suggestion = suggestion;
+    }
+
+    persona
+}
+
+fn build_reading_persona_input(stats: &ReadingStatsRecord) -> ReadingPersonaInput {
+    let persona = build_local_reading_persona(stats);
+
+    ReadingPersonaInput {
+        status: persona.status,
+        code: persona.code,
+        label: persona.label,
+        display_title: persona.display_title,
+        palette_group: persona.palette_group,
+        accent_tone: persona.accent_tone,
+        confidence: persona.confidence,
+        basis_notice: persona.basis_notice,
+        dimensions: persona
+            .dimensions
+            .into_iter()
+            .map(reading_persona_dimension_to_input)
+            .collect(),
+        evidence: persona.evidence,
+    }
+}
+
+fn build_local_reading_persona(stats: &ReadingStatsRecord) -> ReadingPersona {
+    let signals = summarize_reading_persona_signals(stats);
+    let dimensions = vec![
+        build_reading_persona_energy_dimension(&signals),
+        build_reading_persona_information_dimension(&signals),
+        build_reading_persona_decision_dimension(&signals),
+        build_reading_persona_lifestyle_dimension(&signals),
+    ];
+    let stable_dimension_count = dimensions
+        .iter()
+        .filter(|dimension| dimension.strength != "light")
+        .count();
+    let status = resolve_reading_persona_status(&signals, stable_dimension_count);
+
+    if status == "insufficient" {
+        return ReadingPersona {
+            status: status.to_string(),
+            code: None,
+            label: None,
+            display_title: None,
+            palette_group: None,
+            accent_tone: None,
+            confidence: None,
+            basis_notice: reading_persona_basis_notice().to_string(),
+            dimensions: Vec::new(),
+            evidence: Vec::new(),
+            summary: Some("本期阅读样本较少，继续阅读后再生成阅读人格。".to_string()),
+            suggestion: None,
+        };
+    }
+
+    let code = dimensions
+        .iter()
+        .map(|dimension| dimension.key.as_str())
+        .collect::<String>();
+    let (label, palette_group, accent_tone) =
+        reading_persona_definition(&code).unwrap_or_else(|| {
+            let group = infer_reading_persona_palette_group(&code).to_string();
+            let tone = accent_tone_for_reading_persona_group(&group).to_string();
+            (reading_persona_config().fallback_label.clone(), group, tone)
+        });
+    let display_title = format!("{code} 型读者 · {label}");
+    let exported_dimensions = dimensions
+        .iter()
+        .cloned()
+        .map(reading_persona_dimension_from_input)
+        .collect::<Vec<_>>();
+
+    ReadingPersona {
+        status: status.to_string(),
+        code: Some(code.clone()),
+        label: Some(label.clone()),
+        display_title: Some(display_title),
+        palette_group: Some(palette_group),
+        accent_tone: Some(accent_tone),
+        confidence: build_reading_persona_confidence(&dimensions, status),
+        basis_notice: reading_persona_basis_notice().to_string(),
+        dimensions: exported_dimensions.clone(),
+        evidence: build_reading_persona_evidence(&signals, &dimensions, status),
+        summary: Some(build_local_reading_persona_summary(
+            &signals, &label, status,
+        )),
+        suggestion: build_local_reading_persona_suggestion(&signals, &exported_dimensions, status),
+    }
+}
+
+fn reading_persona_dimension_from_input(
+    dimension: ReadingPersonaDimensionInput,
+) -> ReadingPersonaDimension {
+    ReadingPersonaDimension {
+        axis: dimension.axis,
+        key: dimension.key,
+        label: dimension.label,
+        strength: dimension.strength,
+        basis: dimension.basis,
+    }
+}
+
+fn reading_persona_dimension_to_input(
+    dimension: ReadingPersonaDimension,
+) -> ReadingPersonaDimensionInput {
+    ReadingPersonaDimensionInput {
+        axis: dimension.axis,
+        key: dimension.key,
+        label: dimension.label,
+        strength: dimension.strength,
+        basis: dimension.basis,
+    }
+}
+
+fn build_local_reading_persona_summary(
+    signals: &ReadingPersonaSignals,
+    persona_label: &str,
+    status: &str,
+) -> String {
+    if status == "provisional" {
+        return format!(
+            "这段时间的阅读已经出现 {persona_label} 的倾向，但样本还不算充分，先把它当作当前阅读状态更合适。"
+        );
+    }
+
+    if let Some(title) = signals.top_category_title.as_deref() {
+        return format!(
+            "这一周期的阅读更像围绕{title}主线持续推进，整体已经形成较稳定的阅读气质。"
+        );
+    }
+
+    format!("这一周期的阅读已经形成较清晰的 {persona_label} 倾向。")
+}
+
+fn build_local_reading_persona_suggestion(
+    signals: &ReadingPersonaSignals,
+    dimensions: &[ReadingPersonaDimension],
+    status: &str,
+) -> Option<String> {
+    if status == "insufficient" {
+        return None;
+    }
+
+    if dimensions.first().map(|dimension| dimension.key.as_str()) == Some("I")
+        && signals.top_category_share
+            >= reading_persona_thresholds()
+                .suggestion
+                .introverted_min_top_category_share
+    {
+        return Some("下个周期可以补一本文学或社科短书，给当前主线增加一个横向参照。".to_string());
+    }
+
+    if dimensions.first().map(|dimension| dimension.key.as_str()) == Some("E") {
+        return Some(
+            "下个周期可以先锁定一条主线连续推进，避免多个方向同时展开后难以沉淀。".to_string(),
+        );
+    }
+
+    if dimensions.get(3).map(|dimension| dimension.key.as_str()) == Some("P") {
+        return Some("可以先固定 1 到 2 个阅读时段，再决定本月只重点推进哪一条主线。".to_string());
+    }
+
+    Some("继续保持当前节奏，并在读完重点内容后补一份短复盘，会更容易沉淀出稳定判断。".to_string())
+}
+
+fn normalize_reading_persona_text(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+fn summarize_reading_persona_signals(stats: &ReadingStatsRecord) -> ReadingPersonaSignals {
+    let total_read_time_seconds = stats.total_read_time_seconds.unwrap_or(0).max(0) as f64;
+    let read_days = stats.read_days.unwrap_or(0).max(0);
+    let active_buckets = stats
+        .buckets
+        .iter()
+        .filter(|bucket| bucket.read_time_seconds > 0)
+        .collect::<Vec<_>>();
+    let active_bucket_count = active_buckets.len();
+    let bucket_average = if active_bucket_count > 0 {
+        active_buckets
+            .iter()
+            .map(|bucket| bucket.read_time_seconds.max(0) as f64)
+            .sum::<f64>()
+            / active_bucket_count as f64
+    } else {
+        0.0
+    };
+    let stable_bucket_count = active_buckets
+        .iter()
+        .filter(|bucket| {
+            bucket.read_time_seconds.max(0) as f64
+                >= bucket_average * reading_persona_thresholds().stable_bucket_multiplier
+        })
+        .count();
+    let stable_bucket_share =
+        safe_reading_persona_ratio(stable_bucket_count as f64, active_bucket_count as f64);
+
+    let mut categories = stats.categories.iter().collect::<Vec<_>>();
+    categories.sort_by(|left, right| {
+        category_value_for_reading_persona(right)
+            .partial_cmp(&category_value_for_reading_persona(left))
+            .unwrap_or(Ordering::Equal)
+    });
+    let category_total = categories
+        .iter()
+        .map(|category| category_value_for_reading_persona(category))
+        .sum::<f64>();
+    let top_category = categories.first().copied();
+    let top_category_share = top_category.map_or(0.0, |category| {
+        safe_reading_persona_ratio(category_value_for_reading_persona(category), category_total)
+    });
+    let top3_category_share = if category_total > 0.0 {
+        safe_reading_persona_ratio(
+            categories
+                .iter()
+                .take(3)
+                .map(|category| category_value_for_reading_persona(category))
+                .sum::<f64>(),
+            category_total,
+        )
+    } else {
+        0.0
+    };
+
+    let mut items = stats.longest_items.iter().collect::<Vec<_>>();
+    items.sort_by(|left, right| right.read_time_seconds.cmp(&left.read_time_seconds));
+    let item_total = items
+        .iter()
+        .map(|item| item.read_time_seconds.max(0) as f64)
+        .sum::<f64>();
+    let top_item = items.first().copied();
+    let top_item_share = top_item.map_or(0.0, |item| {
+        safe_reading_persona_ratio(item.read_time_seconds.max(0) as f64, item_total)
+    });
+    let mut author_map = HashMap::<String, f64>::new();
+    for item in &items {
+        let Some(author) = item
+            .author
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+
+        *author_map.entry(author.to_string()).or_insert(0.0) +=
+            item.read_time_seconds.max(0) as f64;
+    }
+    let author_concentration = if item_total > 0.0 && !author_map.is_empty() {
+        safe_reading_persona_ratio(author_map.values().copied().fold(0.0, f64::max), item_total)
+    } else {
+        0.0
+    };
+
+    let practical_score = sum_reading_persona_category_score(
+        &stats.categories,
+        &reading_persona_config().category_tokens.practical,
+    );
+    let conceptual_score = sum_reading_persona_category_score(
+        &stats.categories,
+        &reading_persona_config().category_tokens.conceptual,
+    );
+    let analytical_score = sum_reading_persona_category_score(
+        &stats.categories,
+        &reading_persona_config().category_tokens.analytical,
+    );
+    let resonant_score = sum_reading_persona_category_score(
+        &stats.categories,
+        &reading_persona_config().category_tokens.resonant,
+    );
+    let top_signals_text = [
+        top_category.map(|category| category.title.as_str()),
+        top_category.and_then(|category| category.parent_title.as_deref()),
+        top_item.map(|item| item.title.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .chain(
+        top_item
+            .map(|item| item.tags.iter().map(String::as_str).collect::<Vec<_>>())
+            .unwrap_or_default(),
+    )
+    .filter(|value| !value.trim().is_empty())
+    .collect::<Vec<_>>()
+    .join("|");
+
+    ReadingPersonaSignals {
+        total_read_time_seconds,
+        read_days,
+        category_count: stats.categories.len(),
+        active_bucket_count,
+        stable_bucket_share,
+        top_category_title: top_category.map(|category| category.title.clone()),
+        top_category_share,
+        top3_category_share,
+        top_item_title: top_item.map(|item| item.title.clone()),
+        top_item_share,
+        author_concentration,
+        compare: stats.compare.unwrap_or(0.0),
+        practical_score,
+        conceptual_score,
+        analytical_score,
+        resonant_score,
+        top_signals_text,
+    }
+}
+
+fn resolve_reading_persona_status(
+    signals: &ReadingPersonaSignals,
+    stable_dimension_count: usize,
+) -> &'static str {
+    let thresholds = &reading_persona_thresholds().status;
+
+    if signals.total_read_time_seconds >= thresholds.complete.min_total_read_time_seconds
+        && signals.read_days >= thresholds.complete.min_read_days
+        && signals.active_bucket_count >= thresholds.complete.min_active_bucket_count
+        && signals.category_count >= thresholds.complete.min_category_count
+    {
+        return "complete";
+    }
+
+    if signals.total_read_time_seconds >= thresholds.provisional.min_total_read_time_seconds
+        && signals.read_days >= thresholds.provisional.min_read_days
+        && stable_dimension_count >= thresholds.provisional.min_stable_dimension_count
+    {
+        return "provisional";
+    }
+
+    "insufficient"
+}
+
+fn build_reading_persona_energy_dimension(
+    signals: &ReadingPersonaSignals,
+) -> ReadingPersonaDimensionInput {
+    let introverted = &reading_persona_thresholds().energy.introverted;
+    let is_introverted = signals.top3_category_share >= introverted.min_top3_category_share
+        || signals.author_concentration >= introverted.min_author_concentration
+        || signals.top_item_share >= introverted.min_top_item_share;
+    let key = if is_introverted { "I" } else { "E" };
+    let strength = if is_introverted {
+        strength_from_reading_persona_threshold_delta(
+            (signals.top3_category_share - introverted.min_top3_category_share)
+                .max(signals.author_concentration - introverted.min_author_concentration)
+                .max(signals.top_item_share - introverted.min_top_item_share),
+        )
+    } else {
+        strength_from_reading_persona_breadth(signals)
+    };
+
+    ReadingPersonaDimensionInput {
+        axis: "energy".to_string(),
+        key: key.to_string(),
+        label: if key == "I" {
+            "主题深度".to_string()
+        } else {
+            "探索广度".to_string()
+        },
+        strength: strength.to_string(),
+        basis: if key == "I" {
+            format!(
+                "投入主要集中在{}与重点书目上，阅读更像围绕主线持续推进。",
+                signals.top_category_title.as_deref().unwrap_or("少数主题")
+            )
+        } else {
+            "主题分布更分散，阅读更像在多个方向之间主动探索和横向扩展。".to_string()
+        },
+    }
+}
+
+fn build_reading_persona_information_dimension(
+    signals: &ReadingPersonaSignals,
+) -> ReadingPersonaDimensionInput {
+    let axis_bias_multiplier = reading_persona_thresholds().axis_bias_multiplier;
+    let conceptual_wins =
+        signals.conceptual_score >= signals.practical_score * axis_bias_multiplier;
+    let practical_wins = signals.practical_score >= signals.conceptual_score * axis_bias_multiplier;
+    let key = if conceptual_wins {
+        "N"
+    } else if practical_wins {
+        "S"
+    } else {
+        resolve_reading_persona_text_bias(
+            &signals.top_signals_text,
+            &reading_persona_config().category_tokens.conceptual,
+            &reading_persona_config().category_tokens.practical,
+            "N",
+            "S",
+        )
+    };
+    let strength =
+        strength_from_reading_persona_ratio(signals.conceptual_score, signals.practical_score);
+
+    ReadingPersonaDimensionInput {
+        axis: "information".to_string(),
+        key: key.to_string(),
+        label: if key == "N" {
+            "概念想象".to_string()
+        } else {
+            "实用经验".to_string()
+        },
+        strength: strength.to_string(),
+        basis: if key == "N" {
+            format!(
+                "这段时间更偏向{}，阅读重点更接近理解主题与建立联想。",
+                signals
+                    .top_category_title
+                    .as_deref()
+                    .unwrap_or("历史、文学或思想性内容")
+            )
+        } else {
+            format!(
+                "这段时间更偏向{}，阅读重点更接近获取可直接使用的方法。",
+                signals
+                    .top_category_title
+                    .as_deref()
+                    .unwrap_or("工具、管理或方法类内容")
+            )
+        },
+    }
+}
+
+fn build_reading_persona_decision_dimension(
+    signals: &ReadingPersonaSignals,
+) -> ReadingPersonaDimensionInput {
+    let axis_bias_multiplier = reading_persona_thresholds().axis_bias_multiplier;
+    let analytical_wins = signals.analytical_score >= signals.resonant_score * axis_bias_multiplier;
+    let resonant_wins = signals.resonant_score >= signals.analytical_score * axis_bias_multiplier;
+    let key = if analytical_wins {
+        "T"
+    } else if resonant_wins {
+        "F"
+    } else {
+        resolve_reading_persona_text_bias(
+            &signals.top_signals_text,
+            &reading_persona_config().category_tokens.analytical,
+            &reading_persona_config().category_tokens.resonant,
+            "T",
+            "F",
+        )
+    };
+    let strength =
+        strength_from_reading_persona_ratio(signals.analytical_score, signals.resonant_score);
+
+    ReadingPersonaDimensionInput {
+        axis: "decision".to_string(),
+        key: key.to_string(),
+        label: if key == "T" {
+            "分析取向".to_string()
+        } else {
+            "共鸣取向".to_string()
+        },
+        strength: strength.to_string(),
+        basis: if key == "T" {
+            "当前更容易被结构、方法和判断框架吸引，阅读时更关注可拆解、可比较的分析线索。"
+                .to_string()
+        } else {
+            "当前更容易被人物、命运和社会现场吸引，阅读时更关注情绪、关系与经验共鸣。".to_string()
+        },
+    }
+}
+
+fn build_reading_persona_lifestyle_dimension(
+    signals: &ReadingPersonaSignals,
+) -> ReadingPersonaDimensionInput {
+    let thresholds = &reading_persona_thresholds().lifestyle;
+    let is_planned = (signals.read_days >= thresholds.planned.min_read_days
+        && signals.stable_bucket_share >= thresholds.planned.min_stable_bucket_share)
+        || (signals.top_item_share >= thresholds.planned.min_top_item_share
+            && signals.compare >= thresholds.planned.min_compare);
+    let clearly_exploratory = signals.read_days <= thresholds.exploratory.max_read_days
+        || signals.active_bucket_count <= thresholds.exploratory.max_active_bucket_count;
+    let key = if clearly_exploratory {
+        "P"
+    } else if is_planned {
+        "J"
+    } else {
+        "P"
+    };
+    let strength = if key == "J" {
+        strength_from_reading_persona_threshold_delta(
+            (signals.stable_bucket_share - thresholds.planned.min_stable_bucket_share).max(
+                (signals.read_days as f64 - thresholds.planned.min_read_days as f64)
+                    / thresholds.judging_strength.read_days_scale,
+            ),
+        )
+    } else if signals.read_days <= thresholds.perceiving_strength.strong.max_read_days
+        || signals.active_bucket_count
+            <= thresholds
+                .perceiving_strength
+                .strong
+                .max_active_bucket_count
+    {
+        "strong"
+    } else if signals.read_days <= thresholds.perceiving_strength.medium.max_read_days
+        || signals.active_bucket_count
+            <= thresholds
+                .perceiving_strength
+                .medium
+                .max_active_bucket_count
+    {
+        "medium"
+    } else {
+        "light"
+    };
+
+    ReadingPersonaDimensionInput {
+        axis: "lifestyle".to_string(),
+        key: key.to_string(),
+        label: if key == "J" {
+            "稳定推进".to_string()
+        } else {
+            "即兴探索".to_string()
+        },
+        strength: strength.to_string(),
+        basis: if key == "J" {
+            "阅读天数和高活跃分桶更稳定，说明这段时间已经形成相对固定的推进节奏。".to_string()
+        } else {
+            "阅读更像阶段性集中或临时切换，说明这一周期更接近按兴趣和时间窗口灵活推进。".to_string()
+        },
+    }
+}
+
+fn build_reading_persona_evidence(
+    signals: &ReadingPersonaSignals,
+    dimensions: &[ReadingPersonaDimensionInput],
+    status: &str,
+) -> Vec<String> {
+    let mut evidence = Vec::new();
+
+    if let Some(title) = signals.top_category_title.as_deref() {
+        evidence.push(format!(
+            "{title} 是当前投入最多的主题，约占分类投入的 {}%。",
+            reading_persona_percent(signals.top_category_share)
+        ));
+    }
+    if let Some(title) = signals.top_item_title.as_deref() {
+        evidence.push(format!(
+            "《{title}》占重点内容时长约 {}%，说明注意力仍集中在少数主线。",
+            reading_persona_percent(signals.top_item_share)
+        ));
+    }
+    if signals.read_days > 0 {
+        evidence.push(format!(
+            "本周期活跃阅读 {} 天，稳定分布的高活跃时间段约占 {}%。",
+            signals.read_days,
+            reading_persona_percent(signals.stable_bucket_share)
+        ));
+    }
+    if dimensions.first().map(|dimension| dimension.key.as_str()) == Some("E") {
+        evidence.push(format!(
+            "Top 3 分类投入约占 {}%，说明主题分布更分散。",
+            reading_persona_percent(signals.top3_category_share)
+        ));
+    }
+
+    let max_items = if status == "provisional" {
+        reading_persona_thresholds().evidence.provisional_max_items
+    } else {
+        reading_persona_thresholds().evidence.default_max_items
+    };
+    evidence.truncate(max_items);
+    evidence
+}
+
+fn build_reading_persona_confidence(
+    dimensions: &[ReadingPersonaDimensionInput],
+    status: &str,
+) -> Option<f64> {
+    if status == "insufficient" || dimensions.is_empty() {
+        return None;
+    }
+
+    let total = dimensions
+        .iter()
+        .map(|dimension| confidence_for_reading_persona_strength(&dimension.strength))
+        .sum::<f64>();
+    Some(((total / dimensions.len() as f64) * 100.0).round() / 100.0)
+}
+
+fn category_value_for_reading_persona(category: &ReadingCategoryRecord) -> f64 {
+    category
+        .reading_time_seconds
+        .map(|value| value.max(0) as f64)
+        .or(category.value.map(|value| value.max(0.0)))
+        .or(category.reading_count.map(|value| value.max(0) as f64))
+        .unwrap_or(0.0)
+}
+
+fn safe_reading_persona_ratio(value: f64, total: f64) -> f64 {
+    if !value.is_finite() || !total.is_finite() || total <= 0.0 {
+        return 0.0;
+    }
+
+    value / total
+}
+
+fn sum_reading_persona_category_score(
+    categories: &[ReadingCategoryRecord],
+    tokens: &[String],
+) -> f64 {
+    categories.iter().fold(0.0, |sum, category| {
+        let text = [
+            Some(category.title.as_str()),
+            category.parent_title.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("|");
+        if contains_any_reading_persona_token(&text, tokens) {
+            sum + category_value_for_reading_persona(category)
+        } else {
+            sum
+        }
+    })
+}
+
+fn resolve_reading_persona_text_bias<'a>(
+    text: &str,
+    left_tokens: &[String],
+    right_tokens: &[String],
+    left_key: &'a str,
+    right_key: &'a str,
+) -> &'a str {
+    if contains_any_reading_persona_token(text, left_tokens) {
+        return left_key;
+    }
+    if contains_any_reading_persona_token(text, right_tokens) {
+        return right_key;
+    }
+
+    left_key
+}
+
+fn contains_any_reading_persona_token(text: &str, tokens: &[String]) -> bool {
+    tokens.iter().any(|token| text.contains(token.as_str()))
+}
+
+fn strength_from_reading_persona_ratio(left: f64, right: f64) -> &'static str {
+    let max = left.max(right);
+    let min = left.min(right);
+    let ratio = if min <= 0.0 {
+        if max > 0.0 {
+            2.0
+        } else {
+            1.0
+        }
+    } else {
+        max / min
+    };
+    let thresholds = &reading_persona_thresholds().strength.ratio;
+
+    if ratio >= thresholds.strong {
+        "strong"
+    } else if ratio >= thresholds.medium {
+        "medium"
+    } else {
+        "light"
+    }
+}
+
+fn strength_from_reading_persona_threshold_delta(delta: f64) -> &'static str {
+    let thresholds = &reading_persona_thresholds().strength.delta;
+
+    if delta >= thresholds.strong {
+        "strong"
+    } else if delta >= thresholds.medium {
+        "medium"
+    } else {
+        "light"
+    }
+}
+
+fn strength_from_reading_persona_breadth(signals: &ReadingPersonaSignals) -> &'static str {
+    let thresholds = &reading_persona_thresholds().energy.breadth_strength;
+
+    if signals.top3_category_share <= thresholds.strong.max_top3_category_share
+        && signals.author_concentration <= thresholds.strong.max_author_concentration
+        && signals.top_item_share <= thresholds.strong.max_top_item_share
+    {
+        "strong"
+    } else if signals.top3_category_share <= thresholds.medium.max_top3_category_share
+        && signals.top_item_share <= thresholds.medium.max_top_item_share
+    {
+        "medium"
+    } else {
+        "light"
+    }
+}
+
+fn reading_persona_definition(code: &str) -> Option<(String, String, String)> {
+    let definition = reading_persona_config().definitions.get(code)?;
+
+    Some((
+        definition.label.clone(),
+        definition.palette_group.clone(),
+        definition.accent_tone.clone(),
+    ))
+}
+
+fn infer_reading_persona_palette_group(code: &str) -> &'static str {
+    let chars = code.chars().collect::<Vec<_>>();
+    if chars.len() < 4 {
+        return "NT";
+    }
+
+    if chars[1] == 'N' {
+        if chars[2] == 'F' {
+            "NF"
+        } else {
+            "NT"
+        }
+    } else if chars[3] == 'P' {
+        "SP"
+    } else {
+        "SJ"
+    }
+}
+
+fn accent_tone_for_reading_persona_group(group: &str) -> &'static str {
+    match group {
+        "NF" => "rose",
+        "SJ" => "moss",
+        "SP" => "amber",
+        _ => "bluegreen",
+    }
+}
+
+fn confidence_for_reading_persona_strength(strength: &str) -> f64 {
+    let confidence = &reading_persona_thresholds().strength.confidence;
+
+    match strength {
+        "strong" => confidence.strong,
+        "medium" => confidence.medium,
+        _ => confidence.light,
+    }
+}
+
+fn reading_persona_percent(value: f64) -> i64 {
+    ((value * 100.0).round() as i64).max(1)
 }
 
 fn build_reading_route_input(
@@ -2567,6 +4202,7 @@ fn build_reading_route_input(
         payload,
         source_stats,
         allowed_book_ids,
+        current_stage,
     })
 }
 
@@ -2650,6 +4286,91 @@ fn build_book_decision_input(
     })
 }
 
+fn build_local_reader_selection_question_input(
+    request: LocalReaderSelectionQuestionInput,
+) -> Result<LocalReaderSelectionQuestionBuildInput, AiServiceError> {
+    let source_item = normalize_local_reader_source_item(request.source_item)?;
+    let title = normalize_local_reader_text("书名", &request.book.title, 160)?;
+    let author = request
+        .book
+        .author
+        .map(|value| value.trim().chars().take(120).collect::<String>())
+        .filter(|value| !value.is_empty());
+    let selected_text = normalize_local_reader_text(
+        "选中文本",
+        &request.selection.text,
+        MAX_LOCAL_READER_SELECTED_TEXT_CHARS,
+    )?;
+    let question =
+        normalize_local_reader_text("问题", &request.question, MAX_LOCAL_READER_QUESTION_CHARS)?;
+    let start_offset = request.selection.start_offset;
+    let end_offset = request.selection.end_offset;
+
+    if start_offset < 0 || end_offset <= start_offset {
+        return Err(AiServiceError::InvalidProviderOutput(
+            "AI 提问选区位置无效，请重新选择文本。".to_string(),
+        ));
+    }
+
+    let scope_id = format!(
+        "{}:{}:{}-{}",
+        source_item.source, source_item.source_id, start_offset, end_offset
+    );
+    let payload = json!({
+        "promptVersion": LOCAL_READER_SELECTION_QA_PROMPT_VERSION,
+        "basis": "仅基于用户在本地阅读器中手动选择的文本回答，不包含整本书、本地文件路径、文件 hash、数据库路径、微信凭据或微信读书笔记。",
+        "source": "local",
+        "book": {
+            "title": title,
+            "author": author
+        },
+        "selection": {
+            "text": selected_text,
+            "startOffset": start_offset,
+            "endOffset": end_offset
+        },
+        "question": question
+    });
+
+    Ok(LocalReaderSelectionQuestionBuildInput {
+        source_item,
+        scope_id,
+        payload,
+    })
+}
+
+fn normalize_local_reader_source_item(
+    source_item: SourceItemInput,
+) -> Result<SourceItemInput, AiServiceError> {
+    let source = source_item.source.trim();
+    if source != "local" {
+        return Err(AiServiceError::InvalidProviderOutput(
+            "本地阅读器 AI 提问只允许处理本地图书选区。".to_string(),
+        ));
+    }
+
+    let source_id = normalize_local_reader_text("本地图书 ID", &source_item.source_id, 160)?;
+    Ok(SourceItemInput {
+        source: source.to_string(),
+        source_id,
+    })
+}
+
+fn normalize_local_reader_text(
+    field_name: &str,
+    value: &str,
+    max_chars: usize,
+) -> Result<String, AiServiceError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(AiServiceError::InvalidProviderOutput(format!(
+            "AI 提问{field_name}不能为空。"
+        )));
+    }
+
+    Ok(trimmed.chars().take(max_chars).collect())
+}
+
 fn normalize_book_decision_goal(goal: Option<String>) -> String {
     let normalized = goal.unwrap_or_default().trim().to_string();
     match normalized.as_str() {
@@ -2665,6 +4386,7 @@ fn normalize_summary_output(
     source_stats: BookAiSummarySourceStats,
     generated_at: String,
     prompt_version: &str,
+    response_format: AiResponseFormatKind,
 ) -> Result<BookAiSummary, AiServiceError> {
     if !value.is_object() {
         return Err(AiServiceError::InvalidProviderOutput(
@@ -2726,6 +4448,7 @@ fn normalize_summary_output(
         source_stats,
         generated_at,
         prompt_version: prompt_version.to_string(),
+        response_format: Some(response_format),
         basis_notice: "基于本地笔记生成，不代表整本书全文内容。".to_string(),
     })
 }
@@ -2735,6 +4458,7 @@ fn normalize_reading_stats_review_output(
     source_stats: ReadingStatsAiReviewSourceStats,
     generated_at: String,
     prompt_version: &str,
+    response_format: AiResponseFormatKind,
 ) -> Result<ReadingStatsAiReview, AiServiceError> {
     if !value.is_object() {
         return Err(AiServiceError::InvalidProviderOutput(
@@ -2798,9 +4522,17 @@ fn normalize_reading_stats_review_output(
         .map(|item| humanize_review_text(&item))
         .take(5)
         .collect(),
+        reading_persona: normalize_reading_persona_patch(
+            output
+                .get("readingPersona")
+                .or_else(|| output.get("reading_persona"))
+                .or_else(|| value.get("readingPersona"))
+                .or_else(|| value.get("reading_persona")),
+        ),
         source_stats,
         generated_at,
         prompt_version: prompt_version.to_string(),
+        response_format: Some(response_format),
         basis_notice: "基于结构化阅读统计生成，不包含笔记正文或书籍全文。".to_string(),
     })
 }
@@ -2809,8 +4541,10 @@ fn normalize_reading_route_output(
     value: Value,
     allowed_book_ids: HashSet<String>,
     source_stats: ReadingRouteSourceStats,
+    fallback_stage: Option<ReadingStageSignal>,
     generated_at: String,
     prompt_version: &str,
+    response_format: AiResponseFormatKind,
 ) -> Result<ReadingRoute, AiServiceError> {
     if !value.is_object() {
         return Err(AiServiceError::InvalidProviderOutput(
@@ -2886,10 +4620,12 @@ fn normalize_reading_route_output(
         .collect(),
         reading_stage: reading_stage_value(
             output.get("readingStage").or_else(|| value.get("readingStage")),
-        ),
+        )
+        .or(fallback_stage),
         source_stats,
         generated_at,
         prompt_version: prompt_version.to_string(),
+        response_format: Some(response_format),
         basis_notice:
             "基于本地缓存、已生成复盘和用户选择的候选书生成，不代表微信读书远端计划，也不会写回微信读书。"
                 .to_string(),
@@ -2906,6 +4642,7 @@ fn normalize_book_decision_output(
     source_stats: BookDecisionSourceStats,
     generated_at: String,
     prompt_version: &str,
+    response_format: AiResponseFormatKind,
 ) -> Result<BookDecision, AiServiceError> {
     if !value.is_object() {
         return Err(AiServiceError::InvalidProviderOutput(
@@ -2976,9 +4713,73 @@ fn normalize_book_decision_output(
         source_stats,
         generated_at,
         prompt_version: prompt_version.to_string(),
+        response_format: Some(response_format),
         basis_notice:
             "基于本地候选、已生成复盘和结构化统计信号生成，不代表微信读书远端推荐，也不会写回微信读书。"
                 .to_string(),
+    })
+}
+
+fn normalize_local_reader_selection_answer_output(
+    value: Value,
+    generated_at: String,
+    prompt_version: &str,
+    response_format: AiResponseFormatKind,
+) -> Result<LocalReaderSelectionAnswer, AiServiceError> {
+    if !value.is_object() {
+        return Err(AiServiceError::InvalidProviderOutput(
+            "AI 选区回答必须是 JSON 对象。".to_string(),
+        ));
+    }
+
+    let output = summary_output_root(&value);
+    let answer = string_value_any(output, &["answer", "response", "summary", "回答"])
+        .or_else(|| string_value_any(&value, &["answer", "response", "summary", "回答"]))
+        .ok_or_else(|| {
+            AiServiceError::InvalidProviderOutput(
+                "AI 返回缺少 answer 回答字段，请重新提问。".to_string(),
+            )
+        })?;
+
+    Ok(LocalReaderSelectionAnswer {
+        answer: truncate_text(&humanize_route_text(&answer), MAX_LOCAL_READER_ANSWER_CHARS),
+        key_points: string_list_any(
+            output,
+            &["keyPoints", "key_points", "points", "要点", "关键点"],
+        )
+        .into_iter()
+        .map(|item| {
+            truncate_text(
+                &humanize_route_text(&item),
+                MAX_LOCAL_READER_LIST_ITEM_CHARS,
+            )
+        })
+        .take(5)
+        .collect(),
+        follow_up_questions: string_list_any(
+            output,
+            &[
+                "followUpQuestions",
+                "follow_up_questions",
+                "questions",
+                "追问",
+                "后续问题",
+            ],
+        )
+        .into_iter()
+        .map(|item| {
+            truncate_text(
+                &humanize_route_text(&item),
+                MAX_LOCAL_READER_LIST_ITEM_CHARS,
+            )
+        })
+        .take(MAX_LOCAL_READER_FOLLOW_UP_QUESTIONS)
+        .collect(),
+        generated_at,
+        prompt_version: prompt_version.to_string(),
+        response_format: Some(response_format),
+        basis_notice: "仅基于本次选中文本生成，不代表整本书全文，也不会读取或合并微信读书数据。"
+            .to_string(),
     })
 }
 
@@ -3044,11 +4845,15 @@ fn cached_reading_route_response(
     scope_id: &str,
     current_input_hash: &str,
     cached: AiCachedOutputRecord,
+    fallback_stage: Option<ReadingStageSignal>,
     error_message: Option<String>,
 ) -> Result<ReadingRouteResponse, AiServiceError> {
-    let route = serde_json::from_value::<ReadingRoute>(cached.output).map_err(|_| {
+    let mut route = serde_json::from_value::<ReadingRoute>(cached.output).map_err(|_| {
         AiServiceError::InvalidProviderOutput("本地 AI 阅读指南缓存无法解析。".to_string())
     })?;
+    if route.reading_stage.is_none() {
+        route.reading_stage = fallback_stage;
+    }
     let source = if error_message.is_some() {
         BookAiSummarySource::StaleCache
     } else {
@@ -3090,6 +4895,60 @@ fn cached_book_decision_response(
         provider_model: cached.provider_model,
         source,
         decision: sanitize_cached_book_decision(decision),
+        cached_updated_at: Some(cached.updated_at),
+        error_message,
+    })
+}
+
+fn cached_local_reader_selection_question_response(
+    source_item: SourceItemInput,
+    current_input_hash: &str,
+    cached: AiCachedOutputRecord,
+    error_message: Option<String>,
+) -> Result<LocalReaderSelectionQuestionResponse, AiServiceError> {
+    let mut answer =
+        serde_json::from_value::<LocalReaderSelectionAnswer>(cached.output).map_err(|_| {
+            AiServiceError::InvalidProviderOutput("本地 AI 选区问答缓存无法解析。".to_string())
+        })?;
+    answer.answer = truncate_text(
+        &humanize_route_text(&answer.answer),
+        MAX_LOCAL_READER_ANSWER_CHARS,
+    );
+    answer.key_points = answer
+        .key_points
+        .into_iter()
+        .map(|item| {
+            truncate_text(
+                &humanize_route_text(&item),
+                MAX_LOCAL_READER_LIST_ITEM_CHARS,
+            )
+        })
+        .take(5)
+        .collect();
+    answer.follow_up_questions = answer
+        .follow_up_questions
+        .into_iter()
+        .map(|item| {
+            truncate_text(
+                &humanize_route_text(&item),
+                MAX_LOCAL_READER_LIST_ITEM_CHARS,
+            )
+        })
+        .take(MAX_LOCAL_READER_FOLLOW_UP_QUESTIONS)
+        .collect();
+    let source = if error_message.is_some() {
+        BookAiSummarySource::StaleCache
+    } else {
+        BookAiSummarySource::Cache
+    };
+
+    Ok(LocalReaderSelectionQuestionResponse {
+        source_item,
+        prompt_version: cached.prompt_version,
+        input_hash: current_input_hash.to_string(),
+        provider_model: cached.provider_model,
+        source,
+        answer,
         cached_updated_at: Some(cached.updated_at),
         error_message,
     })
@@ -3270,6 +5129,7 @@ fn empty_summary_response(
             source_stats,
             generated_at: current_unix_seconds(),
             prompt_version: BOOK_NOTES_SUMMARY_PROMPT_VERSION.to_string(),
+            response_format: None,
             basis_notice: "基于本地笔记生成，不代表整本书全文内容。".to_string(),
         },
         cached_updated_at: None,
@@ -3301,9 +5161,11 @@ fn empty_reading_stats_review_response(
             preference_insights: Vec::new(),
             focus_items: Vec::new(),
             next_actions: Vec::new(),
+            reading_persona: None,
             source_stats,
             generated_at: current_unix_seconds(),
             prompt_version: READING_STATS_REVIEW_PROMPT_VERSION.to_string(),
+            response_format: None,
             basis_notice: "基于结构化阅读统计生成，不包含笔记正文或书籍全文。".to_string(),
         },
         cached_updated_at: None,
@@ -3333,6 +5195,27 @@ fn sanitize_cached_reading_review(mut review: ReadingStatsAiReview) -> ReadingSt
         .into_iter()
         .map(|item| humanize_review_text(&item))
         .collect();
+    review.reading_persona = review.reading_persona.and_then(|patch| {
+        let summary = patch
+            .summary
+            .as_deref()
+            .map(humanize_review_text)
+            .filter(|text| !text.trim().is_empty());
+        let suggestion = patch
+            .suggestion
+            .as_deref()
+            .map(humanize_review_text)
+            .filter(|text| !text.trim().is_empty());
+
+        if summary.is_none() && suggestion.is_none() {
+            return None;
+        }
+
+        Some(ReadingPersonaPatch {
+            summary,
+            suggestion,
+        })
+    });
     review
 }
 
@@ -4694,6 +6577,29 @@ fn string_list(value: Option<&Value>) -> Vec<String> {
     }
 }
 
+fn normalize_reading_persona_patch(value: Option<&Value>) -> Option<ReadingPersonaPatch> {
+    let field = value?.as_object()?;
+    let summary = string_value_any(
+        &Value::Object(field.clone()),
+        &["summary", "personaSummary"],
+    )
+    .map(|text| humanize_review_text(&text));
+    let suggestion = string_value_any(
+        &Value::Object(field.clone()),
+        &["suggestion", "personaSuggestion"],
+    )
+    .map(|text| humanize_review_text(&text));
+
+    if summary.is_none() && suggestion.is_none() {
+        return None;
+    }
+
+    Some(ReadingPersonaPatch {
+        summary,
+        suggestion,
+    })
+}
+
 fn string_from_list_item(value: Option<&Value>) -> Option<String> {
     let field = value?;
 
@@ -5939,7 +7845,7 @@ fn read_ai_asset_version_history(
 
     let mut histories = Vec::with_capacity(cached_versions.len().saturating_sub(1));
     for (index, cached) in cached_versions.iter().enumerate().skip(1) {
-        let previous_version = cached_versions.get(index - 1);
+        let previous_version = cached_versions.get(index + 1);
         histories.push(ai_asset_version_summary_from_cached(
             connection,
             &normalized_feature,
@@ -6565,31 +8471,170 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     use rusqlite::Connection;
+    use serde::Deserialize;
     use serde_json::json;
 
-    use crate::{db::initialize_schema, mappers::stats::map_reading_stats_response};
+    use crate::{
+        db::initialize_schema,
+        mappers::stats::{
+            map_reading_stats_response, ReadingCategoryRecord, ReadingRankItemRecord,
+            ReadingStatsRecord, ReadingTimeBucketRecord,
+        },
+    };
 
     use super::{
-        build_book_decision_input, build_chat_completion_payload, build_reading_route_input,
-        build_reading_stats_review_input, build_summary_input,
-        cached_reading_stats_review_response, chat_completions_url, extract_chat_completion_json,
-        humanize_review_text, is_empty_reading_stats, normalize_book_decision_output,
+        book_decision_json_schema, book_notes_summary_json_schema, build_book_decision_input,
+        build_chat_completion_payload, build_local_reader_selection_question_input,
+        build_reading_route_input, build_reading_stats_review_input, build_summary_input,
+        cached_reading_route_response, cached_reading_stats_review_response, chat_completions_url,
+        default_json_object_response_format, extract_chat_completion_json, humanize_review_text,
+        is_empty_reading_stats, is_unsupported_json_schema_response,
+        local_reader_selection_question_json_schema, local_reader_selection_question_system_prompt,
+        normalize_book_decision_output, normalize_local_reader_selection_answer_output,
         normalize_provider_settings, normalize_reading_route_output,
         normalize_reading_stats_review_output, normalize_summary_output,
         provider_network_user_message, read_ai_asset_detail, read_ai_asset_summaries,
         read_ai_asset_version_detail, read_ai_asset_version_history, read_ai_output,
         read_ai_review_feedback, read_book_summary_export_items, read_book_summary_list,
-        read_latest_ai_output, read_local_book_notes, require_ai_credential_for_uncached_summary,
-        save_ai_review_feedback, serialize_book_summary_export_index, stable_hash_json,
-        upsert_ai_output, AiFeedbackExportRecord, AiOutputUpsert, AiReviewFeedbackExport,
-        AiReviewFeedbackState, AiService, AiServiceError, BookAiSummarySource,
-        BookAiSummarySourceStats, BookDecisionCandidateInput, BookDecisionSourceStats,
-        BookSummaryExportItem, BookSummaryUpdateContext, ReadingRouteBookInput,
-        ReadingRouteRequest, ReadingRouteSourceStats, ReadingStatsAiReviewSourceStats,
-        BOOK_DECISION_PROMPT_VERSION, BOOK_NOTES_SUMMARY_FEATURE,
-        BOOK_NOTES_SUMMARY_PROMPT_VERSION, READING_ROUTE_PROMPT_VERSION,
+        read_latest_ai_output, read_local_book_notes, reading_route_json_schema,
+        reading_stats_review_json_schema, require_ai_credential_for_uncached_summary,
+        resolve_reading_persona, save_ai_review_feedback, serialize_book_summary_export_index,
+        stable_hash_json, upsert_ai_output, AiCachedOutputRecord, AiFeedbackExportRecord,
+        AiOutputUpsert, AiResponseFormatKind, AiReviewFeedbackExport, AiReviewFeedbackState,
+        AiService, AiServiceError, BookAiSummarySource, BookAiSummarySourceStats,
+        BookDecisionCandidateInput, BookDecisionSourceStats, BookSummaryExportItem,
+        BookSummaryUpdateContext, LocalReaderSelectionBookInput, LocalReaderSelectionInput,
+        LocalReaderSelectionQuestionInput, ReadingPersonaPatch, ReadingRouteBookInput,
+        ReadingRouteRequest, ReadingRouteSourceStats, ReadingStageSignal,
+        ReadingStatsAiReviewSourceStats, SourceItemInput, BOOK_DECISION_PROMPT_VERSION,
+        BOOK_NOTES_SUMMARY_FEATURE, BOOK_NOTES_SUMMARY_PROMPT_VERSION,
+        LOCAL_READER_SELECTION_QA_PROMPT_VERSION, MAX_LOCAL_READER_ANSWER_CHARS,
+        MAX_LOCAL_READER_LIST_ITEM_CHARS, READING_ROUTE_FEATURE, READING_ROUTE_PROMPT_VERSION,
         READING_STATS_REVIEW_FEATURE, READING_STATS_REVIEW_PROMPT_VERSION,
     };
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ReadingPersonaFixtureCase {
+        id: String,
+        stats: ReadingPersonaFixtureStats,
+        expected: ReadingPersonaFixtureExpected,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ReadingPersonaFixtureStats {
+        mode: String,
+        base_time: i64,
+        read_days: Option<i64>,
+        total_read_time_seconds: Option<i64>,
+        day_average_read_time_seconds: Option<i64>,
+        compare: Option<f64>,
+        #[serde(default)]
+        buckets: Vec<ReadingPersonaFixtureBucket>,
+        #[serde(default)]
+        longest_items: Vec<ReadingPersonaFixtureItem>,
+        #[serde(default)]
+        categories: Vec<ReadingPersonaFixtureCategory>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ReadingPersonaFixtureBucket {
+        start_time: i64,
+        read_time_seconds: i64,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ReadingPersonaFixtureItem {
+        id: String,
+        title: String,
+        author: Option<String>,
+        #[serde(rename = "type")]
+        item_type: String,
+        read_time_seconds: i64,
+        #[serde(default)]
+        tags: Vec<String>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ReadingPersonaFixtureCategory {
+        category_id: Option<String>,
+        title: String,
+        parent_title: Option<String>,
+        reading_time_seconds: Option<i64>,
+        reading_count: Option<i64>,
+        value: Option<f64>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ReadingPersonaFixtureExpected {
+        status: String,
+        code: Option<String>,
+        label: Option<String>,
+        display_title: Option<String>,
+        palette_group: Option<String>,
+        accent_tone: Option<String>,
+        dimension_keys: Vec<String>,
+        confidence: Option<f64>,
+        evidence_count: usize,
+    }
+
+    fn load_reading_persona_fixture_cases() -> Vec<ReadingPersonaFixtureCase> {
+        serde_json::from_str(include_str!("../../../src/reading-persona.fixtures.json"))
+            .expect("reading persona fixtures should be valid JSON")
+    }
+
+    fn reading_stats_record_from_fixture(stats: &ReadingPersonaFixtureStats) -> ReadingStatsRecord {
+        ReadingStatsRecord {
+            mode: stats.mode.clone(),
+            base_time: stats.base_time,
+            read_days: stats.read_days,
+            total_read_time_seconds: stats.total_read_time_seconds,
+            day_average_read_time_seconds: stats.day_average_read_time_seconds,
+            compare: stats.compare,
+            buckets: stats
+                .buckets
+                .iter()
+                .map(|bucket| ReadingTimeBucketRecord {
+                    start_time: bucket.start_time,
+                    read_time_seconds: bucket.read_time_seconds,
+                })
+                .collect(),
+            longest_items: stats
+                .longest_items
+                .iter()
+                .map(|item| ReadingRankItemRecord {
+                    id: item.id.clone(),
+                    title: item.title.clone(),
+                    author: item.author.clone(),
+                    cover: None,
+                    item_type: item.item_type.clone(),
+                    read_time_seconds: item.read_time_seconds,
+                    record_reading_time_seconds: None,
+                    tags: item.tags.clone(),
+                })
+                .collect(),
+            categories: stats
+                .categories
+                .iter()
+                .map(|category| ReadingCategoryRecord {
+                    category_id: category.category_id.clone(),
+                    title: category.title.clone(),
+                    parent_category_id: None,
+                    parent_title: category.parent_title.clone(),
+                    value: category.value,
+                    reading_time_seconds: category.reading_time_seconds,
+                    reading_count: category.reading_count,
+                    category_type: None,
+                })
+                .collect(),
+            raw: serde_json::Value::Null,
+        }
+    }
 
     #[test]
     fn validate_ai_credential_rejects_empty_key() {
@@ -6636,6 +8681,8 @@ mod tests {
         assert!(prompt.contains("不写“建立习惯、沉淀模板、长期投入、可复用方法论”等空泛话术"));
         assert!(prompt.contains("suggestedOutput 必须包含数量或格式和验收标准"));
         assert!(prompt.contains("nextActions 是 2-5 条可执行下一步"));
+        assert!(prompt.contains("readingStage"));
+        assert!(prompt.contains("currentBookStage"));
         assert!(prompt.contains("进度阶段"));
         assert!(prompt.contains("章节只能作为辅助依据"));
         assert!(prompt.contains("缺少章节"));
@@ -6847,6 +8894,167 @@ mod tests {
     }
 
     #[test]
+    fn local_reader_selection_question_input_uses_only_selection_payload() {
+        let input =
+            build_local_reader_selection_question_input(LocalReaderSelectionQuestionInput {
+                source_item: SourceItemInput {
+                    source: "local".to_string(),
+                    source_id: "local_fnv1a64_sensitive_file_hash".to_string(),
+                },
+                book: LocalReaderSelectionBookInput {
+                    title: "本地图书".to_string(),
+                    author: Some("作者".to_string()),
+                },
+                selection: LocalReaderSelectionInput {
+                    text: "这是一段用户手动选择的文本。".to_string(),
+                    start_offset: 12,
+                    end_offset: 28,
+                },
+                question: "这段话如何理解？".to_string(),
+            })
+            .expect("local reader selection question input should build");
+        let payload_text = input.payload.to_string();
+
+        assert_eq!(
+            input.payload["promptVersion"],
+            json!(LOCAL_READER_SELECTION_QA_PROMPT_VERSION)
+        );
+        assert_eq!(input.payload["source"], json!("local"));
+        assert_eq!(
+            input.payload["selection"]["text"],
+            json!("这是一段用户手动选择的文本。")
+        );
+        assert_eq!(input.payload["question"], json!("这段话如何理解？"));
+        assert_eq!(
+            input.scope_id,
+            "local:local_fnv1a64_sensitive_file_hash:12-28"
+        );
+        assert!(!payload_text.contains("local_fnv1a64_sensitive_file_hash"));
+        assert!(!payload_text.contains("storagePath"));
+        assert!(!payload_text.contains("fileHash"));
+        assert!(!payload_text.contains("app.db"));
+        assert!(!payload_text.contains("sk-"));
+        assert!(!payload_text.contains("wx_session"));
+        assert!(!payload_text.contains("整本书正文不应进入选区提问"));
+    }
+
+    #[test]
+    fn local_reader_selection_question_rejects_invalid_source_or_range() {
+        let weread_result =
+            build_local_reader_selection_question_input(LocalReaderSelectionQuestionInput {
+                source_item: SourceItemInput {
+                    source: "weread".to_string(),
+                    source_id: "book_1".to_string(),
+                },
+                book: LocalReaderSelectionBookInput {
+                    title: "微信书".to_string(),
+                    author: None,
+                },
+                selection: LocalReaderSelectionInput {
+                    text: "选区".to_string(),
+                    start_offset: 0,
+                    end_offset: 2,
+                },
+                question: "问题".to_string(),
+            });
+        assert!(weread_result.is_err());
+
+        let invalid_range =
+            build_local_reader_selection_question_input(LocalReaderSelectionQuestionInput {
+                source_item: SourceItemInput {
+                    source: "local".to_string(),
+                    source_id: "local_book".to_string(),
+                },
+                book: LocalReaderSelectionBookInput {
+                    title: "本地图书".to_string(),
+                    author: None,
+                },
+                selection: LocalReaderSelectionInput {
+                    text: "选区".to_string(),
+                    start_offset: 10,
+                    end_offset: 10,
+                },
+                question: "问题".to_string(),
+            });
+        assert!(invalid_range.is_err());
+    }
+
+    #[test]
+    fn normalize_local_reader_selection_answer_limits_follow_ups() {
+        let answer = normalize_local_reader_selection_answer_output(
+            json!({
+                "answer": "仅凭选中文本看，这段话强调阅读器应该围绕正文保持克制。",
+                "keyPoints": ["围绕正文", "不读取整本书"],
+                "followUpQuestions": ["还能选择哪段？", "作者前文如何铺垫？", "后文是否转折？", "多余问题"]
+            }),
+            "100".to_string(),
+            LOCAL_READER_SELECTION_QA_PROMPT_VERSION,
+            AiResponseFormatKind::JsonSchema,
+        )
+        .expect("selection answer should normalize");
+
+        assert_eq!(answer.key_points.len(), 2);
+        assert_eq!(
+            answer.follow_up_questions,
+            vec![
+                "还能选择哪段？".to_string(),
+                "作者前文如何铺垫？".to_string(),
+                "后文是否转折？".to_string(),
+            ]
+        );
+        assert_eq!(
+            answer.response_format,
+            Some(AiResponseFormatKind::JsonSchema)
+        );
+        assert!(answer.basis_notice.contains("选中文本"));
+    }
+
+    #[test]
+    fn normalize_local_reader_selection_answer_limits_long_items() {
+        let long_answer = "a".repeat(MAX_LOCAL_READER_ANSWER_CHARS + 20);
+        let long_item = "b".repeat(MAX_LOCAL_READER_LIST_ITEM_CHARS + 20);
+        let answer = normalize_local_reader_selection_answer_output(
+            json!({
+                "answer": long_answer,
+                "keyPoints": [long_item, long_item, long_item, long_item, long_item, long_item],
+                "followUpQuestions": [long_item, long_item, long_item, long_item]
+            }),
+            "100".to_string(),
+            LOCAL_READER_SELECTION_QA_PROMPT_VERSION,
+            AiResponseFormatKind::JsonSchema,
+        )
+        .expect("selection answer should normalize");
+
+        assert_eq!(
+            answer.answer.chars().count(),
+            MAX_LOCAL_READER_ANSWER_CHARS + 3
+        );
+        assert_eq!(answer.key_points.len(), 5);
+        assert_eq!(answer.follow_up_questions.len(), 3);
+        assert_eq!(
+            answer.key_points[0].chars().count(),
+            MAX_LOCAL_READER_LIST_ITEM_CHARS + 3
+        );
+        assert!(answer.key_points[0].ends_with("..."));
+        assert!(answer.follow_up_questions[0].ends_with("..."));
+    }
+
+    #[test]
+    fn local_reader_selection_prompt_and_schema_lock_privacy_boundary() {
+        let prompt = local_reader_selection_question_system_prompt();
+        let schema = local_reader_selection_question_json_schema();
+
+        assert!(prompt.contains("只基于用户提供的 selectedText 和 question"));
+        assert!(prompt.contains("不假装读过整本书"));
+        assert!(prompt.contains("文件 hash"));
+        assert!(prompt.contains("微信凭据"));
+        assert_eq!(
+            schema["required"],
+            json!(["answer", "keyPoints", "followUpQuestions"])
+        );
+    }
+
+    #[test]
     fn normalize_book_decision_output_limits_candidates_and_requires_decision_fields() {
         let decision = normalize_book_decision_output(
             json!({
@@ -6917,6 +9125,7 @@ mod tests {
             },
             "100".to_string(),
             BOOK_DECISION_PROMPT_VERSION,
+            AiResponseFormatKind::JsonSchema,
         )
         .expect("decision should normalize");
 
@@ -6929,6 +9138,10 @@ mod tests {
         assert_eq!(decision.deferred_candidates.len(), 1);
         assert_eq!(decision.next_actions.len(), 2);
         assert_eq!(decision.prompt_version, "book-decision-v1");
+        assert_eq!(
+            decision.response_format,
+            Some(AiResponseFormatKind::JsonSchema)
+        );
         assert!(decision.basis_notice.contains("本地候选"));
     }
 
@@ -6963,6 +9176,7 @@ mod tests {
             },
             "100".to_string(),
             BOOK_DECISION_PROMPT_VERSION,
+            AiResponseFormatKind::JsonObject,
         )
         .expect("decision should normalize");
 
@@ -6973,6 +9187,10 @@ mod tests {
                 "安排一个 30-45 分钟阅读时段，先完成第一段试读。".to_string(),
                 "读完后写 3 条复盘：收获、疑问、下一步。".to_string(),
             ]
+        );
+        assert_eq!(
+            decision.response_format,
+            Some(AiResponseFormatKind::JsonObject)
         );
     }
 
@@ -7068,6 +9286,79 @@ mod tests {
         assert_eq!(response.input_hash, "new_hash");
         assert_eq!(response.cached_updated_at, Some("100".to_string()));
         assert_eq!(response.review.overview, "旧缓存复盘");
+        assert_eq!(response.review.response_format, None);
+    }
+
+    #[test]
+    fn cached_reading_route_response_backfills_missing_stage_from_current_input() {
+        let cached = AiCachedOutputRecord {
+            feature: READING_ROUTE_FEATURE.to_string(),
+            scope_id: "book:book_deep_work".to_string(),
+            prompt_version: READING_ROUTE_PROMPT_VERSION.to_string(),
+            input_hash: "old_hash".to_string(),
+            output: json!({
+                "routeOverview": "先完成关键阅读，再输出 1 页复盘。",
+                "books": [{
+                    "bookId": "book_deep_work",
+                    "title": "深度工作",
+                    "author": "卡尔·纽波特",
+                    "order": 1,
+                    "role": "当前书",
+                    "readingPurpose": "今天先读当前进度后的下一段，确认 1 个最难坚持的专注场景。",
+                    "estimatedEffort": "1 个 45 分钟阅读时段",
+                    "localStatus": "reading",
+                    "basis": "当前进度 55%，已进入深入推进阶段。"
+                }],
+                "dependencies": [],
+                "reviewCheckpoints": [{
+                    "timing": "读完这一段后",
+                    "question": "哪条专注规则最值得本周先试一次？",
+                    "suggestedOutput": "写 3 条观察，并选 1 条作为本周实验。"
+                }],
+                "nextActions": ["今天读 45 分钟并写 3 条专注观察，完成标准：选出 1 条本周实验。"],
+                "sourceStats": {
+                    "currentBookCount": 1,
+                    "candidateCount": 0,
+                    "summaryCount": 0,
+                    "statsSignalCount": 0,
+                    "localStatusCount": 1
+                },
+                "generatedAt": "100",
+                "promptVersion": READING_ROUTE_PROMPT_VERSION,
+                "basisNotice": "基于本地缓存生成。"
+            }),
+            source_count: Some(2),
+            provider_model: Some("deepseek-v3".to_string()),
+            created_at: "100".to_string(),
+            updated_at: "100".to_string(),
+        };
+
+        let response = cached_reading_route_response(
+            "book_deep_work",
+            "book:book_deep_work",
+            "new_hash",
+            cached,
+            Some(ReadingStageSignal {
+                stage: "deepening".to_string(),
+                label: "深入推进".to_string(),
+                progress_percent: 55,
+                refresh_reason: None,
+            }),
+            None,
+        )
+        .expect("cached route should parse");
+
+        assert_eq!(response.input_hash, "new_hash");
+        assert_eq!(
+            response.route.reading_stage,
+            Some(ReadingStageSignal {
+                stage: "deepening".to_string(),
+                label: "深入推进".to_string(),
+                progress_percent: 55,
+                refresh_reason: None,
+            })
+        );
+        assert_eq!(response.route.response_format, None);
     }
 
     #[test]
@@ -8002,7 +10293,15 @@ mod tests {
         assert_eq!(versions[0].progress, Some(72));
         assert_eq!(versions[0].refresh_reason.as_deref(), Some("notes_changed"));
         assert!(!versions[0].is_current);
+        assert_eq!(
+            versions[0]
+                .previous_version
+                .as_ref()
+                .map(|version| version.input_hash.as_str()),
+            Some("route_hash_v1")
+        );
         assert_eq!(versions[1].input_hash, "route_hash_v1");
+        assert!(versions[1].previous_version.is_none());
     }
 
     #[test]
@@ -8105,8 +10404,16 @@ mod tests {
         assert_eq!(versions[0].input_hash, "summary_hash_v2");
         assert_eq!(versions[0].title.as_deref(), Some("《深度工作》书籍复盘"));
         assert_eq!(versions[0].reading_stage.as_deref(), Some("closing"));
+        assert_eq!(
+            versions[0]
+                .previous_version
+                .as_ref()
+                .map(|version| version.input_hash.as_str()),
+            Some("summary_hash_v1")
+        );
         assert_eq!(versions[1].input_hash, "summary_hash_v1");
         assert_eq!(versions[1].title.as_deref(), Some("《深度工作》书籍复盘"));
+        assert!(versions[1].previous_version.is_none());
     }
 
     #[test]
@@ -8463,12 +10770,105 @@ mod tests {
             "deepseekv4pro",
             "system",
             &json!({ "books": [1, 2, 3, 4, 5, 6] }),
+            default_json_object_response_format(),
         );
 
         assert!(
             payload["max_tokens"].as_i64().unwrap_or_default() >= 4000,
             "reading route JSON output must not be truncated by a small token cap"
         );
+        assert_eq!(payload["response_format"]["type"], "json_object");
+    }
+
+    #[test]
+    fn build_chat_completion_payload_accepts_json_schema_response_format() {
+        let payload = build_chat_completion_payload(
+            "deepseekv4pro",
+            "system",
+            &json!({ "book": "deep-work" }),
+            json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "reading_route_response",
+                    "strict": true,
+                    "schema": reading_route_json_schema()
+                }
+            }),
+        );
+
+        assert_eq!(payload["response_format"]["type"], "json_schema");
+        assert_eq!(
+            payload["response_format"]["json_schema"]["name"],
+            "reading_route_response"
+        );
+        assert_eq!(
+            payload["response_format"]["json_schema"]["schema"]["required"][5],
+            "readingStage"
+        );
+    }
+
+    #[test]
+    fn book_notes_summary_json_schema_requires_quote_structure() {
+        let schema = book_notes_summary_json_schema();
+
+        assert_eq!(schema["required"][0], "overview");
+        assert_eq!(schema["required"][5], "representativeQuotes");
+        assert_eq!(
+            schema["properties"]["representativeQuotes"]["items"]["required"][2],
+            "noteType"
+        );
+        assert_eq!(
+            schema["properties"]["representativeQuotes"]["items"]["properties"]["noteType"]["enum"]
+                [1],
+            "想法"
+        );
+    }
+
+    #[test]
+    fn reading_stats_review_json_schema_requires_core_sections() {
+        let schema = reading_stats_review_json_schema();
+
+        assert_eq!(schema["required"][0], "overview");
+        assert_eq!(schema["required"][1], "rhythmInsights");
+        assert_eq!(schema["required"][4], "nextActions");
+        assert_eq!(schema["properties"]["readingPersona"]["type"], "object");
+        assert_eq!(
+            schema["properties"]["readingPersona"]["properties"]["summary"]["type"],
+            "string"
+        );
+        assert!(!schema["required"]
+            .as_array()
+            .expect("required should be an array")
+            .iter()
+            .any(|item| item == "readingPersona"));
+    }
+
+    #[test]
+    fn book_decision_json_schema_requires_ranked_candidates() {
+        let schema = book_decision_json_schema();
+
+        assert_eq!(schema["required"][0], "decisionOverview");
+        assert_eq!(
+            schema["properties"]["topCandidates"]["items"]["required"][5],
+            "estimatedEffort"
+        );
+        assert_eq!(
+            schema["properties"]["deferredCandidates"]["items"]["required"][2],
+            "reason"
+        );
+    }
+
+    #[test]
+    fn detect_unsupported_json_schema_provider_response() {
+        assert!(is_unsupported_json_schema_response(
+            "AI Provider 返回 HTTP 400：response_format json_schema is not supported by this model."
+        ));
+        assert!(is_unsupported_json_schema_response(
+            "AI Provider 返回 HTTP 400：Unknown parameter: response_format.json_schema.strict"
+        ));
+        assert!(!is_unsupported_json_schema_response(
+            "AI 返回内容不是有效 JSON。"
+        ));
     }
 
     #[test]
@@ -8628,6 +11028,7 @@ mod tests {
             },
             "100".to_string(),
             "book-notes-summary-v3",
+            AiResponseFormatKind::JsonSchema,
         )
         .expect("summary should normalize");
 
@@ -8635,6 +11036,10 @@ mod tests {
         assert_eq!(summary.key_ideas, vec!["观点一".to_string()]);
         assert_eq!(summary.generated_at, "100");
         assert_eq!(summary.prompt_version, "book-notes-summary-v3");
+        assert_eq!(
+            summary.response_format,
+            Some(AiResponseFormatKind::JsonSchema)
+        );
         assert_eq!(summary.theme_tags, vec!["专注".to_string()]);
         assert_eq!(summary.representative_quotes[0].quote, "原文摘录");
         assert_eq!(
@@ -8672,12 +11077,17 @@ mod tests {
             },
             "100".to_string(),
             "book-notes-summary-v3",
+            AiResponseFormatKind::JsonObject,
         )
         .expect("summary aliases should normalize");
 
         assert_eq!(summary.overview, "别名概览");
         assert_eq!(summary.key_ideas, vec!["观点对象".to_string()]);
         assert_eq!(summary.theme_tags, vec!["标签".to_string()]);
+        assert_eq!(
+            summary.response_format,
+            Some(AiResponseFormatKind::JsonObject)
+        );
         assert_eq!(summary.representative_quotes[0].reason, "别名理由");
         assert_eq!(
             summary.representative_quotes[0].chapter,
@@ -8703,6 +11113,7 @@ mod tests {
             },
             "100".to_string(),
             "book-notes-summary-v3",
+            AiResponseFormatKind::JsonSchema,
         )
         .expect_err("missing overview should fail");
 
@@ -8743,8 +11154,15 @@ mod tests {
                 stats_signal_count: 0,
                 local_status_count: 1,
             },
+            Some(ReadingStageSignal {
+                stage: "framing".to_string(),
+                label: "建立主线".to_string(),
+                progress_percent: 25,
+                refresh_reason: None,
+            }),
             "100".to_string(),
             READING_ROUTE_PROMPT_VERSION,
+            AiResponseFormatKind::JsonSchema,
         )
         .expect("route should normalize without routeOverview");
 
@@ -8753,6 +11171,10 @@ mod tests {
         assert_eq!(route.books.len(), 1);
         assert_eq!(route.books[0].book_id, "book_deep_work");
         assert_eq!(route.review_checkpoints.len(), 1);
+        assert_eq!(
+            route.response_format,
+            Some(AiResponseFormatKind::JsonSchema)
+        );
         assert_eq!(
             route.next_actions,
             vec!["今天安排45分钟读完第2章，完成标准：输出3条专注行动。".to_string()]
@@ -8791,8 +11213,10 @@ mod tests {
                 stats_signal_count: 1,
                 local_status_count: 1,
             },
+            None,
             "100".to_string(),
             READING_ROUTE_PROMPT_VERSION,
+            AiResponseFormatKind::JsonSchema,
         )
         .expect("route should normalize");
 
@@ -8822,6 +11246,10 @@ mod tests {
         assert!(!route.route_overview.contains("currentCore"));
         assert!(!route.route_overview.contains("latestStats"));
         assert!(!route.route_overview.contains("sourceStats"));
+        assert_eq!(
+            route.response_format,
+            Some(AiResponseFormatKind::JsonSchema)
+        );
         assert!(route.route_overview.contains("阅读"));
     }
 
@@ -8857,14 +11285,75 @@ mod tests {
                 stats_signal_count: 1,
                 local_status_count: 1,
             },
+            None,
             "100".to_string(),
             READING_ROUTE_PROMPT_VERSION,
+            AiResponseFormatKind::JsonSchema,
         )
         .expect_err("generic single-book guidance should fail");
 
         assert_eq!(
             error.user_message(),
             "AI 返回的单书阅读指南缺少具体阅读范围、复盘输出或验收标准，请重新生成。"
+        );
+    }
+
+    #[test]
+    fn normalize_reading_route_output_falls_back_to_current_book_stage_when_missing() {
+        let route = normalize_reading_route_output(
+            json!({
+                "routeOverview": "围绕《深度工作》先完成关键阅读，再输出 1 页复盘。",
+                "books": [{
+                    "bookId": "book_deep_work",
+                    "title": "深度工作",
+                    "author": "卡尔·纽波特",
+                    "order": 1,
+                    "role": "当前书",
+                    "readingPurpose": "今天先读当前进度后的下一段，确认专注工作最难坚持的 1 个场景。",
+                    "estimatedEffort": "1 个 45 分钟阅读时段",
+                    "localStatus": "reading",
+                    "basis": "当前进度 55%，已进入深入推进阶段。"
+                }],
+                "dependencies": [],
+                "reviewCheckpoints": [{
+                    "timing": "读完这一段后",
+                    "question": "哪条专注规则最值得本周先试一次？",
+                    "suggestedOutput": "写 3 条观察，并选 1 条作为本周实验，完成标准：能落实到具体场景。"
+                }],
+                "nextActions": ["今天读 45 分钟并写 3 条专注观察，完成标准：选出 1 条本周实验。"]
+            }),
+            HashSet::from(["book_deep_work".to_string()]),
+            ReadingRouteSourceStats {
+                current_book_count: 1,
+                candidate_count: 0,
+                summary_count: 0,
+                stats_signal_count: 0,
+                local_status_count: 1,
+            },
+            Some(ReadingStageSignal {
+                stage: "deepening".to_string(),
+                label: "深入推进".to_string(),
+                progress_percent: 55,
+                refresh_reason: None,
+            }),
+            "100".to_string(),
+            READING_ROUTE_PROMPT_VERSION,
+            AiResponseFormatKind::JsonObject,
+        )
+        .expect("route should normalize with fallback stage");
+
+        assert_eq!(
+            route.reading_stage,
+            Some(ReadingStageSignal {
+                stage: "deepening".to_string(),
+                label: "深入推进".to_string(),
+                progress_percent: 55,
+                refresh_reason: None,
+            })
+        );
+        assert_eq!(
+            route.response_format,
+            Some(AiResponseFormatKind::JsonObject)
         );
     }
 
@@ -8900,6 +11389,174 @@ mod tests {
         assert!(input.payload.get("raw").is_none());
         assert!(input.payload.to_string().find("privateField").is_none());
         assert_eq!(input.payload["longestItems"][0]["title"], "深度工作");
+        assert_eq!(input.payload["personaStatus"], "insufficient");
+        assert_eq!(
+            input.payload["personaBasisNotice"],
+            super::reading_persona_basis_notice()
+        );
+    }
+
+    #[test]
+    fn reading_persona_shared_fixtures_match_rust_payload_contract() {
+        for fixture in load_reading_persona_fixture_cases() {
+            let stats = reading_stats_record_from_fixture(&fixture.stats);
+            let input = build_reading_stats_review_input(&stats)
+                .unwrap_or_else(|_| panic!("fixture {} should build", fixture.id));
+
+            assert_eq!(input.payload["personaStatus"], fixture.expected.status);
+
+            match fixture.expected.code.as_deref() {
+                Some(code) => assert_eq!(input.payload["personaCode"], code),
+                None => assert!(input.payload.get("personaCode").is_none()),
+            }
+            match fixture.expected.label.as_deref() {
+                Some(label) => assert_eq!(input.payload["personaLabel"], label),
+                None => assert!(input.payload.get("personaLabel").is_none()),
+            }
+            match fixture.expected.display_title.as_deref() {
+                Some(title) => assert_eq!(input.payload["personaDisplayTitle"], title),
+                None => assert!(input.payload.get("personaDisplayTitle").is_none()),
+            }
+            match fixture.expected.palette_group.as_deref() {
+                Some(group) => assert_eq!(input.payload["personaPaletteGroup"], group),
+                None => assert!(input.payload.get("personaPaletteGroup").is_none()),
+            }
+            match fixture.expected.accent_tone.as_deref() {
+                Some(tone) => assert_eq!(input.payload["personaAccentTone"], tone),
+                None => assert!(input.payload.get("personaAccentTone").is_none()),
+            }
+
+            let dimension_keys = input.payload["personaDimensions"]
+                .as_array()
+                .expect("personaDimensions should be an array")
+                .iter()
+                .map(|item| {
+                    item["key"]
+                        .as_str()
+                        .expect("dimension key should be a string")
+                        .to_string()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(dimension_keys, fixture.expected.dimension_keys);
+            assert_eq!(
+                input.payload["personaEvidence"]
+                    .as_array()
+                    .expect("personaEvidence should be an array")
+                    .len(),
+                fixture.expected.evidence_count
+            );
+
+            match fixture.expected.confidence {
+                Some(confidence) => {
+                    let actual = input.payload["personaConfidence"]
+                        .as_f64()
+                        .expect("personaConfidence should be a float");
+                    assert!((actual - confidence).abs() < 0.0001);
+                }
+                None => assert!(input.payload.get("personaConfidence").is_none()),
+            }
+        }
+    }
+
+    #[test]
+    fn build_reading_stats_review_input_includes_local_persona_context() {
+        let stats = map_reading_stats_response(
+            "monthly",
+            &json!({
+                "baseTime": 1725955200i64,
+                "readDays": 12,
+                "totalReadTime": 18900,
+                "dayAverageReadTime": 1575,
+                "compare": 0.18,
+                "readTimes": {
+                    "1725696000": 1800,
+                    "1725782400": 3600,
+                    "1725868800": 2400
+                },
+                "readLongest": [{
+                    "book": { "bookId": "book-deep-work", "title": "深度工作", "author": "卡尔·纽波特" },
+                    "readTime": 7200,
+                    "tags": ["效率", "专注"]
+                }],
+                "preferCategory": [{
+                    "categoryId": "efficiency",
+                    "categoryTitle": "效率",
+                    "parentCategoryTitle": "非虚构",
+                    "readingTime": 9000,
+                    "readingCount": 3
+                }, {
+                    "categoryId": "sci-fi",
+                    "categoryTitle": "科幻",
+                    "parentCategoryTitle": "文学",
+                    "readingTime": 5400,
+                    "readingCount": 2
+                }]
+            }),
+            None,
+        );
+        let input = build_reading_stats_review_input(&stats).expect("input should build");
+
+        assert_eq!(input.payload["personaStatus"], "complete");
+        assert_eq!(input.payload["personaCode"], "ISTJ");
+        assert_eq!(input.payload["personaLabel"], "秩序型读者");
+        assert_eq!(
+            input.payload["personaDisplayTitle"],
+            "ISTJ 型读者 · 秩序型读者"
+        );
+        assert_eq!(input.payload["personaPaletteGroup"], "SJ");
+        assert_eq!(input.payload["personaAccentTone"], "moss");
+        assert_eq!(input.payload["personaDimensions"][0]["axis"], "energy");
+        assert_eq!(input.payload["personaDimensions"][3]["key"], "J");
+        assert!(
+            input.payload["personaEvidence"]
+                .as_array()
+                .expect("evidence should be an array")
+                .len()
+                >= 2
+        );
+    }
+
+    #[test]
+    fn resolve_reading_persona_prefers_ai_copy_without_overriding_local_identity() {
+        let fixture = load_reading_persona_fixture_cases()
+            .into_iter()
+            .find(|case| case.id == "stable-istj")
+            .expect("stable-istj fixture should exist");
+        let stats = reading_stats_record_from_fixture(&fixture.stats);
+        let persona = resolve_reading_persona(
+            &stats,
+            Some(&ReadingPersonaPatch {
+                summary: Some("AI 改写后的主线总结。".to_string()),
+                suggestion: Some("AI 改写后的温和建议。".to_string()),
+            }),
+        );
+
+        assert_eq!(persona.status, "complete");
+        assert_eq!(persona.code.as_deref(), Some("ISTJ"));
+        assert_eq!(persona.label.as_deref(), Some("秩序型读者"));
+        assert_eq!(persona.summary.as_deref(), Some("AI 改写后的主线总结。"));
+        assert_eq!(persona.suggestion.as_deref(), Some("AI 改写后的温和建议。"));
+    }
+
+    #[test]
+    fn resolve_reading_persona_keeps_insufficient_state_when_ai_patch_exists() {
+        let fixture = load_reading_persona_fixture_cases()
+            .into_iter()
+            .find(|case| case.id == "insufficient-sample")
+            .expect("insufficient-sample fixture should exist");
+        let stats = reading_stats_record_from_fixture(&fixture.stats);
+        let persona = resolve_reading_persona(
+            &stats,
+            Some(&ReadingPersonaPatch {
+                summary: Some("依据还不多，先继续读。".to_string()),
+                suggestion: Some("不要升级成完整人格。".to_string()),
+            }),
+        );
+
+        assert_eq!(persona.status, "insufficient");
+        assert!(persona.code.is_none());
+        assert_eq!(persona.summary.as_deref(), Some("依据还不多，先继续读。"));
+        assert!(persona.suggestion.is_none());
     }
 
     #[test]
@@ -8910,7 +11567,11 @@ mod tests {
                 "rhythmInsights": ["集中在周末"],
                 "preferenceInsights": ["偏好效率类"],
                 "focusItems": ["深度工作"],
-                "nextActions": ["保持固定阅读时段"]
+                "nextActions": ["保持固定阅读时段"],
+                "readingPersona": {
+                    "summary": "这一周期更像围绕主线持续推进。",
+                    "suggestion": "下个周期补一本文学短书。"
+                }
             }),
             ReadingStatsAiReviewSourceStats {
                 mode: "monthly".to_string(),
@@ -8923,7 +11584,8 @@ mod tests {
                 category_count: 1,
             },
             "200".to_string(),
-            "reading-stats-review-v1",
+            "reading-stats-review-v2",
+            AiResponseFormatKind::JsonSchema,
         )
         .expect("review should normalize");
 
@@ -8932,7 +11594,52 @@ mod tests {
         assert_eq!(review.preference_insights, vec!["偏好效率类".to_string()]);
         assert_eq!(review.focus_items, vec!["深度工作".to_string()]);
         assert_eq!(review.next_actions, vec!["保持固定阅读时段".to_string()]);
-        assert_eq!(review.prompt_version, "reading-stats-review-v1");
+        assert_eq!(review.prompt_version, "reading-stats-review-v2");
+        assert_eq!(
+            review.reading_persona,
+            Some(ReadingPersonaPatch {
+                summary: Some("这一周期更像围绕主线持续推进。".to_string()),
+                suggestion: Some("下个周期补一本文学短书。".to_string()),
+            })
+        );
+        assert_eq!(
+            review.response_format,
+            Some(AiResponseFormatKind::JsonSchema)
+        );
+    }
+
+    #[test]
+    fn normalize_reading_stats_review_output_ignores_invalid_reading_persona_patch() {
+        let review = normalize_reading_stats_review_output(
+            json!({
+                "overview": "本月阅读稳定。",
+                "rhythmInsights": ["集中在周末"],
+                "preferenceInsights": ["偏好效率类"],
+                "focusItems": ["深度工作"],
+                "nextActions": ["保持固定阅读时段"],
+                "readingPersona": {
+                    "summary": 42,
+                    "suggestion": ["bad"]
+                }
+            }),
+            ReadingStatsAiReviewSourceStats {
+                mode: "monthly".to_string(),
+                base_time: 100,
+                read_days: Some(3),
+                total_read_time_seconds: Some(3600),
+                day_average_read_time_seconds: Some(1200),
+                bucket_count: 2,
+                longest_item_count: 1,
+                category_count: 1,
+            },
+            "200".to_string(),
+            "reading-stats-review-v2",
+            AiResponseFormatKind::JsonSchema,
+        )
+        .expect("review should still normalize");
+
+        assert_eq!(review.overview, "本月阅读稳定。");
+        assert!(review.reading_persona.is_none());
     }
 
     #[test]

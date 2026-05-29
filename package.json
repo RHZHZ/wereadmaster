@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "export:reading-preview-data": "node ./scripts/export-reading-preview-data.mjs",
     "test": "vitest run --dir src",
     "e2e": "playwright test",
     "tauri": "node ./scripts/run-tauri.mjs"

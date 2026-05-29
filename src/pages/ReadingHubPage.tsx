@@ -1,9 +1,11 @@
 import { useDeferredValue, useEffect, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import {
   AlertCircle,
+  BarChart3,
   BookOpen,
   ChevronLeft,
   ChevronRight,
+  Compass,
   Database,
   Download,
   ListChecks,
@@ -46,7 +48,12 @@ import {
   type NotebookOverviewResponse,
   type ReadingStatsResponse
 } from "../lib/reading-api";
-import { formatAiTimestamp } from "../lib/formatters";
+import {
+  readingWorkflowTemplates,
+  type ReadingWorkflowTemplate,
+  type ReadingWorkflowTemplateTarget
+} from "../lib/reading-workflow-templates";
+import { formatAiResponseFormat, formatAiTimestamp } from "../lib/formatters";
 import type {
   AIAssetDetail,
   AIAssetVersionDetail,
@@ -63,6 +70,7 @@ import { BookReviewExportDialog, filterBookAiSummaryItems } from "./BookReviewEx
 import { ReadingRouteResultPanel } from "./reading-route/ReadingRouteResultPanel";
 import { buildGuideActionText, buildGuideDetailSections } from "./reading-route/guide-prescription";
 import { ReadingReviewPage } from "./ReadingReviewPage";
+import { type ReadingStatsCache } from "./reading-stats-period";
 
 type ReadingHubTab = "books" | "guides" | "report";
 type AIAssetDetailTab = "guide" | "routes" | "review";
@@ -70,13 +78,16 @@ type SelectedAssetVersion = Pick<AssetVersionRef, "feature" | "scopeId" | "input
 
 type ReadingHubPageProps = {
   credentialStatus?: CredentialStatus;
-  cache: Partial<Record<ReadingStatsMode, ReadingStatsResponse>>;
+  cache: ReadingStatsCache;
   onCacheChange: (mode: ReadingStatsMode, response: ReadingStatsResponse) => void;
   onOpenSettings: () => void;
   activeTab: ReadingHubTab;
   onOpenBookSummary: (book: NotebookBook) => void;
   onPrepareAssetUpdate: (detail: AIAssetVersionDetail, book: AIAssetDetail) => void;
   onOpenNotes: () => void;
+  onOpenReadingAssets: () => void;
+  onOpenReadingReport: () => void;
+  onOpenCandidateShelf: () => void;
   notesOverview?: NotebookOverviewResponse;
   onNotesOverviewChange: (overview: NotebookOverviewResponse | undefined) => void;
 };
@@ -90,6 +101,9 @@ export function ReadingHubPage({
   onOpenBookSummary,
   onPrepareAssetUpdate,
   onOpenNotes,
+  onOpenReadingAssets,
+  onOpenReadingReport,
+  onOpenCandidateShelf,
   notesOverview,
   onNotesOverviewChange
 }: ReadingHubPageProps) {
@@ -339,6 +353,13 @@ export function ReadingHubPage({
     });
   }
 
+  const workflowTemplateActions: Record<ReadingWorkflowTemplateTarget, () => void> = {
+    notes: onOpenNotes,
+    readingAssets: onOpenReadingAssets,
+    readingReport: onOpenReadingReport,
+    candidateShelf: onOpenCandidateShelf
+  };
+
   function handleOpenAssetDetail(item: AIAssetSummary) {
     setSelectedAssetBookId(item.bookId);
     setAssetDetail(undefined);
@@ -380,8 +401,8 @@ export function ReadingHubPage({
           <div className="reading-hub-books-toolbar">
             <div>
               <p className="section-kicker">书籍复盘</p>
-              <h3>书籍复盘管理</h3>
-              <p>左侧查看已生成复盘，右侧处理有笔记但还没复盘的书。</p>
+              <h3>把单本笔记整理成复盘资产</h3>
+              <p>左侧查看已沉淀复盘，右侧选择有笔记但还没整理的书；生成仍需手动确认。</p>
             </div>
             <div className="reading-hub-toolbar-actions">
               <label className="search-field">
@@ -413,6 +434,8 @@ export function ReadingHubPage({
               </button>
             </div>
           </div>
+
+          <ReadingWorkflowTemplateStrip actions={workflowTemplateActions} />
 
           {error ? (
             <div className="status-message status-message--error">
@@ -452,7 +475,7 @@ export function ReadingHubPage({
               <div className="reading-hub-section-heading">
                 <div>
                   <p className="section-kicker">已生成</p>
-                  <h3>已生成的书籍复盘</h3>
+                  <h3>已沉淀的复盘资产</h3>
                 </div>
                 <span>{filteredItems.length} 本</span>
               </div>
@@ -462,7 +485,7 @@ export function ReadingHubPage({
                   <Loader2 aria-hidden="true" size={26} className="spin" />
                   <div>
                     <h3>正在读取本地复盘缓存</h3>
-                    <p>这里只展示已经生成过 AI 复盘的书，不会自动调用 AI。</p>
+                    <p>这里只展示已经手动生成过复盘的书，不会自动调用 AI。</p>
                   </div>
                 </section>
               ) : null}
@@ -471,7 +494,7 @@ export function ReadingHubPage({
                 <section className="empty-inline stats-empty" aria-label="暂无书籍复盘">
                   <Database aria-hidden="true" size={28} />
                   <h3>还没有书籍复盘</h3>
-                  <p>先去笔记页打开一本书并生成 AI 复盘，这里才会出现列表。</p>
+                  <p>先去笔记页打开一本书并手动生成复盘，这里才会出现可查看和导出的资产。</p>
                   <button className="secondary-action" type="button" onClick={onOpenNotes}>
                     去笔记中心
                   </button>
@@ -518,8 +541,8 @@ export function ReadingHubPage({
               <div className="review-candidate-heading">
                 <div>
                   <p className="section-kicker">建议生成</p>
-                  <h3>有笔记但还没复盘</h3>
-                  <p>按想法数、总笔记数和阅读进度排序。搜索不会影响这里，生成仍需手动确认。</p>
+                  <h3>有笔记但还没整理</h3>
+                  <p>按想法数、总笔记数和阅读进度排序。搜索不会影响这里，生成复盘仍需手动确认。</p>
                 </div>
                 <span>{reviewCandidates.length} 本候选</span>
               </div>
@@ -532,7 +555,7 @@ export function ReadingHubPage({
               ) : (
                 <div className="review-candidate-empty">
                   <Sparkles aria-hidden="true" size={24} />
-                  <span>当前没有待生成的书籍复盘。</span>
+                  <span>当前没有待整理成复盘的书。</span>
                   <button className="secondary-action" type="button" onClick={onOpenNotes}>
                     去同步笔记
                   </button>
@@ -571,7 +594,7 @@ export function ReadingHubPage({
             <div>
               <p className="section-kicker">阅读指南</p>
               <h3>按书聚合的阅读资产</h3>
-              <p>这里按书整理你已经沉淀下来的指南、路线和复盘资产，不会自动调用 AI。</p>
+              <p>这里按书整理已经沉淀下来的指南、路线和复盘资产，方便回看、更新和继续导出。</p>
             </div>
             <div className="reading-hub-toolbar-actions">
               <label className="search-field">
@@ -591,6 +614,8 @@ export function ReadingHubPage({
               </label>
             </div>
           </div>
+
+          <ReadingWorkflowTemplateStrip actions={workflowTemplateActions} />
 
           {error ? (
             <div className="status-message status-message--error">
@@ -622,8 +647,8 @@ export function ReadingHubPage({
               <section className="book-detail-loading" aria-label="正在读取阅读资产缓存">
                 <Loader2 aria-hidden="true" size={26} className="spin" />
                 <div>
-                  <h3>正在读取本地阅读资产</h3>
-                  <p>只聚合已经生成的本地缓存，不读取远端笔记。</p>
+                <h3>正在读取本地阅读资产</h3>
+                  <p>只聚合已经生成的本地缓存，不读取远端笔记，也不会自动调用 AI。</p>
                 </div>
               </section>
             ) : null}
@@ -702,6 +727,74 @@ function StatusPill({ label, value }: { label: string; value: string }) {
       <strong>{value}</strong>
     </article>
   );
+}
+
+function ReadingWorkflowTemplateStrip({
+  actions
+}: {
+  actions: Record<ReadingWorkflowTemplateTarget, () => void>;
+}) {
+  return (
+    <section className="reading-workflow-template-strip" aria-label="阅读工作流模板">
+      <div className="reading-workflow-template-heading">
+        <div>
+          <p className="section-kicker">工作流模板</p>
+          <h3>把阅读数据变成可继续使用的资产</h3>
+        </div>
+        <p>模板只连接现有页面和已确认输入范围，不会自动同步、自动生成或打开通用聊天。</p>
+      </div>
+      <div className="reading-workflow-template-grid">
+        {readingWorkflowTemplates.map((template) => (
+          <ReadingWorkflowTemplateCard
+            key={template.id}
+            template={template}
+            onClick={actions[template.target]}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ReadingWorkflowTemplateCard({
+  template,
+  onClick
+}: {
+  template: ReadingWorkflowTemplate;
+  onClick: () => void;
+}) {
+  return (
+    <button className="reading-workflow-template-card" type="button" onClick={onClick}>
+      <span className="reading-workflow-template-icon">
+        {getWorkflowTemplateIcon(template.target)}
+      </span>
+      <span className="reading-workflow-template-copy">
+        <strong>{template.title}</strong>
+        <small>{template.description}</small>
+        <span>
+          输入：{template.inputScope} · 输出：{template.output}
+        </span>
+        <b>{template.actionLabel}</b>
+      </span>
+      <ChevronRight aria-hidden="true" size={17} />
+    </button>
+  );
+}
+
+function getWorkflowTemplateIcon(target: ReadingWorkflowTemplateTarget) {
+  if (target === "notes") {
+    return <BookOpen aria-hidden="true" size={18} />;
+  }
+
+  if (target === "readingAssets") {
+    return <Waypoints aria-hidden="true" size={18} />;
+  }
+
+  if (target === "readingReport") {
+    return <BarChart3 aria-hidden="true" size={18} />;
+  }
+
+  return <Compass aria-hidden="true" size={18} />;
 }
 
 function ReviewCandidateCard({
@@ -910,7 +1003,7 @@ export function AIAssetDetailView({
             <AssetRefSection
               title="当前书籍复盘"
               emptyTitle="还没有书籍复盘"
-              emptyCopy="从单本笔记生成 AI 复盘后，这里会显示当前有效引用。"
+              emptyCopy="从单本笔记手动生成复盘后，这里会显示当前有效引用。"
               refs={detail.currentBookReview ? [detail.currentBookReview] : []}
               bookTitle={detail.title}
               onOpenVersion={onOpenVersion}
@@ -1714,6 +1807,7 @@ function BookReviewVersionContent({
       <div className="ai-summary-meta">
         <span>生成时间：{formatAiTimestamp(summary.generatedAt) || "尚未生成"}</span>
         <span>Prompt：{summary.promptVersion}</span>
+        {summary.responseFormat ? <span>{formatAiResponseFormat(summary.responseFormat)}</span> : null}
         {providerModel ? <span>模型：{providerModel}</span> : null}
         {updatedAt ? <span>缓存更新：{formatAiTimestamp(updatedAt)}</span> : null}
       </div>

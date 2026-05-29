@@ -220,6 +220,7 @@ pub fn serialize_bulk_export_index(report: &BulkExportReport) -> String {
     let _ = writeln!(markdown, "- 策略：{:?}", report.strategy);
     let _ = writeln!(markdown, "- 并发：{}", report.concurrency);
     let _ = writeln!(markdown);
+    write_bulk_export_boundary_section(&mut markdown);
     let _ = writeln!(markdown, "## 书籍");
     let _ = writeln!(markdown);
 
@@ -247,6 +248,7 @@ pub fn serialize_bulk_export_report(report: &BulkExportReport) -> String {
     let _ = writeln!(markdown, "- 策略：{:?}", report.strategy);
     let _ = writeln!(markdown, "- 并发：{}", report.concurrency);
     let _ = writeln!(markdown);
+    write_bulk_export_boundary_section(&mut markdown);
 
     for item in &report.items {
         let _ = writeln!(markdown, "## {}", item.title);
@@ -263,6 +265,28 @@ pub fn serialize_bulk_export_report(report: &BulkExportReport) -> String {
     }
 
     markdown
+}
+
+fn write_bulk_export_boundary_section(markdown: &mut String) {
+    let _ = writeln!(markdown, "## 数据边界");
+    let _ = writeln!(markdown);
+    let _ = writeln!(
+        markdown,
+        "- 数据来源：本地笔记概览、单本笔记缓存和已生成复盘缓存"
+    );
+    let _ = writeln!(
+        markdown,
+        "- 包含：划线、想法/点评、章节分组、可导出笔记元信息和本地已生成的书籍复盘缓存"
+    );
+    let _ = writeln!(
+        markdown,
+        "- 不包含：书签正文、微信读书 API Key、AI API Key、数据库路径和原始接口响应"
+    );
+    let _ = writeln!(
+        markdown,
+        "- 导出行为：只有选择同步策略时才会按有界队列读取缺失书籍；不会自动生成 AI 复盘。"
+    );
+    let _ = writeln!(markdown);
 }
 
 #[cfg(test)]
@@ -393,6 +417,8 @@ mod tests {
 
         let markdown = serialize_bulk_export_report(&report);
 
+        assert!(markdown.contains("## 数据边界"));
+        assert!(markdown.contains("不会自动生成 AI 复盘"));
         assert!(markdown.contains("需要同步/读取后才能导出"));
         assert!(markdown.contains("已生成复盘"));
         assert!(!markdown.contains("sk-"));

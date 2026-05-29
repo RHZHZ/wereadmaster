@@ -10,7 +10,7 @@ import {
   buildAiReflectionQuestionStateKey,
   createAiActionFeedbackRecord
 } from "../lib/ai-action-items";
-import { AIAssetDetailView, AIAssetVersionDetailView, AssetVersionHistorySection } from "./ReadingHubPage";
+import { AIAssetDetailView, AIAssetVersionDetailView, AssetVersionHistorySection, ReadingHubPage } from "./ReadingHubPage";
 import type { AIAssetDetail, AIAssetVersionDetail, AIAssetVersionSummary, AssetVersionRef } from "../lib/types";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -30,6 +30,34 @@ afterEach(() => {
 });
 
 describe("reading hub asset history section", () => {
+  test("renders workflow templates as existing-page entry points", () => {
+    const markup = renderToStaticMarkup(
+      <ToastProvider>
+        <ReadingHubPage
+          credentialStatus={{ hasCredential: true }}
+          cache={{}}
+          onCacheChange={() => undefined}
+          onOpenSettings={() => undefined}
+          activeTab="books"
+          onOpenBookSummary={() => undefined}
+          onPrepareAssetUpdate={() => undefined}
+          onOpenNotes={() => undefined}
+          onOpenReadingAssets={() => undefined}
+          onOpenReadingReport={() => undefined}
+          onOpenCandidateShelf={() => undefined}
+          onNotesOverviewChange={() => undefined}
+        />
+      </ToastProvider>
+    );
+
+    expect(markup).toContain("阅读工作流模板");
+    expect(markup).toContain("整理一本书");
+    expect(markup).toContain("规划当前书");
+    expect(markup).toContain("回顾一段时间");
+    expect(markup).toContain("决定下一本");
+    expect(markup).toContain("不会自动同步、自动生成或打开通用聊天");
+  });
+
   test("renders collapsed lightweight history rows with required metadata", () => {
     const markup = renderToStaticMarkup(
       <AssetVersionHistorySection
@@ -154,6 +182,7 @@ describe("reading hub asset history section", () => {
     expect(markup).toContain("上一版：上一版阅读指南");
     expect(markup).toContain("当前本书阅读指南");
     expect(markup).toContain("更新依据");
+    expect(markup).toContain("结构化约束：JSON Schema");
   });
 
   test("renders local action feedback summary and regeneration boundary", () => {
@@ -218,6 +247,7 @@ describe("reading hub asset history section", () => {
     expect(markup).not.toContain(
       "<h3>这份复盘基于你当前导出的本地划线与想法，无法覆盖全书所有内容与论证细节。</h3>"
     );
+    expect(markup).toContain("结构化约束：JSON Object");
   });
 
   test("renders editable action feedback controls for book review version detail", () => {
@@ -521,6 +551,7 @@ function createRouteVersionDetail({
       },
       generatedAt: "1709000000",
       promptVersion,
+      responseFormat: "json_schema",
       basisNotice: "基于本地缓存生成。"
     }
   };
@@ -561,6 +592,7 @@ function createBookReviewVersionDetail(overrides: Partial<AIAssetVersionDetail> 
       },
       generatedAt: "1709000000",
       promptVersion: "book-notes-summary-v3",
+      responseFormat: "json_object",
       basisNotice: "基于本地笔记缓存生成。"
     },
     ...overrides

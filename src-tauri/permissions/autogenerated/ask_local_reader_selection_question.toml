@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-ask-local-reader-selection-question"
+description = "Enables the ask_local_reader_selection_question command without any pre-configured scope."
+commands.allow = ["ask_local_reader_selection_question"]
+
+[[permission]]
+identifier = "deny-ask-local-reader-selection-question"
+description = "Denies the ask_local_reader_selection_question command without any pre-configured scope."
+commands.deny = ["ask_local_reader_selection_question"]

@@ -2,6 +2,7 @@ pub mod ai;
 pub mod book;
 pub mod credentials;
 pub mod discovery;
+pub mod local_books;
 pub mod notes;
 pub mod reading_state;
 pub mod settings;

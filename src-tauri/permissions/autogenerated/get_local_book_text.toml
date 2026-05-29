@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-local-book-text"
+description = "Enables the get_local_book_text command without any pre-configured scope."
+commands.allow = ["get_local_book_text"]
+
+[[permission]]
+identifier = "deny-get-local-book-text"
+description = "Denies the get_local_book_text command without any pre-configured scope."
+commands.deny = ["get_local_book_text"]

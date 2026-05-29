@@ -129,7 +129,10 @@ pub mod stronghold {
         ) -> Result<(), String> {
             let client_key = client_key(&self.path);
             let mut data = self.data.lock().map_err(|error| error.to_string())?;
-            data.clients.entry(client_key).or_default().insert(key, value);
+            data.clients
+                .entry(client_key)
+                .or_default()
+                .insert(key, value);
             Ok(())
         }
 

@@ -14,6 +14,7 @@ import {
   type BookshelfResponse,
   type ReadingStatsResponse
 } from "../lib/reading-api";
+import { formatAiResponseFormat, formatAiTimestamp } from "../lib/formatters";
 import {
   buildAiActionItemId,
   getAiActionItemStorage,
@@ -36,6 +37,7 @@ import {
   writeBookDecisionDraft
 } from "./book-decision-draft";
 import { BookDecisionInputDialog } from "./BookDecisionInputDialog";
+import { type ReadingStatsCache } from "./reading-stats-period";
 import {
   maxDecisionCandidates,
   type BookDecisionSession,
@@ -44,7 +46,7 @@ import {
 
 type BookDecisionPageProps = {
   bookshelf?: BookshelfResponse;
-  readingStatsCache: Partial<Record<ReadingStatsMode, ReadingStatsResponse>>;
+  readingStatsCache: ReadingStatsCache;
   session?: BookDecisionSession;
   onSessionChange: (session: BookDecisionSession) => void;
   onBack: () => void;
@@ -561,6 +563,14 @@ function BookDecisionResult({
           onToggle={handleToggleAction}
         />
       </section>
+
+      <div className="ai-summary-meta">
+        <span>生成时间：{formatAiTimestamp(decision.generatedAt) || "尚未生成"}</span>
+        <span>Prompt：{decision.promptVersion ?? "book-decision-v1"}</span>
+        {decision.responseFormat ? <span>{formatAiResponseFormat(decision.responseFormat)}</span> : null}
+        {response.providerModel ? <span>模型：{response.providerModel}</span> : null}
+        {response.cachedUpdatedAt ? <span>缓存更新：{formatAiTimestamp(response.cachedUpdatedAt)}</span> : null}
+      </div>
 
       <details className="book-decision-section book-decision-evidence" aria-label="依据说明">
         <summary>依据说明</summary>

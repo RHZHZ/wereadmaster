@@ -23,17 +23,23 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import onboardingLocalVault from "../assets/generated/onboarding-local-vault.png";
+import { AppUpdateNotes } from "../components/AppUpdateNotes";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { useToast } from "../components/ToastProvider";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { formatUnixDate } from "../lib/formatters";
 import {
+  APP_UPDATE_RELEASE_AUTHOR,
+  APP_UPDATE_RELEASE_AUTHOR_URL,
+  APP_UPDATE_RELEASE_FEED_URL,
+  APP_UPDATE_RELEASE_PAGE_URL,
+  APP_UPDATE_RELEASE_REPOSITORY_URL,
+} from "../lib/app-update-config";
+import {
   chooseCustomExportDirectory,
   chooseCustomDataDirectory,
-  checkForAppUpdate,
   clearAiOutputCache,
   clearLocalCache,
-  downloadAndInstallAppUpdate,
   exportLocalDataBackup,
   exportDiagnostics,
   getCommandErrorMessage,
@@ -69,6 +75,15 @@ type SettingsPageProps = {
   preferences: UserPreferences;
   onPreferencesChange: (preferences: UserPreferences) => void;
   onClose: () => void;
+  preferredCategory?: SettingsCategoryId;
+  appUpdateStatus?: AppUpdateStatus;
+  hasPendingAppUpdate?: boolean;
+  isCheckingForAppUpdate?: boolean;
+  isInstallingAppUpdate?: boolean;
+  appUpdateProgressLabel?: string;
+  onCheckForAppUpdate?: () => Promise<void>;
+  onInstallAppUpdate?: () => Promise<void>;
+  onViewAppUpdate?: () => void;
 };
 
 type PendingAction =
@@ -82,7 +97,7 @@ type PendingAction =
 type PendingStorageMigration = {
   targetDir: string;
 };
-type SettingsCategoryId =
+export type SettingsCategoryId =
   | "account"
   | "ai"
   | "appearance"
@@ -105,7 +120,7 @@ const settingsCategories: SettingsCategory[] = [
     label: "账户与同步",
     description: "微信读书凭据",
     heroDescription:
-      "管理微信读书同步凭据。已保存的 Key 只在本机安全存储中读取，前端不显示明文。",
+      "连接微信读书后，才能把书架、笔记和统计沉淀到本地阅读资产库；已保存的 Key 只在本机安全存储中读取。",
     icon: KeyRound,
   },
   {
@@ -113,7 +128,7 @@ const settingsCategories: SettingsCategory[] = [
     label: "AI 设置",
     description: "Provider 和 Key",
     heroDescription:
-      "配置用于复盘和阅读指南的 Provider；只有主动生成时才会发送当前书的本地内容。",
+      "配置用于书籍复盘、阅读指南、统计复盘和选书决策的 Provider；只有主动生成时才会发送对应输入范围。",
     icon: Bot,
   },
   {
@@ -158,13 +173,6 @@ const sectionLabels: Record<string, string> = {
   dashboard: "总览",
 };
 
-const releaseAuthor = "RHZ";
-const releaseFeedUrl =
-  "https://github.com/RHZHZ/wereadmaster/releases/latest/download/latest.json";
-const releaseRepositoryUrl = "https://github.com/RHZHZ/wereadmaster";
-const releasePageUrl = "https://github.com/RHZHZ/wereadmaster/releases";
-const releaseAuthorUrl = "https://github.com/RHZHZ";
-
 export function SettingsPage({
   open,
   credentialStatus,
@@ -173,6 +181,15 @@ export function SettingsPage({
   preferences,
   onPreferencesChange,
   onClose,
+  preferredCategory,
+  appUpdateStatus,
+  hasPendingAppUpdate = false,
+  isCheckingForAppUpdate = false,
+  isInstallingAppUpdate = false,
+  appUpdateProgressLabel,
+  onCheckForAppUpdate,
+  onInstallAppUpdate,
+  onViewAppUpdate,
 }: SettingsPageProps) {
   const [state, setState] = useState<SettingsState>();
   const [aiState, setAiState] = useState<AiSettingsState>();
@@ -196,14 +213,9 @@ export function SettingsPage({
   const [isSavingExportDirectory, setIsSavingExportDirectory] = useState(false);
   const [isResettingExportDirectory, setIsResettingExportDirectory] =
     useState(false);
-  const [isCheckingForUpdate, setIsCheckingForUpdate] = useState(false);
-  const [isInstallingUpdate, setIsInstallingUpdate] = useState(false);
   const [exportDirectoryInput, setExportDirectoryInput] = useState("");
   const [isExportingDiagnostics, setIsExportingDiagnostics] = useState(false);
   const [lastBackup, setLastBackup] = useState<ExportBackupResult>();
-  const [latestUpdateStatus, setLatestUpdateStatus] = useState<
-    AppUpdateStatus | undefined
-  >();
   const [pendingStorageMigration, setPendingStorageMigration] =
     useState<PendingStorageMigration>();
   const [pendingAction, setPendingAction] = useState<PendingAction>();
@@ -216,6 +228,10 @@ export function SettingsPage({
   const activeCategoryConfig =
     settingsCategories.find((category) => category.id === activeCategory) ??
     settingsCategories[0];
+  const supportsNativeUpdater =
+    state?.supportsNativeUpdater ??
+    appUpdateStatus?.supportsNativeUpdater ??
+    false;
 
   async function handleOpenExternalLink(url: string, fallbackLabel: string) {
     try {
@@ -262,6 +278,22 @@ export function SettingsPage({
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [onClose, open]);
+
+  useEffect(() => {
+    if (!open || !preferredCategory) {
+      return;
+    }
+
+    setActiveCategory(preferredCategory);
+  }, [open, preferredCategory]);
+
+  useEffect(() => {
+    if (!open || activeCategory !== "updates") {
+      return;
+    }
+
+    onViewAppUpdate?.();
+  }, [activeCategory, onViewAppUpdate, open]);
 
   async function loadState() {
     setIsLoading(true);
@@ -409,7 +441,7 @@ export function SettingsPage({
       setAiModel(nextAiState.provider.model);
       setAiApiKey("");
       showToast({
-        message: "已移除本机保存的 AI API Key。历史 AI 总结缓存不会被删除。",
+        message: "已移除本机保存的 AI API Key。历史 AI 阅读资产缓存不会被删除。",
         tone: "success",
       });
       setPendingAction(undefined);
@@ -479,58 +511,28 @@ export function SettingsPage({
   }
 
   async function handleCheckForUpdate() {
-    setIsCheckingForUpdate(true);
     setError(undefined);
 
     try {
-      const updateStatus = await checkForAppUpdate();
-      setLatestUpdateStatus(updateStatus);
-
-      if (!updateStatus.available) {
-        showToast({
-          message: `当前已是最新版本 ${updateStatus.currentVersion}。`,
-          tone: "success",
-        });
-        return;
-      }
-
-      const latestVersion = updateStatus.latestVersion || "未知版本";
-      showToast({
-        message: `发现新版本 ${latestVersion}，请先查看摘要后再安装。`,
-        tone: "warning",
-      });
+      await onCheckForAppUpdate?.();
     } catch (updateError) {
       setError(getCommandErrorMessage(updateError));
-    } finally {
-      setIsCheckingForUpdate(false);
     }
   }
 
   async function handleInstallUpdate() {
-    if (!latestUpdateStatus?.available) {
+    if (!appUpdateStatus?.available) {
       setError("请先检查更新，确认存在可安装的新版本。");
       return;
     }
 
-    setIsInstallingUpdate(true);
     setError(undefined);
 
     try {
-      const latestVersion = latestUpdateStatus.latestVersion || "未知版本";
-      showToast({
-        message: `正在下载并安装 ${latestVersion}。`,
-        tone: "warning",
-      });
-      await downloadAndInstallAppUpdate();
-      showToast({
-        message: "更新已下载并开始安装，完成后请重新启动应用。",
-        tone: "success",
-      });
+      await onInstallAppUpdate?.();
       setPendingAction(undefined);
     } catch (installError) {
       setError(getCommandErrorMessage(installError));
-    } finally {
-      setIsInstallingUpdate(false);
     }
   }
 
@@ -738,7 +740,12 @@ export function SettingsPage({
                 >
                   <Icon aria-hidden="true" size={19} strokeWidth={1.8} />
                   <span>
-                    <strong>{category.label}</strong>
+                    <strong>
+                      {category.label}
+                      {category.id === "updates" && hasPendingAppUpdate ? (
+                        <i className="app-update-badge" aria-hidden="true" />
+                      ) : null}
+                    </strong>
                     <small>{category.description}</small>
                   </span>
                 </button>
@@ -799,10 +806,11 @@ export function SettingsPage({
                         <h3>先把凭据安全地留在本机</h3>
                         <p>
                           API Key 来自微信读书 Skill 页面，只保存在当前设备。
-                          前端页面不会读取或展示明文，后续同步只通过本地 Rust 层完成。
+                          连接后可以同步书架、读取笔记、回顾统计并导出阅读资产；前端页面不会读取或展示明文，后续同步只通过本地 Rust 层完成。
                         </p>
                         <ul className="settings-onboarding-points">
                           <li>绑定后即可同步书架、笔记、统计和发现数据</li>
+                          <li>笔记、复盘、路线和导出记录会继续保存在本机</li>
                           <li>移除凭据不会删除已经缓存到本机的阅读数据</li>
                         </ul>
                       </div>
@@ -823,8 +831,8 @@ export function SettingsPage({
                   </div>
                   <p>
                     {credential?.hasCredential
-                      ? "同步会通过本地 Rust 层读取凭据；前端只知道是否已绑定。"
-                      : "保存微信读书 Skill API Key 后即可同步书架、笔记、统计和发现数据。"}
+                      ? "同步会通过本地 Rust 层读取凭据；前端只知道是否已绑定，已缓存资产仍保留在本机。"
+                      : "保存微信读书 Skill API Key 后即可同步书架、笔记、统计和发现数据，作为后续复盘和导出的资产底座。"}
                   </p>
                   <p className="credential-help-note">
                     会在新窗口打开技能页面；如果被拦截，链接会复制到剪贴板。
@@ -894,7 +902,7 @@ export function SettingsPage({
                       <Bot aria-hidden="true" size={20} />
                     </span>
                     <div>
-                      <p className="section-kicker">AI 总结</p>
+                      <p className="section-kicker">AI 阅读资产</p>
                       <h3>
                         {aiState?.credential.hasCredential
                           ? "已配置 AI Provider"
@@ -903,9 +911,14 @@ export function SettingsPage({
                     </div>
                   </div>
                   <p>
-                    AI 总结只会在你点击生成时发送当前书的本地划线和想法到配置的
-                    Provider； 不会自动上传书架、其他书笔记或任何 API Key。
+                    AI 只在你点击生成书籍复盘、阅读指南、统计复盘或选书决策时调用配置的
+                    Provider；不会自动上传书架、其他书笔记或任何 API Key。
                   </p>
+                  <ul className="settings-onboarding-points">
+                    <li>单本复盘只发送当前书的本地划线和想法</li>
+                    <li>阅读指南和选书决策只使用你确认的当前书、候选书和本地统计信号</li>
+                    <li>已生成结果会作为本地阅读资产缓存，后续可查看和导出</li>
+                  </ul>
                   <dl className="settings-dl">
                     <div>
                       <dt>验证时间</dt>
@@ -1272,22 +1285,27 @@ export function SettingsPage({
                       <dt>当前版本</dt>
                       <dd>
                         {state?.appVersion ||
-                          latestUpdateStatus?.currentVersion ||
+                          appUpdateStatus?.currentVersion ||
                           "尚未读取"}
                       </dd>
                     </div>
                     <div>
                       <dt>检查结果</dt>
-                      <dd>{renderUpdateSummary(latestUpdateStatus)}</dd>
+                      <dd>
+                        {renderUpdateSummary(
+                          appUpdateStatus,
+                          supportsNativeUpdater
+                        )}
+                      </dd>
                     </div>
                     <div>
                       <dt>最新版本</dt>
-                      <dd>{latestUpdateStatus?.latestVersion || "尚未检查"}</dd>
+                      <dd>{appUpdateStatus?.latestVersion || "尚未检查"}</dd>
                     </div>
                     <div>
                       <dt>发布时间</dt>
                       <dd>
-                        {formatReleaseDate(latestUpdateStatus?.publishedAt)}
+                        {formatReleaseDate(appUpdateStatus?.publishedAt)}
                       </dd>
                     </div>
                     <div>
@@ -1298,12 +1316,12 @@ export function SettingsPage({
                           type="button"
                           onClick={() =>
                             void handleOpenExternalLink(
-                              releaseAuthorUrl,
+                              APP_UPDATE_RELEASE_AUTHOR_URL,
                               "作者主页"
                             )
                           }
                         >
-                          作者 @{releaseAuthor}
+                          作者 @{APP_UPDATE_RELEASE_AUTHOR}
                           <ExternalLink aria-hidden="true" size={14} />
                         </button>
                       </dd>
@@ -1316,7 +1334,7 @@ export function SettingsPage({
                           type="button"
                           onClick={() =>
                             void handleOpenExternalLink(
-                              releaseRepositoryUrl,
+                              APP_UPDATE_RELEASE_REPOSITORY_URL,
                               "项目地址"
                             )
                           }
@@ -1328,7 +1346,7 @@ export function SettingsPage({
                     </div>
                     <div className="wide-row">
                       <dt>更新源</dt>
-                      <dd title={releaseFeedUrl}>{releaseFeedUrl}</dd>
+                      <dd title={APP_UPDATE_RELEASE_FEED_URL}>{APP_UPDATE_RELEASE_FEED_URL}</dd>
                     </div>
                   </dl>
                   <section
@@ -1339,21 +1357,39 @@ export function SettingsPage({
                       <Info aria-hidden="true" size={16} />
                       <strong>更新摘要</strong>
                     </div>
-                    <p>
-                      {latestUpdateStatus?.notes?.trim() ||
-                        "检查到新版本后，这里会显示这次版本带来的改动和影响范围。"}
-                    </p>
+                    <AppUpdateNotes
+                      notes={appUpdateStatus?.notes}
+                      emptyText="检查到新版本后，这里会显示这次版本带来的改动和影响范围。"
+                    />
                   </section>
+                  {state && !supportsNativeUpdater ? (
+                    <div className="status-message status-message--actionable">
+                      <Info aria-hidden="true" size={18} />
+                      <span>
+                        当前平台暂不支持应用内下载安装。请前往 GitHub Release 页面下载最新 APK
+                        或安装包。
+                      </span>
+                    </div>
+                  ) : null}
+                  {appUpdateProgressLabel ? (
+                    <div className="status-message status-message--actionable">
+                      <Download aria-hidden="true" size={18} />
+                      <span>{appUpdateProgressLabel}</span>
+                    </div>
+                  ) : null}
                   <div className="settings-actions settings-card-actions">
                     <button
                       className="secondary-action"
                       type="button"
                       onClick={() => void handleCheckForUpdate()}
                       disabled={
-                        isCheckingForUpdate || isInstallingUpdate || isLoading
+                        isCheckingForAppUpdate ||
+                        isInstallingAppUpdate ||
+                        isLoading ||
+                        !state
                       }
                     >
-                      {isCheckingForUpdate ? (
+                      {isCheckingForAppUpdate ? (
                         <Loader2
                           aria-hidden="true"
                           size={18}
@@ -1362,19 +1398,39 @@ export function SettingsPage({
                       ) : (
                         <Sparkles aria-hidden="true" size={18} />
                       )}
-                      {isCheckingForUpdate ? "检查中" : "检查更新"}
+                      {supportsNativeUpdater
+                        ? isCheckingForAppUpdate
+                          ? "检查中"
+                          : "检查更新"
+                        : isCheckingForAppUpdate
+                          ? "检查中"
+                          : "检查更新"}
                     </button>
                     <button
                       className="sync-button"
                       type="button"
-                      onClick={() => setPendingAction("installUpdate")}
+                      onClick={() =>
+                        supportsNativeUpdater
+                          ? setPendingAction("installUpdate")
+                          : void handleOpenExternalLink(
+                              APP_UPDATE_RELEASE_PAGE_URL,
+                              "发布页"
+                            )
+                      }
                       disabled={
-                        !latestUpdateStatus?.available ||
-                        isCheckingForUpdate ||
-                        isInstallingUpdate
+                        !state ||
+                        (supportsNativeUpdater
+                          ? !appUpdateStatus?.available ||
+                            isCheckingForAppUpdate ||
+                            isInstallingAppUpdate
+                          : false)
                       }
                     >
-                      {isInstallingUpdate ? "安装中" : "安装更新"}
+                      {supportsNativeUpdater
+                        ? isInstallingAppUpdate
+                          ? "安装中"
+                          : "安装更新"
+                        : "前往下载"}
                     </button>
                   </div>
                 </section>
@@ -1751,7 +1807,7 @@ export function SettingsPage({
           <ConfirmDialog
             open={pendingAction === "removeAiCredential"}
             title="确认移除 AI API Key？"
-            description="移除后将无法生成新的 AI 总结。已缓存的 AI 总结不会被删除，清除本地缓存时才会删除。"
+            description="移除后将无法生成新的 AI 阅读资产。已缓存的书籍复盘、阅读报告和阅读指南不会被删除，清除本地缓存时才会删除。"
             confirmLabel="确认移除"
             isDanger
             isBusy={isSavingAiCredential}
@@ -1771,7 +1827,7 @@ export function SettingsPage({
           <ConfirmDialog
             open={pendingAction === "clearAiOutputCache"}
             title="确认清除 AI 输出缓存？"
-            description="这只会删除已生成的 AI 总结、阅读报告和阅读指南缓存。API Key、微信读书缓存、本地阅读状态和导出文件不会被删除。"
+            description="这只会删除已生成的书籍复盘、阅读报告、阅读指南和选书决策缓存。API Key、微信读书缓存、本地阅读状态和导出文件不会被删除。"
             confirmLabel="确认清除"
             isDanger
             isBusy={isClearingAiOutputCache}
@@ -1804,9 +1860,9 @@ export function SettingsPage({
           <ConfirmDialog
             open={pendingAction === "installUpdate"}
             title="确认安装更新？"
-            description={`将从 ${releasePageUrl} 下载并安装 ${latestUpdateStatus?.latestVersion || "新版本"}。安装完成后需要重新启动应用。`}
+            description={`将从 ${APP_UPDATE_RELEASE_PAGE_URL} 下载并安装 ${appUpdateStatus?.latestVersion || "新版本"}。安装完成后需要重新启动应用。`}
             confirmLabel="确认安装"
-            isBusy={isInstallingUpdate}
+            isBusy={isInstallingAppUpdate}
             onCancel={() => setPendingAction(undefined)}
             onConfirm={() => void handleInstallUpdate()}
           />
@@ -1816,16 +1872,23 @@ export function SettingsPage({
   );
 }
 
-function renderUpdateSummary(status?: AppUpdateStatus): string {
+function renderUpdateSummary(
+  status?: AppUpdateStatus,
+  supportsNativeUpdater?: boolean
+): string {
   if (!status) {
-    return "尚未检查";
+    return supportsNativeUpdater === false ? "尚未检查（安装包更新）" : "尚未检查";
   }
 
   if (status.available) {
-    return "发现新版本";
+    return status.supportsNativeUpdater ? "发现新版本" : "发现新版本（安装包更新）";
   }
 
-  return "已是最新版本";
+  if (status.latestVersion) {
+    return status.supportsNativeUpdater ? "已是最新版本" : "已是最新版本（安装包更新）";
+  }
+
+  return supportsNativeUpdater === false ? "当前平台使用安装包更新" : "已是最新版本";
 }
 
 function formatReleaseDate(value?: string): string {
@@ -1950,7 +2013,7 @@ function tableLabel(table: string): string {
     highlights: "划线",
     thoughts: "想法",
     reading_stats: "阅读统计",
-    ai_outputs: "AI 总结",
+    ai_outputs: "AI 阅读资产",
     raw_cache: "原始缓存",
     sync_state: "同步状态",
     reading_item_states: "本地阅读状态",

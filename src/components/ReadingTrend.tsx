@@ -1,13 +1,17 @@
 import { BarChart3 } from "lucide-react";
+import { BarTrend } from "./BarTrend";
+import { LineTrend } from "./LineTrend";
+import { ReadingHeatmap } from "./ReadingHeatmap";
 import { formatDuration, formatUnixDate } from "../lib/formatters";
 import type { ReadingStatsMode, ReadingTimeBucket } from "../lib/types";
 
 type ReadingTrendProps = {
   mode: ReadingStatsMode;
   buckets: ReadingTimeBucket[];
+  compare?: number;
 };
 
-export function ReadingTrend({ mode, buckets }: ReadingTrendProps) {
+export function ReadingTrend({ mode, buckets, compare }: ReadingTrendProps) {
   const visibleBuckets = buckets.filter((bucket) => bucket.readTimeSeconds > 0);
 
   if (visibleBuckets.length === 0) {
@@ -53,24 +57,34 @@ export function ReadingTrend({ mode, buckets }: ReadingTrendProps) {
         </span>
       </div>
 
-      <div className="trend-bars" style={{ minHeight: chartHeight }}>
-        {visibleBuckets.map((bucket) => {
-          const height = Math.max(10, Math.round((bucket.readTimeSeconds / maxSeconds) * chartHeight));
+      {Number.isFinite(compare) ? (
+        <p className={`trend-compare-summary ${compareToneClass(compare ?? 0)}`}>
+          {formatCompareSummary(compare ?? 0)}
+        </p>
+      ) : null}
 
-          return (
-            <div className="trend-column" key={bucket.startTime}>
-              <span
-                className="trend-bar"
-                style={{ height }}
-                aria-label={`${formatBucketLabel(mode, bucket.startTime)} ${formatDuration(
-                  bucket.readTimeSeconds
-                )}`}
-              />
-              <small>{formatBucketLabel(mode, bucket.startTime)}</small>
-            </div>
-          );
-        })}
-      </div>
+      {mode === "weekly" || mode === "monthly" ? (
+        <BarTrend
+          buckets={visibleBuckets}
+          chartHeight={chartHeight}
+          formatBucketLabel={formatBucketLabel}
+          maxSeconds={maxSeconds}
+          mode={mode}
+          peakStartTime={peakBucket.startTime}
+          totalSeconds={totalSeconds}
+        />
+      ) : (
+        <LineTrend
+          buckets={visibleBuckets}
+          formatBucketLabel={formatBucketLabel}
+          maxSeconds={maxSeconds}
+          mode={mode}
+          peakStartTime={peakBucket.startTime}
+          totalSeconds={totalSeconds}
+        />
+      )}
+
+      {mode === "monthly" ? <ReadingHeatmap buckets={buckets} /> : null}
     </section>
   );
 }
@@ -104,4 +118,30 @@ function formatBucketLabel(mode: ReadingStatsMode, timestamp: number): string {
 
   const formatted = formatUnixDate(timestamp);
   return formatted ? formatted.slice(5) : "";
+}
+
+function formatCompareSummary(compare: number): string {
+  const percent = Math.round(Math.abs(compare) * 100);
+
+  if (compare > 0) {
+    return `较上一周期增加 ${percent}%`;
+  }
+
+  if (compare < 0) {
+    return `较上一周期减少 ${percent}%`;
+  }
+
+  return "较上一周期基本持平";
+}
+
+function compareToneClass(compare: number): string {
+  if (compare > 0) {
+    return "is-positive";
+  }
+
+  if (compare < 0) {
+    return "is-negative";
+  }
+
+  return "is-neutral";
 }

@@ -1,11 +1,18 @@
 import type {
   BookshelfSummary,
   ReadingCategory,
+  ReadingPersona,
+  ReadingPersonaAccentTone,
+  ReadingPersonaDimension,
+  ReadingPersonaKey,
+  ReadingPersonaPaletteGroup,
+  ReadingPersonaPatch,
   ReadingRankItem,
   ReadingStats,
   SearchScope,
-  ShelfEntry
+  ShelfEntry,
 } from "./types";
+import readingPersonaConfigJson from "../reading-persona.config.json";
 
 export type RawShelfCounts = {
   books?: unknown[];
@@ -57,7 +64,11 @@ export type ReadingHabitProfile = {
   basisNotice: string;
 };
 
-export function calculateBookshelfTotal({ books, albums, mp }: RawShelfCounts): number {
+export function calculateBookshelfTotal({
+  books,
+  albums,
+  mp,
+}: RawShelfCounts): number {
   return (books?.length ?? 0) + (albums?.length ?? 0) + (mp ? 1 : 0);
 }
 
@@ -73,39 +84,47 @@ export function summarizeBookshelf(entries: ShelfEntry[]): BookshelfSummary {
     albumCount,
     mpCount,
     publicCount: entries.length - secretCount,
-    secretCount
+    secretCount,
   };
 }
 
 export function calculateShelfPrivacy({ books, albums, mp }: RawShelfPrivacy) {
-  const secretBooks = books?.filter((book) => isSecret(book.secret)).length ?? 0;
+  const secretBooks =
+    books?.filter((book) => isSecret(book.secret)).length ?? 0;
   const publicBooks = (books?.length ?? 0) - secretBooks;
   const secretAlbums =
-    albums?.filter((album) => isSecret(album.albumInfoExtra?.secret)).length ?? 0;
+    albums?.filter((album) => isSecret(album.albumInfoExtra?.secret)).length ??
+    0;
   const publicAlbums = (albums?.length ?? 0) - secretAlbums;
   const mpSecret = mp ? 1 : 0;
 
   return {
     publicCount: publicBooks + publicAlbums,
-    secretCount: secretBooks + secretAlbums + mpSecret
+    secretCount: secretBooks + secretAlbums + mpSecret,
   };
 }
 
 export function calculateTotalNotes({
   reviewCount = 0,
   noteCount = 0,
-  bookmarkCount = 0
+  bookmarkCount = 0,
 }: NoteCountInput): number {
-  return safeCount(reviewCount) + safeCount(noteCount) + safeCount(bookmarkCount);
+  return (
+    safeCount(reviewCount) + safeCount(noteCount) + safeCount(bookmarkCount)
+  );
 }
 
-export function normalizeProgress({ progress = 0, finishTime, isStartReading }: ReadingProgressInput) {
+export function normalizeProgress({
+  progress = 0,
+  finishTime,
+  isStartReading,
+}: ReadingProgressInput) {
   const progressPercent = Math.max(0, Math.min(100, Math.trunc(progress)));
 
   return {
     progressPercent,
     isStarted: Boolean(isStartReading) || progressPercent > 0,
-    isFinished: progressPercent === 100 && Boolean(finishTime)
+    isFinished: progressPercent === 100 && Boolean(finishTime),
   };
 }
 
@@ -150,7 +169,7 @@ export function chooseSearchScope(input: string): SearchScope {
 export function appendRecentSearchKeyword(
   current: string[],
   keyword: string,
-  limit = 6
+  limit = 6,
 ): string[] {
   const normalized = keyword.trim();
   if (!normalized) {
@@ -161,7 +180,10 @@ export function appendRecentSearchKeyword(
   return [normalized, ...deduped].slice(0, limit);
 }
 
-export function extractRepresentativeThemes(stats?: ReadingStats, limit = 5): string[] {
+export function extractRepresentativeThemes(
+  stats?: ReadingStats,
+  limit = 5,
+): string[] {
   if (!stats) {
     return [];
   }
@@ -202,7 +224,9 @@ export function hasEnoughDataForHabitProfile(stats?: ReadingStats): boolean {
 
   const totalReadTimeSeconds = stats.totalReadTimeSeconds ?? 0;
   const readDays = stats.readDays ?? 0;
-  const activeBuckets = stats.buckets.filter((bucket) => bucket.readTimeSeconds > 0).length;
+  const activeBuckets = stats.buckets.filter(
+    (bucket) => bucket.readTimeSeconds > 0,
+  ).length;
 
   return (
     totalReadTimeSeconds >= 1_800 ||
@@ -213,7 +237,9 @@ export function hasEnoughDataForHabitProfile(stats?: ReadingStats): boolean {
   );
 }
 
-export function buildReadingHabitProfile(stats?: ReadingStats): ReadingHabitProfile | undefined {
+export function buildReadingHabitProfile(
+  stats?: ReadingStats,
+): ReadingHabitProfile | undefined {
   if (!stats || !hasEnoughDataForHabitProfile(stats)) {
     return undefined;
   }
@@ -222,12 +248,17 @@ export function buildReadingHabitProfile(stats?: ReadingStats): ReadingHabitProf
   const readDays = stats.readDays ?? 0;
   const averageReadTimeSeconds =
     stats.dayAverageReadTimeSeconds ??
-    (readDays > 0 ? Math.round(totalReadTimeSeconds / Math.max(readDays, 1)) : 0);
+    (readDays > 0
+      ? Math.round(totalReadTimeSeconds / Math.max(readDays, 1))
+      : 0);
   const topCategory = stats.categories
     .slice()
     .sort((left, right) => categoryValue(right) - categoryValue(left))[0];
   const topCategoryShare = topCategory
-    ? safeRatio(categoryValue(topCategory), stats.categories.reduce((sum, item) => sum + categoryValue(item), 0))
+    ? safeRatio(
+        categoryValue(topCategory),
+        stats.categories.reduce((sum, item) => sum + categoryValue(item), 0),
+      )
     : 0;
   const topItem = stats.longestItems
     .slice()
@@ -235,10 +266,15 @@ export function buildReadingHabitProfile(stats?: ReadingStats): ReadingHabitProf
   const topItemShare = topItem
     ? safeRatio(
         topItem.readTimeSeconds,
-        stats.longestItems.reduce((sum, item) => sum + Math.max(item.readTimeSeconds, 0), 0)
+        stats.longestItems.reduce(
+          (sum, item) => sum + Math.max(item.readTimeSeconds, 0),
+          0,
+        ),
       )
     : 0;
-  const activeBuckets = stats.buckets.filter((bucket) => bucket.readTimeSeconds > 0).length;
+  const activeBuckets = stats.buckets.filter(
+    (bucket) => bucket.readTimeSeconds > 0,
+  ).length;
   const contentLabel = detectContentLabel(topCategory, topItem);
   const structuralLabel = detectStructuralLabel({
     readDays,
@@ -249,13 +285,14 @@ export function buildReadingHabitProfile(stats?: ReadingStats): ReadingHabitProf
     topItemShare,
     totalReadTimeSeconds,
     compare: stats.compare ?? 0,
-    longestItemCount: stats.longestItems.length
+    longestItemCount: stats.longestItems.length,
   });
   const primaryLabel = contentLabel ?? structuralLabel;
   const secondaryLabels = uniqueLabels(
     [contentLabel, structuralLabel].filter(
-      (label): label is ReadingHabitProfileLabel => Boolean(label && label !== primaryLabel)
-    )
+      (label): label is ReadingHabitProfileLabel =>
+        Boolean(label && label !== primaryLabel),
+    ),
   );
 
   return {
@@ -271,9 +308,239 @@ export function buildReadingHabitProfile(stats?: ReadingStats): ReadingHabitProf
       topItem,
       topItemShare,
       compare: stats.compare ?? 0,
-      themeCount: stats.categories.length
+      themeCount: stats.categories.length,
     }),
-    basisNotice: "只基于本地统计做当前周期侧写，不代表固定阅读人格。"
+    basisNotice: "只基于本地统计做当前周期侧写，不代表固定阅读人格。",
+  };
+}
+
+type ReadingPersonaSharedConfig = {
+  basisNotice: string;
+  fallbackLabel: string;
+  definitions: Record<
+    string,
+    {
+      label: string;
+      paletteGroup: ReadingPersonaPaletteGroup;
+      accentTone: ReadingPersonaAccentTone;
+    }
+  >;
+  categoryTokens: {
+    practical: string[];
+    conceptual: string[];
+    analytical: string[];
+    resonant: string[];
+  };
+  thresholds: {
+    stableBucketMultiplier: number;
+    axisBiasMultiplier: number;
+    status: {
+      complete: {
+        minTotalReadTimeSeconds: number;
+        minReadDays: number;
+        minActiveBucketCount: number;
+        minCategoryCount: number;
+      };
+      provisional: {
+        minTotalReadTimeSeconds: number;
+        minReadDays: number;
+        minStableDimensionCount: number;
+      };
+    };
+    energy: {
+      introverted: {
+        minTop3CategoryShare: number;
+        minAuthorConcentration: number;
+        minTopItemShare: number;
+      };
+      breadthStrength: {
+        strong: {
+          maxTop3CategoryShare: number;
+          maxAuthorConcentration: number;
+          maxTopItemShare: number;
+        };
+        medium: {
+          maxTop3CategoryShare: number;
+          maxTopItemShare: number;
+        };
+      };
+    };
+    lifestyle: {
+      planned: {
+        minReadDays: number;
+        minStableBucketShare: number;
+        minTopItemShare: number;
+        minCompare: number;
+      };
+      exploratory: {
+        maxReadDays: number;
+        maxActiveBucketCount: number;
+      };
+      judgingStrength: {
+        readDaysScale: number;
+      };
+      perceivingStrength: {
+        strong: {
+          maxReadDays: number;
+          maxActiveBucketCount: number;
+        };
+        medium: {
+          maxReadDays: number;
+          maxActiveBucketCount: number;
+        };
+      };
+    };
+    strength: {
+      ratio: {
+        strong: number;
+        medium: number;
+      };
+      delta: {
+        strong: number;
+        medium: number;
+      };
+      confidence: {
+        strong: number;
+        medium: number;
+        light: number;
+      };
+    };
+    evidence: {
+      provisionalMaxItems: number;
+      defaultMaxItems: number;
+    };
+    suggestion: {
+      introvertedMinTopCategoryShare: number;
+    };
+  };
+};
+
+const READING_PERSONA_CONFIG =
+  readingPersonaConfigJson as ReadingPersonaSharedConfig;
+const READING_PERSONA_BASIS_NOTICE = READING_PERSONA_CONFIG.basisNotice;
+const READING_PERSONA_THRESHOLDS = READING_PERSONA_CONFIG.thresholds;
+
+const READING_PERSONA_DEFINITIONS: Record<
+  string,
+  {
+    label: string;
+    paletteGroup: ReadingPersonaPaletteGroup;
+    accentTone: ReadingPersonaAccentTone;
+  }
+> = READING_PERSONA_CONFIG.definitions;
+
+const PRACTICAL_CATEGORY_PATTERN = buildCategoryPattern(
+  READING_PERSONA_CONFIG.categoryTokens.practical,
+);
+const CONCEPTUAL_CATEGORY_PATTERN = buildCategoryPattern(
+  READING_PERSONA_CONFIG.categoryTokens.conceptual,
+);
+const ANALYTICAL_CATEGORY_PATTERN = buildCategoryPattern(
+  READING_PERSONA_CONFIG.categoryTokens.analytical,
+);
+const RESONANT_CATEGORY_PATTERN = buildCategoryPattern(
+  READING_PERSONA_CONFIG.categoryTokens.resonant,
+);
+
+type PersonaSignals = {
+  totalReadTimeSeconds: number;
+  readDays: number;
+  categoryCount: number;
+  activeBucketCount: number;
+  stableBucketShare: number;
+  topCategoryTitle?: string;
+  topCategoryShare: number;
+  top3CategoryShare: number;
+  topItemTitle?: string;
+  topItemShare: number;
+  authorConcentration: number;
+  compare: number;
+  practicalScore: number;
+  conceptualScore: number;
+  analyticalScore: number;
+  resonantScore: number;
+  topSignalsText: string;
+};
+
+export function buildReadingPersona(stats?: ReadingStats): ReadingPersona {
+  if (!stats) {
+    return buildInsufficientPersona();
+  }
+
+  const signals = summarizePersonaSignals(stats);
+  const dimensions = [
+    buildEnergyDimension(signals),
+    buildInformationDimension(signals),
+    buildDecisionDimension(signals),
+    buildLifestyleDimension(signals),
+  ];
+  const stableDimensionCount = dimensions.filter(
+    (item) => item.strength !== "light",
+  ).length;
+  const status = resolveReadingPersonaStatus(signals, stableDimensionCount);
+
+  if (status === "insufficient") {
+    return buildInsufficientPersona();
+  }
+
+  const code = dimensions.map((item) => item.key).join("");
+  const definition = READING_PERSONA_DEFINITIONS[code] ?? {
+    label: READING_PERSONA_CONFIG.fallbackLabel,
+    paletteGroup: inferPaletteGroup(code),
+    accentTone: accentToneForPaletteGroup(inferPaletteGroup(code)),
+  };
+  const confidence = buildPersonaConfidence(dimensions, status);
+  const evidence = buildPersonaEvidence(signals, dimensions, status);
+
+  return {
+    status,
+    code,
+    label: definition.label,
+    displayTitle: `${code} 型读者 · ${definition.label}`,
+    paletteGroup: definition.paletteGroup,
+    accentTone: definition.accentTone,
+    basisNotice: READING_PERSONA_BASIS_NOTICE,
+    dimensions,
+    evidence,
+    confidence,
+    summary: buildLocalPersonaSummary(signals, definition.label, status),
+    suggestion: buildLocalPersonaSuggestion(signals, dimensions, status),
+  };
+}
+
+export function resolveReadingPersona(
+  localPersona: ReadingPersona,
+  patch?: ReadingPersonaPatch | null,
+): ReadingPersona {
+  if (!patch) {
+    return localPersona;
+  }
+
+  const summary = normalizePersonaText(patch.summary);
+  const suggestion = normalizePersonaText(patch.suggestion);
+
+  if (localPersona.status === "insufficient") {
+    return {
+      ...localPersona,
+      summary,
+      suggestion: undefined,
+    };
+  }
+
+  return {
+    ...localPersona,
+    summary: summary ?? localPersona.summary,
+    suggestion: suggestion ?? localPersona.suggestion,
+  };
+}
+
+function buildInsufficientPersona(): ReadingPersona {
+  return {
+    status: "insufficient",
+    basisNotice: READING_PERSONA_BASIS_NOTICE,
+    dimensions: [],
+    evidence: [],
+    summary: "本期阅读样本较少，继续阅读后再生成阅读人格。",
   };
 }
 
@@ -286,7 +553,10 @@ function isSecret(value?: number | boolean): boolean {
 }
 
 function categoryValue(category: ReadingCategory): number {
-  return Math.max(0, category.readingTimeSeconds ?? category.value ?? category.readingCount ?? 0);
+  return Math.max(
+    0,
+    category.readingTimeSeconds ?? category.value ?? category.readingCount ?? 0,
+  );
 }
 
 function safeRatio(value: number, total: number): number {
@@ -299,18 +569,22 @@ function safeRatio(value: number, total: number): number {
 
 function detectContentLabel(
   topCategory?: ReadingCategory,
-  topItem?: ReadingRankItem
+  topItem?: ReadingRankItem,
 ): ReadingHabitProfileLabel | undefined {
   const contentTokens = [
     topCategory?.title,
     topCategory?.parentTitle,
     topItem?.title,
-    ...(topItem?.tags ?? [])
+    ...(topItem?.tags ?? []),
   ]
     .filter((item): item is string => Boolean(item))
     .join("|");
 
-  if (/(效率|管理|成长|商业|心理|方法|投资|写作|学习|沟通|产品|运营|思维)/.test(contentTokens)) {
+  if (
+    /(效率|管理|成长|商业|心理|方法|投资|写作|学习|沟通|产品|运营|思维)/.test(
+      contentTokens,
+    )
+  ) {
     return "实用型";
   }
 
@@ -330,7 +604,7 @@ function detectStructuralLabel({
   topItemShare,
   totalReadTimeSeconds,
   compare,
-  longestItemCount
+  longestItemCount,
 }: {
   readDays: number;
   averageReadTimeSeconds: number;
@@ -351,7 +625,12 @@ function detectStructuralLabel({
     return "收藏型";
   }
 
-  if (readDays >= 10 && activeBuckets >= 3 && averageReadTimeSeconds >= 1_200 && compare >= -0.05) {
+  if (
+    readDays >= 10 &&
+    activeBuckets >= 3 &&
+    averageReadTimeSeconds >= 1_200 &&
+    compare >= -0.05
+  ) {
     return "复盘型";
   }
 
@@ -372,7 +651,7 @@ function detectStructuralLabel({
 
 function descriptionForProfile(
   label: ReadingHabitProfileLabel,
-  topCategoryTitle?: string
+  topCategoryTitle?: string,
 ): string {
   switch (label) {
     case "深潜型":
@@ -401,7 +680,7 @@ function buildProfileEvidence({
   topItem,
   topItemShare,
   compare,
-  themeCount
+  themeCount,
 }: {
   primaryLabel: ReadingHabitProfileLabel;
   readDays: number;
@@ -414,17 +693,21 @@ function buildProfileEvidence({
   themeCount: number;
 }): string[] {
   const evidence = [
-    readDays > 0 ? `本周期活跃阅读 ${readDays} 天，单日平均约 ${Math.max(1, Math.round(averageReadTimeSeconds / 60))} 分钟。` : undefined,
+    readDays > 0
+      ? `本周期活跃阅读 ${readDays} 天，单日平均约 ${Math.max(1, Math.round(averageReadTimeSeconds / 60))} 分钟。`
+      : undefined,
     topCategory
       ? `${topCategory.title} 是当前最重投入的主题，约占分类投入的 ${Math.max(1, Math.round(topCategoryShare * 100))}%。`
       : undefined,
     topItem
       ? `《${topItem.title}》占重点内容时长约 ${Math.max(1, Math.round(topItemShare * 100))}%，说明注意力集中在少数主线。`
       : undefined,
-    themeCount > 0 ? `当前周期至少覆盖 ${themeCount} 个主题，结构上更容易判断是聚焦还是扩散。` : undefined,
+    themeCount > 0
+      ? `当前周期至少覆盖 ${themeCount} 个主题，结构上更容易判断是聚焦还是扩散。`
+      : undefined,
     compare !== 0
       ? `和上一周期相比，整体节奏${compare > 0 ? "抬升" : "回落"}约 ${Math.max(1, Math.round(Math.abs(compare) * 100))}%。`
-      : undefined
+      : undefined,
   ].filter((item): item is string => Boolean(item));
 
   if (primaryLabel === "收藏型") {
@@ -434,6 +717,540 @@ function buildProfileEvidence({
   return evidence.slice(0, 4);
 }
 
-function uniqueLabels(labels: ReadingHabitProfileLabel[]): ReadingHabitProfileLabel[] {
+function uniqueLabels(
+  labels: ReadingHabitProfileLabel[],
+): ReadingHabitProfileLabel[] {
   return labels.filter((label, index) => labels.indexOf(label) === index);
+}
+
+function summarizePersonaSignals(stats: ReadingStats): PersonaSignals {
+  const totalReadTimeSeconds = Math.max(0, stats.totalReadTimeSeconds ?? 0);
+  const readDays = Math.max(0, stats.readDays ?? 0);
+  const activeBuckets = stats.buckets.filter(
+    (bucket) => (bucket.readTimeSeconds ?? 0) > 0,
+  );
+  const activeBucketCount = activeBuckets.length;
+  const bucketAverage =
+    activeBucketCount > 0
+      ? activeBuckets.reduce(
+          (sum, bucket) => sum + Math.max(bucket.readTimeSeconds ?? 0, 0),
+          0,
+        ) / activeBucketCount
+      : 0;
+  const stableBucketCount = activeBuckets.filter(
+    (bucket) =>
+      Math.max(bucket.readTimeSeconds ?? 0, 0) >=
+      bucketAverage * READING_PERSONA_THRESHOLDS.stableBucketMultiplier,
+  ).length;
+  const stableBucketShare = safeRatio(stableBucketCount, activeBucketCount);
+
+  const categories = stats.categories
+    .slice()
+    .sort((left, right) => categoryValue(right) - categoryValue(left));
+  const categoryTotal = categories.reduce(
+    (sum, item) => sum + categoryValue(item),
+    0,
+  );
+  const topCategory = categories[0];
+  const topCategoryShare = topCategory
+    ? safeRatio(categoryValue(topCategory), categoryTotal)
+    : 0;
+  const top3CategoryShare =
+    categoryTotal > 0
+      ? safeRatio(
+          categories
+            .slice(0, 3)
+            .reduce((sum, item) => sum + categoryValue(item), 0),
+          categoryTotal,
+        )
+      : 0;
+
+  const items = stats.longestItems
+    .slice()
+    .sort(
+      (left, right) =>
+        Math.max(right.readTimeSeconds, 0) - Math.max(left.readTimeSeconds, 0),
+    );
+  const itemTotal = items.reduce(
+    (sum, item) => sum + Math.max(item.readTimeSeconds, 0),
+    0,
+  );
+  const topItem = items[0];
+  const topItemShare = topItem
+    ? safeRatio(Math.max(topItem.readTimeSeconds, 0), itemTotal)
+    : 0;
+  const authorMap = new Map<string, number>();
+  items.forEach((item) => {
+    const author = item.author?.trim();
+    if (!author) {
+      return;
+    }
+
+    authorMap.set(
+      author,
+      (authorMap.get(author) ?? 0) + Math.max(item.readTimeSeconds, 0),
+    );
+  });
+  const authorConcentration =
+    itemTotal > 0 && authorMap.size > 0
+      ? safeRatio(Math.max(...Array.from(authorMap.values())), itemTotal)
+      : 0;
+
+  const practicalScore = sumCategorySignalScore(
+    stats.categories,
+    PRACTICAL_CATEGORY_PATTERN,
+  );
+  const conceptualScore = sumCategorySignalScore(
+    stats.categories,
+    CONCEPTUAL_CATEGORY_PATTERN,
+  );
+  const analyticalScore = sumCategorySignalScore(
+    stats.categories,
+    ANALYTICAL_CATEGORY_PATTERN,
+  );
+  const resonantScore = sumCategorySignalScore(
+    stats.categories,
+    RESONANT_CATEGORY_PATTERN,
+  );
+  const topSignalsText = [
+    topCategory?.title,
+    topCategory?.parentTitle,
+    topItem?.title,
+    ...(topItem?.tags ?? []),
+  ]
+    .filter((value): value is string => Boolean(value?.trim()))
+    .join("|");
+
+  return {
+    totalReadTimeSeconds,
+    readDays,
+    categoryCount: stats.categories.length,
+    activeBucketCount,
+    stableBucketShare,
+    topCategoryTitle: topCategory?.title,
+    topCategoryShare,
+    top3CategoryShare,
+    topItemTitle: topItem?.title,
+    topItemShare,
+    authorConcentration,
+    compare: stats.compare ?? 0,
+    practicalScore,
+    conceptualScore,
+    analyticalScore,
+    resonantScore,
+    topSignalsText,
+  };
+}
+
+function resolveReadingPersonaStatus(
+  signals: PersonaSignals,
+  stableDimensionCount: number,
+): ReadingPersona["status"] {
+  const { complete, provisional } = READING_PERSONA_THRESHOLDS.status;
+
+  if (
+    signals.totalReadTimeSeconds >= complete.minTotalReadTimeSeconds &&
+    signals.readDays >= complete.minReadDays &&
+    signals.activeBucketCount >= complete.minActiveBucketCount &&
+    signals.categoryCount >= complete.minCategoryCount
+  ) {
+    return "complete";
+  }
+
+  if (
+    signals.totalReadTimeSeconds >= provisional.minTotalReadTimeSeconds &&
+    signals.readDays >= provisional.minReadDays &&
+    stableDimensionCount >= provisional.minStableDimensionCount
+  ) {
+    return "provisional";
+  }
+
+  return "insufficient";
+}
+
+function buildEnergyDimension(
+  signals: PersonaSignals,
+): ReadingPersonaDimension {
+  const { introverted } = READING_PERSONA_THRESHOLDS.energy;
+  const isIntroverted =
+    signals.top3CategoryShare >= introverted.minTop3CategoryShare ||
+    signals.authorConcentration >= introverted.minAuthorConcentration ||
+    signals.topItemShare >= introverted.minTopItemShare;
+  const key: ReadingPersonaKey = isIntroverted ? "I" : "E";
+  const strength = isIntroverted
+    ? strengthFromThresholdDelta(
+        Math.max(
+          signals.top3CategoryShare - introverted.minTop3CategoryShare,
+          signals.authorConcentration - introverted.minAuthorConcentration,
+          signals.topItemShare - introverted.minTopItemShare,
+        ),
+      )
+    : strengthFromBreadthSignals(signals);
+
+  return {
+    axis: "energy",
+    key,
+    label: key === "I" ? "主题深度" : "探索广度",
+    strength,
+    basis:
+      key === "I"
+        ? `投入主要集中在${signals.topCategoryTitle || "少数主题"}与重点书目上，阅读更像围绕主线持续推进。`
+        : "主题分布更分散，阅读更像在多个方向之间主动探索和横向扩展。",
+  };
+}
+
+function buildInformationDimension(
+  signals: PersonaSignals,
+): ReadingPersonaDimension {
+  const axisBiasMultiplier = READING_PERSONA_THRESHOLDS.axisBiasMultiplier;
+  const conceptualWins =
+    signals.conceptualScore >= signals.practicalScore * axisBiasMultiplier;
+  const practicalWins =
+    signals.practicalScore >= signals.conceptualScore * axisBiasMultiplier;
+  const key = conceptualWins
+    ? "N"
+    : practicalWins
+      ? "S"
+      : resolveTextBias(
+          signals.topSignalsText,
+          CONCEPTUAL_CATEGORY_PATTERN,
+          PRACTICAL_CATEGORY_PATTERN,
+          "N",
+          "S",
+        );
+  const strength = strengthFromRatio(
+    signals.conceptualScore,
+    signals.practicalScore,
+  );
+
+  return {
+    axis: "information",
+    key,
+    label: key === "N" ? "概念想象" : "实用经验",
+    strength,
+    basis:
+      key === "N"
+        ? `这段时间更偏向${signals.topCategoryTitle || "历史、文学或思想性内容"}，阅读重点更接近理解主题与建立联想。`
+        : `这段时间更偏向${signals.topCategoryTitle || "工具、管理或方法类内容"}，阅读重点更接近获取可直接使用的方法。`,
+  };
+}
+
+function buildDecisionDimension(
+  signals: PersonaSignals,
+): ReadingPersonaDimension {
+  const axisBiasMultiplier = READING_PERSONA_THRESHOLDS.axisBiasMultiplier;
+  const analyticalWins =
+    signals.analyticalScore >= signals.resonantScore * axisBiasMultiplier;
+  const resonantWins =
+    signals.resonantScore >= signals.analyticalScore * axisBiasMultiplier;
+  const key = analyticalWins
+    ? "T"
+    : resonantWins
+      ? "F"
+      : resolveTextBias(
+          signals.topSignalsText,
+          ANALYTICAL_CATEGORY_PATTERN,
+          RESONANT_CATEGORY_PATTERN,
+          "T",
+          "F",
+        );
+  const strength = strengthFromRatio(
+    signals.analyticalScore,
+    signals.resonantScore,
+  );
+
+  return {
+    axis: "decision",
+    key,
+    label: key === "T" ? "分析取向" : "共鸣取向",
+    strength,
+    basis:
+      key === "T"
+        ? "当前更容易被结构、方法和判断框架吸引，阅读时更关注可拆解、可比较的分析线索。"
+        : "当前更容易被人物、命运和社会现场吸引，阅读时更关注情绪、关系与经验共鸣。",
+  };
+}
+
+function buildLifestyleDimension(
+  signals: PersonaSignals,
+): ReadingPersonaDimension {
+  const { planned, exploratory, judgingStrength, perceivingStrength } =
+    READING_PERSONA_THRESHOLDS.lifestyle;
+  const isPlanned =
+    (signals.readDays >= planned.minReadDays &&
+      signals.stableBucketShare >= planned.minStableBucketShare) ||
+    (signals.topItemShare >= planned.minTopItemShare &&
+      signals.compare >= planned.minCompare);
+  const clearlyExploratory =
+    signals.readDays <= exploratory.maxReadDays ||
+    signals.activeBucketCount <= exploratory.maxActiveBucketCount;
+  const key: ReadingPersonaKey = clearlyExploratory
+    ? "P"
+    : isPlanned
+      ? "J"
+      : "P";
+  const strength =
+    key === "J"
+      ? strengthFromThresholdDelta(
+          Math.max(
+            signals.stableBucketShare - planned.minStableBucketShare,
+            (signals.readDays - planned.minReadDays) /
+              judgingStrength.readDaysScale,
+          ),
+        )
+      : signals.readDays <= perceivingStrength.strong.maxReadDays ||
+          signals.activeBucketCount <=
+            perceivingStrength.strong.maxActiveBucketCount
+        ? "strong"
+        : signals.readDays <= perceivingStrength.medium.maxReadDays ||
+            signals.activeBucketCount <=
+              perceivingStrength.medium.maxActiveBucketCount
+          ? "medium"
+          : "light";
+
+  return {
+    axis: "lifestyle",
+    key,
+    label: key === "J" ? "稳定推进" : "即兴探索",
+    strength,
+    basis:
+      key === "J"
+        ? "阅读天数和高活跃分桶更稳定，说明这段时间已经形成相对固定的推进节奏。"
+        : "阅读更像阶段性集中或临时切换，说明这一周期更接近按兴趣和时间窗口灵活推进。",
+  };
+}
+
+function buildPersonaEvidence(
+  signals: PersonaSignals,
+  dimensions: ReadingPersonaDimension[],
+  status: ReadingPersona["status"],
+): string[] {
+  const evidence = [
+    signals.topCategoryTitle
+      ? `${signals.topCategoryTitle} 是当前投入最多的主题，约占分类投入的 ${Math.max(
+          1,
+          Math.round(signals.topCategoryShare * 100),
+        )}%。`
+      : undefined,
+    signals.topItemTitle
+      ? `《${signals.topItemTitle}》占重点内容时长约 ${Math.max(1, Math.round(signals.topItemShare * 100))}%，说明注意力仍集中在少数主线。`
+      : undefined,
+    signals.readDays > 0
+      ? `本周期活跃阅读 ${signals.readDays} 天，稳定分布的高活跃时间段约占 ${Math.max(
+          1,
+          Math.round(signals.stableBucketShare * 100),
+        )}%。`
+      : undefined,
+    dimensions[0]?.key === "E"
+      ? `Top 3 分类投入约占 ${Math.max(1, Math.round(signals.top3CategoryShare * 100))}%，说明主题分布更分散。`
+      : undefined,
+  ].filter((item): item is string => Boolean(item));
+
+  return evidence.slice(
+    0,
+    status === "provisional"
+      ? READING_PERSONA_THRESHOLDS.evidence.provisionalMaxItems
+      : READING_PERSONA_THRESHOLDS.evidence.defaultMaxItems,
+  );
+}
+
+function buildLocalPersonaSummary(
+  signals: PersonaSignals,
+  personaLabel: string,
+  status: ReadingPersona["status"],
+): string {
+  if (status === "provisional") {
+    return `这段时间的阅读已经出现 ${personaLabel} 的倾向，但样本还不算充分，先把它当作当前阅读状态更合适。`;
+  }
+
+  if (signals.topCategoryTitle) {
+    return `这一周期的阅读更像围绕${signals.topCategoryTitle}主线持续推进，整体已经形成较稳定的阅读气质。`;
+  }
+
+  return `这一周期的阅读已经形成较清晰的 ${personaLabel} 倾向。`;
+}
+
+function buildLocalPersonaSuggestion(
+  signals: PersonaSignals,
+  dimensions: ReadingPersonaDimension[],
+  status: ReadingPersona["status"],
+): string | undefined {
+  if (status === "insufficient") {
+    return undefined;
+  }
+
+  if (
+    dimensions[0]?.key === "I" &&
+    signals.topCategoryShare >=
+      READING_PERSONA_THRESHOLDS.suggestion.introvertedMinTopCategoryShare
+  ) {
+    return "下个周期可以补一本文学或社科短书，给当前主线增加一个横向参照。";
+  }
+
+  if (dimensions[0]?.key === "E") {
+    return "下个周期可以先锁定一条主线连续推进，避免多个方向同时展开后难以沉淀。";
+  }
+
+  if (dimensions[3]?.key === "P") {
+    return "可以先固定 1 到 2 个阅读时段，再决定本月只重点推进哪一条主线。";
+  }
+
+  return "继续保持当前节奏，并在读完重点内容后补一份短复盘，会更容易沉淀出稳定判断。";
+}
+
+function buildPersonaConfidence(
+  dimensions: ReadingPersonaDimension[],
+  status: ReadingPersona["status"],
+): number | undefined {
+  if (status === "insufficient" || dimensions.length === 0) {
+    return undefined;
+  }
+
+  const total = dimensions.reduce(
+    (sum, item) => sum + confidenceForStrength(item.strength),
+    0,
+  );
+  return Number((total / dimensions.length).toFixed(2));
+}
+
+function sumCategorySignalScore(
+  categories: ReadingCategory[],
+  pattern: RegExp,
+): number {
+  return categories.reduce((sum, category) => {
+    const text = [category.title, category.parentTitle]
+      .filter(Boolean)
+      .join("|");
+    return pattern.test(text) ? sum + categoryValue(category) : sum;
+  }, 0);
+}
+
+function resolveTextBias(
+  text: string,
+  leftPattern: RegExp,
+  rightPattern: RegExp,
+  leftKey: ReadingPersonaKey,
+  rightKey: ReadingPersonaKey,
+): ReadingPersonaKey {
+  if (leftPattern.test(text)) {
+    return leftKey;
+  }
+
+  if (rightPattern.test(text)) {
+    return rightKey;
+  }
+
+  return leftKey;
+}
+
+function strengthFromRatio(
+  left: number,
+  right: number,
+): ReadingPersonaDimension["strength"] {
+  const max = Math.max(left, right);
+  const min = Math.min(left, right);
+  const ratio = min <= 0 ? (max > 0 ? 2 : 1) : max / min;
+  const { ratio: ratioThresholds } = READING_PERSONA_THRESHOLDS.strength;
+
+  if (ratio >= ratioThresholds.strong) {
+    return "strong";
+  }
+
+  if (ratio >= ratioThresholds.medium) {
+    return "medium";
+  }
+
+  return "light";
+}
+
+function strengthFromThresholdDelta(
+  delta: number,
+): ReadingPersonaDimension["strength"] {
+  const { delta: deltaThresholds } = READING_PERSONA_THRESHOLDS.strength;
+
+  if (delta >= deltaThresholds.strong) {
+    return "strong";
+  }
+
+  if (delta >= deltaThresholds.medium) {
+    return "medium";
+  }
+
+  return "light";
+}
+
+function strengthFromBreadthSignals(
+  signals: PersonaSignals,
+): ReadingPersonaDimension["strength"] {
+  const { strong, medium } = READING_PERSONA_THRESHOLDS.energy.breadthStrength;
+
+  if (
+    signals.top3CategoryShare <= strong.maxTop3CategoryShare &&
+    signals.authorConcentration <= strong.maxAuthorConcentration &&
+    signals.topItemShare <= strong.maxTopItemShare
+  ) {
+    return "strong";
+  }
+
+  if (
+    signals.top3CategoryShare <= medium.maxTop3CategoryShare &&
+    signals.topItemShare <= medium.maxTopItemShare
+  ) {
+    return "medium";
+  }
+
+  return "light";
+}
+
+function inferPaletteGroup(code: string): ReadingPersonaPaletteGroup {
+  if (code.length < 4) {
+    return "NT";
+  }
+
+  return code[1] === "N"
+    ? (`N${code[2]}` as ReadingPersonaPaletteGroup)
+    : (`S${code[3]}` as ReadingPersonaPaletteGroup);
+}
+
+function accentToneForPaletteGroup(
+  group: ReadingPersonaPaletteGroup,
+): ReadingPersonaAccentTone {
+  switch (group) {
+    case "NF":
+      return "rose";
+    case "SJ":
+      return "moss";
+    case "SP":
+      return "amber";
+    default:
+      return "bluegreen";
+  }
+}
+
+function confidenceForStrength(
+  strength: ReadingPersonaDimension["strength"],
+): number {
+  const { confidence } = READING_PERSONA_THRESHOLDS.strength;
+
+  switch (strength) {
+    case "strong":
+      return confidence.strong;
+    case "medium":
+      return confidence.medium;
+    default:
+      return confidence.light;
+  }
+}
+
+function normalizePersonaText(value?: string): string | undefined {
+  const text = value?.trim();
+  return text ? text : undefined;
+}
+
+function buildCategoryPattern(tokens: readonly string[]): RegExp {
+  return new RegExp(tokens.map(escapeRegexToken).join("|"));
+}
+
+function escapeRegexToken(token: string): string {
+  return token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

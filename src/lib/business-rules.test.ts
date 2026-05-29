@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   appendRecentSearchKeyword,
+  buildReadingPersona,
   buildReadingHabitProfile,
   calculateBookshelfTotal,
   calculateShelfPrivacy,
@@ -9,14 +10,44 @@ import {
   extractRepresentativeThemes,
   hasEnoughDataForHabitProfile,
   normalizeProgress,
-  summarizeBookshelf
+  resolveReadingPersona,
+  summarizeBookshelf,
 } from "./business-rules";
-import { formatDuration, formatProgress, formatRating, formatReviewStars, formatUnixDate } from "./formatters";
+import {
+  formatAiResponseFormat,
+  formatDuration,
+  formatProgress,
+  formatRating,
+  formatReviewStars,
+  formatUnixDate,
+} from "./formatters";
 import type { ReadingStats, ShelfEntry } from "./types";
+import readingPersonaFixturesJson from "../reading-persona.fixtures.json";
+
+type ReadingPersonaFixture = {
+  id: string;
+  stats: ReadingStats;
+  expected: {
+    status: "complete" | "provisional" | "insufficient";
+    code?: string;
+    label?: string;
+    displayTitle?: string;
+    paletteGroup?: "NT" | "NF" | "SJ" | "SP";
+    accentTone?: "bluegreen" | "rose" | "moss" | "amber";
+    dimensionKeys: string[];
+    confidence?: number;
+    evidenceCount: number;
+  };
+};
+
+const readingPersonaFixtures =
+  readingPersonaFixturesJson as ReadingPersonaFixture[];
 
 describe("bookshelf rules", () => {
   it("counts books, albums, and mp entries as visible shelf total", () => {
-    expect(calculateBookshelfTotal({ books: [{}, {}], albums: [{}], mp: {} })).toBe(4);
+    expect(
+      calculateBookshelfTotal({ books: [{}, {}], albums: [{}], mp: {} }),
+    ).toBe(4);
   });
 
   it("counts mp as private when present", () => {
@@ -24,8 +55,8 @@ describe("bookshelf rules", () => {
       calculateShelfPrivacy({
         books: [{ secret: 0 }, { secret: 1 }],
         albums: [{ albumInfoExtra: { secret: 1 } }],
-        mp: {}
-      })
+        mp: {},
+      }),
     ).toEqual({ publicCount: 1, secretCount: 3 });
   });
 
@@ -33,7 +64,7 @@ describe("bookshelf rules", () => {
     const entries: ShelfEntry[] = [
       { id: "1", type: "book", title: "Book", isTop: false, isSecret: false },
       { id: "2", type: "album", title: "Album", isTop: false, isSecret: true },
-      { id: "mp", type: "mp", title: "文章收藏", isTop: false, isSecret: true }
+      { id: "mp", type: "mp", title: "文章收藏", isTop: false, isSecret: true },
     ];
 
     expect(summarizeBookshelf(entries)).toEqual({
@@ -42,18 +73,26 @@ describe("bookshelf rules", () => {
       albumCount: 1,
       mpCount: 1,
       publicCount: 1,
-      secretCount: 2
+      secretCount: 2,
     });
   });
 });
 
 describe("notes rules", () => {
   it("calculates total notes from review, underline, and bookmark counts", () => {
-    expect(calculateTotalNotes({ reviewCount: 3, noteCount: 4, bookmarkCount: 2 })).toBe(9);
+    expect(
+      calculateTotalNotes({ reviewCount: 3, noteCount: 4, bookmarkCount: 2 }),
+    ).toBe(9);
   });
 
   it("ignores invalid negative note counts", () => {
-    expect(calculateTotalNotes({ reviewCount: -1, noteCount: 2, bookmarkCount: Number.NaN })).toBe(2);
+    expect(
+      calculateTotalNotes({
+        reviewCount: -1,
+        noteCount: 2,
+        bookmarkCount: Number.NaN,
+      }),
+    ).toBe(2);
   });
 });
 
@@ -62,15 +101,17 @@ describe("progress rules", () => {
     expect(normalizeProgress({ progress: 1, isStartReading: 1 })).toEqual({
       progressPercent: 1,
       isStarted: true,
-      isFinished: false
+      isFinished: false,
     });
   });
 
   it("marks finished only at 100 percent with finish time", () => {
-    expect(normalizeProgress({ progress: 100, finishTime: 1710000000 })).toEqual({
+    expect(
+      normalizeProgress({ progress: 100, finishTime: 1710000000 }),
+    ).toEqual({
       progressPercent: 100,
       isStarted: true,
-      isFinished: true
+      isFinished: true,
     });
   });
 });
@@ -85,7 +126,7 @@ describe("search scope rules", () => {
     ["推荐书单", 13],
     ["搜公众号", 2],
     ["搜文章", 4],
-    ["搜一下三体", 0]
+    ["搜一下三体", 0],
   ] as const)("maps %s to scope %s", (input, expected) => {
     expect(chooseSearchScope(input)).toBe(expected);
   });
@@ -95,8 +136,15 @@ describe("search scope rules", () => {
   });
 
   it("keeps recent search keywords deduped and newest-first", () => {
-    expect(appendRecentSearchKeyword(["三体", "心理学"], "三体")).toEqual(["三体", "心理学"]);
-    expect(appendRecentSearchKeyword(["三体", "心理学"], "AI")).toEqual(["AI", "三体", "心理学"]);
+    expect(appendRecentSearchKeyword(["三体", "心理学"], "三体")).toEqual([
+      "三体",
+      "心理学",
+    ]);
+    expect(appendRecentSearchKeyword(["三体", "心理学"], "AI")).toEqual([
+      "AI",
+      "三体",
+      "心理学",
+    ]);
   });
 });
 
@@ -111,7 +159,7 @@ describe("reading habit profile rules", () => {
     buckets: [
       { startTime: 1_725_696_000, readTimeSeconds: 1_800 },
       { startTime: 1_725_782_400, readTimeSeconds: 3_600 },
-      { startTime: 1_725_868_800, readTimeSeconds: 2_400 }
+      { startTime: 1_725_868_800, readTimeSeconds: 2_400 },
     ],
     longestItems: [
       {
@@ -120,8 +168,8 @@ describe("reading habit profile rules", () => {
         author: "卡尔·纽波特",
         type: "book",
         readTimeSeconds: 7_200,
-        tags: ["效率", "专注"]
-      }
+        tags: ["效率", "专注"],
+      },
     ],
     categories: [
       {
@@ -129,20 +177,25 @@ describe("reading habit profile rules", () => {
         title: "效率",
         parentTitle: "非虚构",
         readingTimeSeconds: 9_000,
-        readingCount: 3
+        readingCount: 3,
       },
       {
         categoryId: "sci-fi",
         title: "科幻",
         parentTitle: "文学",
         readingTimeSeconds: 5_400,
-        readingCount: 2
-      }
-    ]
+        readingCount: 2,
+      },
+    ],
   };
 
   it("extracts representative themes from categories and item tags", () => {
-    expect(extractRepresentativeThemes(stats, 4)).toEqual(["效率", "非虚构", "科幻", "文学"]);
+    expect(extractRepresentativeThemes(stats, 4)).toEqual([
+      "效率",
+      "非虚构",
+      "科幻",
+      "文学",
+    ]);
   });
 
   it("builds a non-absolute reading habit profile from local stats", () => {
@@ -162,9 +215,65 @@ describe("reading habit profile rules", () => {
         categories: [],
         longestItems: [],
         readDays: 1,
-        totalReadTimeSeconds: 600
-      })
+        totalReadTimeSeconds: 600,
+      }),
     ).toBeUndefined();
+  });
+
+  it.each(readingPersonaFixtures)(
+    "keeps reading persona fixture $id aligned",
+    ({ stats: fixtureStats, expected }) => {
+      const persona = buildReadingPersona(fixtureStats);
+
+      expect(persona.status).toBe(expected.status);
+      expect(persona.code).toBe(expected.code);
+      expect(persona.label).toBe(expected.label);
+      expect(persona.displayTitle).toBe(expected.displayTitle);
+      expect(persona.paletteGroup).toBe(expected.paletteGroup);
+      expect(persona.accentTone).toBe(expected.accentTone);
+      expect(persona.dimensions.map((item) => item.key)).toEqual(
+        expected.dimensionKeys,
+      );
+      expect(persona.evidence).toHaveLength(expected.evidenceCount);
+      expect(persona.confidence).toBe(expected.confidence);
+      expect(persona.summary).toContain(
+        expected.status === "insufficient" ? "样本较少" : "阅读",
+      );
+    },
+  );
+
+  it("merges AI persona copy without overriding local persona fields", () => {
+    const localPersona = buildReadingPersona(stats);
+    const merged = resolveReadingPersona(localPersona, {
+      summary: "AI 补充总结",
+      suggestion: "AI 补充建议",
+    });
+
+    expect(merged.code).toBe(localPersona.code);
+    expect(merged.label).toBe(localPersona.label);
+    expect(merged.summary).toBe("AI 补充总结");
+    expect(merged.suggestion).toBe("AI 补充建议");
+  });
+
+  it("keeps insufficient personas from upgrading into a full persona via AI patch", () => {
+    const localPersona = buildReadingPersona({
+      mode: "weekly",
+      baseTime: 1_725_955_200,
+      buckets: [],
+      categories: [],
+      longestItems: [],
+      readDays: 1,
+      totalReadTimeSeconds: 900,
+    });
+    const merged = resolveReadingPersona(localPersona, {
+      summary: "AI 也认为样本不足。",
+      suggestion: "不应展示",
+    });
+
+    expect(merged.status).toBe("insufficient");
+    expect(merged.code).toBeUndefined();
+    expect(merged.summary).toBe("AI 也认为样本不足。");
+    expect(merged.suggestion).toBeUndefined();
   });
 });
 
@@ -190,5 +299,15 @@ describe("formatters", () => {
     expect(formatProgress(-8)).toBe("0%");
     expect(formatRating(undefined)).toBe("暂无评分");
     expect(formatReviewStars(0)).toBe("未评分");
+  });
+
+  it("formats AI response format labels", () => {
+    expect(formatAiResponseFormat("json_schema")).toBe(
+      "结构化约束：JSON Schema",
+    );
+    expect(formatAiResponseFormat("json_object")).toBe(
+      "结构化约束：JSON Object",
+    );
+    expect(formatAiResponseFormat(undefined)).toBe("");
   });
 });

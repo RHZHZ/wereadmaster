@@ -34,13 +34,15 @@ describe("credential setup onboarding reuse", () => {
         </ToastProvider>
       ),
       renderToStaticMarkup(
-        <StatisticsPage
-          credentialStatus={{ hasCredential: false }}
-          cache={{}}
-          onCacheChange={() => undefined}
-          onOpenSettings={() => undefined}
-          onOpenReview={() => undefined}
-        />
+        <ToastProvider>
+          <StatisticsPage
+            credentialStatus={{ hasCredential: false }}
+            cache={{}}
+            onCacheChange={() => undefined}
+            onOpenSettings={() => undefined}
+            onOpenReview={() => undefined}
+          />
+        </ToastProvider>
       ),
       renderToStaticMarkup(
         <ToastProvider>

@@ -41,7 +41,7 @@ import {
   saveAiReviewFeedback,
   summarizeBookNotes
 } from "../lib/reading-api";
-import { formatAiTimestamp } from "../lib/formatters";
+import { formatAiResponseFormat, formatAiTimestamp } from "../lib/formatters";
 import type {
   AiSettingsState,
   BookAiRepresentativeQuote,
@@ -650,6 +650,7 @@ export function BookAiSummaryPage({
       <div className="ai-summary-meta">
         <span>生成时间：{formatAiTimestamp(summary?.generatedAt) || "尚未生成"}</span>
         <span>Prompt：{summary?.promptVersion ?? "book-notes-summary-v3"}</span>
+        {summary?.responseFormat ? <span>{formatAiResponseFormat(summary.responseFormat)}</span> : null}
         {summaryResponse?.providerModel ? <span>模型：{summaryResponse.providerModel}</span> : null}
         {summaryResponse?.cachedUpdatedAt ? (
           <span>缓存更新：{formatAiTimestamp(summaryResponse.cachedUpdatedAt)}</span>
@@ -869,6 +870,7 @@ function formatFullSummary({
     book?.author ? `作者：${book.author}` : undefined,
     `生成时间：${formatAiTimestamp(summary.generatedAt) || "未知"}`,
     `Prompt：${summary.promptVersion}`,
+    summary.responseFormat ? formatAiResponseFormat(summary.responseFormat) : undefined,
     providerModel ? `模型：${providerModel}` : undefined,
     responseSource ? `来源：${sourceLabelFromResponse(responseSource)}` : undefined,
     `输入统计：划线 ${sourceStats.highlightCount} 条，想法 ${sourceStats.thoughtCount} 条，书签 ${sourceStats.bookmarkCount} 个，章节 ${sourceStats.chapterCount} 个`

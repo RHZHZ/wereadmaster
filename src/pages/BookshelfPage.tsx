@@ -1,6 +1,7 @@
 import {
   forwardRef,
   useDeferredValue,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -25,14 +26,16 @@ import { CredentialSetupCard } from "../components/CredentialSetupCard";
 import { useToast } from "../components/ToastProvider";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { getCommandErrorMessage, upsertReadingItemState, type BookshelfResponse } from "../lib/reading-api";
-import type { CredentialStatus, ShelfEntry, ShelfEntryType } from "../lib/types";
-
-type ShelfFilter = "all" | ShelfEntryType;
-
-type CategoryOption = {
-  label: string;
-  count: number;
-};
+import type { CredentialStatus, ShelfEntry } from "../lib/types";
+import {
+  CATEGORY_PREVIEW_LIMIT,
+  filterEntries,
+  filterLabels,
+  getCategoryEntries,
+  getCategoryOptions,
+  getVisibleCategoryOptions,
+  type ShelfFilter
+} from "./bookshelf-filter";
 
 type BookshelfPageProps = {
   credentialStatus?: CredentialStatus;
@@ -54,15 +57,6 @@ type ShelfEntryCardProps = {
   onSaveCandidate: (entry: ShelfEntry) => void;
 };
 
-const filterLabels: Record<ShelfFilter, string> = {
-  all: "全部",
-  book: "电子书",
-  album: "有声书",
-  mp: "文章收藏"
-};
-
-const CATEGORY_PREVIEW_LIMIT = 12;
-
 export function BookshelfPage({
   credentialStatus,
   bookshelf,
@@ -83,7 +77,9 @@ export function BookshelfPage({
   const hasCredential = credentialStatus?.hasCredential === true;
   const entries = useMemo(() => bookshelf?.snapshot.entries ?? [], [bookshelf?.snapshot.entries]);
   const summary = bookshelf?.snapshot.summary;
-  const categoryOptions = useMemo(() => getCategoryOptions(entries), [entries]);
+  const categoryEntries = useMemo(() => getCategoryEntries(entries, filter), [entries, filter]);
+  const categoryOptions = useMemo(() => getCategoryOptions(categoryEntries), [categoryEntries]);
+  const shouldShowCategoryPanel = filter !== "mp" && categoryOptions.length > 1;
   const visibleCategoryOptions = useMemo(
     () => getVisibleCategoryOptions(categoryOptions, categoryFilter, isCategoryExpanded),
     [categoryOptions, categoryFilter, isCategoryExpanded]
@@ -95,6 +91,24 @@ export function BookshelfPage({
   );
   const hasQuery = deferredQuery.trim().length > 0;
   const { showToast } = useToast();
+
+  useEffect(() => {
+    if (!shouldShowCategoryPanel) {
+      if (categoryFilter !== "all") {
+        setCategoryFilter("all");
+      }
+
+      if (isCategoryExpanded) {
+        setIsCategoryExpanded(false);
+      }
+
+      return;
+    }
+
+    if (categoryFilter !== "all" && !categoryOptions.some((category) => category.label === categoryFilter)) {
+      setCategoryFilter("all");
+    }
+  }, [categoryFilter, categoryOptions, isCategoryExpanded, shouldShowCategoryPanel]);
 
   function handleFilterChange(nextFilter: ShelfFilter) {
     startTransition(() => {
@@ -220,59 +234,65 @@ export function BookshelfPage({
         </div>
       ) : null}
 
-      <div className="filter-tabs" role="tablist" aria-label="书架筛选">
-        {(["all", "book", "album", "mp"] as ShelfFilter[]).map((item) => (
-          <button
-            key={item}
-            type="button"
-            role="tab"
-            aria-selected={filter === item}
-            className={filter === item ? "is-active" : ""}
-            onClick={() => handleFilterChange(item)}
-          >
-            {filterLabels[item]}
-          </button>
-        ))}
-      </div>
-
-      {categoryOptions.length > 0 ? (
-        <section className="category-filter-panel" aria-label="书架分类筛选">
-          <div className="filter-tabs category-filter-tabs" role="tablist" aria-label="书架父分类">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={categoryFilter === "all"}
-              className={categoryFilter === "all" ? "is-active" : ""}
-              onClick={() => handleCategoryFilterChange("all")}
-            >
-              全部分类
-            </button>
-            {visibleCategoryOptions.map((category) => (
+      <section className="bookshelf-filter-stack" aria-label="书架筛选">
+        <div className="bookshelf-filter-group">
+          <span className="bookshelf-filter-label">类型</span>
+          <div className="filter-tabs bookshelf-filter-tabs bookshelf-filter-tabs--type" role="tablist" aria-label="书架类型筛选">
+            {(["all", "book", "album", "mp"] as ShelfFilter[]).map((item) => (
               <button
-                key={category.label}
+                key={item}
                 type="button"
                 role="tab"
-                aria-selected={categoryFilter === category.label}
-                className={categoryFilter === category.label ? "is-active" : ""}
-                onClick={() => handleCategoryFilterChange(category.label)}
+                aria-selected={filter === item}
+                className={filter === item ? "is-active" : ""}
+                onClick={() => handleFilterChange(item)}
               >
-                {category.label}
-                <span>{category.count}</span>
+                {filterLabels[item]}
               </button>
             ))}
           </div>
-          {categoryOptions.length > CATEGORY_PREVIEW_LIMIT ? (
-            <button
-              className="category-filter-toggle"
-              type="button"
-              aria-expanded={isCategoryExpanded}
-              onClick={handleToggleCategoryExpanded}
-            >
-              {isCategoryExpanded ? "收起分类" : `展开更多${hiddenCategoryCount > 0 ? ` ${hiddenCategoryCount}` : ""}`}
-            </button>
-          ) : null}
-        </section>
-      ) : null}
+        </div>
+
+        {shouldShowCategoryPanel ? (
+          <section className="bookshelf-filter-group category-filter-panel" aria-label="书架分类筛选">
+            <span className="bookshelf-filter-label">分类</span>
+            <div className="bookshelf-filter-row">
+              <div className="filter-tabs bookshelf-filter-tabs bookshelf-filter-tabs--category category-filter-tabs" role="group" aria-label="书架父分类">
+                <button
+                  type="button"
+                  aria-pressed={categoryFilter === "all"}
+                  className={categoryFilter === "all" ? "is-active" : ""}
+                  onClick={() => handleCategoryFilterChange("all")}
+                >
+                  全部
+                </button>
+                {visibleCategoryOptions.map((category) => (
+                  <button
+                    key={category.label}
+                    type="button"
+                    aria-pressed={categoryFilter === category.label}
+                    className={categoryFilter === category.label ? "is-active" : ""}
+                    onClick={() => handleCategoryFilterChange(category.label)}
+                  >
+                    {category.label}
+                    <span>{category.count}</span>
+                  </button>
+                ))}
+                {categoryOptions.length > CATEGORY_PREVIEW_LIMIT ? (
+                  <button
+                    className="category-filter-toggle"
+                    type="button"
+                    aria-expanded={isCategoryExpanded}
+                    onClick={handleToggleCategoryExpanded}
+                  >
+                    {isCategoryExpanded ? "收起分类" : `展开更多${hiddenCategoryCount > 0 ? ` ${hiddenCategoryCount}` : ""}`}
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          </section>
+        ) : null}
+      </section>
 
       {entries.length > 0 ? (
         <div className="bookshelf-search-row">
@@ -308,7 +328,7 @@ export function BookshelfPage({
       {!isLoading && entries.length > 0 && filteredEntries.length === 0 ? (
         <section className="empty-inline" aria-label="筛选无结果">
           <SearchX aria-hidden="true" size={28} />
-          <h3>{hasQuery ? "没有匹配的书架条目" : "当前分类没有条目"}</h3>
+          <h3>{hasQuery ? "没有匹配的书架条目" : categoryFilter === "all" ? "当前类型没有条目" : "当前分类没有条目"}</h3>
           <p>{hasQuery ? "换一个关键词，或清空搜索后继续浏览。" : "换一个类型或分类，或同步后再查看。"}</p>
           <button className="secondary-action" type="button" onClick={hasQuery ? handleClearQuery : handleResetFilters}>
             {hasQuery ? "清空搜索" : "查看全部书架"}
@@ -504,83 +524,4 @@ ShelfEntryCard.displayName = "ShelfEntryCard";
 
 function nonBookActionText(): string {
   return "暂不支持详情";
-}
-
-function filterEntries(
-  entries: ShelfEntry[],
-  filter: ShelfFilter,
-  categoryFilter: string,
-  query: string
-): ShelfEntry[] {
-  const keyword = query.trim().toLowerCase();
-
-  return entries.filter((entry) => {
-    if (filter !== "all" && entry.type !== filter) {
-      return false;
-    }
-
-    if (categoryFilter !== "all" && getParentCategory(entry.category) !== categoryFilter) {
-      return false;
-    }
-
-    if (!keyword) {
-      return true;
-    }
-
-    const title = entry.title.toLowerCase();
-    const author = entry.author?.toLowerCase() ?? "";
-    const category = entry.category?.toLowerCase() ?? "";
-
-    return title.includes(keyword) || author.includes(keyword) || category.includes(keyword);
-  });
-}
-
-function getCategoryOptions(entries: ShelfEntry[]): CategoryOption[] {
-  const counts = new Map<string, { count: number; index: number }>();
-
-  entries.forEach((entry) => {
-    const category = getParentCategory(entry.category);
-    if (!category) {
-      return;
-    }
-
-    const current = counts.get(category);
-    if (current) {
-      current.count += 1;
-      return;
-    }
-
-    counts.set(category, { count: 1, index: counts.size });
-  });
-
-  return Array.from(counts, ([label, value]) => ({ label, count: value.count, index: value.index }))
-    .sort((left, right) => right.count - left.count || left.index - right.index)
-    .map(({ label, count }) => ({ label, count }));
-}
-
-function getVisibleCategoryOptions(
-  options: CategoryOption[],
-  activeCategory: string,
-  isExpanded: boolean
-): CategoryOption[] {
-  if (isExpanded || options.length <= CATEGORY_PREVIEW_LIMIT) {
-    return options;
-  }
-
-  const preview = options.slice(0, CATEGORY_PREVIEW_LIMIT);
-  if (activeCategory === "all" || preview.some((category) => category.label === activeCategory)) {
-    return preview;
-  }
-
-  const activeOption = options.find((category) => category.label === activeCategory);
-  return activeOption ? [...preview.slice(0, CATEGORY_PREVIEW_LIMIT - 1), activeOption] : preview;
-}
-
-function getParentCategory(category?: string): string | undefined {
-  const normalized = category?.trim();
-  if (!normalized) {
-    return undefined;
-  }
-
-  return normalized.split("-")[0]?.trim() || normalized;
 }

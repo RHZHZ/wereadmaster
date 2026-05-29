@@ -70,6 +70,7 @@ export type BookAiSummary = {
   sourceStats: BookAiSummarySourceStats;
   generatedAt: string;
   promptVersion: string;
+  responseFormat?: AiResponseFormatKind;
   basisNotice: string;
 };
 
@@ -81,6 +82,7 @@ export type BookAiRepresentativeQuote = {
 };
 
 export type BookAiSummarySource = "cache" | "generated" | "staleCache" | "empty";
+export type AiResponseFormatKind = "json_schema" | "json_object";
 
 export type BookAiSummaryResponse = {
   bookId: string;
@@ -245,6 +247,41 @@ export type BookNotesSummariesExportOptions = {
   includeRepresentativeQuotes: boolean;
 };
 
+export type ReadingPersonaStatus = "complete" | "provisional" | "insufficient";
+export type ReadingPersonaPaletteGroup = "NT" | "NF" | "SJ" | "SP";
+export type ReadingPersonaAccentTone = "bluegreen" | "rose" | "moss" | "amber";
+export type ReadingPersonaAxis = "energy" | "information" | "decision" | "lifestyle";
+export type ReadingPersonaStrength = "strong" | "medium" | "light";
+export type ReadingPersonaKey = "E" | "I" | "S" | "N" | "T" | "F" | "J" | "P";
+
+export type ReadingPersonaDimension = {
+  axis: ReadingPersonaAxis;
+  key: ReadingPersonaKey;
+  label: string;
+  strength: ReadingPersonaStrength;
+  basis: string;
+};
+
+export type ReadingPersona = {
+  status: ReadingPersonaStatus;
+  code?: string;
+  label?: string;
+  displayTitle?: string;
+  paletteGroup?: ReadingPersonaPaletteGroup;
+  accentTone?: ReadingPersonaAccentTone;
+  basisNotice: string;
+  dimensions: ReadingPersonaDimension[];
+  evidence: string[];
+  confidence?: number;
+  summary?: string;
+  suggestion?: string;
+};
+
+export type ReadingPersonaPatch = {
+  summary?: string;
+  suggestion?: string;
+};
+
 export type ReadingStatsAiReviewSourceStats = {
   mode: ReadingStatsMode;
   baseTime: number;
@@ -262,9 +299,11 @@ export type ReadingStatsAiReview = {
   preferenceInsights: string[];
   focusItems: string[];
   nextActions: string[];
+  readingPersona?: ReadingPersonaPatch;
   sourceStats: ReadingStatsAiReviewSourceStats;
   generatedAt: string;
   promptVersion: string;
+  responseFormat?: AiResponseFormatKind;
   basisNotice: string;
 };
 
@@ -342,6 +381,7 @@ export type ReadingRoute = {
   sourceStats: ReadingRouteSourceStats;
   generatedAt: string;
   promptVersion: string;
+  responseFormat?: AiResponseFormatKind;
   basisNotice: string;
 };
 
@@ -406,6 +446,7 @@ export type BookDecision = {
   sourceStats: BookDecisionSourceStats;
   generatedAt: string;
   promptVersion: string;
+  responseFormat?: AiResponseFormatKind;
   basisNotice: string;
 };
 
@@ -777,14 +818,27 @@ export type SettingsState = {
   localData: LocalDataState;
   exportData: ExportDataState;
   appVersion: string;
+  supportsNativeUpdater: boolean;
 };
 
 export type AppUpdateStatus = {
   available: boolean;
   currentVersion: string;
+  supportsNativeUpdater: boolean;
   latestVersion?: string;
   notes?: string;
   publishedAt?: string;
+};
+
+export type AppUpdateRuntime = {
+  currentVersion: string;
+  supportsNativeUpdater: boolean;
+};
+
+export type AppUpdateNoticeState = {
+  lastCheckedAt?: string;
+  dismissedVersion?: string;
+  reviewedVersion?: string;
 };
 
 export type LocalDataState = {
@@ -820,6 +874,12 @@ export type ClearAiOutputCacheResult = {
 };
 
 export type ExportDiagnosticsResult = {
+  fileName: string;
+  path: string;
+  exportedAt: string;
+};
+
+export type ExportImageResult = {
   fileName: string;
   path: string;
   exportedAt: string;

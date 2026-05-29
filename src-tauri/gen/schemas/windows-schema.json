@@ -345,6 +345,12 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Enables the ask_local_reader_selection_question command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ask-local-reader-selection-question",
+          "markdownDescription": "Enables the ask_local_reader_selection_question command without any pre-configured scope."
+        },
+        {
           "description": "Enables the cancel_bulk_export command without any pre-configured scope.",
           "type": "string",
           "const": "allow-cancel-bulk-export",
@@ -361,6 +367,12 @@
           "type": "string",
           "const": "allow-choose-custom-export-directory",
           "markdownDescription": "Enables the choose_custom_export_directory command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the choose_local_book_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-choose-local-book-file",
+          "markdownDescription": "Enables the choose_local_book_file command without any pre-configured scope."
         },
         {
           "description": "Enables the clear_ai_output_cache command without any pre-configured scope.",
@@ -427,6 +439,12 @@
           "type": "string",
           "const": "allow-export-reading-stats-review-markdown",
           "markdownDescription": "Enables the export_reading_stats_review_markdown command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the export_report_image command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-export-report-image",
+          "markdownDescription": "Enables the export_report_image command without any pre-configured scope."
         },
         {
           "description": "Enables the get_ai_asset_detail command without any pre-configured scope.",
@@ -513,6 +531,24 @@
           "markdownDescription": "Enables the get_latest_reading_stats_review command without any pre-configured scope."
         },
         {
+          "description": "Enables the get_local_book command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-local-book",
+          "markdownDescription": "Enables the get_local_book command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_local_book_text command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-local-book-text",
+          "markdownDescription": "Enables the get_local_book_text command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_local_reading_progress command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-local-reading-progress",
+          "markdownDescription": "Enables the get_local_reading_progress command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_notebook_overview command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-notebook-overview",
@@ -543,6 +579,12 @@
           "markdownDescription": "Enables the get_recommendations command without any pre-configured scope."
         },
         {
+          "description": "Enables the get_remote_app_update_manifest command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-remote-app-update-manifest",
+          "markdownDescription": "Enables the get_remote_app_update_manifest command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_settings_state command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-settings-state",
@@ -555,6 +597,12 @@
           "markdownDescription": "Enables the get_similar_books command without any pre-configured scope."
         },
         {
+          "description": "Enables the import_local_book command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-import-local-book",
+          "markdownDescription": "Enables the import_local_book command without any pre-configured scope."
+        },
+        {
           "description": "Enables the list_ai_asset_summaries command without any pre-configured scope.",
           "type": "string",
           "const": "allow-list-ai-asset-summaries",
@@ -565,6 +613,12 @@
           "type": "string",
           "const": "allow-list-book-notes-summaries",
           "markdownDescription": "Enables the list_book_notes_summaries command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the list_local_books command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-list-local-books",
+          "markdownDescription": "Enables the list_local_books command without any pre-configured scope."
         },
         {
           "description": "Enables the list_reading_item_states command without any pre-configured scope.",
@@ -651,6 +705,12 @@
           "markdownDescription": "Enables the save_custom_export_directory command without any pre-configured scope."
         },
         {
+          "description": "Enables the save_local_reading_progress command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-save-local-reading-progress",
+          "markdownDescription": "Enables the save_local_reading_progress command without any pre-configured scope."
+        },
+        {
           "description": "Enables the search_books command without any pre-configured scope.",
           "type": "string",
           "const": "allow-search-books",
@@ -717,6 +777,12 @@
           "markdownDescription": "Enables the validate_credential command without any pre-configured scope."
         },
         {
+          "description": "Denies the ask_local_reader_selection_question command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ask-local-reader-selection-question",
+          "markdownDescription": "Denies the ask_local_reader_selection_question command without any pre-configured scope."
+        },
+        {
           "description": "Denies the cancel_bulk_export command without any pre-configured scope.",
           "type": "string",
           "const": "deny-cancel-bulk-export",
@@ -733,6 +799,12 @@
           "type": "string",
           "const": "deny-choose-custom-export-directory",
           "markdownDescription": "Denies the choose_custom_export_directory command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the choose_local_book_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-choose-local-book-file",
+          "markdownDescription": "Denies the choose_local_book_file command without any pre-configured scope."
         },
         {
           "description": "Denies the clear_ai_output_cache command without any pre-configured scope.",
@@ -799,6 +871,12 @@
           "type": "string",
           "const": "deny-export-reading-stats-review-markdown",
           "markdownDescription": "Denies the export_reading_stats_review_markdown command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the export_report_image command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-export-report-image",
+          "markdownDescription": "Denies the export_report_image command without any pre-configured scope."
         },
         {
           "description": "Denies the get_ai_asset_detail command without any pre-configured scope.",
@@ -885,6 +963,24 @@
           "markdownDescription": "Denies the get_latest_reading_stats_review command without any pre-configured scope."
         },
         {
+          "description": "Denies the get_local_book command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-local-book",
+          "markdownDescription": "Denies the get_local_book command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_local_book_text command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-local-book-text",
+          "markdownDescription": "Denies the get_local_book_text command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_local_reading_progress command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-local-reading-progress",
+          "markdownDescription": "Denies the get_local_reading_progress command without any pre-configured scope."
+        },
+        {
           "description": "Denies the get_notebook_overview command without any pre-configured scope.",
           "type": "string",
           "const": "deny-get-notebook-overview",
@@ -915,6 +1011,12 @@
           "markdownDescription": "Denies the get_recommendations command without any pre-configured scope."
         },
         {
+          "description": "Denies the get_remote_app_update_manifest command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-remote-app-update-manifest",
+          "markdownDescription": "Denies the get_remote_app_update_manifest command without any pre-configured scope."
+        },
+        {
           "description": "Denies the get_settings_state command without any pre-configured scope.",
           "type": "string",
           "const": "deny-get-settings-state",
@@ -927,6 +1029,12 @@
           "markdownDescription": "Denies the get_similar_books command without any pre-configured scope."
         },
         {
+          "description": "Denies the import_local_book command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-import-local-book",
+          "markdownDescription": "Denies the import_local_book command without any pre-configured scope."
+        },
+        {
           "description": "Denies the list_ai_asset_summaries command without any pre-configured scope.",
           "type": "string",
           "const": "deny-list-ai-asset-summaries",
@@ -937,6 +1045,12 @@
           "type": "string",
           "const": "deny-list-book-notes-summaries",
           "markdownDescription": "Denies the list_book_notes_summaries command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the list_local_books command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-list-local-books",
+          "markdownDescription": "Denies the list_local_books command without any pre-configured scope."
         },
         {
           "description": "Denies the list_reading_item_states command without any pre-configured scope.",
@@ -1021,6 +1135,12 @@
           "type": "string",
           "const": "deny-save-custom-export-directory",
           "markdownDescription": "Denies the save_custom_export_directory command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_local_reading_progress command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-save-local-reading-progress",
+          "markdownDescription": "Denies the save_local_reading_progress command without any pre-configured scope."
         },
         {
           "description": "Denies the search_books command without any pre-configured scope.",

@@ -55,6 +55,18 @@ export function formatAiTimestamp(value?: string): string {
   return `${year}-${month}-${day} ${hour}:${minute}`;
 }
 
+export function formatAiResponseFormat(value?: string): string {
+  if (value === "json_schema") {
+    return "结构化约束：JSON Schema";
+  }
+
+  if (value === "json_object") {
+    return "结构化约束：JSON Object";
+  }
+
+  return "";
+}
+
 export function formatProgress(progressPercent?: number): string {
   const value = clampPercent(progressPercent ?? 0);
   return `${value}%`;

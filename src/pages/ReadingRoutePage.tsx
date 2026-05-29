@@ -49,7 +49,7 @@ export function ReadingRoutePage({
         <div>
           <p className="section-kicker">AI 阅读指南</p>
           <h3>{state.currentBook?.title ? `围绕《${state.currentBook.title}》规划下一步` : state.pageTitle}</h3>
-          <p>默认生成这本书的阅读指南；加入候选书后切换为跨书路线图。不会自动发送笔记，也不会写回微信读书。</p>
+          <p>默认把当前书整理成下一步阅读指南；加入候选书后切换为跨书路线图。不会自动发送笔记，也不会写回微信读书。</p>
           {state.currentBook?.author ? <small>{state.currentBook.author}</small> : null}
         </div>
         <div className="ai-summary-hero-side">
@@ -101,7 +101,7 @@ export function ReadingRoutePage({
           <Settings aria-hidden="true" size={20} />
           <div>
             <strong>需要先配置 AI Provider</strong>
-            <p>路线生成沿用本机 AI Provider 设置，API Key 不会暴露给前端。</p>
+            <p>阅读指南和跨书路线沿用本机 AI Provider 设置，API Key 不会暴露给前端。</p>
           </div>
           <button className="secondary-action" type="button" onClick={onOpenSettings}>
             去设置

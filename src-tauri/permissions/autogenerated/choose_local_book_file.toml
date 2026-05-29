@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-choose-local-book-file"
+description = "Enables the choose_local_book_file command without any pre-configured scope."
+commands.allow = ["choose_local_book_file"]
+
+[[permission]]
+identifier = "deny-choose-local-book-file"
+description = "Denies the choose_local_book_file command without any pre-configured scope."
+commands.deny = ["choose_local_book_file"]

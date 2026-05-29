@@ -283,6 +283,45 @@ pub fn initialize_schema(connection: &Connection) -> SqliteResult<()> {
         CREATE INDEX IF NOT EXISTS idx_ai_feedback_records_scope_updated
             ON ai_feedback_records(feature, scope_id, updated_at);
 
+        CREATE TABLE IF NOT EXISTS local_books (
+            id TEXT PRIMARY KEY NOT NULL,
+            title TEXT NOT NULL,
+            author TEXT,
+            format TEXT NOT NULL CHECK(format IN ('epub', 'txt')),
+            file_hash TEXT NOT NULL,
+            file_size INTEGER NOT NULL,
+            storage_path TEXT NOT NULL,
+            cover_path TEXT,
+            imported_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(file_hash)
+        );
+
+        CREATE TABLE IF NOT EXISTS local_book_files (
+            id TEXT PRIMARY KEY NOT NULL,
+            book_id TEXT NOT NULL,
+            original_file_name TEXT NOT NULL,
+            original_extension TEXT NOT NULL,
+            mime_type TEXT,
+            storage_path TEXT NOT NULL,
+            file_hash TEXT NOT NULL,
+            file_size INTEGER NOT NULL,
+            imported_at TEXT NOT NULL,
+            FOREIGN KEY(book_id) REFERENCES local_books(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS local_reading_progress (
+            book_id TEXT PRIMARY KEY NOT NULL,
+            locator TEXT NOT NULL,
+            progress_percent INTEGER NOT NULL DEFAULT 0 CHECK(progress_percent BETWEEN 0 AND 100),
+            read_time_seconds INTEGER NOT NULL DEFAULT 0 CHECK(read_time_seconds >= 0),
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(book_id) REFERENCES local_books(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_local_books_updated
+            ON local_books(updated_at);
+
         CREATE TABLE IF NOT EXISTS reading_item_states (
             item_id TEXT PRIMARY KEY NOT NULL,
             item_type TEXT NOT NULL,
@@ -358,6 +397,9 @@ mod tests {
                     'raw_cache',
                     'ai_outputs',
                     'ai_feedback_records',
+                    'local_books',
+                    'local_book_files',
+                    'local_reading_progress',
                     'reading_item_states'
                 )",
                 [],
@@ -365,7 +407,133 @@ mod tests {
             )
             .expect("table count should be readable");
 
-        assert_eq!(table_count, 13);
+        assert_eq!(table_count, 16);
+    }
+
+    #[test]
+    fn local_books_enforce_file_hash_deduplication() {
+        let connection = Connection::open_in_memory().expect("in-memory database should open");
+
+        initialize_schema(&connection).expect("schema should initialize");
+        connection
+            .execute(
+                "
+                INSERT INTO local_books (
+                    id,
+                    title,
+                    format,
+                    file_hash,
+                    file_size,
+                    storage_path,
+                    imported_at,
+                    updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+                ",
+                rusqlite::params![
+                    "local_1",
+                    "本地图书",
+                    "epub",
+                    "hash-1",
+                    128,
+                    "local-books/local_1/source.epub",
+                    "100"
+                ],
+            )
+            .expect("first local book should insert");
+
+        let duplicate = connection.execute(
+            "
+            INSERT INTO local_books (
+                id,
+                title,
+                format,
+                file_hash,
+                file_size,
+                storage_path,
+                imported_at,
+                updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+            ",
+            rusqlite::params![
+                "local_2",
+                "重复图书",
+                "epub",
+                "hash-1",
+                128,
+                "local-books/local_2/source.epub",
+                "101"
+            ],
+        );
+
+        assert!(duplicate.is_err());
+    }
+
+    #[test]
+    fn local_books_are_isolated_from_weread_shelf_ids() {
+        let connection = Connection::open_in_memory().expect("in-memory database should open");
+
+        initialize_schema(&connection).expect("schema should initialize");
+        connection
+            .execute(
+                "
+                INSERT INTO shelf_entries (
+                    id,
+                    type,
+                    title,
+                    raw_json,
+                    updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5)
+                ",
+                rusqlite::params!["shared-id", "book", "微信读书版本", "{}", "100"],
+            )
+            .expect("weread shelf entry should insert");
+        connection
+            .execute(
+                "
+                INSERT INTO local_books (
+                    id,
+                    title,
+                    format,
+                    file_hash,
+                    file_size,
+                    storage_path,
+                    imported_at,
+                    updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+                ",
+                rusqlite::params![
+                    "shared-id",
+                    "本地版本",
+                    "txt",
+                    "hash-2",
+                    64,
+                    "local-books/shared-id/source.txt",
+                    "101"
+                ],
+            )
+            .expect("local book should not conflict with weread shelf id");
+
+        let weread_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM shelf_entries WHERE id = 'shared-id'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("weread count should read");
+        let local_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM local_books WHERE id = 'shared-id'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("local count should read");
+
+        assert_eq!(weread_count, 1);
+        assert_eq!(local_count, 1);
     }
 
     #[test]

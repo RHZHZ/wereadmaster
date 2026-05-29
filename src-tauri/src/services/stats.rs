@@ -26,6 +26,15 @@ const DEFAULT_STATS_MODE: &str = "monthly";
 pub struct ReadingStatsResponse {
     pub stats: ReadingStatsRecord,
     pub sync_state: Option<SyncStateRecord>,
+    pub source: ReadingStatsResponseSource,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ReadingStatsResponseSource {
+    Cache,
+    Synced,
+    Empty,
 }
 
 pub struct StatsService {
@@ -86,16 +95,26 @@ impl StatsService {
             tauri::async_runtime::spawn_blocking(
                 move || -> Result<ReadingStatsResponse, AppError> {
                     let connection = db::open_connection(&app).map_err(AppError::Storage)?;
-                    let stats = match base_time {
+                    let cached_stats = match base_time {
                         Some(base_time) => read_reading_stats(&connection, &mode, base_time)?,
                         None => read_latest_reading_stats(&connection, &mode)?,
-                    }
-                    .unwrap_or_else(|| empty_reading_stats(&mode, base_time.unwrap_or(0)));
+                    };
+                    let source = if cached_stats.is_some() {
+                        ReadingStatsResponseSource::Cache
+                    } else {
+                        ReadingStatsResponseSource::Empty
+                    };
+                    let stats = cached_stats
+                        .unwrap_or_else(|| empty_reading_stats(&mode, base_time.unwrap_or(0)));
                     let sync_state = SyncStateRepository::new(&connection)
                         .get(STATS_SECTION)
                         .map_err(AppError::from)?;
 
-                    Ok(ReadingStatsResponse { stats, sync_state })
+                    Ok(ReadingStatsResponse {
+                        stats,
+                        sync_state,
+                        source,
+                    })
                 },
             ),
         )
@@ -108,9 +127,12 @@ fn build_reading_stats_params(mode: &str, base_time: Option<i64>) -> Value {
     let mut params = Map::new();
     params.insert("mode".to_string(), json!(mode));
 
-    if let Some(base_time) = base_time {
-        params.insert("baseTime".to_string(), json!(base_time));
-    }
+    let request_base_time = if mode == "overall" {
+        0
+    } else {
+        base_time.unwrap_or(0)
+    };
+    params.insert("baseTime".to_string(), json!(request_base_time));
 
     Value::Object(params)
 }
@@ -274,6 +296,7 @@ impl StatsService {
                 sync_state: SyncStateRepository::new(&connection)
                     .get(STATS_SECTION)
                     .map_err(AppError::from)?,
+                source: ReadingStatsResponseSource::Synced,
             })
         })
         .await
@@ -329,8 +352,8 @@ mod tests {
     use crate::{db::initialize_schema, mappers::stats::map_reading_stats_response};
 
     use super::{
-        normalize_base_time, normalize_stats_mode, read_latest_reading_stats, read_reading_stats,
-        upsert_reading_stats,
+        build_reading_stats_params, normalize_base_time, normalize_stats_mode,
+        read_latest_reading_stats, read_reading_stats, upsert_reading_stats,
     };
 
     #[test]
@@ -357,6 +380,31 @@ mod tests {
             None
         );
         assert!(normalize_base_time("monthly", Some(-1)).is_err());
+    }
+
+    #[test]
+    fn current_period_sync_payload_sends_base_time_zero() {
+        assert_eq!(
+            build_reading_stats_params("monthly", None),
+            json!({
+                "mode": "monthly",
+                "baseTime": 0
+            })
+        );
+        assert_eq!(
+            build_reading_stats_params("annually", None),
+            json!({
+                "mode": "annually",
+                "baseTime": 0
+            })
+        );
+        assert_eq!(
+            build_reading_stats_params("overall", Some(0)),
+            json!({
+                "mode": "overall",
+                "baseTime": 0
+            })
+        );
     }
 
     #[test]

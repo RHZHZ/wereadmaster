@@ -1,4 +1,12 @@
-import { startTransition, useDeferredValue, useEffect, useState } from "react";
+import {
+  startTransition,
+  useDeferredValue,
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type CompositionEvent as ReactCompositionEvent
+} from "react";
 import {
   AlertCircle,
   BookOpen,
@@ -17,6 +25,7 @@ import emptyNotes from "../assets/empty-notes.png";
 import { CredentialSetupCard } from "../components/CredentialSetupCard";
 import { ExportFailurePanel } from "../components/ExportFailurePanel";
 import { calculateTotalNotes } from "../lib/business-rules";
+import { getExportAssetBoundary } from "../lib/export-asset-boundaries";
 import { formatProgress } from "../lib/formatters";
 import {
   cancelBulkExport,
@@ -57,6 +66,7 @@ export function NotesPage({
 }: NotesPageProps) {
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
+  const isQueryComposingRef = useRef(false);
   const [summaryItems, setSummaryItems] = useState<BookAiSummaryListItem[]>();
   const [isLoadingSummaries, setIsLoadingSummaries] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -178,7 +188,25 @@ export function NotesPage({
     });
   }
 
+  function handleQueryInputChange(event: ChangeEvent<HTMLInputElement>) {
+    if (isQueryComposingRef.current || isNativeInputComposing(event.nativeEvent)) {
+      return;
+    }
+
+    handleQueryChange(event.target.value);
+  }
+
+  function handleQueryCompositionStart() {
+    isQueryComposingRef.current = true;
+  }
+
+  function handleQueryCompositionEnd(event: ReactCompositionEvent<HTMLInputElement>) {
+    isQueryComposingRef.current = false;
+    handleQueryChange(event.currentTarget.value);
+  }
+
   function handleClearQuery() {
+    isQueryComposingRef.current = false;
     startTransition(() => {
       setQuery("");
     });
@@ -409,7 +437,9 @@ export function NotesPage({
           <Search aria-hidden="true" size={18} />
           <input
             value={query}
-            onChange={(event) => handleQueryChange(event.target.value)}
+            onChange={handleQueryInputChange}
+            onCompositionStart={handleQueryCompositionStart}
+            onCompositionEnd={handleQueryCompositionEnd}
             placeholder="按书名或作者筛选笔记"
           />
         </label>
@@ -526,6 +556,8 @@ function BulkExportWizard({
   onCancelExport: () => void;
   onClose: () => void;
 }) {
+  const isSearchComposingRef = useRef(false);
+  const exportBoundary = getExportAssetBoundary("bulkNotes");
   const selectedCount = selectedBookIds.length;
   const exportDisabled =
     isPreflighting ||
@@ -543,6 +575,23 @@ function BulkExportWizard({
     ? filterBulkPreflightItems(preflight.items, strategy === "selectedBooksOnly" ? searchQuery : "")
     : [];
 
+  function handleSearchQueryInputChange(event: ChangeEvent<HTMLInputElement>) {
+    if (isSearchComposingRef.current || isNativeInputComposing(event.nativeEvent)) {
+      return;
+    }
+
+    onSearchQueryChange(event.target.value);
+  }
+
+  function handleSearchQueryCompositionStart() {
+    isSearchComposingRef.current = true;
+  }
+
+  function handleSearchQueryCompositionEnd(event: ReactCompositionEvent<HTMLInputElement>) {
+    isSearchComposingRef.current = false;
+    onSearchQueryChange(event.currentTarget.value);
+  }
+
   return (
     <div className="bulk-export-backdrop" role="presentation">
       <section className="bulk-export-dialog" role="dialog" aria-modal="true" aria-label="批量导出向导">
@@ -550,9 +599,7 @@ function BulkExportWizard({
           <div>
             <p className="section-kicker">批量导出</p>
             <h3>导出笔记与已生成复盘</h3>
-            <p>
-              先预检本地缓存，再选择导出策略。只有选择同步策略时才会读取缺失书籍；AI 复盘只导出已有缓存。
-            </p>
+            <p>{exportBoundary.summary}</p>
           </div>
           <button className="dialog-close" type="button" onClick={onClose} aria-label="关闭批量导出向导">
             <X aria-hidden="true" size={18} />
@@ -607,6 +654,15 @@ function BulkExportWizard({
         {stage === "setup" && preflight ? (
           <>
             <section className="bulk-export-setup" aria-label="导出设置">
+              <section className="bulk-export-boundary" aria-label="批量导出边界">
+                <strong>{exportBoundary.title}</strong>
+                <p>{exportBoundary.behavior}</p>
+                <ul className="asset-boundary-list">
+                  <li>来源：{exportBoundary.source}</li>
+                  <li>包含：{exportBoundary.includes.join("；")}</li>
+                  <li>不包含：{exportBoundary.excludes.join("；")}</li>
+                </ul>
+              </section>
               <section className="bulk-export-strategies" aria-label="导出策略">
                 <StrategyOption
                   value="localCachedOnly"
@@ -663,7 +719,9 @@ function BulkExportWizard({
                     <Search aria-hidden="true" size={18} />
                     <input
                       value={searchQuery}
-                      onChange={(event) => onSearchQueryChange(event.target.value)}
+                      onChange={handleSearchQueryInputChange}
+                      onCompositionStart={handleSearchQueryCompositionStart}
+                      onCompositionEnd={handleSearchQueryCompositionEnd}
                       placeholder="按书名或作者筛选导出书籍"
                     />
                   </label>
@@ -952,6 +1010,10 @@ function SummaryPill({ label, value }: { label: string; value: number | string }
       <strong>{value}</strong>
     </article>
   );
+}
+
+function isNativeInputComposing(event: Event): boolean {
+  return (event as InputEvent).isComposing === true;
 }
 
 function bulkStatusLabel(status: BulkExportPreflightItem["status"]): string {

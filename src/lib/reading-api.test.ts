@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn()
@@ -18,13 +18,22 @@ import {
   clearAiOutputCache,
   checkForAppUpdate,
   chooseCustomExportDirectory,
+  exportReportImage,
+  getAiSettingsState,
   getAiReviewFeedback,
   getAIAssetVersionDetail,
   getAIAssetVersionHistory,
+  getBookshelf,
+  getCredentialStatus,
+  getLatestReadingStatsReview,
+  getNotebookOverview,
+  getReadingStats,
   getSettingsState,
+  listReadingItemStates,
   resetCustomExportDirectory,
   saveAiReviewFeedback,
-  saveCustomExportDirectory
+  saveCustomExportDirectory,
+  syncShelf
 } from "./reading-api";
 
 const invokeMock = vi.mocked(invoke);
@@ -34,6 +43,12 @@ describe("settings export directory API", () => {
   beforeEach(() => {
     invokeMock.mockReset();
     checkMock.mockReset();
+    vi.unstubAllGlobals();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   test("maps export location from settings state", async () => {
@@ -55,7 +70,8 @@ describe("settings export directory API", () => {
         defaultExportDir: "C:/Users/RHZ/AppData/Roaming/wxreadmaster/exports",
         isCustomExportDir: true
       },
-      appVersion: "0.1.0"
+      appVersion: "0.1.0",
+      supportsNativeUpdater: true
     });
 
     const state = await getSettingsState();
@@ -112,6 +128,26 @@ describe("settings export directory API", () => {
     expect(reset.state.exportData.isCustomExportDir).toBe(false);
   });
 
+  test("exports report image through the configured application export directory", async () => {
+    invokeMock.mockResolvedValue({
+      fileName: "2026-05-report.png",
+      path: "D:/ReadingExports/2026-05-report.png",
+      exportedAt: "1800000000"
+    });
+
+    const result = await exportReportImage("2026-05-report.png", "data:image/png;base64,iVBORw0KGgo=");
+
+    expect(invokeMock).toHaveBeenCalledWith("export_report_image", {
+      fileName: "2026-05-report.png",
+      pngBase64: "data:image/png;base64,iVBORw0KGgo="
+    });
+    expect(result).toEqual({
+      fileName: "2026-05-report.png",
+      path: "D:/ReadingExports/2026-05-report.png",
+      exportedAt: "1800000000"
+    });
+  });
+
   test("clears only AI output cache through dedicated command", async () => {
     invokeMock.mockResolvedValue({
       deletedRows: 3,
@@ -136,7 +172,8 @@ describe("settings export directory API", () => {
           defaultExportDir: "C:/Users/RHZ/AppData/Roaming/wxreadmaster/exports",
           isCustomExportDir: false
         },
-        appVersion: "0.1.0"
+        appVersion: "0.1.0",
+        supportsNativeUpdater: true
       }
     });
 
@@ -275,7 +312,8 @@ describe("settings export directory API", () => {
       syncStates: [],
       localData: {},
       exportData: {},
-      appVersion: "0.1.0"
+      appVersion: "0.1.0",
+      supportsNativeUpdater: true
     });
     checkMock.mockResolvedValue({
       currentVersion: "0.1.0",
@@ -289,9 +327,293 @@ describe("settings export directory API", () => {
     expect(status).toEqual({
       available: true,
       currentVersion: "0.1.0",
+      supportsNativeUpdater: true,
       latestVersion: "0.1.1",
       notes: "修复检查更新交互并补充更新摘要。",
       publishedAt: "2026-05-23T10:00:00.000Z"
     });
+  });
+
+  test("reads remote manifest for unsupported platforms", async () => {
+    invokeMock
+      .mockResolvedValueOnce({
+        credential: { hasCredential: true },
+        syncStates: [],
+        localData: {},
+        exportData: {},
+        appVersion: "1.0.1",
+        supportsNativeUpdater: false
+      })
+      .mockResolvedValueOnce({
+        version: "v1.0.2",
+        notes: "Android 改为读取远程更新清单。",
+        publishedAt: "2026-05-24T08:00:00.000Z"
+      });
+
+    const status = await checkForAppUpdate();
+
+    expect(checkMock).not.toHaveBeenCalled();
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "get_remote_app_update_manifest");
+    expect(status).toEqual({
+      available: true,
+      currentVersion: "1.0.1",
+      supportsNativeUpdater: false,
+      latestVersion: "v1.0.2",
+      notes: "Android 改为读取远程更新清单。",
+      publishedAt: "2026-05-24T08:00:00.000Z"
+    });
+  });
+
+  test("keeps remote metadata when unsupported platform is already up to date", async () => {
+    invokeMock
+      .mockResolvedValueOnce({
+        credential: { hasCredential: true },
+        syncStates: [],
+        localData: {},
+        exportData: {},
+        appVersion: "1.0.2",
+        supportsNativeUpdater: false
+      })
+      .mockResolvedValueOnce({
+        version: "v1.0.2",
+        notes: "当前已是最新 APK 版本。",
+        publishedAt: "2026-05-24T08:00:00.000Z"
+      });
+
+    const status = await checkForAppUpdate();
+
+    expect(checkMock).not.toHaveBeenCalled();
+    expect(status).toEqual({
+      available: false,
+      currentVersion: "1.0.2",
+      supportsNativeUpdater: false,
+      latestVersion: "v1.0.2",
+      notes: "当前已是最新 APK 版本。",
+      publishedAt: "2026-05-24T08:00:00.000Z"
+    });
+  });
+
+  test("uses exported web preview data for stats and cached review when Tauri is unavailable", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 4, 24, 10, 0, 0));
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        schemaVersion: 2,
+        exportedAt: "1779592046",
+        statsSyncState: {
+          section: "stats",
+          status: "success",
+          lastSuccessAt: "1779589282",
+          lastAttemptAt: "1779589282"
+        },
+        shelfSyncState: {
+          section: "shelf",
+          status: "success",
+          lastSuccessAt: "1779533684",
+          lastAttemptAt: "1779533684"
+        },
+        notesSyncState: {
+          section: "notes",
+          status: "success",
+          lastSuccessAt: "1779587048",
+          lastAttemptAt: "1779587048"
+        },
+        shelfEntries: [
+          {
+            id: "3300082699",
+            type: "book",
+            title: "巴别塔",
+            author: "匡灵秀",
+            cover: "cover-book",
+            category: "文学-外国文学",
+            isTop: 0,
+            isSecret: 0,
+            isFinished: 0,
+            lastReadAt: 1769272411,
+            rawJson: JSON.stringify({
+              bookId: "3300082699",
+              title: "巴别塔"
+            })
+          },
+          {
+            id: "audio-1",
+            type: "album",
+            title: "一小时听懂大历史",
+            author: "播客编辑部",
+            cover: "cover-audio",
+            category: "历史-历史读物",
+            isTop: 0,
+            isSecret: 0,
+            isFinished: 0,
+            lastReadAt: 1769000000,
+            rawJson: JSON.stringify({
+              albumId: "audio-1",
+              name: "一小时听懂大历史"
+            })
+          }
+        ],
+        readingItemStates: [
+          {
+            itemId: "34752158",
+            itemType: "candidate",
+            status: "toRead",
+            title: "爵士乐宝典：即兴、编曲、乐曲大全",
+            author: "马克·列文",
+            cover: "candidate-cover",
+            category: "艺术-音乐",
+            note: "书籍详情页保存的本地候选",
+            createdAt: "1779464743",
+            updatedAt: "1779464743"
+          }
+        ],
+        notebookBooks: [
+          {
+            bookId: "822995",
+            title: "明朝那些事儿（全集）",
+            author: "当年明月",
+            cover: "notes-cover",
+            reviewCount: 95,
+            noteCount: 488,
+            bookmarkCount: 9,
+            totalNoteCount: 592,
+            sort: 1779496560,
+            rawJson: JSON.stringify({
+              bookId: "822995",
+              title: "明朝那些事儿（全集）"
+            })
+          }
+        ],
+        statsRows: [
+          {
+            mode: "weekly",
+            baseTime: 1779033600,
+            rawJson: JSON.stringify({
+              baseTime: 1779033600,
+              totalReadTime: 3090,
+              readDays: 2,
+              dayAverageReadTime: 441,
+              compare: 1.448,
+              readTimes: {
+                1779033600: 2111,
+                1779465600: 966
+              },
+              readLongest: [
+                {
+                  book: {
+                    bookId: "822995",
+                    title: "明朝那些事儿（全集）",
+                    author: "当年明月",
+                    cover: "cover"
+                  },
+                  readTime: 466,
+                  tags: ["单日阅读最久"]
+                }
+              ],
+              preferCategory: [
+                {
+                  categoryId: 200000,
+                  categoryTitle: "历史",
+                  parentCategoryTitle: "历史",
+                  readingTime: 3090,
+                  readingCount: 1
+                }
+              ]
+            })
+          },
+          {
+            mode: "weekly",
+            baseTime: 1780243200,
+            rawJson: JSON.stringify({
+              baseTime: 1780243200,
+              totalReadTime: 0,
+              readDays: 0,
+              readTimes: {}
+            })
+          },
+          {
+            mode: "overall",
+            baseTime: 0,
+            rawJson: JSON.stringify({
+              baseTime: 0,
+              totalReadTime: 4759747,
+              readDays: 1431,
+              preferCategory: [
+                {
+                  categoryId: 100012,
+                  categoryTitle: "影视原著",
+                  parentCategoryTitle: "精品小说",
+                  readingTime: 168424,
+                  readingCount: 5
+                }
+              ]
+            })
+          }
+        ],
+        reviewRows: [
+          {
+            scopeId: "overall:0",
+            promptVersion: "reading-stats-review-v1",
+            inputHash: "hash",
+            outputJson: JSON.stringify({
+              overview: "长期阅读投入稳定。",
+              rhythmInsights: ["2024 年是峰值。"],
+              preferenceInsights: ["影视原著投入最高。"],
+              focusItems: ["《牧神记》是超长单本。"],
+              nextActions: ["回看 2024。"],
+              readingPersona: {
+                summary: "这一阶段的阅读更像围绕少数主线持续推进。",
+                suggestion: "下个周期可以补一本文学短书做横向对照。"
+              },
+              sourceStats: {
+                mode: "overall",
+                baseTime: 0,
+                bucketCount: 9,
+                longestItemCount: 10,
+                categoryCount: 8
+              },
+              generatedAt: "1779465839",
+              promptVersion: "reading-stats-review-v1",
+              basisNotice: "基于结构化阅读统计生成。"
+            }),
+            providerModel: "gpt-5.2",
+            createdAt: "1779465839",
+            updatedAt: "1779465839"
+          }
+        ]
+      })
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const credential = await getCredentialStatus();
+    const aiSettings = await getAiSettingsState();
+    const weeklyStats = await getReadingStats("weekly");
+    const overallReview = await getLatestReadingStatsReview({ mode: "overall", baseTime: 0 });
+    const bookshelf = await getBookshelf();
+    const syncedBookshelf = await syncShelf();
+    const readingStates = await listReadingItemStates();
+    const notebookOverview = await getNotebookOverview();
+
+    expect(credential.hasCredential).toBe(true);
+    expect(aiSettings.provider.model).toBe("preview-readonly");
+    expect(weeklyStats.stats.baseTime).toBe(1779033600);
+    expect(weeklyStats.source).toBe("cache");
+    expect(weeklyStats.stats.totalReadTimeSeconds).toBe(3090);
+    expect(weeklyStats.stats.longestItems[0]?.title).toBe("明朝那些事儿（全集）");
+    expect(weeklyStats.stats.categories[0]?.title).toBe("历史");
+    expect(overallReview?.review.overview).toBe("长期阅读投入稳定。");
+    expect(overallReview?.review.readingPersona?.summary).toContain("主线");
+    expect(overallReview?.review.readingPersona?.suggestion).toContain("文学短书");
+    expect(bookshelf.snapshot.summary.totalVisibleEntries).toBe(2);
+    expect(bookshelf.snapshot.entries[0]?.title).toBe("巴别塔");
+    expect(syncedBookshelf.syncState?.section).toBe("shelf");
+    expect(readingStates).toHaveLength(1);
+    expect(readingStates[0]?.status).toBe("toRead");
+    expect(notebookOverview.summary.totalBookCount).toBe(1);
+    expect(notebookOverview.summary.totalNoteCount).toBe(592);
+    expect(notebookOverview.books[0]?.title).toBe("明朝那些事儿（全集）");
+    expect(invokeMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalled();
   });
 });

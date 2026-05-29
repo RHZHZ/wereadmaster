@@ -1,72 +1,70 @@
-import { startTransition, useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import {
   AlertCircle,
-  BarChart3,
-  BookOpen,
   CalendarDays,
-  CheckCircle2,
-  Clock3,
-  Compass,
   Database,
   Download,
-  Lightbulb,
-  ListChecks,
   Loader2,
-  RefreshCw,
-  Settings,
-  Target,
-  Trophy
+  Settings
 } from "lucide-react";
+import { useToast } from "../components/ToastProvider";
+import { ReadingStatsPeriodJumpPicker } from "../components/ReadingStatsPeriodJumpPicker";
+import { ReadingStatsPeriodNavigator } from "../components/ReadingStatsPeriodNavigator";
+import { ReviewActionsSection } from "../features/reading-review/components/ReviewActionsSection";
+import { ReviewFocusBooksSection } from "../features/reading-review/components/ReviewFocusBooksSection";
+import { ReviewHeroSection } from "../features/reading-review/components/ReviewHeroSection";
+import { ReviewMetaSection } from "../features/reading-review/components/ReviewMetaSection";
+import { ReviewMetricSection } from "../features/reading-review/components/ReviewMetricSection";
+import { ReviewPreferenceSection } from "../features/reading-review/components/ReviewPreferenceSection";
+import { ReviewProfileSection } from "../features/reading-review/components/ReviewProfileSection";
+import { ReviewTimelineSection } from "../features/reading-review/components/ReviewTimelineSection";
+import { useReadingReviewPage } from "../features/reading-review/hooks/useReadingReviewPage";
+import { ReportGenerationWizardDialog } from "../features/reading-stats/components/ReportGenerationWizardDialog";
 import {
-  exportReadingStatsReviewMarkdown,
-  getAiSettingsState,
+  buildLifetimeReadingReportData,
+  downloadLifetimeReadingReportWide,
+  type LifetimeReadingReportCompleteness
+} from "../features/reading-stats/lifetime-reading-report";
+import {
+  buildPeriodReportData,
+  downloadPeriodReportPoster,
+  downloadPeriodReportStoryPage,
+  downloadPeriodReportStoryPages,
+  downloadPeriodReportWideReport,
+  type PeriodReportCompleteness,
+  type PeriodReportDownloadMode
+} from "../features/reading-stats/period-report";
+import type { ReportImageExportResult } from "../features/reading-stats/report-image-export";
+import { hasReadingStatsData } from "../features/reading-stats/reading-stats-view-helpers";
+import {
   getCommandErrorMessage,
   getLatestReadingStatsReview,
   getReadingStats,
-  summarizeReadingStats,
   syncReadingStats,
   type ReadingStatsResponse
 } from "../lib/reading-api";
+import type { CredentialStatus, ReadingStatsAiReviewResponse, ReadingStatsMode } from "../lib/types";
 import {
-  buildReadingHabitProfile,
-  extractRepresentativeThemes,
-  hasEnoughDataForHabitProfile
-} from "../lib/business-rules";
-import { formatAiTimestamp, formatDuration, formatUnixDate } from "../lib/formatters";
-import type {
-  AiSettingsState,
-  BookAiSummarySource,
-  CredentialStatus,
-  ExportAiMarkdownResponse,
-  ReadingCategory,
-  ReadingRankItem,
-  ReadingStats,
-  ReadingStatsAiReviewResponse,
-  ReadingStatsMode,
-  ReadingTimeBucket
-} from "../lib/types";
+  buildReadingStatsPeriod,
+  getCurrentReadingStatsAnchor,
+  getReadingStatsRequestBaseTime,
+  getReadingStatsResponse,
+  type ReadingStatsCache,
+  type ReadingStatsPeriod
+} from "./reading-stats-period";
 
 type ReadingReviewPageProps = {
   credentialStatus?: CredentialStatus;
-  cache: Partial<Record<ReadingStatsMode, ReadingStatsResponse>>;
+  cache: ReadingStatsCache;
   onCacheChange: (mode: ReadingStatsMode, response: ReadingStatsResponse) => void;
   onOpenSettings: () => void;
 };
 
-type ReviewStatus =
-  | "idle"
-  | "setup-required"
-  | "loading-cache"
-  | "generating"
-  | "cached"
-  | "generated"
-  | "error";
-
 const periodOptions: Array<{ mode: ReadingStatsMode; label: string; description: string }> = [
-  { mode: "weekly", label: "本周", description: "短周期节奏" },
-  { mode: "monthly", label: "本月", description: "默认复盘" },
-  { mode: "annually", label: "今年", description: "年度节奏" },
-  { mode: "overall", label: "总计", description: "长期画像" }
+  { mode: "weekly", label: "周度", description: "自然周" },
+  { mode: "monthly", label: "月度", description: "自然月" },
+  { mode: "annually", label: "年度", description: "自然年" },
+  { mode: "overall", label: "总计", description: "全部历史" }
 ];
 
 export function ReadingReviewPage({
@@ -75,337 +73,324 @@ export function ReadingReviewPage({
   onCacheChange,
   onOpenSettings
 }: ReadingReviewPageProps) {
-  const [mode, setMode] = useState<ReadingStatsMode>("monthly");
-  const [aiState, setAiState] = useState<AiSettingsState>();
-  const [reviewResponse, setReviewResponse] = useState<ReadingStatsAiReviewResponse>();
-  const [status, setStatus] = useState<ReviewStatus>("idle");
-  const [isLoadingStats, setIsLoadingStats] = useState(false);
-  const [isLoadingReviewCache, setIsLoadingReviewCache] = useState(false);
-  const [isSyncing, setIsSyncing] = useState(false);
-  const [isExporting, setIsExporting] = useState(false);
-  const [exportResult, setExportResult] = useState<ExportAiMarkdownResponse>();
-  const [error, setError] = useState<string>();
-  const hasCredential = credentialStatus?.hasCredential === true;
-  const stats = cache[mode]?.stats;
-  const review = reviewResponse?.review;
-  const hasStatsData = hasReadableStats(stats);
-  const canGenerate =
-    Boolean(stats) &&
-    hasStatsData &&
-    aiState?.credential.hasCredential === true &&
-    status !== "generating" &&
-    !isLoadingReviewCache &&
-    !isLoadingStats;
-  const peakBucket = getPeakBucket(stats);
-  const topCategory = getTopCategory(stats?.categories ?? []);
-  const timeSegments = buildReviewTimelineSegments(stats);
-  const representativeThemes = extractRepresentativeThemes(stats);
-  const habitProfile = buildReadingHabitProfile(stats);
-  const canBuildProfile = hasEnoughDataForHabitProfile(stats);
-  const statusMeta = statusMetaFromState(status, Boolean(reviewResponse?.errorMessage));
-  const isStaleCache = reviewResponse?.source === "staleCache";
+  const [isJumpPickerOpen, setIsJumpPickerOpen] = useState(false);
+  const [isReportOpen, setIsReportOpen] = useState(false);
+  const [isReportPreviewRequested, setIsReportPreviewRequested] = useState(false);
+  const [isReportDownloading, setIsReportDownloading] = useState(false);
+  const [isReportDataLoading, setIsReportDataLoading] = useState(false);
+  const [isReportPeriodSyncing, setIsReportPeriodSyncing] = useState(false);
+  const [reportDataError, setReportDataError] = useState<string>();
+  const [reportPeriod, setReportPeriod] = useState<ReadingStatsPeriod>(() =>
+    buildReadingStatsPeriod("monthly")
+  );
+  const [reportResponse, setReportResponse] = useState<ReadingStatsResponse>();
+  const [reportReviewResponse, setReportReviewResponse] = useState<ReadingStatsAiReviewResponse>();
+  const { showToast } = useToast();
+  const {
+    activePeriod,
+    canGenerate,
+    canStepForward,
+    drillPeriods,
+    error,
+    exportResult,
+    handleDrillPeriod,
+    handleExport,
+    handleGenerate,
+    handleModeChange,
+    handleShiftPeriod,
+    handleSyncStats,
+    hasCredential,
+    hasStatsData,
+    isExporting,
+    isLoadingReviewCache,
+    isLoadingStats,
+    isPreviewReadonly,
+    isStaleCache,
+    isSyncing,
+    peakBucket,
+    representativeThemes,
+    readingPersona,
+    review,
+    reviewResponse,
+    stats,
+    status,
+    statusMeta,
+    timelineInsights,
+    topCategory
+  } = useReadingReviewPage({
+    credentialStatus,
+    cache,
+    onCacheChange,
+    onOpenSettings
+  });
+  const activeReportResponse = getReadingStatsResponse(cache, activePeriod);
+  const isActivePeriodReportMode = activePeriod.mode !== "overall";
+  const activeReportDataCompleteness = resolveReportDataCompleteness(
+    activeReportResponse?.source,
+    hasStatsData
+  );
+  const activeLifetimeReportDataCompleteness = resolveLifetimeReportDataCompleteness(
+    activeReportResponse?.source,
+    hasStatsData
+  );
+  const activeReportDisabledReason = isActivePeriodReportMode
+    ? buildReportDisabledReason({
+        dataCompleteness: activeReportDataCompleteness,
+        hasStatsData,
+        isLoadingData: isLoadingStats,
+        isPeriodReportMode: true,
+        stats
+      })
+    : buildLifetimeReportDisabledReason({
+        dataCompleteness: activeLifetimeReportDataCompleteness,
+        hasStatsData,
+        isLoadingData: isLoadingStats,
+        stats
+      });
+  const reportStats = reportResponse?.stats;
+  const reportDataPeriod = reportStats
+    ? buildReadingStatsPeriod(reportStats.mode, reportStats.baseTime)
+    : reportPeriod;
+  const hasReportStatsData = hasReadingStatsData(reportStats);
+  const isReportFutureBlocked = isFutureReadingStatsPeriod(reportDataPeriod);
+  const reportDataCompleteness = isReportFutureBlocked
+    ? "future_blocked"
+    : resolveReportDataCompleteness(reportResponse?.source, hasReportStatsData);
+  const lifetimeReportDataCompleteness = resolveLifetimeReportDataCompleteness(
+    reportResponse?.source,
+    hasReportStatsData
+  );
+  const isLifetimeReportMode = reportDataPeriod.mode === "overall";
+  const reportUnavailableReason =
+    reportDataError ??
+    (isLifetimeReportMode
+      ? buildLifetimeReportDisabledReason({
+          dataCompleteness: lifetimeReportDataCompleteness,
+          hasStatsData: hasReportStatsData,
+          isLoadingData: isReportDataLoading,
+          stats: reportStats
+        })
+      : buildReportDisabledReason({
+          dataCompleteness: reportDataCompleteness,
+          hasStatsData: hasReportStatsData,
+          isLoadingData: isReportDataLoading,
+          isPeriodReportMode: true,
+          stats: reportStats
+        }));
+  const isReportPeriodSyncDisabled =
+    isReportDataLoading ||
+    isReportPeriodSyncing ||
+    isReportFutureBlocked;
+  const currentReviewForReport =
+    reviewResponse &&
+    reviewResponse.source !== "empty" &&
+    reviewResponse.mode === reportStats?.mode &&
+    reviewResponse.baseTime === reportStats?.baseTime
+      ? reviewResponse.review
+      : undefined;
+  const cachedReviewForReport =
+    reportReviewResponse &&
+    reportReviewResponse.source !== "empty" &&
+    reportReviewResponse.mode === reportStats?.mode &&
+    reportReviewResponse.baseTime === reportStats?.baseTime
+      ? reportReviewResponse.review
+      : undefined;
+  const periodReportAiReview = currentReviewForReport ?? cachedReviewForReport;
+  const periodReportData =
+    reportDataPeriod.mode !== "overall" && reportStats
+      ? buildPeriodReportData(reportStats, reportDataPeriod, {
+          aiReview: periodReportAiReview,
+          dataCompleteness: reportDataCompleteness
+        })
+      : undefined;
+  const lifetimeReportData =
+    reportDataPeriod.mode === "overall" && reportStats
+      ? buildLifetimeReadingReportData(reportStats, {
+          aiReview: periodReportAiReview,
+          dataCompleteness: lifetimeReportDataCompleteness
+        })
+      : undefined;
 
   useEffect(() => {
     let isMounted = true;
+    setReportDataError(undefined);
 
-    async function loadAiState() {
-      try {
-        const nextState = await getAiSettingsState();
-        if (!isMounted) {
-          return;
-        }
-
-        setAiState(nextState);
-        setStatus((current) =>
-          current === "cached" ||
-          current === "generated" ||
-          current === "generating" ||
-          current === "loading-cache"
-            ? current
-            : statusFromAiState(nextState)
-        );
-      } catch (settingsError) {
-        if (isMounted) {
-          setStatus("error");
-          setError(getCommandErrorMessage(settingsError));
-        }
-      }
+    if (!isReportOpen || !isReportPreviewRequested) {
+      setReportResponse(undefined);
+      setIsReportDataLoading(false);
+      return () => {
+        isMounted = false;
+      };
     }
 
-    void loadAiState();
+    if (isFutureReadingStatsPeriod(reportPeriod)) {
+      setReportResponse(undefined);
+      setIsReportDataLoading(false);
+      return () => {
+        isMounted = false;
+      };
+    }
 
-    return () => {
-      isMounted = false;
-    };
-  }, []);
+    const cached = getReadingStatsResponse(cache, reportPeriod);
+    if (cached) {
+      setReportResponse(cached);
+      setIsReportDataLoading(false);
+      return () => {
+        isMounted = false;
+      };
+    }
 
-  useEffect(() => {
-    let isMounted = true;
+    setReportResponse(undefined);
+    setIsReportDataLoading(true);
 
-    async function loadStats() {
-      if (cache[mode]) {
-        setError(undefined);
-        setIsLoadingStats(false);
-        return;
-      }
-
-      setIsLoadingStats(true);
-      setError(undefined);
-
+    async function loadReportStats() {
       try {
-        const cached = await getReadingStats(mode);
+        const loaded = await getReadingStats(
+          reportPeriod.mode,
+          getReadingStatsRequestBaseTime(reportPeriod)
+        );
+
         if (isMounted) {
-          onCacheChange(mode, cached);
+          setReportResponse(loaded);
+          onCacheChange(loaded.stats.mode, loaded);
         }
-      } catch (statsError) {
+      } catch (loadError) {
         if (isMounted) {
-          setError(getCommandErrorMessage(statsError));
+          setReportDataError(getCommandErrorMessage(loadError));
+          setReportResponse(undefined);
         }
       } finally {
         if (isMounted) {
-          setIsLoadingStats(false);
+          setIsReportDataLoading(false);
         }
       }
     }
 
-    void loadStats();
+    void loadReportStats();
 
     return () => {
       isMounted = false;
     };
-  }, [mode, cache, onCacheChange]);
-
-  useEffect(() => {
-    setReviewResponse(undefined);
-    setError(undefined);
-    setStatus(statusFromAiState(aiState));
-  }, [mode, stats]);
+  }, [
+    cache,
+    isReportOpen,
+    isReportPreviewRequested,
+    onCacheChange,
+    reportPeriod.baseTime,
+    reportPeriod.mode
+  ]);
 
   useEffect(() => {
     let isMounted = true;
+    setReportReviewResponse(undefined);
 
-    async function loadCachedReview() {
-      if (!stats || !hasStatsData) {
-        setIsLoadingReviewCache(false);
-        return;
-      }
+    if (!isReportOpen || !reportStats || !hasReportStatsData || currentReviewForReport) {
+      return () => {
+        isMounted = false;
+      };
+    }
 
-      setIsLoadingReviewCache(true);
-      setError(undefined);
-      setStatus("loading-cache");
+    const selectedReportStats = reportStats;
 
+    async function loadCachedReportReview() {
       try {
         const cached = await getLatestReadingStatsReview({
-          mode: stats.mode,
-          baseTime: stats.baseTime
+          mode: selectedReportStats.mode,
+          baseTime: selectedReportStats.baseTime
         });
 
-        if (!isMounted) {
-          return;
-        }
-
-        if (cached) {
-          setReviewResponse(cached);
-          setStatus(statusFromSource(cached.source));
-          setError(cached.errorMessage);
-          return;
-        }
-
-        setReviewResponse(undefined);
-        setStatus(statusFromAiState(aiState));
-      } catch (cacheError) {
         if (isMounted) {
-          setStatus("error");
-          setError(getCommandErrorMessage(cacheError));
+          setReportReviewResponse(cached);
         }
-      } finally {
+      } catch {
         if (isMounted) {
-          setIsLoadingReviewCache(false);
+          setReportReviewResponse(undefined);
         }
       }
     }
 
-    void loadCachedReview();
+    void loadCachedReportReview();
 
     return () => {
       isMounted = false;
     };
-  }, [stats, hasStatsData]);
-
-  async function handleSyncStats() {
-    if (!hasCredential) {
-      setError("请先在设置中保存微信读书 API Key，再同步阅读统计。");
-      onOpenSettings();
-      return;
-    }
-
-    setIsSyncing(true);
-    setError(undefined);
-
-    try {
-      const synced = await syncReadingStats(mode);
-      onCacheChange(mode, synced);
-    } catch (syncError) {
-      setError(getCommandErrorMessage(syncError));
-    } finally {
-      setIsSyncing(false);
-    }
-  }
-
-  async function handleGenerate(regenerate: boolean) {
-    if (!stats) {
-      setError("请先读取或同步当前周期统计，再生成阅读复盘。");
-      return;
-    }
-
-    if (!hasStatsData) {
-      setError("当前周期还没有可复盘的统计数据。");
-      return;
-    }
-
-    if (aiState?.credential.hasCredential !== true) {
-      setStatus("setup-required");
-      return;
-    }
-
-    setStatus("generating");
-    setError(undefined);
-    setExportResult(undefined);
-
-    try {
-      const response = await summarizeReadingStats({
-        mode: stats.mode,
-        baseTime: stats.baseTime,
-        regenerate
-      });
-      setReviewResponse(response);
-      setStatus(statusFromSource(response.source));
-      if (response.errorMessage) {
-        setError(response.errorMessage);
-      }
-    } catch (reviewError) {
-      setStatus("error");
-      setError(getCommandErrorMessage(reviewError));
-    }
-  }
-
-  async function handleExport() {
-    if (!stats || !review) {
-      return;
-    }
-
-    setIsExporting(true);
-    setError(undefined);
-    setExportResult(undefined);
-
-    try {
-      const response = await exportReadingStatsReviewMarkdown({
-        mode: stats.mode,
-        baseTime: stats.baseTime
-      });
-      setExportResult(response);
-    } catch (exportError) {
-      setError(getCommandErrorMessage(exportError));
-    } finally {
-      setIsExporting(false);
-    }
-  }
-
-  function handleModeChange(nextMode: ReadingStatsMode) {
-    startTransition(() => {
-      setMode(nextMode);
-    });
-  }
+  }, [
+    currentReviewForReport,
+    hasReportStatsData,
+    isReportOpen,
+    reportDataPeriod.mode,
+    reportStats?.baseTime,
+    reportStats?.mode
+  ]);
 
   return (
     <section className="reading-review-page" aria-label="阅读复盘">
-      <section className="review-cover-card">
-        <div className="review-cover-main">
-          <p className="section-kicker">AI 阅读体检报告</p>
-          <h3>{reviewTitle(mode)}</h3>
-          <p>
-            {review?.overview ??
-              "把阅读统计转成更容易行动的复盘报告：节奏、偏好、重点内容和下一步行动分开展示。"}
-          </p>
-          <div className="review-cover-actions">
-            <button
-              className="sync-button"
-              type="button"
-              onClick={() => void handleGenerate(false)}
-              disabled={!canGenerate || Boolean(review)}
-            >
-              {status === "generating" || isLoadingReviewCache ? (
-                <Loader2 aria-hidden="true" size={18} className="spin" />
-              ) : (
-                <Database aria-hidden="true" size={18} />
-              )}
-              {status === "generating"
-                ? "生成中"
-                : isLoadingReviewCache
-                  ? "读取缓存中"
-                  : "生成复盘"}
-            </button>
-            <button
-              className="secondary-action"
-              type="button"
-              onClick={() => void handleGenerate(true)}
-              disabled={!canGenerate || !review}
-            >
-              <RefreshCw aria-hidden="true" size={18} />
-              重新生成
-            </button>
-            <button
-              className="text-button"
-              type="button"
-              onClick={() => void handleSyncStats()}
-              disabled={!hasCredential || isSyncing}
-            >
-              {isSyncing ? (
-                <Loader2 aria-hidden="true" size={16} className="spin" />
-              ) : (
-                <RefreshCw aria-hidden="true" size={16} />
-              )}
-              {isSyncing ? "同步中" : "同步统计"}
-            </button>
-            <button
-              className="secondary-action"
-              type="button"
-              onClick={() => void handleExport()}
-              disabled={!review || isExporting || isLoadingReviewCache || status === "generating"}
-            >
-              {isExporting ? (
-                <Loader2 aria-hidden="true" size={18} className="spin" />
-              ) : (
-                <Download aria-hidden="true" size={18} />
-              )}
-              {isExporting ? "导出中" : "导出 Markdown"}
-            </button>
-          </div>
-        </div>
-        <div className="review-cover-side">
-          <span className={`ai-summary-badge ai-summary-badge--${statusMeta.tone}`}>
-            {statusMeta.label}
-          </span>
-          <strong>{formatDuration(stats?.totalReadTimeSeconds)}</strong>
-          <small>{periodLabel(mode)}总阅读/收听时长</small>
-        </div>
-      </section>
+      <ReviewHeroSection
+        activePeriod={activePeriod}
+        canGenerate={canGenerate}
+        exportDisabled={
+          isPreviewReadonly || !review || isExporting || isLoadingReviewCache || status === "generating"
+        }
+        hasReview={Boolean(review)}
+        isExporting={isExporting}
+        isLoadingReviewCache={isLoadingReviewCache}
+        isSyncing={isSyncing}
+        review={review}
+        reportActionLabel={activePeriod.mode === "overall" ? "长期复盘图" : "生成报告图"}
+        reportDisabled={Boolean(activeReportDisabledReason) || isLoadingStats}
+        reportDisabledReason={activeReportDisabledReason}
+        stats={stats}
+        status={status}
+        statusMeta={statusMeta}
+        syncDisabled={!hasCredential || isSyncing}
+        onExport={() => void handleExport()}
+        onGenerate={() => void handleGenerate(false)}
+        onOpenReport={handleOpenReport}
+        onRegenerate={() => void handleGenerate(true)}
+        onSyncStats={() => void handleSyncStats()}
+      />
 
-      <div className="period-tabs" role="tablist" aria-label="复盘周期">
-        {periodOptions.map((option) => (
-          <button
-            key={option.mode}
-            type="button"
-            role="tab"
-            aria-selected={mode === option.mode}
-            className={mode === option.mode ? "is-active" : ""}
-            onClick={() => handleModeChange(option.mode)}
-          >
-            <strong>{option.label}</strong>
-            <small>{option.description}</small>
-          </button>
-        ))}
-      </div>
+      <ReadingStatsPeriodNavigator
+        activePeriod={activePeriod}
+        anchorAriaLabel="复盘时间锚点"
+        anchorDescription={describeReviewAnchor(activePeriod.mode)}
+        canStepForward={canStepForward}
+        drillAriaLabel="复盘下钻入口"
+        drillLabels={{ overall: "历史年份", nested: "本年各月" }}
+        drillPeriods={drillPeriods}
+        periodOptions={periodOptions}
+        tabsAriaLabel="复盘周期"
+        onDrillPeriod={handleDrillPeriod}
+        onModeChange={handleModeChange}
+        onOpenJumpPicker={() => setIsJumpPickerOpen(true)}
+        onShiftPeriod={handleShiftPeriod}
+      />
+      <ReadingStatsPeriodJumpPicker
+        activePeriod={activePeriod}
+        cache={cache}
+        open={isJumpPickerOpen}
+        onClose={() => setIsJumpPickerOpen(false)}
+        onSelectPeriod={handleDrillPeriod}
+      />
+      {isReportOpen ? (
+        <ReportGenerationWizardDialog
+          cache={cache}
+          data={periodReportData}
+          lifetimeData={lifetimeReportData}
+          isDataLoading={isReportDataLoading}
+          isDownloading={isReportDownloading}
+          isSyncingReportPeriod={isReportPeriodSyncing}
+          open={isReportOpen}
+          reportPeriod={reportPeriod}
+          reportUnavailableReason={reportUnavailableReason}
+          syncReportDisabled={isReportPeriodSyncDisabled}
+          onClose={() => setIsReportOpen(false)}
+          onDownload={(mode, storyPageIndex) => void handleReportDownload(mode, storyPageIndex)}
+          onDownloadLifetime={() => void handleLifetimeReportDownload()}
+          onGenerateReport={handleGeneratePeriodReport}
+          onSyncReportPeriod={() => void handleReportPeriodSync()}
+        />
+      ) : null}
 
       {status === "setup-required" ? (
         <div className="ai-summary-callout">
@@ -424,6 +409,13 @@ export function ReadingReviewPage({
         <div className="status-message status-message--warning">
           <AlertCircle aria-hidden="true" size={18} />
           <span>{error}</span>
+        </div>
+      ) : null}
+
+      {isPreviewReadonly && !error ? (
+        <div className="status-message status-message--neutral">
+          <Database aria-hidden="true" size={18} />
+          <span>当前为 Web 只读预览：统计与已缓存复盘来自导出缓存，生成和导出请在桌面应用中执行。</span>
         </div>
       ) : null}
 
@@ -455,7 +447,7 @@ export function ReadingReviewPage({
         <section className="empty-inline stats-empty" aria-label="复盘统计为空">
           <CalendarDays aria-hidden="true" size={28} />
           <h3>还没有可复盘的数据</h3>
-          <p>先同步当前周期统计；复盘页会基于结构化统计生成报告。</p>
+          <p>先同步当前周期统计；后续可以从总计继续下钻到年份和月份生成对应复盘。</p>
           <button
             className="secondary-action"
             type="button"
@@ -469,594 +461,276 @@ export function ReadingReviewPage({
 
       {stats ? (
         <>
-          <section className="review-metric-grid" aria-label="复盘指标">
-            <ReviewMetricCard
-              icon={<CalendarDays aria-hidden="true" size={20} />}
-              label="阅读天数"
-              value={`${stats.readDays ?? 0}天`}
-              detail="单日满 1 分钟计入"
-            />
-            <ReviewMetricCard
-              icon={<Clock3 aria-hidden="true" size={20} />}
-              label={mode === "overall" ? "长期日均" : "自然日均"}
-              value={formatAverageDuration(stats)}
-              detail={mode === "overall" ? "总计周期不强推自然日均" : "用于判断稳定性"}
-            />
-            <ReviewMetricCard
-              icon={<BarChart3 aria-hidden="true" size={20} />}
-              label="高峰分桶"
-              value={peakBucket ? formatBucketLabel(stats.mode, peakBucket.startTime) : "暂无"}
-              detail={peakBucket ? formatDuration(peakBucket.readTimeSeconds) : "同步后展示"}
-            />
-            <ReviewMetricCard
-              icon={<Compass aria-hidden="true" size={20} />}
-              label="主要偏好"
-              value={topCategory?.title ?? "暂无"}
-              detail={topCategory ? formatCategoryValue(topCategory) : "分类数据不足"}
-            />
-          </section>
+          <ReviewMetricSection
+            activeMode={activePeriod.mode}
+            peakBucket={peakBucket}
+            stats={stats}
+            topCategory={topCategory}
+          />
 
           <section className="review-layout">
             <div className="review-column review-column--left">
-              <section className="review-panel review-timeline-panel" aria-label="阅读时间轴">
-                <PanelHeading
-                  kicker="阅读时间轴"
-                  title="按阶段看阅读变化"
-                  badge={`${stats.buckets.filter((bucket) => bucket.readTimeSeconds > 0).length} 个分桶`}
-                />
-                <ReviewTimeline mode={stats.mode} buckets={stats.buckets} />
-                <ReviewTimeSegments
-                  mode={stats.mode}
-                  readDays={stats.readDays}
-                  segments={timeSegments}
-                  themes={representativeThemes}
-                />
-                <ReviewList
-                  title="AI 节奏标注"
-                  icon={<BarChart3 aria-hidden="true" size={18} />}
-                  items={review?.rhythmInsights ?? []}
-                  emptyText="生成复盘后会把趋势变化标注成可读结论。"
-                />
-              </section>
-
-              <section className="review-panel" aria-label="阅读习惯画像">
-                <PanelHeading
-                  kicker="阅读习惯画像"
-                  title="本周期更接近哪种节奏"
-                  badge="仅本地统计"
-                />
-                <HabitProfileCard profile={habitProfile} canBuildProfile={canBuildProfile} />
-              </section>
+              <ReviewTimelineSection
+                mode={stats.mode}
+                readDays={stats.readDays}
+                themes={representativeThemes}
+                timelineInsights={timelineInsights}
+                buckets={stats.buckets}
+              />
+              <ReviewProfileSection persona={readingPersona} />
             </div>
 
             <div className="review-column review-column--right">
-              <section className="review-panel" aria-label="偏好地图">
-                <PanelHeading kicker="偏好地图" title="主题投入结构" badge="分类偏好" />
-                <PreferenceMap categories={stats.categories} />
-                <ReviewList
-                  title="AI 偏好解释"
-                  icon={<Compass aria-hidden="true" size={18} />}
-                  items={review?.preferenceInsights ?? []}
-                  emptyText="生成复盘后会解释你把时间投向了哪些主题。"
-                />
-              </section>
-
-              <section className="review-panel" aria-label="重点内容">
-                <PanelHeading kicker="重点内容" title="最值得复盘的书" badge="最多 4 本" />
-                <FocusBooks items={stats.longestItems} aiItems={review?.focusItems ?? []} />
-              </section>
-            </div>
-
-            <section className="review-panel review-action-panel" aria-label="下一步行动">
-              <PanelHeading kicker="行动建议" title="把复盘变成安排" badge="可执行" />
-              <ReviewList
-                title="下一步行动"
-                icon={<ListChecks aria-hidden="true" size={18} />}
-                items={review?.nextActions ?? []}
-                emptyText="生成复盘后会给出 3-5 条可执行建议。"
+              <ReviewPreferenceSection
+                aiItems={review?.preferenceInsights ?? []}
+                categories={stats.categories}
               />
-              <div className="review-action-note">
-                <Lightbulb aria-hidden="true" size={18} />
-                <span>建议只保留少数行动项，避免把复盘变成新的待办压力。</span>
-              </div>
-            </section>
+              <ReviewFocusBooksSection aiItems={review?.focusItems ?? []} items={stats.longestItems} />
+            </div>
+
+            <ReviewActionsSection items={review?.nextActions ?? []} />
           </section>
 
-          <section className="ai-summary-source-card" aria-label="复盘数据依据">
-            <div>
-              <strong>数据依据</strong>
-              <small>只发送结构化统计：周期、阅读天数、总时长、趋势分桶、最长内容和分类偏好。</small>
-            </div>
-            <div className="ai-summary-stats">
-              <SummaryStat label="分桶" value={stats.buckets.length} />
-              <SummaryStat label="最长内容" value={stats.longestItems.length} />
-              <SummaryStat label="分类" value={stats.categories.length} />
-              <SummaryStat label="阅读天数" value={stats.readDays ?? 0} />
-            </div>
-          </section>
-
-          <div className="ai-summary-meta">
-            <span>生成时间：{formatAiTimestamp(review?.generatedAt) || "尚未生成"}</span>
-            <span>Prompt：{review?.promptVersion ?? "reading-stats-review-v1"}</span>
-            {reviewResponse?.providerModel ? <span>模型：{reviewResponse.providerModel}</span> : null}
-            {reviewResponse?.cachedUpdatedAt ? (
-              <span>缓存更新：{formatAiTimestamp(reviewResponse.cachedUpdatedAt)}</span>
-            ) : null}
-          </div>
+          <ReviewMetaSection review={review} reviewResponse={reviewResponse} stats={stats} />
         </>
       ) : null}
     </section>
   );
-}
 
-function ReviewMetricCard({
-  icon,
-  label,
-  value,
-  detail
-}: {
-  icon: ReactNode;
-  label: string;
-  value: string;
-  detail: string;
-}) {
-  return (
-    <article className="review-metric-card">
-      <span>{icon}</span>
-      <small>{label}</small>
-      <strong>{value}</strong>
-      <p>{detail}</p>
-    </article>
-  );
-}
-
-function PanelHeading({
-  kicker,
-  title,
-  badge
-}: {
-  kicker: string;
-  title: string;
-  badge: string;
-}) {
-  return (
-    <div className="stats-card-heading">
-      <div>
-        <p className="section-kicker">{kicker}</p>
-        <h3>{title}</h3>
-      </div>
-      <span>{badge}</span>
-    </div>
-  );
-}
-
-function ReviewTimeline({
-  mode,
-  buckets
-}: {
-  mode: ReadingStatsMode;
-  buckets: ReadingTimeBucket[];
-}) {
-  const visibleBuckets = buckets.filter((bucket) => bucket.readTimeSeconds > 0);
-
-  if (visibleBuckets.length === 0) {
-    return (
-      <div className="review-empty-block">
-        <BarChart3 aria-hidden="true" size={22} />
-        <span>暂无趋势分桶。</span>
-      </div>
-    );
+  function handleOpenReport() {
+    const nextReportPeriod = activePeriod;
+    setReportPeriod(nextReportPeriod);
+    setReportResponse(activeReportResponse);
+    setReportDataError(undefined);
+    setIsReportPreviewRequested(false);
+    setIsReportDataLoading(false);
+    setIsReportOpen(true);
   }
 
-  const maxSeconds = Math.max(...visibleBuckets.map((bucket) => bucket.readTimeSeconds), 1);
+  function handleGeneratePeriodReport(period: ReadingStatsPeriod) {
+    setReportPeriod(period);
+    setReportResponse(undefined);
+    setReportReviewResponse(undefined);
+    setReportDataError(undefined);
+    setIsReportPreviewRequested(true);
+  }
 
-  return (
-    <div className="review-timeline">
-      {visibleBuckets.map((bucket) => {
-        const width = `${Math.max(8, Math.round((bucket.readTimeSeconds / maxSeconds) * 100))}%`;
+  async function handleReportDownload(mode: PeriodReportDownloadMode, storyPageIndex = 0) {
+    if (!periodReportData) {
+      return;
+    }
 
-        return (
-          <article key={bucket.startTime}>
-            <div>
-              <strong>{formatBucketLabel(mode, bucket.startTime)}</strong>
-              <span>{formatDuration(bucket.readTimeSeconds)}</span>
-            </div>
-            <i style={{ width }} />
-          </article>
+    setIsReportDownloading(true);
+
+    try {
+      if (mode === "wide") {
+        showReportExportSuccess(await downloadPeriodReportWideReport(periodReportData), "已生成横版报告。");
+        return;
+      }
+
+      if (mode === "cards-current") {
+        showReportExportSuccess(
+          await downloadPeriodReportStoryPage(periodReportData, storyPageIndex),
+          "已生成当前轮播页。"
         );
-      })}
-    </div>
-  );
-}
+        return;
+      }
 
-function ReviewTimeSegments({
-  mode,
-  readDays,
-  segments,
-  themes
-}: {
-  mode: ReadingStatsMode;
-  readDays?: number;
-  segments: ReviewTimelineSegment[];
-  themes: string[];
-}) {
-  if (segments.length === 0) {
-    return (
-      <div className="review-empty-block">
-        <CalendarDays aria-hidden="true" size={22} />
-        <span>当前周期还不足以切出阶段变化。</span>
-      </div>
-    );
+      if (mode === "cards-all") {
+        showReportExportSuccess(await downloadPeriodReportStoryPages(periodReportData), "已生成全部轮播页。");
+        return;
+      }
+
+      showReportExportSuccess(await downloadPeriodReportPoster(periodReportData), "已生成阅读报告。");
+    } catch (posterError) {
+      showToast({
+        message: posterError instanceof Error ? posterError.message : "生成阅读报告图片失败。",
+        tone: "error"
+      });
+    } finally {
+      setIsReportDownloading(false);
+    }
   }
 
-  return (
-    <section className="review-stage-list" aria-label="阅读阶段变化">
-      <div className="review-stage-summary">
-        <span>{readDays ? `${readDays} 天参与阅读` : "阅读天数不足"}</span>
-        <span>{themes.length > 0 ? `${themes.length} 个代表主题` : "等待主题聚合"}</span>
-      </div>
-      {segments.map((segment) => (
-        <article key={`${segment.anchorTime}-${segment.title}`}>
-          <div className="review-stage-heading">
-            <strong>{segment.title}</strong>
-            <span>{formatBucketLabel(mode, segment.anchorTime)}</span>
-          </div>
-          <p>{segment.description}</p>
-        </article>
-      ))}
-      {themes.length > 0 ? (
-        <div className="review-stage-tags" aria-label="代表主题">
-          {themes.map((theme) => (
-            <span key={theme}>{theme}</span>
-          ))}
-        </div>
-      ) : null}
-    </section>
-  );
-}
-
-function HabitProfileCard({
-  profile,
-  canBuildProfile
-}: {
-  profile: ReturnType<typeof buildReadingHabitProfile>;
-  canBuildProfile: boolean;
-}) {
-  if (!canBuildProfile || !profile) {
-    return (
-      <div className="review-empty-block">
-        <Compass aria-hidden="true" size={22} />
-        <span>数据不足，继续阅读后生成画像。</span>
-      </div>
-    );
-  }
-
-  return (
-    <section className="review-profile-card">
-      <div className="review-profile-head">
-        <span className="review-profile-badge">本周期更接近</span>
-        <strong>{profile.primaryLabel}</strong>
-        {profile.secondaryLabels.length > 0 ? (
-          <small>兼有 {profile.secondaryLabels.join(" / ")} 倾向</small>
-        ) : (
-          <small>这不是固定人格，只是当前周期侧写。</small>
-        )}
-      </div>
-      <p>{profile.description}</p>
-      <ul className="review-profile-evidence">
-        {profile.evidence.map((item, index) => (
-          <li key={`${item}-${index}`}>
-            <CheckCircle2 aria-hidden="true" size={15} />
-            <span>{item}</span>
-          </li>
-        ))}
-      </ul>
-      <div className="review-profile-footnote">
-        <Lightbulb aria-hidden="true" size={16} />
-        <span>{profile.basisNotice}</span>
-      </div>
-    </section>
-  );
-}
-
-function PreferenceMap({ categories }: { categories: ReadingCategory[] }) {
-  if (categories.length === 0) {
-    return (
-      <div className="review-empty-block">
-        <Compass aria-hidden="true" size={22} />
-        <span>暂无分类偏好。</span>
-      </div>
-    );
-  }
-
-  const visibleCategories = categories.slice(0, 8);
-  const maxValue = Math.max(
-    ...visibleCategories.map((category) => category.readingTimeSeconds ?? category.value ?? 0),
-    1
-  );
-
-  return (
-    <div className="review-preference-map">
-      {visibleCategories.map((category, index) => {
-        const value = category.readingTimeSeconds ?? category.value ?? 0;
-        const size = 74 + Math.round((value / maxValue) * 88);
-
-        return (
-          <article
-            key={`${category.categoryId ?? category.title}-${index}`}
-            style={{ width: size, height: size }}
-          >
-            <strong>{category.title}</strong>
-            <small>{formatCategoryValue(category)}</small>
-          </article>
-        );
-      })}
-    </div>
-  );
-}
-
-function FocusBooks({ items, aiItems }: { items: ReadingRankItem[]; aiItems: string[] }) {
-  if (items.length === 0 && aiItems.length === 0) {
-    return (
-      <div className="review-empty-block">
-        <Trophy aria-hidden="true" size={22} />
-        <span>暂无重点内容。</span>
-      </div>
-    );
-  }
-
-  return (
-    <div className="review-focus-grid">
-      {items.slice(0, 4).map((item, index) => (
-        <article className="review-focus-book" key={`${item.id}-${index}`}>
-          <span className="rank-cover">
-            {item.cover ? <img src={item.cover} alt="" /> : <BookOpen aria-hidden="true" size={24} />}
-          </span>
-          <div>
-            <strong>{item.title}</strong>
-            <small>{item.author || (item.type === "album" ? "有声内容" : "电子书")}</small>
-            <b>{formatDuration(item.readTimeSeconds)}</b>
-          </div>
-        </article>
-      ))}
-      {aiItems.length > 0 ? (
-        <ReviewList
-          title="AI 重点解释"
-          icon={<Target aria-hidden="true" size={18} />}
-          items={aiItems}
-          emptyText=""
-        />
-      ) : null}
-    </div>
-  );
-}
-
-function ReviewList({
-  title,
-  icon,
-  items,
-  emptyText
-}: {
-  title: string;
-  icon: ReactNode;
-  items: string[];
-  emptyText: string;
-}) {
-  return (
-    <section className="review-list-card">
-      <h4>
-        {icon}
-        {title}
-      </h4>
-      {items.length > 0 ? (
-        <ul>
-          {items.map((item, index) => (
-            <li key={`${item}-${index}`}>
-              <CheckCircle2 aria-hidden="true" size={15} />
-              <span>{item}</span>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p>{emptyText}</p>
-      )}
-    </section>
-  );
-}
-
-function SummaryStat({ label, value }: { label: string; value: number }) {
-  return (
-    <span>
-      <b>{value}</b>
-      {label}
-    </span>
-  );
-}
-
-function hasReadableStats(stats?: ReadingStats): boolean {
-  return Boolean(
-    stats &&
-      ((stats.totalReadTimeSeconds ?? 0) > 0 ||
-        (stats.readDays ?? 0) > 0 ||
-        stats.buckets.length > 0 ||
-        stats.longestItems.length > 0 ||
-        stats.categories.length > 0)
-  );
-}
-
-function getPeakBucket(stats?: ReadingStats): ReadingTimeBucket | undefined {
-  return stats?.buckets.reduce<ReadingTimeBucket | undefined>((peak, bucket) => {
-    if (bucket.readTimeSeconds <= 0) {
-      return peak;
+  async function handleLifetimeReportDownload() {
+    if (!lifetimeReportData) {
+      return;
     }
 
-    if (!peak || bucket.readTimeSeconds > peak.readTimeSeconds) {
-      return bucket;
+    setIsReportDownloading(true);
+
+    try {
+      showReportExportSuccess(await downloadLifetimeReadingReportWide(lifetimeReportData), "已生成长期复盘报告。");
+    } catch (posterError) {
+      showToast({
+        message: posterError instanceof Error ? posterError.message : "生成长期复盘图片失败。",
+        tone: "error"
+      });
+    } finally {
+      setIsReportDownloading(false);
+    }
+  }
+
+  async function handleReportPeriodSync() {
+    if (!hasCredential) {
+      showToast({ message: "请先在设置中保存微信读书 API Key。", tone: "error" });
+      onOpenSettings();
+      return;
     }
 
-    return peak;
-  }, undefined);
-}
-
-function getTopCategory(categories: ReadingCategory[]): ReadingCategory | undefined {
-  return categories.reduce<ReadingCategory | undefined>((top, category) => {
-    const value = category.readingTimeSeconds ?? category.value ?? 0;
-    const topValue = top ? top.readingTimeSeconds ?? top.value ?? 0 : -1;
-    return value > topValue ? category : top;
-  }, undefined);
-}
-
-function formatCategoryValue(category: ReadingCategory): string {
-  if (category.readingTimeSeconds !== undefined) {
-    return formatDuration(category.readingTimeSeconds);
-  }
-
-  if (category.readingCount !== undefined) {
-    return `${category.readingCount} 本`;
-  }
-
-  return "分类偏好";
-}
-
-function formatAverageDuration(stats: ReadingStats): string {
-  if (stats.dayAverageReadTimeSeconds && stats.dayAverageReadTimeSeconds > 0) {
-    return formatDuration(stats.dayAverageReadTimeSeconds);
-  }
-
-  if (stats.mode === "overall" && stats.readDays && stats.readDays > 0) {
-    return formatDuration((stats.totalReadTimeSeconds ?? 0) / stats.readDays);
-  }
-
-  return "暂无";
-}
-
-type ReviewTimelineSegment = {
-  anchorTime: number;
-  title: string;
-  description: string;
-};
-
-function buildReviewTimelineSegments(stats?: ReadingStats): ReviewTimelineSegment[] {
-  const buckets = stats?.buckets.filter((bucket) => bucket.readTimeSeconds > 0) ?? [];
-  if (buckets.length === 0) {
-    return [];
-  }
-
-  const maxSeconds = Math.max(...buckets.map((bucket) => bucket.readTimeSeconds), 1);
-  const segments: ReviewTimelineSegment[] = [];
-
-  buckets.forEach((bucket, index) => {
-    const previous = buckets[index - 1];
-    const ratio = bucket.readTimeSeconds / maxSeconds;
-    const delta = previous ? bucket.readTimeSeconds - previous.readTimeSeconds : 0;
-
-    let title = "稳定段";
-    let description = `在 ${formatBucketLabel(stats?.mode ?? "monthly", bucket.startTime)} 保持了 ${formatDuration(bucket.readTimeSeconds)} 的投入。`;
-
-    if (ratio >= 0.88) {
-      title = "高峰段";
-      description = `这一段投入达到当前周期高位，阅读时长约 ${formatDuration(bucket.readTimeSeconds)}。`;
-    } else if (delta >= 900) {
-      title = "抬升段";
-      description = `相比上一段明显抬升，新增投入约 ${formatDuration(delta)}。`;
-    } else if (delta <= -900) {
-      title = "收束段";
-      description = `相比上一段明显回落，说明节奏开始从高峰收束。`;
+    if (isFutureReadingStatsPeriod(reportPeriod)) {
+      showToast({ message: "未来周期不能同步阅读报告数据。", tone: "error" });
+      return;
     }
 
-    segments.push({
-      anchorTime: bucket.startTime,
-      title,
-      description
-    });
-  });
+    setIsReportPeriodSyncing(true);
+    setReportDataError(undefined);
 
-  return segments.slice(-4);
+    try {
+      const synced = await syncReadingStats(
+        reportPeriod.mode,
+        getReadingStatsRequestBaseTime(reportPeriod)
+      );
+      setReportResponse(synced);
+      onCacheChange(synced.stats.mode, synced);
+      showToast({
+        message: reportPeriod.mode === "overall" ? "总计统计已同步。" : "目标周期统计已同步。",
+        tone: "success"
+      });
+    } catch (syncError) {
+      const message = getCommandErrorMessage(syncError);
+      setReportDataError(message);
+      showToast({ message, tone: "error" });
+    } finally {
+      setIsReportPeriodSyncing(false);
+    }
+  }
+
+  function showReportExportSuccess(
+    result: ReportImageExportResult | ReportImageExportResult[],
+    browserFallbackMessage: string
+  ) {
+    const results = Array.isArray(result) ? result : [result];
+    const exportDirResult = results.find((item) => item.source === "exportDir");
+    if (exportDirResult?.path) {
+      showToast({
+        message:
+          results.length > 1
+            ? `已保存 ${results.length} 张图片到应用导出目录。`
+            : `已保存到应用导出目录：${exportDirResult.path}`,
+        tone: "success"
+      });
+      return;
+    }
+
+    showToast({ message: browserFallbackMessage, tone: "success" });
+  }
 }
 
-function reviewTitle(mode: ReadingStatsMode): string {
-  if (mode === "weekly") {
-    return "本周阅读复盘";
+function describeReviewAnchor(mode: ReadingStatsMode): string {
+  if (mode === "overall") {
+    return "先看长期画像，再继续进入具体年份和月份生成对应复盘。";
   }
 
   if (mode === "annually") {
-    return "年度阅读复盘";
+    return "年度复盘适合先看全年结论，再点进月份核对峰值来源。";
   }
 
-  if (mode === "overall") {
-    return "长期阅读画像";
+  if (mode === "monthly") {
+    return "月度复盘适合和相邻月份对照，确认节奏变化是否持续。";
   }
 
-  return "本月阅读复盘";
+  return "周度复盘更适合快速检查短周期状态。";
 }
 
-function periodLabel(mode: ReadingStatsMode): string {
-  return periodOptions.find((option) => option.mode === mode)?.label ?? "本月";
+function resolveReportDataCompleteness(
+  source: ReadingStatsResponse["source"],
+  hasStatsData: boolean
+): PeriodReportCompleteness | undefined {
+  if (source === "empty") {
+    return "unsynced";
+  }
+
+  if (source === "cache" || source === "synced") {
+    return hasStatsData ? "cached" : "empty";
+  }
+
+  return undefined;
 }
 
-function formatBucketLabel(mode: ReadingStatsMode, timestamp: number): string {
-  const date = new Date(timestamp * 1000);
-
-  if (!Number.isFinite(date.getTime())) {
-    return "";
+function resolveLifetimeReportDataCompleteness(
+  source: ReadingStatsResponse["source"],
+  hasStatsData: boolean
+): LifetimeReadingReportCompleteness | undefined {
+  if (source === "empty") {
+    return "unsynced";
   }
 
-  if (mode === "overall") {
-    return `${date.getFullYear()}年`;
+  if (source === "cache" || source === "synced") {
+    return hasStatsData ? "cached" : "empty";
   }
 
-  if (mode === "annually") {
-    return `${date.getMonth() + 1}月`;
-  }
-
-  const formatted = formatUnixDate(timestamp);
-  return formatted ? formatted.slice(5) : "";
+  return undefined;
 }
 
-function statusMetaFromState(status: ReviewStatus, hasStaleCacheError: boolean) {
-  if (status === "setup-required") {
-    return { label: "需要设置", tone: "warning" };
+function buildReportDisabledReason({
+  dataCompleteness,
+  hasStatsData,
+  isLoadingData,
+  isPeriodReportMode,
+  stats
+}: {
+  dataCompleteness?: PeriodReportCompleteness;
+  hasStatsData: boolean;
+  isLoadingData: boolean;
+  isPeriodReportMode: boolean;
+  stats?: ReadingStatsResponse["stats"];
+}): string | undefined {
+  if (!isPeriodReportMode || hasStatsData) {
+    return undefined;
   }
 
-  if (status === "loading-cache") {
-    return { label: "读取缓存中", tone: "neutral" };
+  if (isLoadingData || !stats) {
+    return "正在读取本地统计缓存，读取完成后再生成阅读报告。";
   }
 
-  if (status === "generating") {
-    return { label: "生成中", tone: "neutral" };
+  if (dataCompleteness === "unsynced") {
+    return "这个周期还没有本地统计缓存，请先同步统计。";
   }
 
-  if (status === "cached") {
-    return { label: "本地缓存", tone: "neutral" };
+  if (dataCompleteness === "future_blocked") {
+    return "未来周期不能生成阅读报告。";
   }
 
-  if (status === "generated") {
-    return { label: "已生成", tone: "success" };
-  }
-
-  if (status === "error") {
-    return { label: hasStaleCacheError ? "使用旧缓存" : "生成失败", tone: "warning" };
-  }
-
-  return { label: "待生成", tone: "neutral" };
+  return "当前周期没有可生成报告的阅读数据。";
 }
 
-function statusFromSource(source: BookAiSummarySource): ReviewStatus {
-  if (source === "cache" || source === "staleCache") {
-    return "cached";
+function buildLifetimeReportDisabledReason({
+  dataCompleteness,
+  hasStatsData,
+  isLoadingData,
+  stats
+}: {
+  dataCompleteness?: LifetimeReadingReportCompleteness;
+  hasStatsData: boolean;
+  isLoadingData: boolean;
+  stats?: ReadingStatsResponse["stats"];
+}): string | undefined {
+  if (hasStatsData) {
+    return undefined;
   }
 
-  if (source === "generated") {
-    return "generated";
+  if (isLoadingData || !stats) {
+    return "正在读取本地总计统计，读取完成后再生成长期复盘。";
   }
 
-  return "idle";
+  if (dataCompleteness === "unsynced") {
+    return "总计统计还没有本地缓存，请先同步总计统计。";
+  }
+
+  return "全部历史暂时没有可生成长期复盘的阅读数据。";
 }
 
-function statusFromAiState(aiState?: AiSettingsState): ReviewStatus {
-  if (!aiState) {
-    return "idle";
-  }
-
-  return aiState.credential.hasCredential ? "idle" : "setup-required";
+function isFutureReadingStatsPeriod(period: ReadingStatsPeriod): boolean {
+  return period.mode !== "overall" && period.baseTime > getCurrentReadingStatsAnchor(period.mode);
 }
