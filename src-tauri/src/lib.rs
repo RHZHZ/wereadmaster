@@ -39,6 +39,8 @@ pub fn run() {
             commands::ai::save_ai_credential,
             commands::ai::save_ai_settings,
             commands::ai::test_ai_connection,
+            commands::ai::probe_ai_provider_capabilities,
+            commands::ai::list_ai_provider_models,
             commands::ai::remove_ai_credential,
             commands::ai::get_ai_cached_output,
             commands::ai::summarize_book_notes,

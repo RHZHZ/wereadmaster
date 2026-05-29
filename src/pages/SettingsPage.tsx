@@ -36,6 +36,15 @@ import {
   APP_UPDATE_RELEASE_REPOSITORY_URL,
 } from "../lib/app-update-config";
 import {
+  AI_PROVIDER_PRESETS,
+  AI_RESPONSE_FORMAT_POLICY_OPTIONS,
+  DEFAULT_AI_PROVIDER_PRESET_ID,
+  DEFAULT_AI_RESPONSE_FORMAT_POLICY,
+  getAiProviderPreset,
+  normalizeAiProviderPresetId,
+  normalizeAiResponseFormatPolicy,
+} from "../lib/ai-provider-presets";
+import {
   chooseCustomExportDirectory,
   chooseCustomDataDirectory,
   clearAiOutputCache,
@@ -45,7 +54,9 @@ import {
   getCommandErrorMessage,
   getAiSettingsState,
   getSettingsState,
+  listAiProviderModels,
   migrateLocalDataDirectory,
+  probeAiProviderCapabilities,
   removeAiCredential,
   removeCredential,
   resetCustomExportDirectory,
@@ -59,6 +70,12 @@ import {
 } from "../lib/reading-api";
 import type { UserPreferences } from "../lib/preferences";
 import type {
+  AiProviderCapabilityStatus,
+  AiProviderPresetId,
+  AiProviderCapabilityProbe,
+  AiProviderModelListItem,
+  AiProviderSettings,
+  AiResponseFormatPolicy,
   AiSettingsState,
   AppUpdateStatus,
   CredentialStatus,
@@ -197,10 +214,25 @@ export function SettingsPage({
   const [aiApiKey, setAiApiKey] = useState("");
   const [aiBaseUrl, setAiBaseUrl] = useState("https://api.openai.com/v1");
   const [aiModel, setAiModel] = useState("gpt-4o-mini");
+  const [aiProviderPresetId, setAiProviderPresetId] =
+    useState<AiProviderPresetId>(DEFAULT_AI_PROVIDER_PRESET_ID);
+  const [aiResponseFormatPolicy, setAiResponseFormatPolicy] =
+    useState<AiResponseFormatPolicy>(DEFAULT_AI_RESPONSE_FORMAT_POLICY);
   const [isLoading, setIsLoading] = useState(false);
   const [isSavingCredential, setIsSavingCredential] = useState(false);
   const [isSavingAiCredential, setIsSavingAiCredential] = useState(false);
   const [isTestingAiConnection, setIsTestingAiConnection] = useState(false);
+  const [isProbingAiProvider, setIsProbingAiProvider] = useState(false);
+  const [isRefreshingAiModels, setIsRefreshingAiModels] = useState(false);
+  const [aiProviderProbe, setAiProviderProbe] =
+    useState<AiProviderCapabilityProbe>();
+  const [aiProviderModels, setAiProviderModels] = useState<
+    AiProviderModelListItem[]
+  >([]);
+  const [aiProviderModelsFetchedAt, setAiProviderModelsFetchedAt] =
+    useState<string>();
+  const [aiProviderModelMessage, setAiProviderModelMessage] =
+    useState<string>();
   const [isClearingAiOutputCache, setIsClearingAiOutputCache] = useState(false);
   const [isClearingCache, setIsClearingCache] = useState(false);
   const [isExportingBackup, setIsExportingBackup] = useState(false);
@@ -219,8 +251,9 @@ export function SettingsPage({
   const [pendingStorageMigration, setPendingStorageMigration] =
     useState<PendingStorageMigration>();
   const [pendingAction, setPendingAction] = useState<PendingAction>();
-  const [activeCategory, setActiveCategory] =
-    useState<SettingsCategoryId>("account");
+  const [activeCategory, setActiveCategory] = useState<SettingsCategoryId>(
+    preferredCategory ?? "account",
+  );
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [error, setError] = useState<string>();
   const { showToast } = useToast();
@@ -254,6 +287,37 @@ export function SettingsPage({
 
   function handleOpenWereadSkill() {
     void handleOpenExternalLink(WEREAD_SKILL_API_KEY_URL, "技能页面");
+  }
+
+  function applyAiProviderSettings(provider: AiProviderSettings) {
+    setAiBaseUrl(provider.baseUrl);
+    setAiModel(provider.model);
+    setAiProviderPresetId(normalizeAiProviderPresetId(provider.presetId));
+    setAiResponseFormatPolicy(
+      normalizeAiResponseFormatPolicy(provider.responseFormatPolicy),
+    );
+    resetAiProviderModels();
+  }
+
+  function handleAiProviderPresetChange(nextPresetId: AiProviderPresetId) {
+    const preset = getAiProviderPreset(nextPresetId);
+    setAiProviderProbe(undefined);
+    resetAiProviderModels();
+    setAiProviderPresetId(nextPresetId);
+    setAiResponseFormatPolicy(preset.responseFormatPolicy);
+
+    if (nextPresetId === "custom") {
+      return;
+    }
+
+    setAiBaseUrl(preset.defaultBaseUrl);
+    setAiModel(preset.defaultModel);
+  }
+
+  function resetAiProviderModels() {
+    setAiProviderModels([]);
+    setAiProviderModelsFetchedAt(undefined);
+    setAiProviderModelMessage(undefined);
   }
 
   useEffect(() => {
@@ -306,8 +370,7 @@ export function SettingsPage({
       ]);
       setState(nextState);
       setAiState(nextAiState);
-      setAiBaseUrl(nextAiState.provider.baseUrl);
-      setAiModel(nextAiState.provider.model);
+      applyAiProviderSettings(nextAiState.provider);
       setExportDirectoryInput(nextState.exportData.exportDir);
       onCredentialChange(nextState.credential);
     } catch (loadError) {
@@ -373,6 +436,8 @@ export function SettingsPage({
           apiKey: trimmedAiKey,
           baseUrl: aiBaseUrl,
           model: aiModel,
+          presetId: aiProviderPresetId,
+          responseFormatPolicy: aiResponseFormatPolicy,
         });
         if (!validation.isValid) {
           setError(
@@ -386,10 +451,12 @@ export function SettingsPage({
         apiKey: trimmedAiKey || undefined,
         baseUrl: aiBaseUrl,
         model: aiModel,
+        presetId: aiProviderPresetId,
+        responseFormatPolicy: aiResponseFormatPolicy,
       });
       setAiState(nextAiState);
-      setAiBaseUrl(nextAiState.provider.baseUrl);
-      setAiModel(nextAiState.provider.model);
+      applyAiProviderSettings(nextAiState.provider);
+      setAiProviderProbe(undefined);
       setAiApiKey("");
       showToast({
         message: trimmedAiKey
@@ -413,6 +480,8 @@ export function SettingsPage({
         apiKey: aiApiKey.trim() || undefined,
         baseUrl: aiBaseUrl,
         model: aiModel,
+        presetId: aiProviderPresetId,
+        responseFormatPolicy: aiResponseFormatPolicy,
       });
       if (!validation.isValid) {
         setError(validation.message || "AI Provider 连通性测试失败。");
@@ -430,6 +499,74 @@ export function SettingsPage({
     }
   }
 
+  async function handleProbeAiProviderCapabilities() {
+    setIsProbingAiProvider(true);
+    setAiProviderProbe(undefined);
+    setError(undefined);
+
+    try {
+      const probe = await probeAiProviderCapabilities({
+        apiKey: aiApiKey.trim() || undefined,
+        baseUrl: aiBaseUrl,
+        model: aiModel,
+        presetId: aiProviderPresetId,
+        responseFormatPolicy: aiResponseFormatPolicy,
+      });
+      setAiProviderProbe(probe);
+      if (probe.basic === "failed") {
+        setError(probe.message || "AI Provider 基础连通性探测失败。");
+        return;
+      }
+
+      if (probe.recommendedPolicy !== aiResponseFormatPolicy) {
+        setAiResponseFormatPolicy(probe.recommendedPolicy);
+      }
+
+      showToast({
+        message: probe.message || "AI Provider 兼容性探测完成。",
+        tone:
+          probe.jsonObject === "failed" && probe.jsonSchema === "failed"
+            ? "warning"
+            : "success",
+      });
+    } catch (probeError) {
+      setError(getCommandErrorMessage(probeError));
+    } finally {
+      setIsProbingAiProvider(false);
+    }
+  }
+
+  async function handleRefreshAiProviderModels() {
+    setIsRefreshingAiModels(true);
+    setAiProviderModelMessage(undefined);
+    setError(undefined);
+
+    try {
+      const response = await listAiProviderModels({
+        apiKey: aiApiKey.trim() || undefined,
+        baseUrl: aiBaseUrl,
+      });
+      setAiProviderModels(response.models);
+      setAiProviderModelsFetchedAt(response.fetchedAt);
+      setAiProviderModelMessage(response.message);
+      if (!aiModel.trim() && response.models[0]?.id) {
+        setAiModel(response.models[0].id);
+      }
+
+      showToast({
+        message:
+          response.message ||
+          `已获取 ${response.models.length} 个可用模型，仍可手动输入模型名。`,
+        tone: response.models.length ? "success" : "warning",
+      });
+    } catch (modelsError) {
+      setAiProviderModelMessage("未能获取模型列表，仍可手动输入模型名。");
+      setError(getCommandErrorMessage(modelsError));
+    } finally {
+      setIsRefreshingAiModels(false);
+    }
+  }
+
   async function handleRemoveAiCredential() {
     setIsSavingAiCredential(true);
     setError(undefined);
@@ -437,8 +574,7 @@ export function SettingsPage({
     try {
       const nextAiState = await removeAiCredential(true);
       setAiState(nextAiState);
-      setAiBaseUrl(nextAiState.provider.baseUrl);
-      setAiModel(nextAiState.provider.model);
+      applyAiProviderSettings(nextAiState.provider);
       setAiApiKey("");
       showToast({
         message: "已移除本机保存的 AI API Key。历史 AI 阅读资产缓存不会被删除。",
@@ -867,6 +1003,50 @@ export function SettingsPage({
                       />
                     </label>
                   </div>
+                  {aiProviderProbe ? (
+                    <section
+                      className="ai-provider-probe"
+                      aria-label="AI Provider 兼容性探测结果"
+                    >
+                      <dl className="settings-dl">
+                        <div>
+                          <dt>基础连通</dt>
+                          <dd>
+                            {formatAiProviderCapabilityStatus(
+                              aiProviderProbe.basic,
+                            )}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>通用 JSON</dt>
+                          <dd>
+                            {formatAiProviderCapabilityStatus(
+                              aiProviderProbe.jsonObject,
+                            )}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>严格结构</dt>
+                          <dd>
+                            {formatAiProviderCapabilityStatus(
+                              aiProviderProbe.jsonSchema,
+                            )}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>建议模式</dt>
+                          <dd>
+                            {formatAiResponseFormatPolicyLabel(
+                              aiProviderProbe.recommendedPolicy,
+                            )}
+                          </dd>
+                        </div>
+                      </dl>
+                      {aiProviderProbe.message ? (
+                        <p>{aiProviderProbe.message}</p>
+                      ) : null}
+                    </section>
+                  ) : null}
                   <div className="settings-actions settings-card-actions">
                     <button
                       className="secondary-action"
@@ -933,24 +1113,125 @@ export function SettingsPage({
                   </dl>
                   <div className="settings-form-grid">
                     <label className="credential-input">
+                      <span>Provider 预设</span>
+                      <select
+                        value={aiProviderPresetId}
+                        onChange={(event) =>
+                          handleAiProviderPresetChange(
+                            normalizeAiProviderPresetId(event.target.value),
+                          )
+                        }
+                      >
+                        {AI_PROVIDER_PRESETS.map((preset) => (
+                          <option key={preset.id} value={preset.id}>
+                            {preset.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="credential-input">
+                      <span>兼容模式</span>
+                      <select
+                        value={aiResponseFormatPolicy}
+                        onChange={(event) => {
+                          setAiProviderProbe(undefined);
+                          setAiResponseFormatPolicy(
+                            normalizeAiResponseFormatPolicy(event.target.value),
+                          );
+                        }}
+                      >
+                        {AI_RESPONSE_FORMAT_POLICY_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="credential-input">
                       <span>Base URL</span>
                       <input
                         value={aiBaseUrl}
                         type="url"
                         autoComplete="off"
                         placeholder="https://api.openai.com/v1"
-                        onChange={(event) => setAiBaseUrl(event.target.value)}
+                        onChange={(event) => {
+                          setAiProviderProbe(undefined);
+                          resetAiProviderModels();
+                          setAiBaseUrl(event.target.value);
+                        }}
                       />
                     </label>
-                    <label className="credential-input">
+                    <label className="credential-input settings-form-span">
                       <span>模型</span>
-                      <input
-                        value={aiModel}
-                        type="text"
-                        autoComplete="off"
-                        placeholder="gpt-4o-mini"
-                        onChange={(event) => setAiModel(event.target.value)}
-                      />
+                      <div className="ai-model-control">
+                        <input
+                          value={aiModel}
+                          type="text"
+                          autoComplete="off"
+                          placeholder="输入模型名，或刷新后从候选中选择"
+                          onChange={(event) => {
+                            setAiProviderProbe(undefined);
+                            setAiModel(event.target.value);
+                          }}
+                        />
+                        <button
+                          className="sync-button"
+                          type="button"
+                          onClick={() => void handleRefreshAiProviderModels()}
+                          disabled={
+                            isRefreshingAiModels ||
+                            isSavingAiCredential ||
+                            isTestingAiConnection ||
+                            isProbingAiProvider ||
+                            !aiBaseUrl.trim() ||
+                            (!aiApiKey.trim() &&
+                              !aiState?.credential.hasCredential)
+                          }
+                        >
+                          {isRefreshingAiModels ? (
+                            <Loader2
+                              aria-hidden="true"
+                              size={18}
+                              className="spin"
+                            />
+                          ) : (
+                            <RefreshCw aria-hidden="true" size={18} />
+                          )}
+                          {isRefreshingAiModels ? "刷新中" : "刷新可用模型"}
+                        </button>
+                      </div>
+                      {aiProviderModels.length || aiProviderModelMessage ? (
+                        <small className="credential-help-note">
+                          {aiProviderModelMessage ||
+                            `已获取 ${aiProviderModels.length} 个模型，可选择或继续手动输入。`}
+                          {aiProviderModelsFetchedAt
+                            ? ` ${formatTimestamp(aiProviderModelsFetchedAt)}`
+                            : ""}
+                        </small>
+                      ) : null}
+                      {aiProviderModels.length ? (
+                        <div
+                          className="ai-model-option-list"
+                          aria-label="可用模型候选"
+                        >
+                          {aiProviderModels.map((model) => (
+                            <button
+                              key={model.id}
+                              className="ai-model-option"
+                              type="button"
+                              aria-pressed={model.id === aiModel}
+                              title={model.ownedBy ?? model.id}
+                              onClick={() => {
+                                setAiProviderProbe(undefined);
+                                setAiModel(model.id);
+                              }}
+                            >
+                              <span>{model.id}</span>
+                              {model.ownedBy ? <small>{model.ownedBy}</small> : null}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
                     </label>
                     <label className="credential-input settings-form-span">
                       <span>新的 AI API Key</span>
@@ -974,6 +1255,7 @@ export function SettingsPage({
                       onClick={() => void handleSaveAiCredential()}
                       disabled={
                         isSavingAiCredential ||
+                        isRefreshingAiModels ||
                         !aiBaseUrl.trim() ||
                         !aiModel.trim()
                       }
@@ -986,6 +1268,8 @@ export function SettingsPage({
                       onClick={() => void handleTestAiConnection()}
                       disabled={
                         isTestingAiConnection ||
+                        isProbingAiProvider ||
+                        isRefreshingAiModels ||
                         isSavingAiCredential ||
                         !aiBaseUrl.trim() ||
                         !aiModel.trim() ||
@@ -1006,11 +1290,38 @@ export function SettingsPage({
                     <button
                       className="sync-button"
                       type="button"
+                      onClick={() => void handleProbeAiProviderCapabilities()}
+                      disabled={
+                        isProbingAiProvider ||
+                        isTestingAiConnection ||
+                        isRefreshingAiModels ||
+                        isSavingAiCredential ||
+                        !aiBaseUrl.trim() ||
+                        !aiModel.trim() ||
+                        (!aiApiKey.trim() && !aiState?.credential.hasCredential)
+                      }
+                    >
+                      {isProbingAiProvider ? (
+                        <Loader2
+                          aria-hidden="true"
+                          size={18}
+                          className="spin"
+                        />
+                      ) : (
+                        <ShieldCheck aria-hidden="true" size={18} />
+                      )}
+                      {isProbingAiProvider ? "探测中" : "测试兼容性"}
+                    </button>
+                    <button
+                      className="sync-button"
+                      type="button"
                       onClick={() => setPendingAction("removeAiCredential")}
                       disabled={
                         !aiState?.credential.hasCredential ||
                         isSavingAiCredential ||
-                        isTestingAiConnection
+                        isTestingAiConnection ||
+                        isProbingAiProvider ||
+                        isRefreshingAiModels
                       }
                     >
                       移除 AI Key
@@ -1973,6 +2284,29 @@ function formatTimestamp(value?: string): string {
 
   const timestamp = Number(value);
   return formatUnixDate(timestamp) || value;
+}
+
+function formatAiProviderCapabilityStatus(
+  status: AiProviderCapabilityStatus,
+): string {
+  if (status === "passed") {
+    return "通过";
+  }
+
+  if (status === "failed") {
+    return "失败";
+  }
+
+  return "跳过";
+}
+
+function formatAiResponseFormatPolicyLabel(
+  policy: AiResponseFormatPolicy,
+): string {
+  return (
+    AI_RESPONSE_FORMAT_POLICY_OPTIONS.find((option) => option.value === policy)
+      ?.label ?? "自动"
+  );
 }
 
 function formatBytes(value: number): string {

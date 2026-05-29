@@ -34,7 +34,7 @@ pub const BOOK_NOTES_SUMMARY_PROMPT_VERSION: &str = "book-notes-summary-v3";
 pub const READING_STATS_REVIEW_PROMPT_VERSION: &str = "reading-stats-review-v2";
 pub const READING_ROUTE_PROMPT_VERSION: &str = "reading-route-v2.1";
 pub const BOOK_DECISION_PROMPT_VERSION: &str = "book-decision-v1";
-pub const LOCAL_READER_SELECTION_QA_PROMPT_VERSION: &str = "local-reader-selection-qa-v1";
+pub const LOCAL_READER_SELECTION_QA_PROMPT_VERSION: &str = "local-reader-selection-qa-v2";
 
 pub const BOOK_NOTES_SUMMARY_FEATURE: &str = "book-notes-summary";
 const READING_STATS_REVIEW_FEATURE: &str = "reading-stats-review";
@@ -49,6 +49,8 @@ const PROVIDER_SETTINGS_RECORD: &[u8] = b"ai-provider-settings";
 const VAULT_PASSWORD: &str = "wxreadmaster-local-ai-credential-v1";
 const DEFAULT_AI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_AI_MODEL: &str = "gpt-4o-mini";
+const DEFAULT_AI_PROVIDER_PRESET_ID: &str = "openai";
+const CUSTOM_AI_PROVIDER_PRESET_ID: &str = "custom";
 const MAX_SUMMARY_HIGHLIGHTS: usize = 80;
 const MAX_SUMMARY_THOUGHTS: usize = 80;
 const MAX_SUMMARY_CHAPTER_GROUPS: usize = 80;
@@ -59,6 +61,7 @@ const MAX_STATS_CATEGORIES: usize = 12;
 const MAX_ROUTE_CANDIDATES: usize = 8;
 const MAX_BOOK_DECISION_CANDIDATES: usize = 8;
 const MAX_LOCAL_READER_SELECTED_TEXT_CHARS: usize = 2_000;
+const MAX_LOCAL_READER_CONTEXT_TEXT_CHARS: usize = 1_200;
 const MAX_LOCAL_READER_QUESTION_CHARS: usize = 600;
 const MAX_LOCAL_READER_ANSWER_CHARS: usize = 8_000;
 const MAX_LOCAL_READER_LIST_ITEM_CHARS: usize = 500;
@@ -275,11 +278,64 @@ pub struct AiCredentialValidationResult {
     pub message: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum AiProviderCapabilityStatus {
+    Passed,
+    Failed,
+    Skipped,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AiProviderCapabilityProbe {
+    pub basic: AiProviderCapabilityStatus,
+    pub json_object: AiProviderCapabilityStatus,
+    pub json_schema: AiProviderCapabilityStatus,
+    pub recommended_policy: AiResponseFormatPolicy,
+    pub checked_at: String,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AiProviderModelListItem {
+    pub id: String,
+    pub owned_by: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AiProviderModelListResponse {
+    pub models: Vec<AiProviderModelListItem>,
+    pub fetched_at: String,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum AiResponseFormatPolicy {
+    Auto,
+    JsonSchemaFirst,
+    JsonObjectFirst,
+    NoResponseFormatFirst,
+}
+
+impl Default for AiResponseFormatPolicy {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AiProviderSettings {
     pub base_url: String,
     pub model: String,
+    #[serde(default = "default_stored_provider_preset_id")]
+    pub preset_id: String,
+    #[serde(default)]
+    pub response_format_policy: AiResponseFormatPolicy,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -369,7 +425,7 @@ impl AiResponseFormatKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProviderJsonResult {
     value: Value,
-    response_format: AiResponseFormatKind,
+    response_format: Option<AiResponseFormatKind>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -644,10 +700,18 @@ pub struct LocalReaderSelectionBookInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct LocalReaderSelectionContextInput {
+    pub before_text: Option<String>,
+    pub after_text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct LocalReaderSelectionInput {
     pub text: String,
     pub start_offset: i64,
     pub end_offset: i64,
+    pub context: Option<LocalReaderSelectionContextInput>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -991,8 +1055,16 @@ impl AiService {
         api_key: &str,
         base_url: Option<&str>,
         model: Option<&str>,
+        preset_id: Option<&str>,
+        response_format_policy: Option<AiResponseFormatPolicy>,
     ) -> Result<AiSettingsState, AiServiceError> {
-        self.save_settings(Some(api_key), base_url, model)
+        self.save_settings(
+            Some(api_key),
+            base_url,
+            model,
+            preset_id,
+            response_format_policy,
+        )
     }
 
     pub fn save_settings(
@@ -1000,14 +1072,19 @@ impl AiService {
         api_key: Option<&str>,
         base_url: Option<&str>,
         model: Option<&str>,
+        preset_id: Option<&str>,
+        response_format_policy: Option<AiResponseFormatPolicy>,
     ) -> Result<AiSettingsState, AiServiceError> {
-        let provider = normalize_provider_settings(base_url, model)?;
+        let provider =
+            normalize_provider_settings(base_url, model, preset_id, response_format_policy)?;
         let trimmed_key = api_key.map(str::trim).filter(|value| !value.is_empty());
         if let Some(next_key) = trimmed_key {
             let validation = Self::validate_credential_input(
                 next_key,
                 Some(&provider.base_url),
                 Some(&provider.model),
+                Some(&provider.preset_id),
+                Some(provider.response_format_policy),
             );
             if !validation.is_valid {
                 return Err(AiServiceError::InvalidCredential(
@@ -2087,35 +2164,21 @@ impl AiService {
         api_key: &str,
         base_url: Option<&str>,
         model: Option<&str>,
+        preset_id: Option<&str>,
+        response_format_policy: Option<AiResponseFormatPolicy>,
     ) -> AiCredentialValidationResult {
         let checked_at = current_unix_seconds();
-        let trimmed_key = api_key.trim();
-
-        if trimmed_key.is_empty() {
+        if let Some(message) = Self::validate_api_key_input(api_key) {
             return AiCredentialValidationResult {
                 is_valid: false,
                 checked_at,
-                message: Some("AI API Key 不能为空。".to_string()),
+                message: Some(message),
             };
         }
 
-        if trimmed_key.len() < 16 {
-            return AiCredentialValidationResult {
-                is_valid: false,
-                checked_at,
-                message: Some("AI API Key 长度过短。".to_string()),
-            };
-        }
-
-        if trimmed_key.chars().any(char::is_whitespace) {
-            return AiCredentialValidationResult {
-                is_valid: false,
-                checked_at,
-                message: Some("AI API Key 不能包含空白字符。".to_string()),
-            };
-        }
-
-        if let Err(error) = normalize_provider_settings(base_url, model) {
+        if let Err(error) =
+            normalize_provider_settings(base_url, model, preset_id, response_format_policy)
+        {
             return AiCredentialValidationResult {
                 is_valid: false,
                 checked_at,
@@ -2130,23 +2193,44 @@ impl AiService {
         }
     }
 
+    fn validate_api_key_input(api_key: &str) -> Option<String> {
+        let trimmed_key = api_key.trim();
+
+        if trimmed_key.is_empty() {
+            return Some("AI API Key 不能为空。".to_string());
+        }
+
+        if trimmed_key.len() < 16 {
+            return Some("AI API Key 长度过短。".to_string());
+        }
+
+        if trimmed_key.chars().any(char::is_whitespace) {
+            return Some("AI API Key 不能包含空白字符。".to_string());
+        }
+
+        None
+    }
+
     pub async fn test_connection(
         &self,
         api_key: Option<&str>,
         base_url: Option<&str>,
         model: Option<&str>,
+        preset_id: Option<&str>,
+        response_format_policy: Option<AiResponseFormatPolicy>,
     ) -> Result<AiCredentialValidationResult, AiServiceError> {
         let checked_at = current_unix_seconds();
-        let provider = match normalize_provider_settings(base_url, model) {
-            Ok(settings) => settings,
-            Err(error) => {
-                return Ok(AiCredentialValidationResult {
-                    is_valid: false,
-                    checked_at,
-                    message: Some(error.user_message()),
-                });
-            }
-        };
+        let provider =
+            match normalize_provider_settings(base_url, model, preset_id, response_format_policy) {
+                Ok(settings) => settings,
+                Err(error) => {
+                    return Ok(AiCredentialValidationResult {
+                        is_valid: false,
+                        checked_at,
+                        message: Some(error.user_message()),
+                    });
+                }
+            };
         let trimmed_input_key = api_key.map(str::trim).filter(|value| !value.is_empty());
         let key = match trimmed_input_key {
             Some(value) => value.to_string(),
@@ -2165,8 +2249,13 @@ impl AiService {
             },
         };
 
-        let validation =
-            Self::validate_credential_input(&key, Some(&provider.base_url), Some(&provider.model));
+        let validation = Self::validate_credential_input(
+            &key,
+            Some(&provider.base_url),
+            Some(&provider.model),
+            Some(&provider.preset_id),
+            Some(provider.response_format_policy),
+        );
         if !validation.is_valid {
             return Ok(AiCredentialValidationResult {
                 is_valid: false,
@@ -2187,6 +2276,92 @@ impl AiService {
                 message: Some(error.user_message()),
             }),
         }
+    }
+
+    pub async fn probe_provider_capabilities(
+        &self,
+        api_key: Option<&str>,
+        base_url: Option<&str>,
+        model: Option<&str>,
+        preset_id: Option<&str>,
+        response_format_policy: Option<AiResponseFormatPolicy>,
+    ) -> Result<AiProviderCapabilityProbe, AiServiceError> {
+        let checked_at = current_unix_seconds();
+        let provider =
+            match normalize_provider_settings(base_url, model, preset_id, response_format_policy) {
+                Ok(settings) => settings,
+                Err(error) => {
+                    return Ok(AiProviderCapabilityProbe {
+                        basic: AiProviderCapabilityStatus::Failed,
+                        json_object: AiProviderCapabilityStatus::Skipped,
+                        json_schema: AiProviderCapabilityStatus::Skipped,
+                        recommended_policy: AiResponseFormatPolicy::Auto,
+                        checked_at,
+                        message: Some(error.user_message()),
+                    });
+                }
+            };
+        let trimmed_input_key = api_key.map(str::trim).filter(|value| !value.is_empty());
+        let key = match trimmed_input_key {
+            Some(value) => value.to_string(),
+            None => match self.read_api_key() {
+                Ok(value) => value,
+                Err(AiServiceError::MissingCredential) => {
+                    return Ok(AiProviderCapabilityProbe {
+                        basic: AiProviderCapabilityStatus::Failed,
+                        json_object: AiProviderCapabilityStatus::Skipped,
+                        json_schema: AiProviderCapabilityStatus::Skipped,
+                        recommended_policy: provider.response_format_policy,
+                        checked_at,
+                        message: Some(
+                            "还没有保存 AI API Key，也没有输入新的 AI API Key。".to_string(),
+                        ),
+                    });
+                }
+                Err(error) => return Err(error),
+            },
+        };
+
+        let validation = Self::validate_credential_input(
+            &key,
+            Some(&provider.base_url),
+            Some(&provider.model),
+            Some(&provider.preset_id),
+            Some(provider.response_format_policy),
+        );
+        if !validation.is_valid {
+            return Ok(AiProviderCapabilityProbe {
+                basic: AiProviderCapabilityStatus::Failed,
+                json_object: AiProviderCapabilityStatus::Skipped,
+                json_schema: AiProviderCapabilityStatus::Skipped,
+                recommended_policy: provider.response_format_policy,
+                checked_at,
+                message: validation.message,
+            });
+        }
+
+        Ok(probe_ai_provider_capabilities(&key, &provider, checked_at).await)
+    }
+
+    pub async fn list_provider_models(
+        &self,
+        api_key: Option<&str>,
+        base_url: Option<&str>,
+    ) -> Result<AiProviderModelListResponse, AiServiceError> {
+        let fetched_at = current_unix_seconds();
+        let base_url = normalize_provider_base_url(base_url)?;
+        let trimmed_input_key = api_key.map(str::trim).filter(|value| !value.is_empty());
+        let key = match trimmed_input_key {
+            Some(value) => value.to_string(),
+            None => self.read_api_key()?,
+        };
+
+        let validation = Self::validate_api_key_input(&key);
+        if let Some(message) = validation {
+            return Err(AiServiceError::InvalidCredential(message));
+        }
+
+        request_ai_provider_models(&key, &base_url, fetched_at).await
     }
 
     fn open_client(&self) -> Result<(Stronghold, Client), AiServiceError> {
@@ -2391,7 +2566,7 @@ async fn request_ai_json(
     system_prompt: &str,
     input: &Value,
 ) -> Result<ProviderJsonResult, AiServiceError> {
-    request_ai_json_with_response_format(
+    match request_ai_json_with_response_format(
         api_key,
         provider,
         system_prompt,
@@ -2400,6 +2575,15 @@ async fn request_ai_json(
         AiResponseFormatKind::JsonObject,
     )
     .await
+    {
+        Ok(value) => Ok(value),
+        Err(AiServiceError::ProviderResponse(message))
+            if is_unsupported_response_format_response(&message) =>
+        {
+            request_ai_json_without_response_format(api_key, provider, system_prompt, input).await
+        }
+        Err(error) => Err(error),
+    }
 }
 
 async fn request_ai_json_with_schema_fallback(
@@ -2410,6 +2594,22 @@ async fn request_ai_json_with_schema_fallback(
     schema_name: &str,
     schema: Value,
 ) -> Result<ProviderJsonResult, AiServiceError> {
+    match provider.response_format_policy {
+        AiResponseFormatPolicy::JsonObjectFirst => {
+            return request_ai_json(api_key, provider, system_prompt, input).await;
+        }
+        AiResponseFormatPolicy::NoResponseFormatFirst => {
+            return request_ai_json_without_response_format(
+                api_key,
+                provider,
+                system_prompt,
+                input,
+            )
+            .await;
+        }
+        AiResponseFormatPolicy::Auto | AiResponseFormatPolicy::JsonSchemaFirst => {}
+    }
+
     let schema_response_format = json!({
         "type": "json_schema",
         "json_schema": {
@@ -2437,6 +2637,42 @@ async fn request_ai_json_with_schema_fallback(
         }
         Err(error) => Err(error),
     }
+}
+
+async fn request_ai_json_without_response_format(
+    api_key: &str,
+    provider: &AiProviderSettings,
+    system_prompt: &str,
+    input: &Value,
+) -> Result<ProviderJsonResult, AiServiceError> {
+    let client = HttpClient::builder()
+        .timeout(std::time::Duration::from_secs(AI_REQUEST_TIMEOUT_SECONDS))
+        .build()
+        .map_err(AiServiceError::storage)?;
+    let response = client
+        .post(chat_completions_url(&provider.base_url))
+        .bearer_auth(api_key)
+        .json(&build_chat_completion_payload_without_response_format(
+            &provider.model,
+            system_prompt,
+            input,
+        ))
+        .send()
+        .await
+        .map_err(|error| AiServiceError::ProviderNetwork(error.to_string()))?;
+    let status = response.status();
+    let value = response.json::<Value>().await.map_err(|error| {
+        if status.is_success() {
+            AiServiceError::ProviderResponse(safe_provider_decode_message(error))
+        } else {
+            AiServiceError::ProviderNetwork(format!("HTTP {}", status.as_u16()))
+        }
+    })?;
+
+    extract_chat_completion_json(status, value).map(|value| ProviderJsonResult {
+        value,
+        response_format: None,
+    })
 }
 
 async fn request_ai_json_with_response_format(
@@ -2474,7 +2710,7 @@ async fn request_ai_json_with_response_format(
 
     extract_chat_completion_json(status, value).map(|value| ProviderJsonResult {
         value,
-        response_format: response_format_kind,
+        response_format: Some(response_format_kind),
     })
 }
 
@@ -2518,23 +2754,269 @@ async fn request_ai_connection_test(
     }
 
     let value = response.json::<Value>().await.ok();
-    if let Some(error_message) = value
-        .as_ref()
-        .and_then(|body| body.get("error"))
-        .and_then(|error| error.get("message"))
-        .and_then(Value::as_str)
-    {
-        return Err(AiServiceError::ProviderResponse(format!(
-            "AI Provider 返回 HTTP {}：{}",
-            status.as_u16(),
-            error_message.trim()
-        )));
+    if let Some(value) = value {
+        return Err(provider_response_status_error(status, &value));
     }
 
     Err(AiServiceError::ProviderNetwork(format!(
         "HTTP {}",
         status.as_u16()
     )))
+}
+
+fn provider_response_status_error(status: StatusCode, value: &Value) -> AiServiceError {
+    if let Some(error_message) = value
+        .get("error")
+        .and_then(|error| error.get("message"))
+        .and_then(Value::as_str)
+    {
+        return AiServiceError::ProviderResponse(format!(
+            "AI Provider 返回 HTTP {}：{}",
+            status.as_u16(),
+            error_message.trim()
+        ));
+    }
+
+    AiServiceError::ProviderNetwork(format!("HTTP {}", status.as_u16()))
+}
+
+async fn request_ai_provider_models(
+    api_key: &str,
+    base_url: &str,
+    fetched_at: String,
+) -> Result<AiProviderModelListResponse, AiServiceError> {
+    let client = HttpClient::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(AiServiceError::storage)?;
+    let response = client
+        .get(models_url(base_url))
+        .bearer_auth(api_key)
+        .send()
+        .await
+        .map_err(|error| AiServiceError::ProviderNetwork(error.to_string()))?;
+    let status = response.status();
+    let value = response.json::<Value>().await.map_err(|error| {
+        if status.is_success() {
+            AiServiceError::ProviderResponse(safe_provider_decode_message(error))
+        } else {
+            AiServiceError::ProviderNetwork(format!("HTTP {}", status.as_u16()))
+        }
+    })?;
+
+    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+        return Err(AiServiceError::ProviderResponse(
+            "AI API Key 无效或无权读取模型列表，请在设置中更新。".to_string(),
+        ));
+    }
+
+    if !status.is_success() {
+        return Err(provider_response_status_error(status, &value));
+    }
+
+    let mut models = parse_provider_model_list(&value)?;
+    models.sort_by(|left, right| left.id.cmp(&right.id));
+    models.dedup_by(|left, right| left.id == right.id);
+    let message = if models.is_empty() {
+        Some("Provider 未返回可用模型，仍可手动输入模型名。".to_string())
+    } else {
+        None
+    };
+
+    Ok(AiProviderModelListResponse {
+        models,
+        fetched_at,
+        message,
+    })
+}
+
+fn parse_provider_model_list(
+    value: &Value,
+) -> Result<Vec<AiProviderModelListItem>, AiServiceError> {
+    let data = value.get("data").and_then(Value::as_array).ok_or_else(|| {
+        AiServiceError::InvalidProviderOutput("模型列表响应缺少 data 数组。".to_string())
+    })?;
+
+    Ok(data
+        .iter()
+        .filter_map(|item| {
+            let id = item.get("id").and_then(Value::as_str)?.trim();
+            if id.is_empty() {
+                return None;
+            }
+
+            Some(AiProviderModelListItem {
+                id: id.to_string(),
+                owned_by: item
+                    .get("owned_by")
+                    .or_else(|| item.get("ownedBy"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToString::to_string),
+            })
+        })
+        .collect())
+}
+
+async fn probe_ai_provider_capabilities(
+    api_key: &str,
+    provider: &AiProviderSettings,
+    checked_at: String,
+) -> AiProviderCapabilityProbe {
+    let basic_result = request_ai_connection_test(api_key, provider).await;
+    if let Err(error) = basic_result {
+        return AiProviderCapabilityProbe {
+            basic: AiProviderCapabilityStatus::Failed,
+            json_object: AiProviderCapabilityStatus::Skipped,
+            json_schema: AiProviderCapabilityStatus::Skipped,
+            recommended_policy: AiResponseFormatPolicy::NoResponseFormatFirst,
+            checked_at,
+            message: Some(error.user_message()),
+        };
+    }
+
+    let json_object_result =
+        request_ai_response_format_probe(api_key, provider, default_json_object_response_format())
+            .await;
+    let json_schema_result = request_ai_response_format_probe(
+        api_key,
+        provider,
+        json!({
+            "type": "json_schema",
+            "json_schema": {
+                "name": "provider_capability_probe",
+                "strict": true,
+                "schema": provider_capability_probe_json_schema()
+            }
+        }),
+    )
+    .await;
+
+    let json_object = status_from_probe_result(&json_object_result);
+    let json_schema = status_from_probe_result(&json_schema_result);
+    let recommended_policy = recommend_response_format_policy(json_object, json_schema);
+    let message = build_provider_capability_probe_message(
+        &json_object_result,
+        &json_schema_result,
+        recommended_policy,
+    );
+
+    AiProviderCapabilityProbe {
+        basic: AiProviderCapabilityStatus::Passed,
+        json_object,
+        json_schema,
+        recommended_policy,
+        checked_at,
+        message,
+    }
+}
+
+async fn request_ai_response_format_probe(
+    api_key: &str,
+    provider: &AiProviderSettings,
+    response_format: Value,
+) -> Result<(), AiServiceError> {
+    let client = HttpClient::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(AiServiceError::storage)?;
+    let response = client
+        .post(chat_completions_url(&provider.base_url))
+        .bearer_auth(api_key)
+        .json(&build_chat_completion_probe_payload(
+            &provider.model,
+            Some(response_format),
+        ))
+        .send()
+        .await
+        .map_err(|error| AiServiceError::ProviderNetwork(error.to_string()))?;
+    let status = response.status();
+    let value = response.json::<Value>().await.map_err(|error| {
+        if status.is_success() {
+            AiServiceError::ProviderResponse(safe_provider_decode_message(error))
+        } else {
+            AiServiceError::ProviderNetwork(format!("HTTP {}", status.as_u16()))
+        }
+    })?;
+
+    extract_chat_completion_json(status, value).map(|_| ())
+}
+
+fn build_chat_completion_probe_payload(model: &str, response_format: Option<Value>) -> Value {
+    let mut payload = json!({
+        "model": model,
+        "temperature": 0,
+        "max_tokens": 30,
+        "messages": [
+            {
+                "role": "system",
+                "content": "只输出一个 JSON 对象，不要 Markdown。"
+            },
+            {
+                "role": "user",
+                "content": "请回复 {\"ok\":true}"
+            }
+        ]
+    });
+
+    if let Some(response_format) = response_format {
+        payload["response_format"] = response_format;
+    }
+
+    payload
+}
+
+fn provider_capability_probe_json_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "ok": {
+                "type": "boolean"
+            }
+        },
+        "required": ["ok"]
+    })
+}
+
+fn status_from_probe_result(result: &Result<(), AiServiceError>) -> AiProviderCapabilityStatus {
+    match result {
+        Ok(()) => AiProviderCapabilityStatus::Passed,
+        Err(_) => AiProviderCapabilityStatus::Failed,
+    }
+}
+
+fn recommend_response_format_policy(
+    json_object: AiProviderCapabilityStatus,
+    json_schema: AiProviderCapabilityStatus,
+) -> AiResponseFormatPolicy {
+    if json_schema == AiProviderCapabilityStatus::Passed {
+        AiResponseFormatPolicy::JsonSchemaFirst
+    } else if json_object == AiProviderCapabilityStatus::Passed {
+        AiResponseFormatPolicy::JsonObjectFirst
+    } else {
+        AiResponseFormatPolicy::NoResponseFormatFirst
+    }
+}
+
+fn build_provider_capability_probe_message(
+    _json_object_result: &Result<(), AiServiceError>,
+    _json_schema_result: &Result<(), AiServiceError>,
+    recommended_policy: AiResponseFormatPolicy,
+) -> Option<String> {
+    match recommended_policy {
+        AiResponseFormatPolicy::JsonSchemaFirst => {
+            Some("当前模型支持严格结构化输出，可使用严格结构化模式。".to_string())
+        }
+        AiResponseFormatPolicy::JsonObjectFirst => {
+            Some("当前模型不支持严格结构化输出，建议使用通用 JSON 模式。".to_string())
+        }
+        AiResponseFormatPolicy::NoResponseFormatFirst => {
+            Some("结构化输出探测未通过，建议使用宽松兼容模式。".to_string())
+        }
+        AiResponseFormatPolicy::Auto => None,
+    }
 }
 
 fn build_chat_completion_payload(
@@ -2561,6 +3043,28 @@ fn build_chat_completion_payload(
     })
 }
 
+fn build_chat_completion_payload_without_response_format(
+    model: &str,
+    system_prompt: &str,
+    input: &Value,
+) -> Value {
+    json!({
+        "model": model,
+        "temperature": 0.2,
+        "max_tokens": AI_JSON_MAX_TOKENS,
+        "messages": [
+            {
+                "role": "system",
+                "content": system_prompt
+            },
+            {
+                "role": "user",
+                "content": serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string())
+            }
+        ]
+    })
+}
+
 fn chat_completions_url(base_url: &str) -> String {
     let base_url = base_url.trim_end_matches('/');
 
@@ -2570,6 +3074,20 @@ fn chat_completions_url(base_url: &str) -> String {
         format!("{base_url}/chat/completions")
     } else {
         format!("{base_url}/v1/chat/completions")
+    }
+}
+
+fn models_url(base_url: &str) -> String {
+    let base_url = base_url.trim_end_matches('/');
+
+    if let Some(root) = base_url.strip_suffix("/chat/completions") {
+        format!("{root}/models")
+    } else if base_url.ends_with("/models") {
+        base_url.to_string()
+    } else if base_url.ends_with("/v1") {
+        format!("{base_url}/models")
+    } else {
+        format!("{base_url}/v1/models")
     }
 }
 
@@ -2590,7 +3108,7 @@ fn book_decision_system_prompt() -> &'static str {
 }
 
 fn local_reader_selection_question_system_prompt() -> &'static str {
-    "你是本地阅读器里的选区问答助手。只基于用户提供的 selectedText 和 question 回答，不假装读过整本书，不补写未提供的上下文，不读取或输出本地路径、文件 hash、数据库路径、API Key、微信凭据或微信读书数据。必须使用简体中文，只输出一个顶层 JSON 对象，不要 Markdown。字段必须使用英文 camelCase，且必须包含 answer、keyPoints、followUpQuestions。answer 写 2-5 句，明确说明结论只来自选中文本；keyPoints 为 1-5 条要点；followUpQuestions 为 0-3 个后续问题。如果问题超出选中文本能支持的范围，必须直接说明“仅凭选中文本无法判断”，并给出用户可以继续选择哪些上下文来追问。"
+    "你是本地阅读器里的选区问答助手。只基于用户提供的 book、selection.text、selection.context.beforeText、selection.context.afterText 和 question 回答，不假装读过整本书，不补写未提供的上下文，不读取或输出本地路径、文件 hash、数据库路径、API Key、微信凭据或微信读书数据。必须使用简体中文，只输出一个顶层 JSON 对象，不要 Markdown。字段必须使用英文 camelCase，且必须包含 answer、keyPoints、followUpQuestions。answer 写 2-5 句，先直接回答用户问题，再说明依据来自选区或前后文；如果选区很短，例如人名、术语或半句话，必须优先结合前后文解释它在当前段落中的作用，不要只回复“无法判断”。只有当前选区和前后文都确实无法支持答案时，才说明“当前选区和前后文仍不足以判断”，并给出最小必要的不确定点。keyPoints 为 1-5 条要点，每条必须落到文本里的对象、动作、关系、转折或情绪，不写“信息不足”这类空要点。followUpQuestions 为 0-3 个可点击追问，必须是用户可以直接提交给 AI 的具体问题，避免“请选择更多文本”“请提供上下文”“包含某某的句子”这类操作说明；优先围绕当前段落继续追问人物关系、指代对象、作者态度、前后因果或概念含义。"
 }
 
 fn extract_chat_completion_json(status: StatusCode, value: Value) -> Result<Value, AiServiceError> {
@@ -2872,11 +3390,17 @@ fn local_reader_selection_question_json_schema() -> Value {
 }
 
 fn is_unsupported_json_schema_response(message: &str) -> bool {
+    is_unsupported_response_format_response(message)
+}
+
+fn is_unsupported_response_format_response(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
     let mentions_schema = message.contains("json_schema")
         || message.contains("response_format")
         || message.contains("response format");
     let mentions_incompatibility = message.contains("unsupported")
+        || message.contains("unavailable")
+        || message.contains("not available")
         || message.contains("not supported")
         || message.contains("does not support")
         || message.contains("not support")
@@ -4305,6 +4829,20 @@ fn build_local_reader_selection_question_input(
         normalize_local_reader_text("问题", &request.question, MAX_LOCAL_READER_QUESTION_CHARS)?;
     let start_offset = request.selection.start_offset;
     let end_offset = request.selection.end_offset;
+    let context_before = request.selection.context.as_ref().and_then(|context| {
+        normalize_local_reader_context_text(
+            context.before_text.as_deref(),
+            MAX_LOCAL_READER_CONTEXT_TEXT_CHARS,
+            true,
+        )
+    });
+    let context_after = request.selection.context.as_ref().and_then(|context| {
+        normalize_local_reader_context_text(
+            context.after_text.as_deref(),
+            MAX_LOCAL_READER_CONTEXT_TEXT_CHARS,
+            false,
+        )
+    });
 
     if start_offset < 0 || end_offset <= start_offset {
         return Err(AiServiceError::InvalidProviderOutput(
@@ -4316,19 +4854,26 @@ fn build_local_reader_selection_question_input(
         "{}:{}:{}-{}",
         source_item.source, source_item.source_id, start_offset, end_offset
     );
+    let mut selection_payload = json!({
+        "text": selected_text,
+        "startOffset": start_offset,
+        "endOffset": end_offset
+    });
+    if context_before.is_some() || context_after.is_some() {
+        selection_payload["context"] = json!({
+            "beforeText": context_before,
+            "afterText": context_after
+        });
+    }
     let payload = json!({
         "promptVersion": LOCAL_READER_SELECTION_QA_PROMPT_VERSION,
-        "basis": "仅基于用户在本地阅读器中手动选择的文本回答，不包含整本书、本地文件路径、文件 hash、数据库路径、微信凭据或微信读书笔记。",
+        "basis": "仅基于用户在本地阅读器中手动选择的文本及其前后文回答，不包含整本书、本地文件路径、文件 hash、数据库路径、微信凭据或微信读书笔记。",
         "source": "local",
         "book": {
             "title": title,
             "author": author
         },
-        "selection": {
-            "text": selected_text,
-            "startOffset": start_offset,
-            "endOffset": end_offset
-        },
+        "selection": selection_payload,
         "question": question
     });
 
@@ -4371,6 +4916,32 @@ fn normalize_local_reader_text(
     Ok(trimmed.chars().take(max_chars).collect())
 }
 
+fn normalize_local_reader_context_text(
+    value: Option<&str>,
+    max_chars: usize,
+    prefer_tail: bool,
+) -> Option<String> {
+    let trimmed = value?.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let chars: Vec<char> = trimmed.chars().collect();
+    if chars.len() <= max_chars {
+        return Some(trimmed.to_string());
+    }
+
+    if prefer_tail {
+        Some(
+            chars[chars.len().saturating_sub(max_chars)..]
+                .iter()
+                .collect(),
+        )
+    } else {
+        Some(chars[..max_chars].iter().collect())
+    }
+}
+
 fn normalize_book_decision_goal(goal: Option<String>) -> String {
     let normalized = goal.unwrap_or_default().trim().to_string();
     match normalized.as_str() {
@@ -4386,7 +4957,7 @@ fn normalize_summary_output(
     source_stats: BookAiSummarySourceStats,
     generated_at: String,
     prompt_version: &str,
-    response_format: AiResponseFormatKind,
+    response_format: Option<AiResponseFormatKind>,
 ) -> Result<BookAiSummary, AiServiceError> {
     if !value.is_object() {
         return Err(AiServiceError::InvalidProviderOutput(
@@ -4448,7 +5019,7 @@ fn normalize_summary_output(
         source_stats,
         generated_at,
         prompt_version: prompt_version.to_string(),
-        response_format: Some(response_format),
+        response_format,
         basis_notice: "基于本地笔记生成，不代表整本书全文内容。".to_string(),
     })
 }
@@ -4458,7 +5029,7 @@ fn normalize_reading_stats_review_output(
     source_stats: ReadingStatsAiReviewSourceStats,
     generated_at: String,
     prompt_version: &str,
-    response_format: AiResponseFormatKind,
+    response_format: Option<AiResponseFormatKind>,
 ) -> Result<ReadingStatsAiReview, AiServiceError> {
     if !value.is_object() {
         return Err(AiServiceError::InvalidProviderOutput(
@@ -4532,7 +5103,7 @@ fn normalize_reading_stats_review_output(
         source_stats,
         generated_at,
         prompt_version: prompt_version.to_string(),
-        response_format: Some(response_format),
+        response_format,
         basis_notice: "基于结构化阅读统计生成，不包含笔记正文或书籍全文。".to_string(),
     })
 }
@@ -4544,7 +5115,7 @@ fn normalize_reading_route_output(
     fallback_stage: Option<ReadingStageSignal>,
     generated_at: String,
     prompt_version: &str,
-    response_format: AiResponseFormatKind,
+    response_format: Option<AiResponseFormatKind>,
 ) -> Result<ReadingRoute, AiServiceError> {
     if !value.is_object() {
         return Err(AiServiceError::InvalidProviderOutput(
@@ -4625,7 +5196,7 @@ fn normalize_reading_route_output(
         source_stats,
         generated_at,
         prompt_version: prompt_version.to_string(),
-        response_format: Some(response_format),
+        response_format,
         basis_notice:
             "基于本地缓存、已生成复盘和用户选择的候选书生成，不代表微信读书远端计划，也不会写回微信读书。"
                 .to_string(),
@@ -4642,7 +5213,7 @@ fn normalize_book_decision_output(
     source_stats: BookDecisionSourceStats,
     generated_at: String,
     prompt_version: &str,
-    response_format: AiResponseFormatKind,
+    response_format: Option<AiResponseFormatKind>,
 ) -> Result<BookDecision, AiServiceError> {
     if !value.is_object() {
         return Err(AiServiceError::InvalidProviderOutput(
@@ -4713,7 +5284,7 @@ fn normalize_book_decision_output(
         source_stats,
         generated_at,
         prompt_version: prompt_version.to_string(),
-        response_format: Some(response_format),
+        response_format,
         basis_notice:
             "基于本地候选、已生成复盘和结构化统计信号生成，不代表微信读书远端推荐，也不会写回微信读书。"
                 .to_string(),
@@ -4724,7 +5295,7 @@ fn normalize_local_reader_selection_answer_output(
     value: Value,
     generated_at: String,
     prompt_version: &str,
-    response_format: AiResponseFormatKind,
+    response_format: Option<AiResponseFormatKind>,
 ) -> Result<LocalReaderSelectionAnswer, AiServiceError> {
     if !value.is_object() {
         return Err(AiServiceError::InvalidProviderOutput(
@@ -4777,9 +5348,10 @@ fn normalize_local_reader_selection_answer_output(
         .collect(),
         generated_at,
         prompt_version: prompt_version.to_string(),
-        response_format: Some(response_format),
-        basis_notice: "仅基于本次选中文本生成，不代表整本书全文，也不会读取或合并微信读书数据。"
-            .to_string(),
+        response_format,
+        basis_notice:
+            "仅基于本次选中文本及其前后文生成，不代表整本书全文，也不会读取或合并微信读书数据。"
+                .to_string(),
     })
 }
 
@@ -6679,24 +7251,56 @@ fn read_provider_settings(bytes: Option<Vec<u8>>) -> AiProviderSettings {
         .unwrap_or_else(default_provider_settings)
 }
 
+fn default_stored_provider_preset_id() -> String {
+    CUSTOM_AI_PROVIDER_PRESET_ID.to_string()
+}
+
 fn default_provider_settings() -> AiProviderSettings {
     AiProviderSettings {
         base_url: DEFAULT_AI_BASE_URL.to_string(),
         model: DEFAULT_AI_MODEL.to_string(),
+        preset_id: DEFAULT_AI_PROVIDER_PRESET_ID.to_string(),
+        response_format_policy: AiResponseFormatPolicy::JsonSchemaFirst,
     }
 }
 
 fn normalize_provider_settings(
     base_url: Option<&str>,
     model: Option<&str>,
+    preset_id: Option<&str>,
+    response_format_policy: Option<AiResponseFormatPolicy>,
 ) -> Result<AiProviderSettings, AiServiceError> {
-    let base_url = match base_url {
-        Some(value) => value.trim(),
-        None => DEFAULT_AI_BASE_URL,
-    };
+    let base_url = normalize_provider_base_url(base_url)?;
     let model = match model {
         Some(value) => value.trim(),
         None => DEFAULT_AI_MODEL,
+    };
+
+    if model.is_empty() {
+        return Err(AiServiceError::InvalidProviderSettings(
+            "AI 模型名称不能为空。".to_string(),
+        ));
+    }
+
+    if model.chars().any(char::is_whitespace) {
+        return Err(AiServiceError::InvalidProviderSettings(
+            "AI 模型名称不能包含空白字符。".to_string(),
+        ));
+    }
+    let preset_id = normalize_provider_preset_id(preset_id)?;
+
+    Ok(AiProviderSettings {
+        base_url,
+        model: model.to_string(),
+        preset_id,
+        response_format_policy: response_format_policy.unwrap_or_default(),
+    })
+}
+
+fn normalize_provider_base_url(base_url: Option<&str>) -> Result<String, AiServiceError> {
+    let base_url = match base_url {
+        Some(value) => value.trim(),
+        None => DEFAULT_AI_BASE_URL,
     };
 
     if base_url.is_empty() {
@@ -6717,22 +7321,31 @@ fn normalize_provider_settings(
         ));
     }
 
-    if model.is_empty() {
+    Ok(base_url.trim_end_matches('/').to_string())
+}
+
+fn normalize_provider_preset_id(preset_id: Option<&str>) -> Result<String, AiServiceError> {
+    let preset_id = preset_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(CUSTOM_AI_PROVIDER_PRESET_ID);
+
+    if preset_id.len() > 64 {
         return Err(AiServiceError::InvalidProviderSettings(
-            "AI 模型名称不能为空。".to_string(),
+            "AI Provider 预设标识过长。".to_string(),
         ));
     }
 
-    if model.chars().any(char::is_whitespace) {
+    if !preset_id
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || character == '-' || character == '_')
+    {
         return Err(AiServiceError::InvalidProviderSettings(
-            "AI 模型名称不能包含空白字符。".to_string(),
+            "AI Provider 预设标识只能包含英文、数字、连字符或下划线。".to_string(),
         ));
     }
 
-    Ok(AiProviderSettings {
-        base_url: base_url.trim_end_matches('/').to_string(),
-        model: model.to_string(),
-    })
+    Ok(preset_id.to_string())
 }
 
 fn normalize_cache_key(
@@ -8484,33 +9097,38 @@ mod tests {
 
     use super::{
         book_decision_json_schema, book_notes_summary_json_schema, build_book_decision_input,
-        build_chat_completion_payload, build_local_reader_selection_question_input,
+        build_chat_completion_payload, build_chat_completion_payload_without_response_format,
+        build_chat_completion_probe_payload, build_local_reader_selection_question_input,
         build_reading_route_input, build_reading_stats_review_input, build_summary_input,
         cached_reading_route_response, cached_reading_stats_review_response, chat_completions_url,
-        default_json_object_response_format, extract_chat_completion_json, humanize_review_text,
-        is_empty_reading_stats, is_unsupported_json_schema_response,
-        local_reader_selection_question_json_schema, local_reader_selection_question_system_prompt,
-        normalize_book_decision_output, normalize_local_reader_selection_answer_output,
-        normalize_provider_settings, normalize_reading_route_output,
-        normalize_reading_stats_review_output, normalize_summary_output,
+        default_json_object_response_format, default_provider_settings,
+        extract_chat_completion_json, humanize_review_text, is_empty_reading_stats,
+        is_unsupported_json_schema_response, local_reader_selection_question_json_schema,
+        local_reader_selection_question_system_prompt, models_url, normalize_book_decision_output,
+        normalize_local_reader_selection_answer_output, normalize_provider_settings,
+        normalize_reading_route_output, normalize_reading_stats_review_output,
+        normalize_summary_output, parse_provider_model_list, provider_capability_probe_json_schema,
         provider_network_user_message, read_ai_asset_detail, read_ai_asset_summaries,
         read_ai_asset_version_detail, read_ai_asset_version_history, read_ai_output,
         read_ai_review_feedback, read_book_summary_export_items, read_book_summary_list,
-        read_latest_ai_output, read_local_book_notes, reading_route_json_schema,
-        reading_stats_review_json_schema, require_ai_credential_for_uncached_summary,
+        read_latest_ai_output, read_local_book_notes, read_provider_settings,
+        reading_route_json_schema, reading_stats_review_json_schema,
+        recommend_response_format_policy, require_ai_credential_for_uncached_summary,
         resolve_reading_persona, save_ai_review_feedback, serialize_book_summary_export_index,
         stable_hash_json, upsert_ai_output, AiCachedOutputRecord, AiFeedbackExportRecord,
-        AiOutputUpsert, AiResponseFormatKind, AiReviewFeedbackExport, AiReviewFeedbackState,
-        AiService, AiServiceError, BookAiSummarySource, BookAiSummarySourceStats,
-        BookDecisionCandidateInput, BookDecisionSourceStats, BookSummaryExportItem,
-        BookSummaryUpdateContext, LocalReaderSelectionBookInput, LocalReaderSelectionInput,
+        AiOutputUpsert, AiProviderCapabilityStatus, AiResponseFormatKind, AiResponseFormatPolicy,
+        AiReviewFeedbackExport, AiReviewFeedbackState, AiService, AiServiceError,
+        BookAiSummarySource, BookAiSummarySourceStats, BookDecisionCandidateInput,
+        BookDecisionSourceStats, BookSummaryExportItem, BookSummaryUpdateContext,
+        LocalReaderSelectionBookInput, LocalReaderSelectionContextInput, LocalReaderSelectionInput,
         LocalReaderSelectionQuestionInput, ReadingPersonaPatch, ReadingRouteBookInput,
         ReadingRouteRequest, ReadingRouteSourceStats, ReadingStageSignal,
         ReadingStatsAiReviewSourceStats, SourceItemInput, BOOK_DECISION_PROMPT_VERSION,
         BOOK_NOTES_SUMMARY_FEATURE, BOOK_NOTES_SUMMARY_PROMPT_VERSION,
         LOCAL_READER_SELECTION_QA_PROMPT_VERSION, MAX_LOCAL_READER_ANSWER_CHARS,
-        MAX_LOCAL_READER_LIST_ITEM_CHARS, READING_ROUTE_FEATURE, READING_ROUTE_PROMPT_VERSION,
-        READING_STATS_REVIEW_FEATURE, READING_STATS_REVIEW_PROMPT_VERSION,
+        MAX_LOCAL_READER_CONTEXT_TEXT_CHARS, MAX_LOCAL_READER_LIST_ITEM_CHARS,
+        READING_ROUTE_FEATURE, READING_ROUTE_PROMPT_VERSION, READING_STATS_REVIEW_FEATURE,
+        READING_STATS_REVIEW_PROMPT_VERSION,
     };
 
     #[derive(Debug, Deserialize)]
@@ -8638,7 +9256,7 @@ mod tests {
 
     #[test]
     fn validate_ai_credential_rejects_empty_key() {
-        let result = AiService::validate_credential_input("   ", None, None);
+        let result = AiService::validate_credential_input("   ", None, None, None, None);
 
         assert!(!result.is_valid);
         assert_eq!(result.message, Some("AI API Key 不能为空。".to_string()));
@@ -8650,6 +9268,8 @@ mod tests {
             "sk-1234567890abcdef",
             Some("api.example.com"),
             Some("gpt-4o-mini"),
+            None,
+            None,
         );
 
         assert!(!result.is_valid);
@@ -8661,12 +9281,53 @@ mod tests {
 
     #[test]
     fn provider_settings_trim_trailing_slashes() {
-        let settings =
-            normalize_provider_settings(Some(" https://api.example.com/v1/ "), Some("gpt-4o-mini"))
-                .expect("provider settings should normalize");
+        let settings = normalize_provider_settings(
+            Some(" https://api.example.com/v1/ "),
+            Some("gpt-4o-mini"),
+            Some("deepseek"),
+            Some(AiResponseFormatPolicy::NoResponseFormatFirst),
+        )
+        .expect("provider settings should normalize");
 
         assert_eq!(settings.base_url, "https://api.example.com/v1");
         assert_eq!(settings.model, "gpt-4o-mini");
+        assert_eq!(settings.preset_id, "deepseek");
+        assert_eq!(
+            settings.response_format_policy,
+            AiResponseFormatPolicy::NoResponseFormatFirst
+        );
+    }
+
+    #[test]
+    fn provider_settings_read_legacy_record_with_safe_defaults() {
+        let bytes = serde_json::to_vec(&json!({
+            "baseUrl": "https://api.example.com/v1",
+            "model": "gpt-4o-mini"
+        }))
+        .expect("legacy provider settings should serialize");
+
+        let settings = read_provider_settings(Some(bytes));
+
+        assert_eq!(settings.base_url, "https://api.example.com/v1");
+        assert_eq!(settings.model, "gpt-4o-mini");
+        assert_eq!(settings.preset_id, "custom");
+        assert_eq!(
+            settings.response_format_policy,
+            AiResponseFormatPolicy::Auto
+        );
+    }
+
+    #[test]
+    fn default_provider_settings_use_openai_json_schema_preset() {
+        let settings = default_provider_settings();
+
+        assert_eq!(settings.base_url, "https://api.openai.com/v1");
+        assert_eq!(settings.model, "gpt-4o-mini");
+        assert_eq!(settings.preset_id, "openai");
+        assert_eq!(
+            settings.response_format_policy,
+            AiResponseFormatPolicy::JsonSchemaFirst
+        );
     }
 
     #[test]
@@ -8909,6 +9570,7 @@ mod tests {
                     text: "这是一段用户手动选择的文本。".to_string(),
                     start_offset: 12,
                     end_offset: 28,
+                    context: None,
                 },
                 question: "这段话如何理解？".to_string(),
             })
@@ -8939,6 +9601,59 @@ mod tests {
     }
 
     #[test]
+    fn local_reader_selection_question_input_includes_bounded_context() {
+        let input =
+            build_local_reader_selection_question_input(LocalReaderSelectionQuestionInput {
+                source_item: SourceItemInput {
+                    source: "local".to_string(),
+                    source_id: "local_book".to_string(),
+                },
+                book: LocalReaderSelectionBookInput {
+                    title: "本地图书".to_string(),
+                    author: None,
+                },
+                selection: LocalReaderSelectionInput {
+                    text: "柴静".to_string(),
+                    start_offset: 20,
+                    end_offset: 22,
+                    context: Some(LocalReaderSelectionContextInput {
+                        before_text: Some(format!(
+                            "敏感路径 C:/Books/private.txt {}",
+                            "前".repeat(MAX_LOCAL_READER_CONTEXT_TEXT_CHARS + 20)
+                        )),
+                        after_text: Some(format!(
+                            "{} wx_session",
+                            "后".repeat(MAX_LOCAL_READER_CONTEXT_TEXT_CHARS + 20)
+                        )),
+                    }),
+                },
+                question: "这里的她是谁？".to_string(),
+            })
+            .expect("local reader selection question input should include context");
+        let payload_text = input.payload.to_string();
+
+        assert_eq!(input.payload["selection"]["text"], json!("柴静"));
+        assert_eq!(
+            input.payload["selection"]["context"]["beforeText"]
+                .as_str()
+                .unwrap()
+                .chars()
+                .count(),
+            MAX_LOCAL_READER_CONTEXT_TEXT_CHARS
+        );
+        assert_eq!(
+            input.payload["selection"]["context"]["afterText"]
+                .as_str()
+                .unwrap()
+                .chars()
+                .count(),
+            MAX_LOCAL_READER_CONTEXT_TEXT_CHARS
+        );
+        assert!(!payload_text.contains("C:/Books/private.txt"));
+        assert!(!payload_text.contains("wx_session"));
+    }
+
+    #[test]
     fn local_reader_selection_question_rejects_invalid_source_or_range() {
         let weread_result =
             build_local_reader_selection_question_input(LocalReaderSelectionQuestionInput {
@@ -8954,6 +9669,7 @@ mod tests {
                     text: "选区".to_string(),
                     start_offset: 0,
                     end_offset: 2,
+                    context: None,
                 },
                 question: "问题".to_string(),
             });
@@ -8973,6 +9689,7 @@ mod tests {
                     text: "选区".to_string(),
                     start_offset: 10,
                     end_offset: 10,
+                    context: None,
                 },
                 question: "问题".to_string(),
             });
@@ -8989,7 +9706,7 @@ mod tests {
             }),
             "100".to_string(),
             LOCAL_READER_SELECTION_QA_PROMPT_VERSION,
-            AiResponseFormatKind::JsonSchema,
+            Some(AiResponseFormatKind::JsonSchema),
         )
         .expect("selection answer should normalize");
 
@@ -9021,7 +9738,7 @@ mod tests {
             }),
             "100".to_string(),
             LOCAL_READER_SELECTION_QA_PROMPT_VERSION,
-            AiResponseFormatKind::JsonSchema,
+            Some(AiResponseFormatKind::JsonSchema),
         )
         .expect("selection answer should normalize");
 
@@ -9044,7 +9761,8 @@ mod tests {
         let prompt = local_reader_selection_question_system_prompt();
         let schema = local_reader_selection_question_json_schema();
 
-        assert!(prompt.contains("只基于用户提供的 selectedText 和 question"));
+        assert!(prompt.contains("selection.context.beforeText"));
+        assert!(prompt.contains("先直接回答用户问题"));
         assert!(prompt.contains("不假装读过整本书"));
         assert!(prompt.contains("文件 hash"));
         assert!(prompt.contains("微信凭据"));
@@ -9125,7 +9843,7 @@ mod tests {
             },
             "100".to_string(),
             BOOK_DECISION_PROMPT_VERSION,
-            AiResponseFormatKind::JsonSchema,
+            Some(AiResponseFormatKind::JsonSchema),
         )
         .expect("decision should normalize");
 
@@ -9176,7 +9894,7 @@ mod tests {
             },
             "100".to_string(),
             BOOK_DECISION_PROMPT_VERSION,
-            AiResponseFormatKind::JsonObject,
+            Some(AiResponseFormatKind::JsonObject),
         )
         .expect("decision should normalize");
 
@@ -10765,6 +11483,46 @@ mod tests {
     }
 
     #[test]
+    fn models_url_accepts_root_v1_models_or_chat_endpoint() {
+        assert_eq!(
+            models_url("https://api.example.com"),
+            "https://api.example.com/v1/models"
+        );
+        assert_eq!(
+            models_url("https://api.example.com/v1/"),
+            "https://api.example.com/v1/models"
+        );
+        assert_eq!(
+            models_url("https://api.example.com/v1/models"),
+            "https://api.example.com/v1/models"
+        );
+        assert_eq!(
+            models_url("https://api.example.com/v1/chat/completions"),
+            "https://api.example.com/v1/models"
+        );
+    }
+
+    #[test]
+    fn parse_provider_model_list_reads_openai_compatible_response() {
+        let models = parse_provider_model_list(&json!({
+            "object": "list",
+            "data": [
+                { "id": "gpt-4o-mini", "owned_by": "openai" },
+                { "id": "deepseek-chat", "ownedBy": "deepseek" },
+                { "id": "" },
+                { "object": "model" }
+            ]
+        }))
+        .expect("model list should parse");
+
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "gpt-4o-mini");
+        assert_eq!(models[0].owned_by.as_deref(), Some("openai"));
+        assert_eq!(models[1].id, "deepseek-chat");
+        assert_eq!(models[1].owned_by.as_deref(), Some("deepseek"));
+    }
+
+    #[test]
     fn build_chat_completion_payload_allows_large_json_outputs() {
         let payload = build_chat_completion_payload(
             "deepseekv4pro",
@@ -10804,6 +11562,68 @@ mod tests {
         assert_eq!(
             payload["response_format"]["json_schema"]["schema"]["required"][5],
             "readingStage"
+        );
+    }
+
+    #[test]
+    fn build_chat_completion_payload_can_omit_response_format() {
+        let payload = build_chat_completion_payload_without_response_format(
+            "deepseek-v4-flash",
+            "system",
+            &json!({ "question": "她是谁？" }),
+        );
+
+        assert!(payload.get("response_format").is_none());
+        assert_eq!(payload["model"], "deepseek-v4-flash");
+    }
+
+    #[test]
+    fn build_chat_completion_probe_payload_uses_small_json_probe() {
+        let payload = build_chat_completion_probe_payload(
+            "deepseek-chat",
+            Some(default_json_object_response_format()),
+        );
+
+        assert_eq!(payload["model"], "deepseek-chat");
+        assert_eq!(payload["max_tokens"], 30);
+        assert_eq!(payload["response_format"]["type"], "json_object");
+        assert!(payload["messages"][1]["content"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("{\"ok\":true}"));
+    }
+
+    #[test]
+    fn provider_capability_probe_schema_requires_ok_boolean() {
+        let schema = provider_capability_probe_json_schema();
+
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(schema["required"][0], "ok");
+        assert_eq!(schema["properties"]["ok"]["type"], "boolean");
+    }
+
+    #[test]
+    fn provider_capability_probe_recommends_strictest_supported_policy() {
+        assert_eq!(
+            recommend_response_format_policy(
+                AiProviderCapabilityStatus::Passed,
+                AiProviderCapabilityStatus::Passed
+            ),
+            AiResponseFormatPolicy::JsonSchemaFirst
+        );
+        assert_eq!(
+            recommend_response_format_policy(
+                AiProviderCapabilityStatus::Passed,
+                AiProviderCapabilityStatus::Failed
+            ),
+            AiResponseFormatPolicy::JsonObjectFirst
+        );
+        assert_eq!(
+            recommend_response_format_policy(
+                AiProviderCapabilityStatus::Failed,
+                AiProviderCapabilityStatus::Failed
+            ),
+            AiResponseFormatPolicy::NoResponseFormatFirst
         );
     }
 
@@ -10865,6 +11685,9 @@ mod tests {
         ));
         assert!(is_unsupported_json_schema_response(
             "AI Provider 返回 HTTP 400：Unknown parameter: response_format.json_schema.strict"
+        ));
+        assert!(is_unsupported_json_schema_response(
+            "AI Provider 返回 HTTP 400：This response_format type is unavailable now"
         ));
         assert!(!is_unsupported_json_schema_response(
             "AI 返回内容不是有效 JSON。"
@@ -11028,7 +11851,7 @@ mod tests {
             },
             "100".to_string(),
             "book-notes-summary-v3",
-            AiResponseFormatKind::JsonSchema,
+            Some(AiResponseFormatKind::JsonSchema),
         )
         .expect("summary should normalize");
 
@@ -11077,7 +11900,7 @@ mod tests {
             },
             "100".to_string(),
             "book-notes-summary-v3",
-            AiResponseFormatKind::JsonObject,
+            Some(AiResponseFormatKind::JsonObject),
         )
         .expect("summary aliases should normalize");
 
@@ -11113,7 +11936,7 @@ mod tests {
             },
             "100".to_string(),
             "book-notes-summary-v3",
-            AiResponseFormatKind::JsonSchema,
+            Some(AiResponseFormatKind::JsonSchema),
         )
         .expect_err("missing overview should fail");
 
@@ -11162,7 +11985,7 @@ mod tests {
             }),
             "100".to_string(),
             READING_ROUTE_PROMPT_VERSION,
-            AiResponseFormatKind::JsonSchema,
+            Some(AiResponseFormatKind::JsonSchema),
         )
         .expect("route should normalize without routeOverview");
 
@@ -11216,7 +12039,7 @@ mod tests {
             None,
             "100".to_string(),
             READING_ROUTE_PROMPT_VERSION,
-            AiResponseFormatKind::JsonSchema,
+            Some(AiResponseFormatKind::JsonSchema),
         )
         .expect("route should normalize");
 
@@ -11288,7 +12111,7 @@ mod tests {
             None,
             "100".to_string(),
             READING_ROUTE_PROMPT_VERSION,
-            AiResponseFormatKind::JsonSchema,
+            Some(AiResponseFormatKind::JsonSchema),
         )
         .expect_err("generic single-book guidance should fail");
 
@@ -11338,7 +12161,7 @@ mod tests {
             }),
             "100".to_string(),
             READING_ROUTE_PROMPT_VERSION,
-            AiResponseFormatKind::JsonObject,
+            Some(AiResponseFormatKind::JsonObject),
         )
         .expect("route should normalize with fallback stage");
 
@@ -11585,7 +12408,7 @@ mod tests {
             },
             "200".to_string(),
             "reading-stats-review-v2",
-            AiResponseFormatKind::JsonSchema,
+            Some(AiResponseFormatKind::JsonSchema),
         )
         .expect("review should normalize");
 
@@ -11634,7 +12457,7 @@ mod tests {
             },
             "200".to_string(),
             "reading-stats-review-v2",
-            AiResponseFormatKind::JsonSchema,
+            Some(AiResponseFormatKind::JsonSchema),
         )
         .expect("review should still normalize");
 

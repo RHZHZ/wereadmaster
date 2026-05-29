@@ -27,6 +27,8 @@ describe("ReportGenerationWizardDialog", () => {
     expect(markup).not.toContain("具体月份");
     expect(markup).not.toContain("具体周");
     expect(markup).not.toContain("竖版海报");
+    expect(markup).not.toContain("monthly-report-poster-preview-shell");
+    expect(markup).not.toContain("暂时不能生成这一期报告");
   });
 
   it("keeps lifetime review as a selectable report kind instead of a separate dialog branch", () => {
@@ -46,6 +48,7 @@ describe("ReportGenerationWizardDialog", () => {
 
     expect(markup).toContain("总计复盘");
     expect(markup).toContain("长期阅读资产沉淀");
-    expect(markup).toContain("下一步只显示这个报告类型需要的时间或范围控件");
+    expect(markup).toContain("下一步：确认长期范围");
+    expect(markup).not.toContain("当前选择：");
   });
 });

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-probe-ai-provider-capabilities"
+description = "Enables the probe_ai_provider_capabilities command without any pre-configured scope."
+commands.allow = ["probe_ai_provider_capabilities"]
+
+[[permission]]
+identifier = "deny-probe-ai-provider-capabilities"
+description = "Denies the probe_ai_provider_capabilities command without any pre-configured scope."
+commands.deny = ["probe_ai_provider_capabilities"]

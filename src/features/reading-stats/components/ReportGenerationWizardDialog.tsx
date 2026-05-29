@@ -86,6 +86,7 @@ export function ReportGenerationWizardDialog({
   const [previewMode, setPreviewMode] = useState<ReportGenerationPreviewMode>("poster");
   const [draftPeriod, setDraftPeriod] = useState<ReadingStatsPeriod>(reportPeriod);
   const previewShellRef = useRef<HTMLDivElement>(null);
+  const hasInitializedOpenDialogRef = useRef(false);
   const [posterScale, setPosterScale] = useState(1);
   const [storyPageIndex, setStoryPageIndex] = useState(0);
   const activeReportMode = draftPeriod.mode;
@@ -124,9 +125,15 @@ export function ReportGenerationWizardDialog({
 
   useEffect(() => {
     if (!open) {
+      hasInitializedOpenDialogRef.current = false;
       return;
     }
 
+    if (hasInitializedOpenDialogRef.current) {
+      return;
+    }
+
+    hasInitializedOpenDialogRef.current = true;
     setDialogStep("type");
     setDraftPeriod(reportPeriod);
     setSelectedYear(reportPeriodSelection.year);
@@ -185,8 +192,10 @@ export function ReportGenerationWizardDialog({
       const styles = window.getComputedStyle(shell);
       const verticalPadding = Number.parseFloat(styles.paddingTop) + Number.parseFloat(styles.paddingBottom);
       const availableHeight = Math.max(0, shell.clientHeight - verticalPadding);
-      const nextScale = Math.min(1, shell.clientWidth / 720, availableHeight / 960);
-      setPosterScale(Math.max(0.32, Number(nextScale.toFixed(3))));
+      const widthFitScale = shell.clientWidth / 720;
+      const heightFitScale = availableHeight / 960;
+      const nextScale = Math.min(0.86, widthFitScale, heightFitScale);
+      setPosterScale(Math.max(0.28, Number(nextScale.toFixed(3))));
     };
 
     updateScale();
@@ -222,7 +231,7 @@ export function ReportGenerationWizardDialog({
   return (
     <div className="reading-route-dialog-backdrop" role="presentation" onMouseDown={onClose}>
       <section
-        className="reading-route-dialog monthly-report-poster-dialog"
+        className={`reading-route-dialog monthly-report-poster-dialog is-${dialogStep}-step`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="monthly-report-poster-dialog-title"
@@ -295,29 +304,78 @@ export function ReportGenerationWizardDialog({
               </div>
             ) : (
             <div className={`monthly-report-period-picker is-${activePeriodReportMode}`}>
-              <ReportPeriodOptionGroup title="年份" description={buildYearPickerDescription(activePeriodReportMode)}>
-                <div className="monthly-report-period-grid monthly-report-period-grid--years">
-                  {yearOptions.map((year) => (
-                    <button
-                      key={year}
-                      type="button"
-                      className={selectedYear === year ? "is-active" : ""}
-                      onClick={() => handleYearSelect(year)}
-                    >
-                      {year} 年
-                    </button>
-                  ))}
-                </div>
-              </ReportPeriodOptionGroup>
+              {activePeriodReportMode === "weekly" ? (
+                <>
+                  <section className="monthly-report-weekly-focus" aria-label="周报年月定位">
+                    <ReportPeriodOptionGroup title="年份" description="先锁定周报所属年份">
+                      <div className="monthly-report-period-grid monthly-report-period-grid--years">
+                        {yearOptions.map((year) => (
+                          <button
+                            key={year}
+                            type="button"
+                            className={selectedYear === year ? "is-active" : ""}
+                            onClick={() => handleYearSelect(year)}
+                          >
+                            {year} 年
+                          </button>
+                        ))}
+                      </div>
+                    </ReportPeriodOptionGroup>
 
-              {activePeriodReportMode === "monthly" || activePeriodReportMode === "weekly" ? (
+                    <ReportPeriodOptionGroup title="月份" description="再定位周报所在月份">
+                      <div className="monthly-report-period-grid monthly-report-period-grid--months">
+                        {monthOptions.map((option) => (
+                          <button
+                            key={`${selectedYear}-${option.month}`}
+                            type="button"
+                            className={selectedMonth === option.month ? "is-active" : ""}
+                            disabled={option.disabled}
+                            onClick={() => handleMonthSelect(option)}
+                          >
+                            {option.label}
+                          </button>
+                        ))}
+                      </div>
+                    </ReportPeriodOptionGroup>
+                  </section>
+
+                  <ReportPeriodOptionGroup title="具体周" description="选择周一锚点后点击生成周报">
+                    <div className="monthly-report-period-grid monthly-report-period-grid--weeks monthly-report-week-grid">
+                      {weekOptions.map((option) => (
+                        <button
+                          key={option.baseTime}
+                          type="button"
+                          className={option.baseTime === draftPeriod.baseTime ? "is-active" : ""}
+                          disabled={option.disabled}
+                          onClick={() => handleWeekSelect(option)}
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+                  </ReportPeriodOptionGroup>
+                </>
+              ) : (
+                <>
+                  <ReportPeriodOptionGroup title="年份" description={buildYearPickerDescription(activePeriodReportMode)}>
+                    <div className="monthly-report-period-grid monthly-report-period-grid--years">
+                      {yearOptions.map((year) => (
+                        <button
+                          key={year}
+                          type="button"
+                          className={selectedYear === year ? "is-active" : ""}
+                          onClick={() => handleYearSelect(year)}
+                        >
+                          {year} 年
+                        </button>
+                      ))}
+                    </div>
+                  </ReportPeriodOptionGroup>
+
+              {activePeriodReportMode === "monthly" ? (
                 <ReportPeriodOptionGroup
-                  title={activePeriodReportMode === "weekly" ? "月份" : "具体月份"}
-                  description={
-                    activePeriodReportMode === "weekly"
-                      ? "先定位月份，再选择该月内的周"
-                      : "点击月份后立即预览该月报告"
-                  }
+                  title="具体月份"
+                  description="选择月份后点击生成报告预览"
                 >
                   <div className="monthly-report-period-grid monthly-report-period-grid--months">
                     {monthOptions.map((option) => (
@@ -334,24 +392,8 @@ export function ReportGenerationWizardDialog({
                   </div>
                 </ReportPeriodOptionGroup>
               ) : null}
-
-              {activePeriodReportMode === "weekly" ? (
-                <ReportPeriodOptionGroup title="具体周" description="点击周一锚点后预览周报">
-                  <div className="monthly-report-period-grid monthly-report-period-grid--weeks">
-                    {weekOptions.map((option) => (
-                      <button
-                        key={option.baseTime}
-                        type="button"
-                        className={option.baseTime === draftPeriod.baseTime ? "is-active" : ""}
-                        disabled={option.disabled}
-                        onClick={() => handleWeekSelect(option)}
-                      >
-                        {option.label}
-                      </button>
-                    ))}
-                  </div>
-                </ReportPeriodOptionGroup>
-              ) : null}
+                </>
+              )}
             </div>
             )}
           </section>
@@ -400,32 +442,7 @@ export function ReportGenerationWizardDialog({
         </div>
         ) : null}
 
-        {isTypeStep ? (
-          <section className="monthly-report-select-summary" aria-label="报告类型确认">
-            <CalendarDays aria-hidden="true" size={24} />
-            <div>
-              <strong>当前选择：{activeReportOption?.label ?? "阅读报告"}</strong>
-              <p>下一步只显示这个报告类型需要的时间或范围控件，避免周、月、年和长期复盘混在一起。</p>
-            </div>
-          </section>
-        ) : isTimeStep ? (
-          <section className="monthly-report-select-summary" aria-label="报告生成前确认">
-            <CalendarDays aria-hidden="true" size={24} />
-            <div>
-              <strong>
-                将生成：
-                {isLifetimeReportMode
-                  ? "全部历史长期阅读资产报告"
-                  : `${formatReadingStatsPeriodAnchor(draftPeriod)} 阅读报告`}
-              </strong>
-              <p>
-                {isLifetimeReportMode
-                  ? "确认范围后再读取总计统计并生成预览。"
-                  : "确认时间后再读取统计缓存并生成预览，避免一边选择一边刷新画面。"}
-              </p>
-            </div>
-          </section>
-        ) : (
+        {isPreviewStep ? (
           <div
             ref={previewShellRef}
             className={
@@ -479,16 +496,18 @@ export function ReportGenerationWizardDialog({
               <PeriodReportWidePrototype data={data!} />
             )}
           </div>
-        )}
+        ) : null}
 
         <div className="reading-route-dialog-footer monthly-report-poster-dialog-actions">
           <button className="sync-button" type="button" onClick={onClose}>
-            关闭预览
+            {isPreviewStep ? "关闭预览" : "关闭"}
           </button>
           {isTypeStep ? (
             <button className="secondary-action" type="button" onClick={() => setDialogStep("time")}>
               <CalendarDays aria-hidden="true" size={18} />
-              {isLifetimeReportMode ? "下一步：确认范围" : "下一步：选择时间"}
+              {isLifetimeReportMode
+                ? "下一步：确认长期范围"
+                : `下一步：选择${activeReportOption?.label ?? "报告"}时间`}
             </button>
           ) : isTimeStep ? (
             <>
@@ -683,11 +702,11 @@ function ReportPeriodOptionGroup({
 
 function buildYearPickerDescription(mode: ReportGenerationPeriodMode): string {
   if (mode === "annually") {
-    return "点击年份后立即预览年报";
+    return "选择年份后点击生成年报";
   }
 
   if (mode === "monthly") {
-    return "先选年份，再点月份";
+    return "先选择年份，再选择月份";
   }
 
   return "先选年份和月份，再点具体周";

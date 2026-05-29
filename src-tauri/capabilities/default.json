@@ -14,6 +14,8 @@
     "allow-save-ai-credential",
     "allow-save-ai-settings",
     "allow-test-ai-connection",
+    "allow-probe-ai-provider-capabilities",
+    "allow-list-ai-provider-models",
     "allow-remove-ai-credential",
     "allow-get-ai-cached-output",
     "allow-summarize-book-notes",

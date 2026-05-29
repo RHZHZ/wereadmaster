@@ -77,4 +77,29 @@ describe("settings page onboarding artwork", () => {
     expect(markup).toContain("应用更新");
     expect(markup).toContain("版本、发布、安装");
   });
+
+  it("shows provider presets and response format policy in AI settings", () => {
+    const markup = renderToStaticMarkup(
+      <ToastProvider>
+        <SettingsPage
+          open
+          credentialStatus={{ hasCredential: true }}
+          onCredentialChange={() => undefined}
+          preferences={DEFAULT_USER_PREFERENCES}
+          onPreferencesChange={() => undefined}
+          onClose={() => undefined}
+          preferredCategory="ai"
+        />
+      </ToastProvider>
+    );
+
+    expect(markup).toContain("Provider 预设");
+    expect(markup).toContain("DeepSeek");
+    expect(markup).toContain("通义千问");
+    expect(markup).toContain("兼容模式");
+    expect(markup).toContain("宽松兼容");
+    expect(markup).toContain("测试兼容性");
+    expect(markup).toContain("输入模型名，或刷新后从候选中选择");
+    expect(markup).toContain("刷新可用模型");
+  });
 });

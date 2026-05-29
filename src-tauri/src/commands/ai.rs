@@ -3,7 +3,8 @@ use tauri::AppHandle;
 
 use crate::services::ai::{
     AiAssetDetail, AiAssetSummary, AiAssetVersionDetail, AiAssetVersionSummary,
-    AiCachedOutputRecord, AiCredentialValidationResult, AiReviewFeedbackExport,
+    AiCachedOutputRecord, AiCredentialValidationResult, AiProviderCapabilityProbe,
+    AiProviderModelListResponse, AiResponseFormatPolicy, AiReviewFeedbackExport,
     AiReviewFeedbackState, AiService, AiServiceError, AiSettingsState, BookAiSummaryListItem,
     BookAiSummaryResponse, BookAiSummaryUpdateContext, BookDecisionCandidateInput,
     BookDecisionResponse, BookNotesSummariesExportOptions, ExportAiBulkMarkdownResponse,
@@ -38,8 +39,16 @@ pub fn validate_ai_credential(
     api_key: String,
     base_url: Option<String>,
     model: Option<String>,
+    preset_id: Option<String>,
+    response_format_policy: Option<AiResponseFormatPolicy>,
 ) -> AiCredentialValidationResult {
-    AiService::validate_credential_input(&api_key, base_url.as_deref(), model.as_deref())
+    AiService::validate_credential_input(
+        &api_key,
+        base_url.as_deref(),
+        model.as_deref(),
+        preset_id.as_deref(),
+        response_format_policy,
+    )
 }
 
 #[tauri::command]
@@ -48,9 +57,17 @@ pub fn save_ai_credential(
     api_key: String,
     base_url: Option<String>,
     model: Option<String>,
+    preset_id: Option<String>,
+    response_format_policy: Option<AiResponseFormatPolicy>,
 ) -> Result<AiSettingsState, AiCommandError> {
     AiService::new(app)
-        .save_credential(&api_key, base_url.as_deref(), model.as_deref())
+        .save_credential(
+            &api_key,
+            base_url.as_deref(),
+            model.as_deref(),
+            preset_id.as_deref(),
+            response_format_policy,
+        )
         .map_err(Into::into)
 }
 
@@ -60,9 +77,17 @@ pub fn save_ai_settings(
     api_key: Option<String>,
     base_url: Option<String>,
     model: Option<String>,
+    preset_id: Option<String>,
+    response_format_policy: Option<AiResponseFormatPolicy>,
 ) -> Result<AiSettingsState, AiCommandError> {
     AiService::new(app)
-        .save_settings(api_key.as_deref(), base_url.as_deref(), model.as_deref())
+        .save_settings(
+            api_key.as_deref(),
+            base_url.as_deref(),
+            model.as_deref(),
+            preset_id.as_deref(),
+            response_format_policy,
+        )
         .map_err(Into::into)
 }
 
@@ -72,9 +97,50 @@ pub async fn test_ai_connection(
     api_key: Option<String>,
     base_url: Option<String>,
     model: Option<String>,
+    preset_id: Option<String>,
+    response_format_policy: Option<AiResponseFormatPolicy>,
 ) -> Result<AiCredentialValidationResult, AiCommandError> {
     AiService::new(app)
-        .test_connection(api_key.as_deref(), base_url.as_deref(), model.as_deref())
+        .test_connection(
+            api_key.as_deref(),
+            base_url.as_deref(),
+            model.as_deref(),
+            preset_id.as_deref(),
+            response_format_policy,
+        )
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn probe_ai_provider_capabilities(
+    app: AppHandle,
+    api_key: Option<String>,
+    base_url: Option<String>,
+    model: Option<String>,
+    preset_id: Option<String>,
+    response_format_policy: Option<AiResponseFormatPolicy>,
+) -> Result<AiProviderCapabilityProbe, AiCommandError> {
+    AiService::new(app)
+        .probe_provider_capabilities(
+            api_key.as_deref(),
+            base_url.as_deref(),
+            model.as_deref(),
+            preset_id.as_deref(),
+            response_format_policy,
+        )
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn list_ai_provider_models(
+    app: AppHandle,
+    api_key: Option<String>,
+    base_url: Option<String>,
+) -> Result<AiProviderModelListResponse, AiCommandError> {
+    AiService::new(app)
+        .list_provider_models(api_key.as_deref(), base_url.as_deref())
         .await
         .map_err(Into::into)
 }
@@ -334,4 +400,64 @@ pub async fn ask_local_reader_selection_question(
         .ask_local_reader_selection_question(request)
         .await
         .map_err(Into::into)
+}
+
+#[cfg(test)]
+mod tests {
+    const AI_SETTINGS_COMMANDS: &[&str] = &[
+        "get_ai_settings_state",
+        "validate_ai_credential",
+        "save_ai_credential",
+        "save_ai_settings",
+        "test_ai_connection",
+        "probe_ai_provider_capabilities",
+        "list_ai_provider_models",
+        "remove_ai_credential",
+    ];
+
+    #[test]
+    fn ai_settings_commands_are_registered_and_permitted() {
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let lib_rs = read_manifest_file(manifest_dir, "src/lib.rs");
+        let build_rs = read_manifest_file(manifest_dir, "build.rs");
+        let capability = read_manifest_file(manifest_dir, "capabilities/default.json");
+
+        for command in AI_SETTINGS_COMMANDS {
+            assert!(
+                lib_rs.contains(&format!("commands::ai::{command}")),
+                "{command} should be registered in tauri invoke_handler"
+            );
+            assert!(
+                build_rs.contains(&format!("\"{command}\"")),
+                "{command} should be listed in Tauri build manifest"
+            );
+
+            let permission_id = format!("allow-{}", command.replace('_', "-"));
+            assert!(
+                capability.contains(&format!("\"{permission_id}\"")),
+                "{permission_id} should be enabled in default capability"
+            );
+
+            let permission_file = manifest_dir
+                .join("permissions")
+                .join("autogenerated")
+                .join(format!("{command}.toml"));
+            assert!(
+                permission_file.is_file(),
+                "{command} should have an autogenerated permission file"
+            );
+
+            let permission_text = std::fs::read_to_string(&permission_file)
+                .expect("permission file should be readable");
+            assert!(
+                permission_text.contains(&format!("commands.allow = [\"{command}\"]")),
+                "{command} permission should allow the matching command"
+            );
+        }
+    }
+
+    fn read_manifest_file(manifest_dir: &std::path::Path, relative_path: &str) -> String {
+        std::fs::read_to_string(manifest_dir.join(relative_path))
+            .unwrap_or_else(|error| panic!("{relative_path} should be readable: {error}"))
+    }
 }

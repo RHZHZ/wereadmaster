@@ -609,6 +609,12 @@
           "markdownDescription": "Enables the list_ai_asset_summaries command without any pre-configured scope."
         },
         {
+          "description": "Enables the list_ai_provider_models command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-list-ai-provider-models",
+          "markdownDescription": "Enables the list_ai_provider_models command without any pre-configured scope."
+        },
+        {
           "description": "Enables the list_book_notes_summaries command without any pre-configured scope.",
           "type": "string",
           "const": "allow-list-book-notes-summaries",
@@ -643,6 +649,12 @@
           "type": "string",
           "const": "allow-preflight-bulk-export",
           "markdownDescription": "Enables the preflight_bulk_export command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the probe_ai_provider_capabilities command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-probe-ai-provider-capabilities",
+          "markdownDescription": "Enables the probe_ai_provider_capabilities command without any pre-configured scope."
         },
         {
           "description": "Enables the remove_ai_credential command without any pre-configured scope.",
@@ -1041,6 +1053,12 @@
           "markdownDescription": "Denies the list_ai_asset_summaries command without any pre-configured scope."
         },
         {
+          "description": "Denies the list_ai_provider_models command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-list-ai-provider-models",
+          "markdownDescription": "Denies the list_ai_provider_models command without any pre-configured scope."
+        },
+        {
           "description": "Denies the list_book_notes_summaries command without any pre-configured scope.",
           "type": "string",
           "const": "deny-list-book-notes-summaries",
@@ -1075,6 +1093,12 @@
           "type": "string",
           "const": "deny-preflight-bulk-export",
           "markdownDescription": "Denies the preflight_bulk_export command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the probe_ai_provider_capabilities command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-probe-ai-provider-capabilities",
+          "markdownDescription": "Denies the probe_ai_provider_capabilities command without any pre-configured scope."
         },
         {
           "description": "Denies the remove_ai_credential command without any pre-configured scope.",

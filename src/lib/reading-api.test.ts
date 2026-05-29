@@ -29,11 +29,16 @@ import {
   getNotebookOverview,
   getReadingStats,
   getSettingsState,
+  listAiProviderModels,
   listReadingItemStates,
+  probeAiProviderCapabilities,
   resetCustomExportDirectory,
+  saveAiSettings,
   saveAiReviewFeedback,
   saveCustomExportDirectory,
-  syncShelf
+  syncShelf,
+  testAiConnection,
+  validateAiCredential
 } from "./reading-api";
 
 const invokeMock = vi.mocked(invoke);
@@ -126,6 +131,97 @@ describe("settings export directory API", () => {
     expect(chosen.path).toBe("D:/ReadingExports");
     expect(saved.state.exportData.isCustomExportDir).toBe(true);
     expect(reset.state.exportData.isCustomExportDir).toBe(false);
+  });
+
+  test("AI provider settings commands pass preset and response format policy", async () => {
+    invokeMock
+      .mockResolvedValueOnce({ isValid: true, checkedAt: "1" })
+      .mockResolvedValueOnce({
+        credential: { hasCredential: true },
+        provider: {
+          baseUrl: "https://api.deepseek.com/v1",
+          model: "deepseek-chat",
+          presetId: "deepseek",
+          responseFormatPolicy: "noResponseFormatFirst"
+        }
+      })
+      .mockResolvedValueOnce({ isValid: true, checkedAt: "2" })
+      .mockResolvedValueOnce({
+        basic: "passed",
+        jsonObject: "failed",
+        jsonSchema: "failed",
+        recommendedPolicy: "noResponseFormatFirst",
+        checkedAt: "3",
+        message: "建议使用宽松兼容模式。"
+      })
+      .mockResolvedValueOnce({
+        models: [{ id: "deepseek-chat", ownedBy: "deepseek" }],
+        fetchedAt: "4"
+      });
+
+    await validateAiCredential({
+      apiKey: "sk-1234567890abcdef",
+      baseUrl: "https://api.deepseek.com/v1",
+      model: "deepseek-chat",
+      presetId: "deepseek",
+      responseFormatPolicy: "noResponseFormatFirst"
+    });
+    await saveAiSettings({
+      baseUrl: "https://api.deepseek.com/v1",
+      model: "deepseek-chat",
+      presetId: "deepseek",
+      responseFormatPolicy: "noResponseFormatFirst"
+    });
+    await testAiConnection({
+      baseUrl: "https://api.deepseek.com/v1",
+      model: "deepseek-chat",
+      presetId: "deepseek",
+      responseFormatPolicy: "noResponseFormatFirst"
+    });
+    const probe = await probeAiProviderCapabilities({
+      baseUrl: "https://api.deepseek.com/v1",
+      model: "deepseek-chat",
+      presetId: "deepseek",
+      responseFormatPolicy: "noResponseFormatFirst"
+    });
+    const models = await listAiProviderModels({
+      baseUrl: "https://api.deepseek.com/v1"
+    });
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "validate_ai_credential", {
+      apiKey: "sk-1234567890abcdef",
+      baseUrl: "https://api.deepseek.com/v1",
+      model: "deepseek-chat",
+      presetId: "deepseek",
+      responseFormatPolicy: "noResponseFormatFirst"
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "save_ai_settings", {
+      apiKey: undefined,
+      baseUrl: "https://api.deepseek.com/v1",
+      model: "deepseek-chat",
+      presetId: "deepseek",
+      responseFormatPolicy: "noResponseFormatFirst"
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(3, "test_ai_connection", {
+      apiKey: undefined,
+      baseUrl: "https://api.deepseek.com/v1",
+      model: "deepseek-chat",
+      presetId: "deepseek",
+      responseFormatPolicy: "noResponseFormatFirst"
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(4, "probe_ai_provider_capabilities", {
+      apiKey: undefined,
+      baseUrl: "https://api.deepseek.com/v1",
+      model: "deepseek-chat",
+      presetId: "deepseek",
+      responseFormatPolicy: "noResponseFormatFirst"
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(5, "list_ai_provider_models", {
+      apiKey: undefined,
+      baseUrl: "https://api.deepseek.com/v1"
+    });
+    expect(probe.recommendedPolicy).toBe("noResponseFormatFirst");
+    expect(models.models[0]?.id).toBe("deepseek-chat");
   });
 
   test("exports report image through the configured application export directory", async () => {

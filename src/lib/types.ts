@@ -22,9 +22,46 @@ export type AiCredentialValidationResult = {
   message?: string;
 };
 
+export type AiProviderCapabilityStatus = "passed" | "failed" | "skipped";
+
+export type AiProviderCapabilityProbe = {
+  basic: AiProviderCapabilityStatus;
+  jsonObject: AiProviderCapabilityStatus;
+  jsonSchema: AiProviderCapabilityStatus;
+  recommendedPolicy: AiResponseFormatPolicy;
+  checkedAt: string;
+  message?: string;
+};
+
+export type AiProviderModelListItem = {
+  id: string;
+  ownedBy?: string;
+};
+
+export type AiProviderModelListResponse = {
+  models: AiProviderModelListItem[];
+  fetchedAt: string;
+  message?: string;
+};
+
+export type AiProviderPresetId =
+  | "openai"
+  | "deepseek"
+  | "dashscope"
+  | "moonshot"
+  | "custom";
+
+export type AiResponseFormatPolicy =
+  | "auto"
+  | "jsonSchemaFirst"
+  | "jsonObjectFirst"
+  | "noResponseFormatFirst";
+
 export type AiProviderSettings = {
   baseUrl: string;
   model: string;
+  presetId?: AiProviderPresetId;
+  responseFormatPolicy?: AiResponseFormatPolicy;
 };
 
 export type AiSettingsState = {

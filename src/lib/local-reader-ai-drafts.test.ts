@@ -315,6 +315,48 @@ describe("local reader AI question drafts", () => {
     expect(record.thread?.[0].answer).toBeUndefined();
   });
 
+  it("deduplicates repeated AI question thread turns by question text", () => {
+    const record = createLocalReaderAiQuestionRecord({
+      bookId: "local:demo",
+      question: "这段话的核心是什么？",
+      selectedText: "选中文本",
+      startOffset: 2,
+      endOffset: 6,
+      now: "2026-05-27T12:00:00.000Z",
+      id: "record-1"
+    });
+    const repeatedQuestion = "你想问的是“柴静”的人物简介，还是在文中此处“她”具体指谁？";
+
+    const [normalized] = writeLocalReaderAiQuestionRecords(undefined, "local:demo", [
+      {
+        ...record,
+        thread: [
+          createLocalReaderAiQuestionThreadTurn({
+            id: "turn-1",
+            question: repeatedQuestion,
+            now: "2026-05-27T12:01:00.000Z",
+            status: "failed",
+            errorMessage: "旧失败"
+          }),
+          createLocalReaderAiQuestionThreadTurn({
+            id: "turn-2",
+            question: repeatedQuestion,
+            now: "2026-05-27T12:02:00.000Z",
+            status: "failed",
+            errorMessage: "新失败"
+          })
+        ]
+      }
+    ]);
+
+    expect(normalized?.thread).toHaveLength(1);
+    expect(normalized?.thread?.[0]).toMatchObject({
+      id: "turn-2",
+      question: repeatedQuestion,
+      errorMessage: "新失败"
+    });
+  });
+
   it("limits AI question thread turns to the latest entries", () => {
     const record = createLocalReaderAiQuestionRecord({
       bookId: "local:demo",

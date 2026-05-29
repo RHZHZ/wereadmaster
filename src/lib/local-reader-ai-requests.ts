@@ -11,6 +11,10 @@ export type LocalReaderAiQuestionRequest = {
     text: string;
     startOffset: number;
     endOffset: number;
+    context?: {
+      beforeText?: string;
+      afterText?: string;
+    };
   };
   question: string;
 };
@@ -38,6 +42,7 @@ export type LocalReaderAiQuestionResponse = {
 
 const MAX_SELECTED_TEXT_LENGTH = 2000;
 const MAX_QUESTION_TEXT_LENGTH = 600;
+const MAX_SELECTION_CONTEXT_CHARS = 1200;
 
 export function createLocalReaderAiQuestionRequest(input: {
   book: Pick<LocalBook, "id" | "title" | "author">;
@@ -45,6 +50,7 @@ export function createLocalReaderAiQuestionRequest(input: {
   question: string;
   startOffset: number;
   endOffset: number;
+  content?: string;
 }): LocalReaderAiQuestionRequest | undefined {
   const sourceItem = sourceItemKeyFromLocalBook(input.book);
   const selectedText = input.selectedText.trim().slice(0, MAX_SELECTED_TEXT_LENGTH);
@@ -56,6 +62,8 @@ export function createLocalReaderAiQuestionRequest(input: {
     return undefined;
   }
 
+  const context = createSelectionContext(input.content, startOffset, endOffset);
+
   return {
     sourceItem,
     book: {
@@ -65,7 +73,8 @@ export function createLocalReaderAiQuestionRequest(input: {
     selection: {
       text: selectedText,
       startOffset,
-      endOffset
+      endOffset,
+      ...(context ? { context } : {})
     },
     question
   };
@@ -73,4 +82,32 @@ export function createLocalReaderAiQuestionRequest(input: {
 
 function normalizeOffset(value: number): number {
   return Number.isFinite(value) ? Math.trunc(value) : -1;
+}
+
+function createSelectionContext(
+  content: string | undefined,
+  startOffset: number,
+  endOffset: number
+): LocalReaderAiQuestionRequest["selection"]["context"] | undefined {
+  if (!content || startOffset < 0 || endOffset <= startOffset) {
+    return undefined;
+  }
+
+  const beforeText = content
+    .slice(Math.max(0, startOffset - MAX_SELECTION_CONTEXT_CHARS), startOffset)
+    .trim()
+    .slice(-MAX_SELECTION_CONTEXT_CHARS);
+  const afterText = content
+    .slice(endOffset, Math.min(content.length, endOffset + MAX_SELECTION_CONTEXT_CHARS))
+    .trim()
+    .slice(0, MAX_SELECTION_CONTEXT_CHARS);
+
+  if (!beforeText && !afterText) {
+    return undefined;
+  }
+
+  return {
+    ...(beforeText ? { beforeText } : {}),
+    ...(afterText ? { afterText } : {})
+  };
 }

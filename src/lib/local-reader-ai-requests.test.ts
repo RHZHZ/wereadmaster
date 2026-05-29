@@ -27,6 +27,49 @@ describe("local reader AI question requests", () => {
     });
   });
 
+  it("为短选区附带有限的前后文窗口", () => {
+    const content = [
+      "前文说明作者第一次听到柴静采访时的紧张。",
+      "柴静问了一个看似温和却直指核心的问题。",
+      "后文转向受访者沉默后的反应。"
+    ].join("\n");
+    const selectedText = "柴静";
+    const startOffset = content.indexOf(selectedText);
+    const request = createLocalReaderAiQuestionRequest({
+      book: makeLocalBook(),
+      selectedText,
+      question: "这里的她是谁？",
+      startOffset,
+      endOffset: startOffset + selectedText.length,
+      content
+    });
+
+    expect(request?.selection.context).toEqual({
+      beforeText: "前文说明作者第一次听到",
+      afterText: "采访时的紧张。\n柴静问了一个看似温和却直指核心的问题。\n后文转向受访者沉默后的反应。"
+    });
+  });
+
+  it("前后文窗口不会扩大到整本书", () => {
+    const distantPrefix = `敏感路径 C:/Books/private.txt ${"前".repeat(1400)}`;
+    const content = `${distantPrefix}柴静${"后".repeat(1400)} wx_session`;
+    const startOffset = content.indexOf("柴静");
+    const request = createLocalReaderAiQuestionRequest({
+      book: makeLocalBook(),
+      selectedText: "柴静",
+      question: "这是谁？",
+      startOffset,
+      endOffset: startOffset + 2,
+      content
+    });
+    const serialized = JSON.stringify(request);
+
+    expect(request?.selection.context?.beforeText).toHaveLength(1200);
+    expect(request?.selection.context?.afterText).toHaveLength(1200);
+    expect(serialized).not.toContain("C:/Books/private.txt");
+    expect(serialized).not.toContain("wx_session");
+  });
+
   it("不会把整本书、本地路径、hash 或任何密钥字段带入请求体", () => {
     const bookWithSensitiveFields = {
       ...makeLocalBook(),

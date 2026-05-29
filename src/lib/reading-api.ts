@@ -12,6 +12,10 @@ import type {
   AIAssetVersionSummary,
   AIAssetSummary,
   AiCredentialValidationResult,
+  AiProviderCapabilityProbe,
+  AiProviderModelListResponse,
+  AiProviderPresetId,
+  AiResponseFormatPolicy,
   AiSettingsState,
   AiReviewFeedbackExport,
   AiReviewFeedbackFeature,
@@ -611,53 +615,124 @@ export async function askLocalReaderSelectionQuestion(
 export async function validateAiCredential({
   apiKey,
   baseUrl,
-  model
+  model,
+  presetId,
+  responseFormatPolicy
 }: {
   apiKey: string;
   baseUrl?: string;
   model?: string;
+  presetId?: AiProviderPresetId;
+  responseFormatPolicy?: AiResponseFormatPolicy;
 }): Promise<AiCredentialValidationResult> {
   return invoke<AiCredentialValidationResult>("validate_ai_credential", {
     apiKey,
     baseUrl,
-    model
+    model,
+    presetId,
+    responseFormatPolicy
   });
 }
 
 export async function saveAiCredential({
   apiKey,
   baseUrl,
-  model
+  model,
+  presetId,
+  responseFormatPolicy
 }: {
   apiKey: string;
   baseUrl?: string;
   model?: string;
+  presetId?: AiProviderPresetId;
+  responseFormatPolicy?: AiResponseFormatPolicy;
 }): Promise<AiSettingsState> {
-  return invoke<AiSettingsState>("save_ai_credential", { apiKey, baseUrl, model });
+  return invoke<AiSettingsState>("save_ai_credential", {
+    apiKey,
+    baseUrl,
+    model,
+    presetId,
+    responseFormatPolicy
+  });
 }
 
 export async function saveAiSettings({
   apiKey,
   baseUrl,
-  model
+  model,
+  presetId,
+  responseFormatPolicy
 }: {
   apiKey?: string;
   baseUrl?: string;
   model?: string;
+  presetId?: AiProviderPresetId;
+  responseFormatPolicy?: AiResponseFormatPolicy;
 }): Promise<AiSettingsState> {
-  return invoke<AiSettingsState>("save_ai_settings", { apiKey, baseUrl, model });
+  return invoke<AiSettingsState>("save_ai_settings", {
+    apiKey,
+    baseUrl,
+    model,
+    presetId,
+    responseFormatPolicy
+  });
 }
 
 export async function testAiConnection({
   apiKey,
   baseUrl,
-  model
+  model,
+  presetId,
+  responseFormatPolicy
 }: {
   apiKey?: string;
   baseUrl?: string;
   model?: string;
+  presetId?: AiProviderPresetId;
+  responseFormatPolicy?: AiResponseFormatPolicy;
 }): Promise<AiCredentialValidationResult> {
-  return invoke<AiCredentialValidationResult>("test_ai_connection", { apiKey, baseUrl, model });
+  return invoke<AiCredentialValidationResult>("test_ai_connection", {
+    apiKey,
+    baseUrl,
+    model,
+    presetId,
+    responseFormatPolicy
+  });
+}
+
+export async function probeAiProviderCapabilities({
+  apiKey,
+  baseUrl,
+  model,
+  presetId,
+  responseFormatPolicy
+}: {
+  apiKey?: string;
+  baseUrl?: string;
+  model?: string;
+  presetId?: AiProviderPresetId;
+  responseFormatPolicy?: AiResponseFormatPolicy;
+}): Promise<AiProviderCapabilityProbe> {
+  return invoke<AiProviderCapabilityProbe>("probe_ai_provider_capabilities", {
+    apiKey,
+    baseUrl,
+    model,
+    presetId,
+    responseFormatPolicy
+  });
+}
+
+export async function listAiProviderModels({
+  apiKey,
+  baseUrl
+}: {
+  apiKey?: string;
+  baseUrl?: string;
+}): Promise<AiProviderModelListResponse> {
+  return invoke<AiProviderModelListResponse>("list_ai_provider_models", {
+    apiKey,
+    baseUrl
+  });
 }
 
 export async function removeAiCredential(confirm: boolean): Promise<AiSettingsState> {
@@ -1711,7 +1786,9 @@ function buildWebPreviewAiSettingsState(exportedAt?: string): AiSettingsState {
     },
     provider: {
       baseUrl: "web-preview",
-      model: "preview-readonly"
+      model: "preview-readonly",
+      presetId: "custom",
+      responseFormatPolicy: "auto"
     }
   };
 }

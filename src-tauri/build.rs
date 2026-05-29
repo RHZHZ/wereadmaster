@@ -6,6 +6,8 @@ fn main() {
             "save_ai_credential",
             "save_ai_settings",
             "test_ai_connection",
+            "probe_ai_provider_capabilities",
+            "list_ai_provider_models",
             "remove_ai_credential",
             "get_ai_cached_output",
             "summarize_book_notes",

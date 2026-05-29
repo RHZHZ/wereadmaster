@@ -443,12 +443,16 @@ function normalizeAiQuestionThread(value: unknown): LocalReaderAiQuestionThreadT
   const uniqueTurns = new Map<string, LocalReaderAiQuestionThreadTurn>();
 
   for (const turn of turns) {
-    uniqueTurns.set(turn.id, turn);
+    uniqueTurns.set(normalizeAiQuestionThreadTurnKey(turn), turn);
   }
 
   return Array.from(uniqueTurns.values())
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     .slice(-MAX_THREAD_TURNS);
+}
+
+function normalizeAiQuestionThreadTurnKey(turn: LocalReaderAiQuestionThreadTurn): string {
+  return turn.question.trim().replace(/\s+/g, " ") || turn.id;
 }
 
 function normalizeAiQuestionThreadTurn(

@@ -61,12 +61,12 @@ import {
 } from "../lib/local-reader-markdown";
 import {
   getLocalReaderPreferenceStorage,
-  nextLocalReaderFontScale,
-  nextLocalReaderLineSpacing,
-  nextLocalReaderTheme,
   readLocalReaderPreferences,
   writeLocalReaderPreferences,
-  type LocalReaderPreferences
+  type LocalReaderFontScale,
+  type LocalReaderLineSpacing,
+  type LocalReaderPreferences,
+  type LocalReaderTheme
 } from "../lib/local-reader-preferences";
 import {
   createLocalReaderThought,
@@ -99,6 +99,7 @@ type LocalReaderProgressReadResult = {
   error?: string;
 };
 type LocalReaderInspectorTab = "highlights" | "thoughts" | "ai";
+type LocalReaderToolbarPanel = "font" | "lineSpacing" | "theme" | "export";
 
 type SelectionMenuState = {
   text: string;
@@ -189,6 +190,21 @@ const THOUGHT_COMPOSER_WIDTH = 360;
 const THOUGHT_COMPOSER_HEIGHT = 220;
 const AI_QUESTION_COMPOSER_WIDTH = 380;
 const AI_QUESTION_COMPOSER_HEIGHT = 250;
+const FONT_SCALE_OPTIONS: Array<{ value: LocalReaderFontScale; label: string; detail: string }> = [
+  { value: "compact", label: "紧凑", detail: "更高信息密度" },
+  { value: "standard", label: "标准", detail: "默认阅读尺寸" },
+  { value: "large", label: "大号", detail: "更舒展易读" }
+];
+const LINE_SPACING_OPTIONS: Array<{ value: LocalReaderLineSpacing; label: string; detail: string }> = [
+  { value: "standard", label: "标准", detail: "适合快速浏览" },
+  { value: "relaxed", label: "舒适", detail: "段落更松一点" },
+  { value: "loose", label: "宽松", detail: "适合长时间阅读" }
+];
+const THEME_OPTIONS: Array<{ value: LocalReaderTheme; label: string; detail: string }> = [
+  { value: "paper", label: "纸张", detail: "低干扰阅读" },
+  { value: "warm", label: "暖色", detail: "夜间前的温和底色" },
+  { value: "mint", label: "青绿", detail: "偏清爽的背景" }
+];
 
 export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
   const [book, setBook] = useState<LocalBook>();
@@ -213,6 +229,7 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
   const [pendingDeleteAiQuestionRecordId, setPendingDeleteAiQuestionRecordId] = useState<string>();
   const [isOutlineOpen, setIsOutlineOpen] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [activeToolbarPanel, setActiveToolbarPanel] = useState<LocalReaderToolbarPanel>();
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMatchIndex, setSearchMatchIndex] = useState(0);
   const [inspectorTab, setInspectorTab] = useState<LocalReaderInspectorTab>("highlights");
@@ -233,6 +250,7 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
   const lastSavedPercentRef = useRef(-1);
   const lastProgressSaveErrorMessageRef = useRef<string>();
   const progressSaveSessionRef = useRef(0);
+  const aiQuestionSubmissionLockRef = useRef(false);
   const currentBookIdRef = useRef(bookId);
   const preserveSelectionMenuUntilRef = useRef(0);
   const outlineButtonRef = useRef<HTMLButtonElement>(null);
@@ -257,6 +275,7 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
     setPendingDeleteAiQuestionRecordId(undefined);
     setIsOutlineOpen(false);
     setIsSearchOpen(false);
+    setActiveToolbarPanel(undefined);
     setSearchQuery("");
     setSearchMatchIndex(0);
   }
@@ -509,7 +528,12 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
 
   useEffect(() => {
     const hasTransientLayer =
-      selectionMenu || thoughtDraft || aiQuestionComposer || isOutlineOpen || isSearchOpen;
+      selectionMenu ||
+      thoughtDraft ||
+      aiQuestionComposer ||
+      isOutlineOpen ||
+      isSearchOpen ||
+      activeToolbarPanel;
     if (!hasTransientLayer || activeThoughtDetail || activeHighlightDetail || activeAiQuestionRecord) {
       return;
     }
@@ -530,6 +554,7 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
       setAiQuestionComposer(undefined);
       setIsOutlineOpen(false);
       setIsSearchOpen(false);
+      setActiveToolbarPanel(undefined);
       window.requestAnimationFrame(() => {
         if (shouldFocusOutlineButton) {
           outlineButtonRef.current?.focus();
@@ -553,6 +578,7 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [
+    activeToolbarPanel,
     activeAiQuestionRecord,
     activeHighlightDetail,
     activeThoughtDetail,
@@ -561,6 +587,33 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
     isSearchOpen,
     selectionMenu,
     thoughtDraft
+  ]);
+
+  useEffect(() => {
+    const hasToolbarPanel = isOutlineOpen || isSearchOpen || activeToolbarPanel;
+    if (!hasToolbarPanel || activeThoughtDetail || activeHighlightDetail || activeAiQuestionRecord) {
+      return;
+    }
+
+    function handlePointerDown(event: globalThis.PointerEvent) {
+      if (isLocalReaderToolbarPanelTarget(event.target)) {
+        return;
+      }
+
+      setIsOutlineOpen(false);
+      setIsSearchOpen(false);
+      setActiveToolbarPanel(undefined);
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    return () => document.removeEventListener("pointerdown", handlePointerDown, true);
+  }, [
+    activeAiQuestionRecord,
+    activeHighlightDetail,
+    activeThoughtDetail,
+    activeToolbarPanel,
+    isOutlineOpen,
+    isSearchOpen
   ]);
 
   useEffect(() => {
@@ -784,34 +837,43 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
     showToast({ message, tone: "success" });
   }
 
-  function handleToggleFontScale() {
+  function handleSelectFontScale(fontScale: LocalReaderFontScale) {
     updateReaderPreferences(
       (current) => ({
         ...current,
-        fontScale: nextLocalReaderFontScale(current.fontScale)
+        fontScale
       }),
-      "已切换字号"
+      `字号已切换为${formatFontScaleLabel(fontScale)}`
     );
   }
 
-  function handleToggleLineSpacing() {
+  function handleSelectLineSpacing(lineSpacing: LocalReaderLineSpacing) {
     updateReaderPreferences(
       (current) => ({
         ...current,
-        lineSpacing: nextLocalReaderLineSpacing(current.lineSpacing)
+        lineSpacing
       }),
-      "已切换行距"
+      `行距已切换为${formatLineSpacingLabel(lineSpacing)}`
     );
   }
 
-  function handleToggleTheme() {
+  function handleSelectTheme(theme: LocalReaderTheme) {
     updateReaderPreferences(
       (current) => ({
         ...current,
-        theme: nextLocalReaderTheme(current.theme)
+        theme
       }),
-      "已切换主题"
+      `主题已切换为${formatReaderThemeLabel(theme)}`
     );
+  }
+
+  function handleToggleToolbarPanel(panel: LocalReaderToolbarPanel) {
+    setSelectionMenu(undefined);
+    setThoughtDraft(undefined);
+    setAiQuestionComposer(undefined);
+    setIsOutlineOpen(false);
+    setIsSearchOpen(false);
+    setActiveToolbarPanel((current) => (current === panel ? undefined : panel));
   }
 
   function handleToggleOutline() {
@@ -819,6 +881,7 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
     setThoughtDraft(undefined);
     setAiQuestionComposer(undefined);
     setIsSearchOpen(false);
+    setActiveToolbarPanel(undefined);
     setIsOutlineOpen((current) => !current);
   }
 
@@ -849,6 +912,7 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
     setThoughtDraft(undefined);
     setAiQuestionComposer(undefined);
     setIsOutlineOpen(false);
+    setActiveToolbarPanel(undefined);
     setIsSearchOpen((current) => !current);
   }
 
@@ -1334,7 +1398,7 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
   async function handleSubmitAiQuestionRecord(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!aiQuestionComposer || isAskingAi) {
+    if (!aiQuestionComposer || isAskingAi || aiQuestionSubmissionLockRef.current) {
       return;
     }
 
@@ -1345,100 +1409,106 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
       return;
     }
 
+    aiQuestionSubmissionLockRef.current = true;
     const selectedText = content.slice(
       composer.startOffset,
       composer.endOffset
     );
 
-    if (composer.parentRecordId) {
-      await handleSubmitAiQuestionThreadTurn(
-        { ...composer, parentRecordId: composer.parentRecordId },
-        question,
-        selectedText
-      );
-      return;
-    }
-
-    const record = createLocalReaderAiQuestionRecord({
-      bookId,
-      question,
-      selectedText,
-      startOffset: composer.startOffset,
-      endOffset: composer.endOffset
-    });
-    let nextAiQuestionRecords = writeLocalReaderAiQuestionRecords(
-      getLocalReaderAiQuestionDraftStorage(),
-      bookId,
-      upsertLocalReaderAiQuestionRecord(aiQuestionRecords, bookId, record)
-    );
-    setAiQuestionRecords(nextAiQuestionRecords);
-    setAiQuestionComposer(undefined);
-    setInspectorTab("ai");
-
-    const canAskAi = await refreshAiQuestionProviderAvailability();
-
-    if (!canAskAi || !book) {
-      showToast({ message: "已保存 AI 提问记录，当前不会请求模型。", tone: "success" });
-      return;
-    }
-
-    const request = createLocalReaderAiQuestionRequest({
-      book,
-      selectedText,
-      question,
-      startOffset: composer.startOffset,
-      endOffset: composer.endOffset
-    });
-
-    if (!request) {
-      showToast({ message: "选区或问题无效，已先保存 AI 提问记录。", tone: "warning" });
-      return;
-    }
-
-    const pendingRecord: LocalReaderAiQuestionRecord = {
-      ...record,
-      status: "pending",
-      updatedAt: new Date().toISOString()
-    };
-    nextAiQuestionRecords = writeLocalReaderAiQuestionRecords(
-      getLocalReaderAiQuestionDraftStorage(),
-      bookId,
-      upsertLocalReaderAiQuestionRecord(nextAiQuestionRecords, bookId, pendingRecord)
-    );
-    setAiQuestionRecords(nextAiQuestionRecords);
-    setIsAskingAi(true);
     try {
-      const response = await askLocalReaderSelectionQuestion(request);
-      const answeredRecord: LocalReaderAiQuestionRecord = {
-        ...pendingRecord,
-        status: "answered",
-        updatedAt: response.answer.generatedAt,
-        answer: createAiQuestionRecordAnswer(response)
+      if (composer.parentRecordId) {
+        await handleSubmitAiQuestionThreadTurn(
+          { ...composer, parentRecordId: composer.parentRecordId },
+          question,
+          selectedText
+        );
+        return;
+      }
+
+      const record = createLocalReaderAiQuestionRecord({
+        bookId,
+        question,
+        selectedText,
+        startOffset: composer.startOffset,
+        endOffset: composer.endOffset
+      });
+      let nextAiQuestionRecords = writeLocalReaderAiQuestionRecords(
+        getLocalReaderAiQuestionDraftStorage(),
+        bookId,
+        upsertLocalReaderAiQuestionRecord(aiQuestionRecords, bookId, record)
+      );
+      setAiQuestionRecords(nextAiQuestionRecords);
+      setAiQuestionComposer(undefined);
+      setInspectorTab("ai");
+
+      const canAskAi = await refreshAiQuestionProviderAvailability();
+
+      if (!canAskAi || !book) {
+        showToast({ message: "已保存 AI 提问记录，当前不会请求模型。", tone: "success" });
+        return;
+      }
+
+      const request = createLocalReaderAiQuestionRequest({
+        book,
+        selectedText,
+        question,
+        startOffset: composer.startOffset,
+        endOffset: composer.endOffset,
+        content
+      });
+
+      if (!request) {
+        showToast({ message: "选区或问题无效，已先保存 AI 提问记录。", tone: "warning" });
+        return;
+      }
+
+      const pendingRecord: LocalReaderAiQuestionRecord = {
+        ...record,
+        status: "pending",
+        updatedAt: new Date().toISOString()
       };
       nextAiQuestionRecords = writeLocalReaderAiQuestionRecords(
         getLocalReaderAiQuestionDraftStorage(),
         bookId,
-        upsertLocalReaderAiQuestionRecord(nextAiQuestionRecords, bookId, answeredRecord)
+        upsertLocalReaderAiQuestionRecord(nextAiQuestionRecords, bookId, pendingRecord)
       );
       setAiQuestionRecords(nextAiQuestionRecords);
-      showToast({ message: "AI 已基于选中文本回答。", tone: "success" });
-    } catch (askError) {
-      const message = getCommandErrorMessage(askError);
-      const failedRecord: LocalReaderAiQuestionRecord = {
-        ...pendingRecord,
-        status: "failed",
-        updatedAt: new Date().toISOString(),
-        errorMessage: message
-      };
-      nextAiQuestionRecords = writeLocalReaderAiQuestionRecords(
-        getLocalReaderAiQuestionDraftStorage(),
-        bookId,
-        upsertLocalReaderAiQuestionRecord(nextAiQuestionRecords, bookId, failedRecord)
-      );
-      setAiQuestionRecords(nextAiQuestionRecords);
-      showToast({ message: `AI 提问失败：${message}`, tone: "error" });
+      setIsAskingAi(true);
+      try {
+        const response = await askLocalReaderSelectionQuestion(request);
+        const answeredRecord: LocalReaderAiQuestionRecord = {
+          ...pendingRecord,
+          status: "answered",
+          updatedAt: response.answer.generatedAt,
+          answer: createAiQuestionRecordAnswer(response)
+        };
+        nextAiQuestionRecords = writeLocalReaderAiQuestionRecords(
+          getLocalReaderAiQuestionDraftStorage(),
+          bookId,
+          upsertLocalReaderAiQuestionRecord(nextAiQuestionRecords, bookId, answeredRecord)
+        );
+        setAiQuestionRecords(nextAiQuestionRecords);
+        showToast({ message: "AI 已基于选区和前后文回答。", tone: "success" });
+      } catch (askError) {
+        const message = getCommandErrorMessage(askError);
+        const failedRecord: LocalReaderAiQuestionRecord = {
+          ...pendingRecord,
+          status: "failed",
+          updatedAt: new Date().toISOString(),
+          errorMessage: message
+        };
+        nextAiQuestionRecords = writeLocalReaderAiQuestionRecords(
+          getLocalReaderAiQuestionDraftStorage(),
+          bookId,
+          upsertLocalReaderAiQuestionRecord(nextAiQuestionRecords, bookId, failedRecord)
+        );
+        setAiQuestionRecords(nextAiQuestionRecords);
+        showToast({ message: `AI 提问失败：${message}`, tone: "error" });
+      } finally {
+        setIsAskingAi(false);
+      }
     } finally {
-      setIsAskingAi(false);
+      aiQuestionSubmissionLockRef.current = false;
     }
   }
 
@@ -1455,7 +1525,13 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
     }
 
     const requestSelectedText = selectedText || parentRecord.selectedText;
-    const turn = createLocalReaderAiQuestionThreadTurn({ question });
+    const existingTurn = parentRecord.thread?.find(
+      (turn) => normalizeAiQuestionText(turn.question) === normalizeAiQuestionText(question)
+    );
+    const turn = createLocalReaderAiQuestionThreadTurn({
+      question,
+      ...(existingTurn ? { id: existingTurn.id, now: existingTurn.createdAt } : {})
+    });
     let nextAiQuestionRecords = writeLocalReaderAiQuestionRecords(
       getLocalReaderAiQuestionDraftStorage(),
       bookId,
@@ -1478,7 +1554,8 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
       selectedText: requestSelectedText,
       question,
       startOffset: parentRecord.startOffset,
-      endOffset: parentRecord.endOffset
+      endOffset: parentRecord.endOffset,
+      content
     });
 
     if (!request) {
@@ -1518,7 +1595,7 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
         )
       );
       setAiQuestionRecords(nextAiQuestionRecords);
-      showToast({ message: "AI 已基于原选中文本回答追问。", tone: "success" });
+      showToast({ message: "AI 已基于原选区和前后文回答追问。", tone: "success" });
     } catch (askError) {
       const message = getCommandErrorMessage(askError);
       const failedTurn = {
@@ -1832,40 +1909,157 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
                   </nav>
                 ) : null}
               </div>
-              <button
-                type="button"
-                className={readerPreferences.fontScale !== "standard" ? "is-active" : undefined}
-                onClick={handleToggleFontScale}
-              >
-                <Type aria-hidden="true" size={17} />
-                字号
-              </button>
-              <button
-                type="button"
-                className={readerPreferences.lineSpacing !== "standard" ? "is-active" : undefined}
-                onClick={handleToggleLineSpacing}
-              >
-                <AlignLeft aria-hidden="true" size={17} />
-                行距
-              </button>
-              <button
-                type="button"
-                className={readerPreferences.theme !== "paper" ? "is-active" : undefined}
-                onClick={handleToggleTheme}
-              >
-                <Palette aria-hidden="true" size={17} />
-                主题
-              </button>
-              <button type="button" onClick={handleExportLocalMarks}>
-                <Download aria-hidden="true" size={17} />
-                导出
-              </button>
+              <div className="local-reader-tool-control">
+                <button
+                  type="button"
+                  className={activeToolbarPanel === "font" ? "is-active" : undefined}
+                  aria-haspopup="dialog"
+                  aria-expanded={activeToolbarPanel === "font"}
+                  onClick={() => handleToggleToolbarPanel("font")}
+                >
+                  <Type aria-hidden="true" size={17} />
+                  字号
+                </button>
+                {activeToolbarPanel === "font" ? (
+                  <section className="local-reader-tool-popover" aria-label="字号设置">
+                    <header>
+                      <strong>字号</strong>
+                      <span>{formatFontScaleLabel(readerPreferences.fontScale)}</span>
+                    </header>
+                    <div className="local-reader-tool-options" role="group" aria-label="字号选项">
+                      {FONT_SCALE_OPTIONS.map((option) => (
+                        <button
+                          key={option.value}
+                          type="button"
+                          className={
+                            readerPreferences.fontScale === option.value ? "is-selected" : undefined
+                          }
+                          onClick={() => handleSelectFontScale(option.value)}
+                        >
+                          <span>{option.label}</span>
+                          <small>{option.detail}</small>
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                ) : null}
+              </div>
+              <div className="local-reader-tool-control">
+                <button
+                  type="button"
+                  className={activeToolbarPanel === "lineSpacing" ? "is-active" : undefined}
+                  aria-haspopup="dialog"
+                  aria-expanded={activeToolbarPanel === "lineSpacing"}
+                  onClick={() => handleToggleToolbarPanel("lineSpacing")}
+                >
+                  <AlignLeft aria-hidden="true" size={17} />
+                  行距
+                </button>
+                {activeToolbarPanel === "lineSpacing" ? (
+                  <section className="local-reader-tool-popover" aria-label="行距设置">
+                    <header>
+                      <strong>行距</strong>
+                      <span>{formatLineSpacingLabel(readerPreferences.lineSpacing)}</span>
+                    </header>
+                    <div className="local-reader-tool-options" role="group" aria-label="行距选项">
+                      {LINE_SPACING_OPTIONS.map((option) => (
+                        <button
+                          key={option.value}
+                          type="button"
+                          className={
+                            readerPreferences.lineSpacing === option.value
+                              ? "is-selected"
+                              : undefined
+                          }
+                          onClick={() => handleSelectLineSpacing(option.value)}
+                        >
+                          <span>{option.label}</span>
+                          <small>{option.detail}</small>
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                ) : null}
+              </div>
+              <div className="local-reader-tool-control">
+                <button
+                  type="button"
+                  className={activeToolbarPanel === "theme" ? "is-active" : undefined}
+                  aria-haspopup="dialog"
+                  aria-expanded={activeToolbarPanel === "theme"}
+                  onClick={() => handleToggleToolbarPanel("theme")}
+                >
+                  <Palette aria-hidden="true" size={17} />
+                  主题
+                </button>
+                {activeToolbarPanel === "theme" ? (
+                  <section className="local-reader-tool-popover" aria-label="主题设置">
+                    <header>
+                      <strong>主题</strong>
+                      <span>{formatReaderThemeLabel(readerPreferences.theme)}</span>
+                    </header>
+                    <div className="local-reader-tool-options" role="group" aria-label="主题选项">
+                      {THEME_OPTIONS.map((option) => (
+                        <button
+                          key={option.value}
+                          type="button"
+                          className={
+                            readerPreferences.theme === option.value ? "is-selected" : undefined
+                          }
+                          onClick={() => handleSelectTheme(option.value)}
+                        >
+                          <span>
+                            <i className={`local-reader-theme-swatch is-${option.value}`} />
+                            {option.label}
+                          </span>
+                          <small>{option.detail}</small>
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                ) : null}
+              </div>
+              <div className="local-reader-tool-control">
+                <button
+                  type="button"
+                  className={activeToolbarPanel === "export" ? "is-active" : undefined}
+                  aria-haspopup="dialog"
+                  aria-expanded={activeToolbarPanel === "export"}
+                  onClick={() => handleToggleToolbarPanel("export")}
+                >
+                  <Download aria-hidden="true" size={17} />
+                  导出
+                </button>
+                {activeToolbarPanel === "export" ? (
+                  <section
+                    className="local-reader-tool-popover local-reader-tool-popover--export"
+                    aria-label="导出设置"
+                  >
+                    <header>
+                      <strong>导出</strong>
+                      <span>Markdown</span>
+                    </header>
+                    <p>导出本书划线、想法和 AI 提问记录。</p>
+                    <button
+                      type="button"
+                      className="local-reader-tool-primary-action"
+                      onClick={() => {
+                        setActiveToolbarPanel(undefined);
+                        handleExportLocalMarks();
+                      }}
+                    >
+                      <Download aria-hidden="true" size={15} />
+                      导出 Markdown
+                    </button>
+                  </section>
+                ) : null}
+              </div>
               <div className="local-reader-search-control">
                 <button
                   ref={searchButtonRef}
                   type="button"
                   className={`local-reader-icon-button ${isSearchOpen ? "is-active" : ""}`}
-                  aria-label="打开书内搜索"
+                  aria-label="打开更多工具"
                   aria-haspopup="dialog"
                   aria-expanded={isSearchOpen}
                   onClick={handleToggleSearch}
@@ -1875,9 +2069,13 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
                 {isSearchOpen ? (
                   <form
                     className="local-reader-search-popover"
-                    aria-label="书内搜索"
+                    aria-label="更多阅读工具"
                     onSubmit={handleSearchSubmit}
                   >
+                    <header className="local-reader-search-popover-header">
+                      <strong>更多工具</strong>
+                      <span>书内搜索</span>
+                    </header>
                     <label className="local-reader-search-field">
                       <Search aria-hidden="true" size={15} />
                       <input
@@ -2444,10 +2642,10 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
           <small>
             {aiQuestionComposer.parentRecordId
               ? isAiQuestionProviderAvailable
-                ? "追问会归入当前 AI 提问记录；只发送原选区和追问内容。"
+                ? "追问会归入当前 AI 提问记录；只发送原选区、前后文和追问内容。"
                 : "仅把追问保存到当前记录；当前不会请求模型，也不会读取整本书。"
               : isAiQuestionProviderAvailable
-                ? "提交时只发送选中文本和问题；不会读取整本书或微信读书数据。"
+                ? "提交时只发送选中文本、前后文和问题；不会读取整本书或微信读书数据。"
                 : "仅保存草稿态记录；当前不会请求模型，也不会读取整本书。"}
           </small>
           <footer>
@@ -2842,7 +3040,6 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
                       ))}
                     </div>
                   ) : null}
-                  <small>{activeAiQuestionRecord.answer.basisNotice}</small>
                 </section>
               ) : null}
 
@@ -2909,15 +3106,6 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
                 </section>
               ) : null}
 
-              <section className="local-reader-thought-modal-section">
-                <div className="local-reader-thought-modal-section-header">
-                  <span>本地边界</span>
-                  <span className="local-reader-ai-scope">基于选区</span>
-                </div>
-                <div className="local-reader-thought-modal-content">
-                  本条 AI 提问只属于本地阅读器，只基于用户主动选择的文本和问题，不会读取整本书，也不会进入微信读书笔记列表。
-                </div>
-              </section>
             </div>
 
             <footer className="local-reader-thought-modal-actions">
@@ -3318,6 +3506,29 @@ function formatHighlightToneLabel(tone: LocalReaderHighlightTone): string {
   return "划线";
 }
 
+function formatFontScaleLabel(value: LocalReaderFontScale): string {
+  return FONT_SCALE_OPTIONS.find((option) => option.value === value)?.label ?? "标准";
+}
+
+function formatLineSpacingLabel(value: LocalReaderLineSpacing): string {
+  return LINE_SPACING_OPTIONS.find((option) => option.value === value)?.label ?? "标准";
+}
+
+function formatReaderThemeLabel(value: LocalReaderTheme): string {
+  return THEME_OPTIONS.find((option) => option.value === value)?.label ?? "纸张";
+}
+
+function isLocalReaderToolbarPanelTarget(target: EventTarget | null): boolean {
+  return (
+    target instanceof Element &&
+    Boolean(
+      target.closest(
+        ".local-reader-outline-control, .local-reader-tool-control, .local-reader-search-control"
+      )
+    )
+  );
+}
+
 function findThoughtsForRange(
   thoughts: LocalReaderThought[],
   startOffset: number,
@@ -3456,6 +3667,10 @@ function getAiQuestionRecordDisplayStatus(
 function formatAiQuestionRecordTurnSummary(record: LocalReaderAiQuestionRecord): string {
   const turnCount = record.thread?.length ?? 0;
   return turnCount > 0 ? `${turnCount + 1} 轮` : "";
+}
+
+function normalizeAiQuestionText(value: string): string {
+  return value.trim().replace(/\s+/g, " ");
 }
 
 function createPreviewHighlight(
