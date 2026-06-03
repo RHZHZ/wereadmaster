@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use rusqlite::{Connection, Result as SqliteResult};
+use rusqlite::{Connection, OptionalExtension, Result as SqliteResult};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
@@ -162,6 +162,17 @@ pub fn initialize_schema(connection: &Connection) -> SqliteResult<()> {
             updated_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS shelf_archives (
+            id TEXT PRIMARY KEY NOT NULL,
+            name TEXT NOT NULL,
+            book_ids_json TEXT NOT NULL,
+            matched_entry_count INTEGER NOT NULL DEFAULT 0,
+            missing_book_count INTEGER NOT NULL DEFAULT 0,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            raw_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS book_details (
             book_id TEXT PRIMARY KEY NOT NULL,
             title TEXT NOT NULL,
@@ -287,7 +298,7 @@ pub fn initialize_schema(connection: &Connection) -> SqliteResult<()> {
             id TEXT PRIMARY KEY NOT NULL,
             title TEXT NOT NULL,
             author TEXT,
-            format TEXT NOT NULL CHECK(format IN ('epub', 'txt')),
+            format TEXT NOT NULL CHECK(format IN ('epub', 'txt', 'markdown')),
             file_hash TEXT NOT NULL,
             file_size INTEGER NOT NULL,
             storage_path TEXT NOT NULL,
@@ -340,6 +351,125 @@ pub fn initialize_schema(connection: &Connection) -> SqliteResult<()> {
     add_column_if_missing(connection, "thoughts", "chapter_uid", "INTEGER")?;
     add_column_if_missing(connection, "thoughts", "range_text", "TEXT")?;
     add_column_if_missing(connection, "thoughts", "deep_link", "TEXT")?;
+    ensure_local_books_support_markdown(connection)?;
+
+    Ok(())
+}
+
+fn ensure_local_books_support_markdown(connection: &Connection) -> SqliteResult<()> {
+    let table_sql = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'local_books'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+
+    if match table_sql.as_deref() {
+        Some(sql) => sql.contains("'markdown'"),
+        None => true,
+    } {
+        return Ok(());
+    }
+
+    let migration = connection.execute_batch(
+        "
+        PRAGMA foreign_keys = OFF;
+        BEGIN IMMEDIATE;
+
+        ALTER TABLE local_book_files RENAME TO local_book_files_before_markdown;
+        ALTER TABLE local_books RENAME TO local_books_before_markdown;
+
+        CREATE TABLE local_books (
+            id TEXT PRIMARY KEY NOT NULL,
+            title TEXT NOT NULL,
+            author TEXT,
+            format TEXT NOT NULL CHECK(format IN ('epub', 'txt', 'markdown')),
+            file_hash TEXT NOT NULL,
+            file_size INTEGER NOT NULL,
+            storage_path TEXT NOT NULL,
+            cover_path TEXT,
+            imported_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(file_hash)
+        );
+
+        CREATE TABLE local_book_files (
+            id TEXT PRIMARY KEY NOT NULL,
+            book_id TEXT NOT NULL,
+            original_file_name TEXT NOT NULL,
+            original_extension TEXT NOT NULL,
+            mime_type TEXT,
+            storage_path TEXT NOT NULL,
+            file_hash TEXT NOT NULL,
+            file_size INTEGER NOT NULL,
+            imported_at TEXT NOT NULL,
+            FOREIGN KEY(book_id) REFERENCES local_books(id) ON DELETE CASCADE
+        );
+
+        INSERT INTO local_books (
+            id,
+            title,
+            author,
+            format,
+            file_hash,
+            file_size,
+            storage_path,
+            cover_path,
+            imported_at,
+            updated_at
+        )
+        SELECT
+            id,
+            title,
+            author,
+            format,
+            file_hash,
+            file_size,
+            storage_path,
+            cover_path,
+            imported_at,
+            updated_at
+        FROM local_books_before_markdown;
+
+        INSERT INTO local_book_files (
+            id,
+            book_id,
+            original_file_name,
+            original_extension,
+            mime_type,
+            storage_path,
+            file_hash,
+            file_size,
+            imported_at
+        )
+        SELECT
+            id,
+            book_id,
+            original_file_name,
+            original_extension,
+            mime_type,
+            storage_path,
+            file_hash,
+            file_size,
+            imported_at
+        FROM local_book_files_before_markdown;
+
+        DROP TABLE local_book_files_before_markdown;
+        DROP TABLE local_books_before_markdown;
+
+        CREATE INDEX IF NOT EXISTS idx_local_books_updated
+            ON local_books(updated_at);
+
+        COMMIT;
+        PRAGMA foreign_keys = ON;
+        ",
+    );
+
+    if let Err(error) = migration {
+        let _ = connection.execute_batch("ROLLBACK; PRAGMA foreign_keys = ON;");
+        return Err(error);
+    }
 
     Ok(())
 }
@@ -468,6 +598,178 @@ mod tests {
         );
 
         assert!(duplicate.is_err());
+    }
+
+    #[test]
+    fn local_books_allow_markdown_format() {
+        let connection = Connection::open_in_memory().expect("in-memory database should open");
+
+        initialize_schema(&connection).expect("schema should initialize");
+        connection
+            .execute(
+                "
+                INSERT INTO local_books (
+                    id,
+                    title,
+                    format,
+                    file_hash,
+                    file_size,
+                    storage_path,
+                    imported_at,
+                    updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+                ",
+                rusqlite::params![
+                    "local_markdown",
+                    "Markdown 文档",
+                    "markdown",
+                    "hash-md",
+                    256,
+                    "local-books/local_markdown/source.md",
+                    "100"
+                ],
+            )
+            .expect("markdown local book should insert");
+
+        let format: String = connection
+            .query_row(
+                "SELECT format FROM local_books WHERE id = 'local_markdown'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("format should read");
+
+        assert_eq!(format, "markdown");
+    }
+
+    #[test]
+    fn initialize_schema_migrates_existing_local_books_constraint_for_markdown() {
+        let connection = Connection::open_in_memory().expect("in-memory database should open");
+        connection
+            .execute_batch(
+                "
+                PRAGMA foreign_keys = ON;
+                CREATE TABLE local_books (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    title TEXT NOT NULL,
+                    author TEXT,
+                    format TEXT NOT NULL CHECK(format IN ('epub', 'txt')),
+                    file_hash TEXT NOT NULL,
+                    file_size INTEGER NOT NULL,
+                    storage_path TEXT NOT NULL,
+                    cover_path TEXT,
+                    imported_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(file_hash)
+                );
+                CREATE TABLE local_book_files (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    book_id TEXT NOT NULL,
+                    original_file_name TEXT NOT NULL,
+                    original_extension TEXT NOT NULL,
+                    mime_type TEXT,
+                    storage_path TEXT NOT NULL,
+                    file_hash TEXT NOT NULL,
+                    file_size INTEGER NOT NULL,
+                    imported_at TEXT NOT NULL,
+                    FOREIGN KEY(book_id) REFERENCES local_books(id) ON DELETE CASCADE
+                );
+                INSERT INTO local_books (
+                    id,
+                    title,
+                    format,
+                    file_hash,
+                    file_size,
+                    storage_path,
+                    imported_at,
+                    updated_at
+                )
+                VALUES (
+                    'local_old',
+                    '旧本地图书',
+                    'txt',
+                    'hash-old',
+                    128,
+                    'local-books/local_old/source.txt',
+                    '100',
+                    '100'
+                );
+                INSERT INTO local_book_files (
+                    id,
+                    book_id,
+                    original_file_name,
+                    original_extension,
+                    storage_path,
+                    file_hash,
+                    file_size,
+                    imported_at
+                )
+                VALUES (
+                    'local_old_file',
+                    'local_old',
+                    '旧本地图书.txt',
+                    'txt',
+                    'local-books/local_old/source.txt',
+                    'hash-old',
+                    128,
+                    '100'
+                );
+                ",
+            )
+            .expect("old schema should be created");
+
+        initialize_schema(&connection).expect("schema should migrate");
+        connection
+            .execute(
+                "
+                INSERT INTO local_books (
+                    id,
+                    title,
+                    format,
+                    file_hash,
+                    file_size,
+                    storage_path,
+                    imported_at,
+                    updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+                ",
+                rusqlite::params![
+                    "local_markdown",
+                    "Markdown 文档",
+                    "markdown",
+                    "hash-md",
+                    256,
+                    "local-books/local_markdown/source.md",
+                    "101"
+                ],
+            )
+            .expect("markdown local book should insert after migration");
+
+        let old_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM local_books WHERE id = 'local_old'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("old local book should read");
+        let file_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM local_book_files WHERE book_id = 'local_old'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("old local book file should read");
+        let foreign_key_error_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .expect("foreign key check should run");
+
+        assert_eq!(old_count, 1);
+        assert_eq!(file_count, 1);
+        assert_eq!(foreign_key_error_count, 0);
     }
 
     #[test]

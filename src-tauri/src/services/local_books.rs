@@ -13,8 +13,9 @@ use crate::{db, errors::AppError};
 
 const LOCAL_BOOKS_DIR: &str = "local-books";
 const LOCAL_BOOK_SOURCE: &str = "local";
-const SUPPORTED_FORMATS_MESSAGE: &str = "目前仅支持导入 EPUB 或 TXT 文件。";
+const SUPPORTED_FORMATS_MESSAGE: &str = "目前仅支持导入 EPUB、TXT 或 Markdown 文件。";
 const TXT_EMPTY_ERROR_MESSAGE: &str = "当前 TXT 文件未提取到可阅读正文。";
+const MARKDOWN_EMPTY_ERROR_MESSAGE: &str = "当前 Markdown 文件未提取到可阅读正文。";
 const EPUB_PARSE_ERROR_MESSAGE: &str = "当前 EPUB 文件无法解析正文，请确认文件未损坏。";
 const LOCAL_BOOK_SOURCE_TOO_LARGE_ERROR_MESSAGE: &str = "当前文件超过 100 MB，暂不支持导入。";
 const LOCAL_BOOK_TEXT_TOO_LARGE_ERROR_MESSAGE: &str = "当前图书正文过大，暂不支持直接阅读。";
@@ -22,7 +23,7 @@ const MAX_LOCAL_BOOK_SOURCE_BYTES: u64 = 100 * 1024 * 1024;
 const MAX_LOCAL_BOOK_TEXT_BYTES: u64 = 24 * 1024 * 1024;
 
 #[derive(Debug, Default)]
-struct EpubMetadata {
+struct LocalBookMetadata {
     title: Option<String>,
     author: Option<String>,
 }
@@ -183,6 +184,9 @@ fn import_local_book_with_result_into(
         "epub" => {
             read_epub_book_text(source_path)?;
         }
+        "markdown" => {
+            read_markdown_book_text(source_path)?;
+        }
         _ => {}
     }
 
@@ -200,10 +204,10 @@ fn import_local_book_with_result_into(
         .chars()
         .take(160)
         .collect::<String>();
-    let metadata = if format == "epub" {
-        read_epub_metadata(source_path).unwrap_or_default()
-    } else {
-        EpubMetadata::default()
+    let metadata = match format.as_str() {
+        "epub" => read_epub_metadata(source_path).unwrap_or_default(),
+        "markdown" => read_markdown_metadata(source_path).unwrap_or_default(),
+        _ => LocalBookMetadata::default(),
     };
     let title = metadata.title.unwrap_or(fallback_title);
     let author = metadata.author;
@@ -214,6 +218,12 @@ fn import_local_book_with_result_into(
         .chars()
         .take(240)
         .collect::<String>();
+    let original_extension = source_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.trim_start_matches('.').to_ascii_lowercase())
+        .filter(|extension| !extension.is_empty())
+        .unwrap_or_else(|| format.clone());
 
     let persist_result = (|| -> Result<(), AppError> {
         let transaction = connection.transaction().map_err(AppError::from)?;
@@ -266,7 +276,7 @@ fn import_local_book_with_result_into(
                     format!("{book_id}:source"),
                     &book_id,
                     &original_file_name,
-                    &format,
+                    &original_extension,
                     mime_type_for_format(&format),
                     &storage_path,
                     &file_hash,
@@ -541,6 +551,7 @@ fn read_local_book_text(
     let content = match book.format.as_str() {
         "txt" => read_txt_book_text(&source_path)?,
         "epub" => read_epub_book_text(&source_path)?,
+        "markdown" => read_markdown_book_text(&source_path)?,
         _ => {
             return Err(AppError::InvalidPayload(
                 SUPPORTED_FORMATS_MESSAGE.to_string(),
@@ -555,6 +566,35 @@ fn read_local_book_text(
 }
 
 fn read_txt_book_text(source_path: &Path) -> Result<String, AppError> {
+    let content = read_utf8_text_source(
+        source_path,
+        "当前 TXT 文件不是 UTF-8 编码，暂无法直接阅读。",
+    )?;
+    if content.trim().is_empty() {
+        return Err(AppError::InvalidPayload(
+            TXT_EMPTY_ERROR_MESSAGE.to_string(),
+        ));
+    }
+
+    Ok(content)
+}
+
+fn read_markdown_book_text(source_path: &Path) -> Result<String, AppError> {
+    let content = read_utf8_text_source(
+        source_path,
+        "当前 Markdown 文件不是 UTF-8 文本，暂不支持导入。",
+    )?;
+    let (_, body) = parse_markdown_document(&content);
+    if body.trim().is_empty() {
+        return Err(AppError::InvalidPayload(
+            MARKDOWN_EMPTY_ERROR_MESSAGE.to_string(),
+        ));
+    }
+
+    Ok(body)
+}
+
+fn read_utf8_text_source(source_path: &Path, encoding_message: &str) -> Result<String, AppError> {
     validate_text_source_size(source_path)?;
     let bytes = fs::read(source_path).map_err(|error| {
         if error.kind() == ErrorKind::NotFound {
@@ -564,16 +604,7 @@ fn read_txt_book_text(source_path: &Path) -> Result<String, AppError> {
         }
     })?;
 
-    let content = String::from_utf8(bytes).map_err(|_| {
-        AppError::InvalidPayload("当前 TXT 文件不是 UTF-8 编码，暂无法直接阅读。".to_string())
-    })?;
-    if content.trim().is_empty() {
-        return Err(AppError::InvalidPayload(
-            TXT_EMPTY_ERROR_MESSAGE.to_string(),
-        ));
-    }
-
-    Ok(content)
+    String::from_utf8(bytes).map_err(|_| AppError::InvalidPayload(encoding_message.to_string()))
 }
 
 fn read_epub_book_text(source_path: &Path) -> Result<String, AppError> {
@@ -624,17 +655,92 @@ fn read_epub_book_text(source_path: &Path) -> Result<String, AppError> {
     Ok(content)
 }
 
-fn read_epub_metadata(source_path: &Path) -> Result<EpubMetadata, AppError> {
+fn read_epub_metadata(source_path: &Path) -> Result<LocalBookMetadata, AppError> {
     let file = File::open(source_path).map_err(|error| AppError::Storage(error.to_string()))?;
     let mut archive = ZipArchive::new(file)
         .map_err(|_| AppError::InvalidPayload(EPUB_PARSE_ERROR_MESSAGE.to_string()))?;
     let package_path = read_epub_package_path(&mut archive)?;
     let package = read_zip_entry_to_string(&mut archive, &package_path)?;
 
-    Ok(EpubMetadata {
+    Ok(LocalBookMetadata {
         title: extract_xml_text(&package, "title", 160),
         author: extract_xml_text(&package, "creator", 120),
     })
+}
+
+fn read_markdown_metadata(source_path: &Path) -> Result<LocalBookMetadata, AppError> {
+    let content = read_utf8_text_source(
+        source_path,
+        "当前 Markdown 文件不是 UTF-8 文本，暂不支持导入。",
+    )?;
+    let (metadata, _) = parse_markdown_document(&content);
+
+    Ok(metadata)
+}
+
+fn parse_markdown_document(content: &str) -> (LocalBookMetadata, String) {
+    let content = content.strip_prefix('\u{feff}').unwrap_or(content);
+    let Some(front_matter_start) = content
+        .strip_prefix("---\n")
+        .map(|rest| content.len() - rest.len())
+        .or_else(|| {
+            content
+                .strip_prefix("---\r\n")
+                .map(|rest| content.len() - rest.len())
+        })
+    else {
+        return (LocalBookMetadata::default(), content.to_string());
+    };
+
+    let mut line_start = front_matter_start;
+    for line in content[front_matter_start..].split_inclusive('\n') {
+        let line_end = line_start + line.len();
+        let line_text = line.trim_end_matches(['\r', '\n']).trim();
+        if line_text == "---" {
+            let front_matter = &content[front_matter_start..line_start];
+            let body = &content[line_end..];
+            return (parse_markdown_front_matter(front_matter), body.to_string());
+        }
+        line_start = line_end;
+    }
+
+    (LocalBookMetadata::default(), content.to_string())
+}
+
+fn parse_markdown_front_matter(front_matter: &str) -> LocalBookMetadata {
+    let mut metadata = LocalBookMetadata::default();
+
+    for line in front_matter.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once(':') else {
+            continue;
+        };
+        let value = normalize_markdown_front_matter_value(value);
+        match key.trim().to_ascii_lowercase().as_str() {
+            "title" => metadata.title = normalize_metadata_text(&value, 160),
+            "author" => metadata.author = normalize_metadata_text(&value, 120),
+            _ => {}
+        }
+    }
+
+    metadata
+}
+
+fn normalize_markdown_front_matter_value(value: &str) -> String {
+    let trimmed = value.trim();
+    let unquoted = if trimmed.len() >= 2
+        && ((trimmed.starts_with('"') && trimmed.ends_with('"'))
+            || (trimmed.starts_with('\'') && trimmed.ends_with('\'')))
+    {
+        &trimmed[1..trimmed.len() - 1]
+    } else {
+        trimmed
+    };
+
+    unquoted.trim().to_string()
 }
 
 fn read_epub_package_path(archive: &mut ZipArchive<File>) -> Result<String, AppError> {
@@ -1207,11 +1313,11 @@ fn normalize_import_path(file_path: &str) -> Result<PathBuf, AppError> {
     }
     let path = PathBuf::from(trimmed);
     let metadata = fs::metadata(&path).map_err(|_| {
-        AppError::InvalidPayload("请选择存在且可读取的 EPUB 或 TXT 文件。".to_string())
+        AppError::InvalidPayload("请选择存在且可读取的 EPUB、TXT 或 Markdown 文件。".to_string())
     })?;
     if !metadata.is_file() {
         return Err(AppError::InvalidPayload(
-            "请选择 EPUB 或 TXT 文件，而不是文件夹。".to_string(),
+            "请选择 EPUB、TXT 或 Markdown 文件，而不是文件夹。".to_string(),
         ));
     }
     local_book_format(&path)?;
@@ -1229,6 +1335,7 @@ fn local_book_format(path: &Path) -> Result<String, AppError> {
 
     match extension.as_str() {
         "epub" | "txt" => Ok(extension),
+        "md" | "markdown" => Ok("markdown".to_string()),
         _ => Err(AppError::InvalidPayload(
             SUPPORTED_FORMATS_MESSAGE.to_string(),
         )),
@@ -1262,7 +1369,7 @@ fn validate_import_source_size(format: &str, path: &Path) -> Result<(), AppError
     })?;
     let source_size = metadata.len();
 
-    if format == "txt" && source_size > MAX_LOCAL_BOOK_TEXT_BYTES {
+    if matches!(format, "txt" | "markdown") && source_size > MAX_LOCAL_BOOK_TEXT_BYTES {
         return Err(AppError::InvalidPayload(
             LOCAL_BOOK_TEXT_TOO_LARGE_ERROR_MESSAGE.to_string(),
         ));
@@ -1324,19 +1431,22 @@ fn canonical_local_book_storage_path(book_id: &str, format: &str) -> Result<Stri
             "本地图书存储路径无效。".to_string(),
         ));
     }
-    if !matches!(format, "epub" | "txt") {
+    if !matches!(format, "epub" | "txt" | "markdown") {
         return Err(AppError::InvalidPayload(
             SUPPORTED_FORMATS_MESSAGE.to_string(),
         ));
     }
 
-    Ok(format!("{LOCAL_BOOKS_DIR}/{book_id}/source.{format}"))
+    let extension = if format == "markdown" { "md" } else { format };
+
+    Ok(format!("{LOCAL_BOOKS_DIR}/{book_id}/source.{extension}"))
 }
 
 fn mime_type_for_format(format: &str) -> Option<&'static str> {
     match format {
         "epub" => Some("application/epub+zip"),
         "txt" => Some("text/plain"),
+        "markdown" => Some("text/markdown"),
         _ => None,
     }
 }
@@ -1788,6 +1898,72 @@ mod tests {
     }
 
     #[test]
+    fn import_local_book_reads_markdown_front_matter_and_body() {
+        let temp_root = temp_dir("local-book-markdown");
+        let source_path = temp_root.join("fallback-name.md");
+        let data_dir = temp_root.join("data");
+        std::fs::create_dir_all(&data_dir).expect("data dir should be created");
+        std::fs::write(
+            &source_path,
+            "---\ntitle: Markdown 书\nauthor: 作者乙\n---\n# 第一章\n正文内容",
+        )
+        .expect("markdown source should be written");
+        let mut connection = rusqlite::Connection::open_in_memory().expect("database should open");
+        initialize_schema(&connection).expect("schema should initialize");
+
+        let book = import_local_book_into(&mut connection, &data_dir, &source_path, "100")
+            .expect("markdown book should import");
+        let text = read_local_book_text(&connection, &data_dir, &book.id)
+            .expect("markdown text should read");
+        let file_record = connection
+            .query_row(
+                "SELECT original_extension, mime_type FROM local_book_files WHERE book_id = ?1",
+                [&book.id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .expect("local book file should read");
+
+        assert_eq!(book.title, "Markdown 书");
+        assert_eq!(book.author.as_deref(), Some("作者乙"));
+        assert_eq!(book.format, "markdown");
+        assert!(book.storage_path.ends_with("/source.md"));
+        assert_eq!(text.content, "# 第一章\n正文内容");
+        assert_eq!(file_record.0, "md");
+        assert_eq!(file_record.1.as_deref(), Some("text/markdown"));
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn import_local_book_supports_markdown_extension_fallback_title() {
+        let temp_root = temp_dir("local-book-markdown-extension");
+        let source_path = temp_root.join("长文档.markdown");
+        let data_dir = temp_root.join("data");
+        std::fs::create_dir_all(&data_dir).expect("data dir should be created");
+        std::fs::write(&source_path, "## 章节\n正文内容")
+            .expect("markdown source should be written");
+        let mut connection = rusqlite::Connection::open_in_memory().expect("database should open");
+        initialize_schema(&connection).expect("schema should initialize");
+
+        let book = import_local_book_into(&mut connection, &data_dir, &source_path, "100")
+            .expect("markdown book should import");
+        let original_extension: String = connection
+            .query_row(
+                "SELECT original_extension FROM local_book_files WHERE book_id = ?1",
+                [&book.id],
+                |row| row.get(0),
+            )
+            .expect("local book original extension should read");
+
+        assert_eq!(book.title, "长文档");
+        assert_eq!(book.format, "markdown");
+        assert!(book.storage_path.ends_with("/source.md"));
+        assert_eq!(original_extension, "markdown");
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
     fn import_local_book_rejects_unsupported_format() {
         let temp_root = temp_dir("local-book-format");
         let source_path = temp_root.join("样例书.pdf");
@@ -1843,7 +2019,7 @@ mod tests {
 
         assert_eq!(
             error.user_message(),
-            "请选择存在且可读取的 EPUB 或 TXT 文件。"
+            "请选择存在且可读取的 EPUB、TXT 或 Markdown 文件。"
         );
 
         let _ = std::fs::remove_dir_all(&temp_root);
@@ -1942,6 +2118,58 @@ mod tests {
             .expect_err("empty TXT should not import");
 
         assert_eq!(error.user_message(), super::TXT_EMPTY_ERROR_MESSAGE);
+        assert_eq!(
+            read_local_books(&connection)
+                .expect("books should list")
+                .len(),
+            0
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn import_local_book_rejects_non_utf8_markdown_without_persisting_record() {
+        let temp_root = temp_dir("local-book-non-utf8-markdown");
+        let source_path = temp_root.join("样例文档.md");
+        let data_dir = temp_root.join("data");
+        std::fs::create_dir_all(&data_dir).expect("data dir should be created");
+        std::fs::write(&source_path, [0xff, 0xfe, 0xfd]).expect("source file should be written");
+        let mut connection = rusqlite::Connection::open_in_memory().expect("database should open");
+        initialize_schema(&connection).expect("schema should initialize");
+
+        let error = import_local_book_into(&mut connection, &data_dir, &source_path, "100")
+            .expect_err("non UTF-8 Markdown should not import");
+
+        assert_eq!(
+            error.user_message(),
+            "当前 Markdown 文件不是 UTF-8 文本，暂不支持导入。"
+        );
+        assert_eq!(
+            read_local_books(&connection)
+                .expect("books should list")
+                .len(),
+            0
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn import_local_book_rejects_empty_markdown_without_persisting_record() {
+        let temp_root = temp_dir("local-book-empty-markdown");
+        let source_path = temp_root.join("空白文档.md");
+        let data_dir = temp_root.join("data");
+        std::fs::create_dir_all(&data_dir).expect("data dir should be created");
+        std::fs::write(&source_path, "---\ntitle: 空白\n---\n \n\t ")
+            .expect("source file should be written");
+        let mut connection = rusqlite::Connection::open_in_memory().expect("database should open");
+        initialize_schema(&connection).expect("schema should initialize");
+
+        let error = import_local_book_into(&mut connection, &data_dir, &source_path, "100")
+            .expect_err("empty Markdown should not import");
+
+        assert_eq!(error.user_message(), super::MARKDOWN_EMPTY_ERROR_MESSAGE);
         assert_eq!(
             read_local_books(&connection)
                 .expect("books should list")

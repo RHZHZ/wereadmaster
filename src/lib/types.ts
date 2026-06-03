@@ -561,6 +561,15 @@ export type ShelfEntry = {
   raw?: unknown;
 };
 
+export type ShelfArchive = {
+  id: string;
+  name: string;
+  bookIds: string[];
+  matchedEntryCount: number;
+  missingBookCount: number;
+  raw?: unknown;
+};
+
 export type BookshelfSummary = {
   totalVisibleEntries: number;
   bookCount: number;

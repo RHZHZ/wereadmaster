@@ -8,14 +8,14 @@
 
 如果你想把微信读书从一个“阅读工具”升级成一个“可整理、可复盘、可导出、可长期积累”的个人阅读资产系统，这就是它。
 
-[![Release](https://img.shields.io/github/v/release/RHZHZ/wxreadmaster)](https://github.com/RHZHZ/wxreadmaster/releases)
-[![Download](https://img.shields.io/badge/下载最新版-GitHub%20Releases-2f80ed)](https://github.com/RHZHZ/wxreadmaster/releases)
+[![Release](https://img.shields.io/github/v/release/RHZHZ/wereadmaster)](https://github.com/RHZHZ/wereadmaster/releases)
+[![Download](https://img.shields.io/badge/下载最新版-GitHub%20Releases-2f80ed)](https://github.com/RHZHZ/wereadmaster/releases)
 
 ## 立即使用
 
-- [查看最新发布](https://github.com/RHZHZ/wxreadmaster/releases)
+- [查看最新发布](https://github.com/RHZHZ/wereadmaster/releases)
 - [查看一键更新说明](docs/github-release-updates.md)
-- 当前版本：`v1.0.3`
+- 当前版本：`v1.0.4`
 
 ## 这是什么
 
@@ -65,8 +65,8 @@ Authorization: Bearer $WEREAD_API_KEY
 ## 核心能力
 
 - **统一管理阅读资产**：总览、书架、详情、笔记和统计集中管理，减少跨入口切换。
-- **本地图书与微信书架隔离**：支持导入本地图书，使用独立的本地书架、阅读进度、划线、想法和 AI 提问记录，不默认合并微信读书同名书数据。
-- **本地阅读器**：正文阅读区支持目录、字号、行距、主题、导出和更多工具面板；选中文本后可手动划线、写想法或向 AI 提问。
+- **本地图书与微信书架隔离**：支持导入 EPUB、TXT 和 Markdown 本地图书，使用独立的本地书架、阅读进度、划线、想法和 AI 提问记录，不默认合并微信读书同名书数据。
+- **本地阅读器**：正文阅读区支持目录、字号、行距、主题、导出和更多工具面板；Markdown 图书支持标题、引用、列表、分隔线和代码块基础渲染；选中文本后可手动划线、写想法或向 AI 提问。
 - **把统计变成历史入口**：统计页和阅读报告页支持 `总计 → 年度 → 月度` 下钻，也支持前后切换历史周期，不必停留在“本月/今年”的单点展示。
 - **把笔记整理成复盘**：围绕单本书生成结构化复盘，提炼关键观点、行动项、复盘问题和代表性摘录。
 - **AI Provider 兼容配置**：设置页支持 OpenAI、DeepSeek、通义千问、Kimi 和自定义 Provider 预设；可测试连通性、测试结构化输出兼容性，也可刷新可用模型并保留手动输入兜底。
@@ -109,7 +109,7 @@ Authorization: Bearer $WEREAD_API_KEY
 
 当前正式发布面向 Windows x64。
 
-1. 从 [GitHub Releases](https://github.com/RHZHZ/wxreadmaster/releases) 下载 Windows 安装包。
+1. 从 [GitHub Releases](https://github.com/RHZHZ/wereadmaster/releases) 下载 Windows 安装包。
 2. 安装并启动应用。
 3. 在设置页完成凭据和更新配置。
 4. 如需 AI 复盘或本地阅读器 AI 提问，在“AI 设置”中选择 Provider 预设、填写 Key，并测试连通性与兼容性。
@@ -120,7 +120,7 @@ Authorization: Bearer $WEREAD_API_KEY
 - 本地优先保存缓存、阅读状态和 AI 输出。
 - AI 调用全部由用户手动触发，不做后台自动生成。
 - AI Provider 配置支持常用预设、兼容模式、模型刷新和手动输入兜底。
-- 本地阅读器支持选区划线、想法、AI 提问和 Markdown 导出。
+- 本地阅读器支持 EPUB、TXT、Markdown 阅读，支持选区划线、想法、AI 提问和 Markdown 导出。
 - 支持 Markdown 导出、批量导出、导出报告和索引。
 - 支持候选书管理、阅读指南、跨书路线和选书决策。
 - 支持备份、恢复、数据目录迁移和应用内更新。

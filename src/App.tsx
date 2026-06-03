@@ -172,7 +172,7 @@ const shelfSubItems: ShelfSubItem[] = [
     id: "local",
     viewId: "localLibrary",
     label: "本地书库",
-    description: "EPUB/TXT",
+    description: "EPUB/TXT/MD",
     icon: FileText,
   },
 ];

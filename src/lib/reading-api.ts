@@ -76,6 +76,7 @@ import type {
   SearchScope,
   SettingsState,
   SaveExportDirectoryResult,
+  ShelfArchive,
   ShelfEntry,
   ShelfEntryType,
   SimilarBooksResult,
@@ -116,9 +117,19 @@ type BookshelfSummaryRecord = {
   secretCount?: unknown;
 };
 
+type ShelfArchiveRecord = {
+  id?: unknown;
+  name?: unknown;
+  bookIds?: unknown;
+  matchedEntryCount?: unknown;
+  missingBookCount?: unknown;
+  rawJson?: unknown;
+};
+
 type BookshelfResponseRecord = {
   snapshot?: {
     entries?: ShelfEntryRecord[];
+    archives?: ShelfArchiveRecord[];
     summary?: BookshelfSummaryRecord;
   };
   syncState?: SyncState;
@@ -509,6 +520,7 @@ type ReadingItemStateRecord = {
 
 export type BookshelfSnapshot = {
   entries: ShelfEntry[];
+  archives: ShelfArchive[];
   summary: BookshelfSummary;
 };
 
@@ -1551,6 +1563,7 @@ type WebReadingPreviewData = {
   shelfSyncState?: SyncState;
   notesSyncState?: SyncState;
   shelfEntries: ShelfEntryRecord[];
+  shelfArchives: ShelfArchiveRecord[];
   readingItemStates: ReadingItemStateRecord[];
   notebookBooks: NotebookBookRecord[];
   statsRows: WebReadingPreviewStatsRow[];
@@ -1625,6 +1638,9 @@ function normalizeWebReadingPreviewData(value: unknown): WebReadingPreviewData |
     shelfEntries: (Array.isArray(record.shelfEntries) ? record.shelfEntries : [])
       .map(normalizeWebPreviewShelfEntryRecord)
       .filter(isDefined),
+    shelfArchives: (Array.isArray(record.shelfArchives) ? record.shelfArchives : [])
+      .map(normalizeWebPreviewShelfArchiveRecord)
+      .filter(isDefined),
     readingItemStates: (Array.isArray(record.readingItemStates) ? record.readingItemStates : [])
       .map(normalizeWebPreviewReadingItemStateRecord)
       .filter(isDefined),
@@ -1666,6 +1682,27 @@ function normalizeWebPreviewShelfEntryRecord(value: unknown): ShelfEntryRecord |
     isFinished: record.isFinished ?? record.is_finished,
     lastReadAt: numberValue(record.lastReadAt ?? record.last_read_at),
     rawJson
+  };
+}
+
+function normalizeWebPreviewShelfArchiveRecord(value: unknown): ShelfArchiveRecord | undefined {
+  const record = asUnknownRecord(value);
+  if (!record) {
+    return undefined;
+  }
+
+  const id = stringValue(record.id);
+  if (!id) {
+    return undefined;
+  }
+
+  return {
+    id,
+    name: stringValue(record.name),
+    bookIds: parseStringArrayJson(record.bookIds ?? record.bookIdsJson ?? record.book_ids_json),
+    matchedEntryCount: numberValue(record.matchedEntryCount ?? record.matched_entry_count),
+    missingBookCount: numberValue(record.missingBookCount ?? record.missing_book_count),
+    rawJson: stringValue(record.rawJson ?? record.raw_json)
   };
 }
 
@@ -1803,6 +1840,7 @@ function buildWebPreviewBookshelfResponse(preview: WebReadingPreviewData): Books
   return {
     snapshot: {
       entries,
+      archives: preview.shelfArchives.map(mapShelfArchive),
       summary: mapSummary(undefined, entries)
     },
     syncState: preview.shelfSyncState
@@ -2249,6 +2287,7 @@ function mapBookshelfResponse(response: BookshelfResponseRecord): BookshelfRespo
   return {
     snapshot: {
       entries,
+      archives: (snapshot.archives ?? []).map(mapShelfArchive),
       summary: mapSummary(snapshot.summary, entries)
     },
     syncState: normalizeSyncState(response.syncState)
@@ -2292,6 +2331,17 @@ function mapShelfEntry(record: ShelfEntryRecord): ShelfEntry {
         ? undefined
         : booleanValue(record.isFinished),
     lastReadAt: numberValue(record.lastReadAt),
+    raw: parseRawJson(record.rawJson)
+  };
+}
+
+function mapShelfArchive(record: ShelfArchiveRecord): ShelfArchive {
+  return {
+    id: stringValue(record.id) || `archive-${crypto.randomUUID()}`,
+    name: stringValue(record.name) || "未命名书单",
+    bookIds: toStringArray(record.bookIds),
+    matchedEntryCount: Math.max(0, numberValue(record.matchedEntryCount) ?? 0),
+    missingBookCount: Math.max(0, numberValue(record.missingBookCount) ?? 0),
     raw: parseRawJson(record.rawJson)
   };
 }
@@ -2946,6 +2996,22 @@ function firstDefinedString(
 
 function toStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.map(stringValue).filter(isDefined) : [];
+}
+
+function parseStringArrayJson(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return toStringArray(value);
+  }
+
+  if (typeof value !== "string" || !value.trim()) {
+    return [];
+  }
+
+  try {
+    return toStringArray(JSON.parse(value));
+  } catch {
+    return [];
+  }
 }
 
 function stringValue(value: unknown): string | undefined {

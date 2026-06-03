@@ -489,6 +489,59 @@ describe("settings export directory API", () => {
     });
   });
 
+  test("maps bookshelf archives from Tauri responses", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    invokeMock.mockResolvedValue({
+      snapshot: {
+        entries: [
+          {
+            id: "b1",
+            type: "book",
+            title: "架构整洁之道",
+            isTop: false,
+            isSecret: false,
+            rawJson: "{\"bookId\":\"b1\"}"
+          }
+        ],
+        archives: [
+          {
+            id: "archive:0:tech",
+            name: "技术栈",
+            bookIds: ["b1", "missing"],
+            matchedEntryCount: 1,
+            missingBookCount: 1,
+            rawJson: "{\"name\":\"技术栈\"}"
+          }
+        ],
+        summary: {
+          totalVisibleEntries: 1,
+          bookCount: 1,
+          albumCount: 0,
+          mpCount: 0,
+          publicCount: 1,
+          secretCount: 0
+        }
+      },
+      syncState: {
+        section: "shelf",
+        status: "success"
+      }
+    });
+
+    const bookshelf = await getBookshelf();
+
+    expect(bookshelf.snapshot.archives).toEqual([
+      {
+        id: "archive:0:tech",
+        name: "技术栈",
+        bookIds: ["b1", "missing"],
+        matchedEntryCount: 1,
+        missingBookCount: 1,
+        raw: { name: "技术栈" }
+      }
+    ]);
+  });
+
   test("uses exported web preview data for stats and cached review when Tauri is unavailable", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 4, 24, 10, 0, 0));
@@ -548,6 +601,16 @@ describe("settings export directory API", () => {
               albumId: "audio-1",
               name: "一小时听懂大历史"
             })
+          }
+        ],
+        shelfArchives: [
+          {
+            id: "archive:0:literature",
+            name: "文学书单",
+            bookIdsJson: JSON.stringify(["3300082699", "missing"]),
+            matchedEntryCount: 1,
+            missingBookCount: 1,
+            rawJson: JSON.stringify({ name: "文学书单" })
           }
         ],
         readingItemStates: [
@@ -703,6 +766,16 @@ describe("settings export directory API", () => {
     expect(overallReview?.review.readingPersona?.suggestion).toContain("文学短书");
     expect(bookshelf.snapshot.summary.totalVisibleEntries).toBe(2);
     expect(bookshelf.snapshot.entries[0]?.title).toBe("巴别塔");
+    expect(bookshelf.snapshot.archives).toEqual([
+      {
+        id: "archive:0:literature",
+        name: "文学书单",
+        bookIds: ["3300082699", "missing"],
+        matchedEntryCount: 1,
+        missingBookCount: 1,
+        raw: { name: "文学书单" }
+      }
+    ]);
     expect(syncedBookshelf.syncState?.section).toBe("shelf");
     expect(readingStates).toHaveLength(1);
     expect(readingStates[0]?.status).toBe("toRead");

@@ -1,4 +1,4 @@
-import type { ShelfEntry, ShelfEntryType } from "../lib/types";
+import type { ShelfArchive, ShelfEntry, ShelfEntryType } from "../lib/types";
 
 export type ShelfFilter = "all" | ShelfEntryType;
 
@@ -15,14 +15,23 @@ export const filterLabels: Record<ShelfFilter, string> = {
 };
 
 export const CATEGORY_PREVIEW_LIMIT = 12;
+export const ARCHIVE_PREVIEW_LIMIT = 10;
 
 export function filterEntries(
   entries: ShelfEntry[],
   filter: ShelfFilter,
   categoryFilter: string,
-  query: string
+  query: string,
+  archiveFilter = "all",
+  archives: ShelfArchive[] = []
 ): ShelfEntry[] {
   const keyword = query.trim().toLowerCase();
+  const archivedBookIds = archiveFilter === "unarchived" ? getArchivedBookIds(archives) : undefined;
+  const selectedArchive =
+    archiveFilter !== "all" && archiveFilter !== "unarchived"
+      ? archives.find((archive) => archive.id === archiveFilter)
+      : undefined;
+  const selectedArchiveBookIds = selectedArchive ? new Set(selectedArchive.bookIds) : undefined;
 
   return entries.filter((entry) => {
     if (filter !== "all" && entry.type !== filter) {
@@ -30,6 +39,10 @@ export function filterEntries(
     }
 
     if (categoryFilter !== "all" && getParentCategory(entry.category) !== categoryFilter) {
+      return false;
+    }
+
+    if (!matchesArchiveFilter(entry, archiveFilter, archivedBookIds, selectedArchiveBookIds)) {
       return false;
     }
 
@@ -43,6 +56,11 @@ export function filterEntries(
 
     return title.includes(keyword) || author.includes(keyword) || category.includes(keyword);
   });
+}
+
+export function getUnarchivedBookCount(entries: ShelfEntry[], archives: ShelfArchive[]): number {
+  const archivedBookIds = getArchivedBookIds(archives);
+  return entries.filter((entry) => entry.type === "book" && !archivedBookIds.has(entry.id)).length;
 }
 
 export function getCategoryEntries(entries: ShelfEntry[], filter: ShelfFilter): ShelfEntry[] {
@@ -90,6 +108,24 @@ export function getVisibleCategoryOptions(
   return activeOption ? [...preview.slice(0, CATEGORY_PREVIEW_LIMIT - 1), activeOption] : preview;
 }
 
+export function getVisibleArchiveOptions(
+  archives: ShelfArchive[],
+  activeArchive: string,
+  isExpanded: boolean
+): ShelfArchive[] {
+  if (isExpanded || archives.length <= ARCHIVE_PREVIEW_LIMIT) {
+    return archives;
+  }
+
+  const preview = archives.slice(0, ARCHIVE_PREVIEW_LIMIT);
+  if (activeArchive === "all" || activeArchive === "unarchived" || preview.some((archive) => archive.id === activeArchive)) {
+    return preview;
+  }
+
+  const activeOption = archives.find((archive) => archive.id === activeArchive);
+  return activeOption ? [...preview.slice(0, ARCHIVE_PREVIEW_LIMIT - 1), activeOption] : preview;
+}
+
 export function getParentCategory(category?: string): string | undefined {
   const normalized = category?.trim();
   if (!normalized) {
@@ -97,4 +133,29 @@ export function getParentCategory(category?: string): string | undefined {
   }
 
   return normalized.split("-")[0]?.trim() || normalized;
+}
+
+function matchesArchiveFilter(
+  entry: ShelfEntry,
+  archiveFilter: string,
+  archivedBookIds: Set<string> | undefined,
+  selectedArchiveBookIds: Set<string> | undefined
+): boolean {
+  if (archiveFilter === "all") {
+    return true;
+  }
+
+  if (entry.type !== "book") {
+    return false;
+  }
+
+  if (archiveFilter === "unarchived") {
+    return !archivedBookIds?.has(entry.id);
+  }
+
+  return selectedArchiveBookIds ? selectedArchiveBookIds.has(entry.id) : true;
+}
+
+function getArchivedBookIds(archives: ShelfArchive[]): Set<string> {
+  return new Set(archives.flatMap((archive) => archive.bookIds));
 }

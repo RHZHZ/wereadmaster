@@ -47,6 +47,8 @@ const PREVIEW_TEXT = [
 
 const SELECTED_TEXT =
   "阅读器应该安静、轻便，不抢正文的注意力。后续再补充划线、标记和向 AI 提问时，也应当围绕选中文本出现，而不是把阅读页变成复杂工作台。";
+const MARKDOWN_SELECTED_TEXT =
+  "Markdown 导入在首版保持文本阅读模式，保留原始标记，优先保证选区、划线和想法偏移稳定。";
 
 const LONG_THOUGHT =
   "这条想法用于验证详情弹窗的复制能力和长文本边界：averyveryverylongtoken_without_spaces_0123456789abcdefghijklmnopqrstuvwxyz@example-domain-with-extra-long-name.test/path/to/resource?query=reading-note-boundary，以及继续补充一段中文说明，确认内容只在详情内部滚动，不会撑大弹窗或侧栏卡片。";
@@ -68,7 +70,7 @@ test.describe("本地阅读器想法详情", () => {
     await expect(page.getByRole("heading", { name: "选择或粘贴本地图书" })).toBeVisible();
     await page.keyboard.press("Control+K");
     await expect(page.getByPlaceholder("搜索书名、作者或关键词")).toBeFocused();
-    const localBookRow = page.getByRole("button", { name: /月亮与六便士 epub/ });
+    const localBookRow = page.getByRole("button", { name: /月亮与六便士 EPUB/ });
     await expect(localBookRow.getByLabel("本地图书来源")).toContainText("本地版本");
     await localBookRow.click();
 
@@ -98,6 +100,123 @@ test.describe("本地阅读器想法详情", () => {
     await expect(page.getByLabel("阅读状态")).toContainText("已保存");
   });
 
+  test("Markdown 书籍渲染基础格式并识别标题目录", async ({ page }) => {
+    await gotoLocalReaderPreview(page);
+    await page.locator(".sidebar").getByRole("button", { name: "书架", exact: true }).click();
+    await page.getByLabel("书架子菜单").getByRole("button", { name: "本地书库" }).click();
+    await page.getByRole("tab", { name: "Markdown" }).click();
+
+    const localBookRow = page.getByRole("button", { name: /阅读设计笔记 Markdown/ });
+    await expect(localBookRow.getByLabel("本地图书来源")).toContainText("本地版本");
+    await localBookRow.click();
+
+    await expect(page.getByLabel("本地阅读器")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "阅读设计笔记" })).toBeVisible();
+    await expect(page.getByLabel("阅读来源边界")).toContainText("本地版本");
+    await expect(page.getByLabel("阅读状态")).toContainText("Markdown · 本地文本阅读");
+    const markdownRenderState = await page.getByLabel("阅读设计笔记 正文").evaluate((reader) => {
+      const heading = reader.querySelector<HTMLElement>(".local-reader-markdown-block--heading");
+      const paragraph = reader.querySelector<HTMLElement>(".local-reader-markdown-block--paragraph");
+      const codeLine = reader.querySelector<HTMLElement>(".local-reader-markdown-block--codeLine");
+      const syntax = reader.querySelector<HTMLElement>(".local-reader-markdown-syntax");
+      const codeFence = reader.querySelector<HTMLElement>(".local-reader-markdown-block--codeFence");
+      const headingStyle = heading ? getComputedStyle(heading) : undefined;
+      const paragraphStyle = paragraph ? getComputedStyle(paragraph) : undefined;
+      const codeStyle = codeLine ? getComputedStyle(codeLine) : undefined;
+      const syntaxStyle = syntax ? getComputedStyle(syntax) : undefined;
+      const codeFenceStyle = codeFence ? getComputedStyle(codeFence) : undefined;
+
+      return {
+        codeFenceHidden: codeFenceStyle?.position === "absolute" && codeFenceStyle.opacity === "0",
+        codeLineMonospace: Boolean(codeStyle?.fontFamily.toLowerCase().includes("mono")),
+        codeText: codeLine?.textContent ?? "",
+        hasMarkdownRoot: Boolean(reader.querySelector(".local-reader-content--markdown")),
+        headingFontWeight: Number.parseInt(headingStyle?.fontWeight ?? "0", 10),
+        headingText: heading?.textContent ?? "",
+        paragraphText: paragraph?.textContent ?? "",
+        paragraphFontSize: Number.parseFloat(paragraphStyle?.fontSize ?? "0"),
+        syntaxHidden: syntaxStyle?.position === "absolute" && syntaxStyle.opacity === "0"
+      };
+    });
+
+    expect(markdownRenderState.hasMarkdownRoot).toBe(true);
+    expect(markdownRenderState.headingText).toContain("第一节：阅读边界");
+    expect(markdownRenderState.headingFontWeight).toBeGreaterThanOrEqual(700);
+    expect(markdownRenderState.paragraphText).toContain("Markdown 导入在首版保持文本阅读模式");
+    expect(markdownRenderState.paragraphFontSize).toBeGreaterThanOrEqual(16);
+    expect(markdownRenderState.codeText).toContain("代码块标题不应进入目录");
+    expect(markdownRenderState.codeLineMonospace).toBe(true);
+    expect(markdownRenderState.syntaxHidden).toBe(true);
+    expect(markdownRenderState.codeFenceHidden).toBe(true);
+
+    await page.getByRole("button", { name: "目录", exact: true }).click();
+    const outline = page.getByLabel("本地图书目录");
+    await expect(outline).toBeVisible();
+    await expect(outline.getByRole("button", { name: /第一节：阅读边界/ })).toBeVisible();
+    await expect(outline.getByRole("button", { name: /第二节：划线与 AI/ })).toBeVisible();
+    await expect(outline.getByRole("button", { name: /代码块标题不应进入目录/ })).toHaveCount(0);
+  });
+
+  test("Markdown 书籍支持划线、想法、AI 草稿和本地导出", async ({ page }) => {
+    await openPreviewMarkdownReader(page);
+
+    await selectReaderTextIn(page, "阅读设计笔记 正文", MARKDOWN_SELECTED_TEXT);
+    const selectionToolbar = page.getByRole("toolbar", { name: "本地选中文本操作" });
+    await expect(selectionToolbar.getByRole("button", { name: "划线" })).toBeFocused();
+    await selectionToolbar.getByRole("button", { name: "划线" }).click();
+
+    const highlight = page.locator(".local-reader-highlight").filter({
+      hasText: MARKDOWN_SELECTED_TEXT
+    });
+    await expect(highlight).toBeVisible();
+    await page.getByRole("tab", { name: "划线" }).click();
+    await expect(page.getByRole("button", { name: /查看划线详情/ })).toContainText(
+      MARKDOWN_SELECTED_TEXT
+    );
+
+    await highlight.click();
+    await expect(selectionToolbar.getByRole("button", { name: "写想法" })).toBeVisible();
+    await selectionToolbar.getByRole("button", { name: "写想法" }).click();
+    const thoughtComposer = page.locator(".local-reader-thought-composer");
+    await expect(thoughtComposer).toBeVisible();
+    await page.getByPlaceholder("写下这段文字触发的想法").fill("Markdown 选区想法会随本地来源保存。");
+    await thoughtComposer.getByRole("button", { name: "保存想法" }).click();
+    await expect(thoughtComposer).toHaveCount(0);
+
+    await page.getByRole("tab", { name: "想法" }).click();
+    await expect(page.getByRole("button", { name: /查看想法详情/ })).toContainText(
+      "Markdown 选区想法会随本地来源保存。"
+    );
+
+    await highlight.click();
+    await expect(selectionToolbar.getByRole("button", { name: "问 AI" })).toBeVisible();
+    await selectionToolbar.getByRole("button", { name: "问 AI" }).click();
+    const aiPanel = page.getByRole("form", { name: "AI 提问面板" });
+    await expect(aiPanel).toBeVisible();
+    await page.getByLabel("AI 提问内容").fill("这段 Markdown 选区应该如何继续整理？");
+    await aiPanel.getByRole("button", { name: "保存记录" }).click();
+
+    await expect(page.getByRole("tab", { name: "AI 提问" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    await expect(page.getByRole("button", { name: /查看 AI 提问详情/ })).toContainText(
+      "这段 Markdown 选区应该如何继续整理？"
+    );
+
+    const download = await downloadLocalReaderMarks(page);
+    expect(download.suggestedFilename()).toBe("阅读设计笔记-本地标记.md");
+
+    const downloadPath = await download.path();
+    expect(downloadPath).toBeTruthy();
+    const markdown = await readFile(downloadPath!, "utf-8");
+    expect(markdown).toContain("format: markdown");
+    expect(markdown).toContain("- 格式：Markdown");
+    expect(markdown).toContain(MARKDOWN_SELECTED_TEXT);
+    expect(markdown).toContain("Markdown 选区想法会随本地来源保存。");
+    expect(markdown).toContain("这段 Markdown 选区应该如何继续整理？");
+  });
+
   test("目录浮层可识别章节并跳转正文位置", async ({ page }) => {
     await openPreviewLocalReader(page);
 
@@ -123,11 +242,8 @@ test.describe("本地阅读器想法详情", () => {
 
     const reader = page.getByLabel("小王子 正文");
     const beforeScrollTop = await reader.evaluate((element) => element.scrollTop);
-    await page.getByRole("button", { name: "打开书内搜索" }).click();
-
-    const searchPanel = page.getByRole("form", { name: "书内搜索" });
-    await expect(searchPanel).toBeVisible();
-    await expect(page.getByRole("button", { name: "更多阅读操作" })).toHaveCount(0);
+    const searchPanel = await openLocalReaderSearch(page);
+    await expect(searchPanel).toContainText("书内搜索");
     await page.getByLabel("搜索正文").fill("本地版本");
     await searchPanel.getByRole("button", { name: "定位" }).click();
 
@@ -148,11 +264,10 @@ test.describe("本地阅读器想法详情", () => {
     await expect(page.getByLabel("本地图书目录")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "目录", exact: true })).toBeFocused();
 
-    await page.getByRole("button", { name: "打开书内搜索" }).click();
-    await expect(page.getByRole("form", { name: "书内搜索" })).toBeVisible();
+    await openLocalReaderSearch(page);
     await page.keyboard.press("Escape");
-    await expect(page.getByRole("form", { name: "书内搜索" })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "打开书内搜索" })).toBeFocused();
+    await expect(page.getByRole("form", { name: "更多阅读工具" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "打开更多工具" })).toBeFocused();
 
     const highlight = page.locator(".local-reader-highlight").first();
     await highlight.click();
@@ -191,12 +306,10 @@ test.describe("本地阅读器想法详情", () => {
     await seedLocalHighlight(page, SELECTED_TEXT);
     await openPreviewLocalReader(page);
 
-    await page.getByRole("button", { name: "打开书内搜索" }).click();
-    const searchPanel = page.getByRole("form", { name: "书内搜索" });
-    await expect(searchPanel).toBeVisible();
+    const searchPanel = await openLocalReaderSearch(page);
     await searchPanel.getByRole("button", { name: "关闭书内搜索" }).click();
     await expect(searchPanel).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "打开书内搜索" })).toBeFocused();
+    await expect(page.getByRole("button", { name: "打开更多工具" })).toBeFocused();
 
     const highlight = page.locator(".local-reader-highlight").first();
     const selectionToolbar = page.getByRole("toolbar", { name: "本地选中文本操作" });
@@ -677,7 +790,9 @@ test.describe("本地阅读器想法详情", () => {
     await expectCurrentSidebarItemStyle(aiItem, 168);
     const aiModal = page.getByRole("dialog", { name: /AI 提问详情/ });
     await expect(aiModal).toContainText("这段话的核心设计原则是什么？");
-    await expect(aiModal).toContainText("只基于用户主动选择的文本和问题");
+    await expect(aiModal).toContainText("草稿");
+    await expect(aiModal).toContainText("用户问题");
+    await expect(aiModal).not.toContainText("AI 回答");
     await aiModal.getByRole("button", { name: "继续追问" }).click();
 
     const followUpPanel = page.getByRole("form", { name: "AI 提问面板" });
@@ -738,10 +853,7 @@ test.describe("本地阅读器想法详情", () => {
     await page.getByLabel("AI 提问内容").fill("这段话可以怎么继续思考？");
     await aiPanel.getByRole("button", { name: "保存记录" }).click();
 
-    const [download] = await Promise.all([
-      page.waitForEvent("download"),
-      page.getByRole("button", { name: "导出", exact: true }).click()
-    ]);
+    const download = await downloadLocalReaderMarks(page);
     expect(download.suggestedFilename()).toBe("小王子-本地标记.md");
 
     const downloadPath = await download.path();
@@ -761,10 +873,7 @@ test.describe("本地阅读器想法详情", () => {
     await seedLocalAiQuestionDraft(page, "这条草稿需要单独导出吗？");
     await openPreviewLocalReader(page);
 
-    const [download] = await Promise.all([
-      page.waitForEvent("download"),
-      page.getByRole("button", { name: "导出", exact: true }).click()
-    ]);
+    const download = await downloadLocalReaderMarks(page);
     expect(download.suggestedFilename()).toBe("小王子-本地标记.md");
 
     const downloadPath = await download.path();
@@ -1034,8 +1143,12 @@ async function setDarkUserPreferences(page: Page) {
 }
 
 async function selectReaderText(page: Page, text: string) {
-  await page.getByLabel("小王子 正文").evaluate((reader, selectedText) => {
-    const contentRoot = reader.querySelector("pre");
+  await selectReaderTextIn(page, "小王子 正文", text);
+}
+
+async function selectReaderTextIn(page: Page, readerLabel: string, text: string) {
+  await page.getByLabel(readerLabel).evaluate((reader, selectedText) => {
+    const contentRoot = reader.querySelector(".local-reader-content");
     if (!contentRoot) {
       throw new Error("阅读器正文节点不存在。");
     }
@@ -1255,6 +1368,22 @@ async function expectCurrentSidebarItemStyle(item: Locator, maxHeight: number) {
   expect(metrics.afterBackgroundColor).not.toBe("rgba(0, 0, 0, 0)");
 }
 
+async function downloadLocalReaderMarks(page: Page) {
+  await page.getByRole("button", { name: "导出", exact: true }).click();
+  const exportAction = page.getByRole("button", { name: "导出 Markdown", exact: true });
+  await expect(exportAction).toBeVisible();
+
+  const [download] = await Promise.all([page.waitForEvent("download"), exportAction.click()]);
+  return download;
+}
+
+async function openLocalReaderSearch(page: Page): Promise<Locator> {
+  await page.getByRole("button", { name: "打开更多工具" }).click();
+  const searchPanel = page.getByRole("form", { name: "更多阅读工具" });
+  await expect(searchPanel).toBeVisible();
+  return searchPanel;
+}
+
 async function seedLocalHighlight(page: Page, text: string) {
   const startOffset = PREVIEW_TEXT.indexOf(SELECTED_TEXT);
   if (startOffset < 0) {
@@ -1287,9 +1416,18 @@ async function openPreviewLocalReader(page: Page) {
   await gotoLocalReaderPreview(page);
   await page.locator(".sidebar").getByRole("button", { name: "书架", exact: true }).click();
   await page.getByLabel("书架子菜单").getByRole("button", { name: "本地书库" }).click();
-  await page.getByRole("button", { name: /小王子 txt/ }).click();
+  await page.getByRole("button", { name: /小王子 TXT/ }).click();
   await expect(page.getByLabel("本地阅读器")).toBeVisible();
   await expect(page.getByRole("heading", { name: "小王子" })).toBeVisible();
+}
+
+async function openPreviewMarkdownReader(page: Page) {
+  await gotoLocalReaderPreview(page);
+  await page.locator(".sidebar").getByRole("button", { name: "书架", exact: true }).click();
+  await page.getByLabel("书架子菜单").getByRole("button", { name: "本地书库" }).click();
+  await page.getByRole("button", { name: /阅读设计笔记 Markdown/ }).click();
+  await expect(page.getByLabel("本地阅读器")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "阅读设计笔记" })).toBeVisible();
 }
 
 async function gotoLocalReaderPreview(page: Page) {

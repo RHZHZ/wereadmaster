@@ -1,7 +1,12 @@
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
+import { ToastProvider } from "../components/ToastProvider";
 import {
+  LocalLibraryPage,
   resolveLocalBookCoverTitle,
   resolveLocalBookCoverTone,
+  formatLocalBookFormatBadge,
+  formatLocalBookFormatLabel,
   resolveLocalLibraryProgressLoadState,
   resolveLocalBookImportNotice,
   resolveLocalBookImportProgressWarning
@@ -80,5 +85,23 @@ describe("local library import notice", () => {
     expect(resolveLocalBookCoverTone(book)).toBe(resolveLocalBookCoverTone(book));
     expect(resolveLocalBookCoverTone(book)).toBeGreaterThanOrEqual(1);
     expect(resolveLocalBookCoverTone(book)).toBeLessThanOrEqual(5);
+  });
+
+  it("展示 Markdown 的用户可读格式和短标识", () => {
+    expect(formatLocalBookFormatLabel("markdown")).toBe("Markdown");
+    expect(formatLocalBookFormatBadge("markdown")).toBe("MD");
+    expect(formatLocalBookFormatBadge("txt")).toBe("TXT");
+  });
+
+  it("将路径导入动作收敛在导入面板内", () => {
+    const markup = renderToStaticMarkup(
+      <ToastProvider>
+        <LocalLibraryPage />
+      </ToastProvider>
+    );
+
+    expect(markup).toContain('aria-label="本地书库格式筛选"');
+    expect(markup).toContain("导入路径");
+    expect(markup).not.toContain("导入 EPUB/TXT/Markdown");
   });
 });

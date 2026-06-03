@@ -75,7 +75,7 @@ import {
   writeLocalReaderThoughts,
   type LocalReaderThought
 } from "../lib/local-reader-thoughts";
-import type { LocalBook, LocalReadingProgress } from "../lib/local-reader-types";
+import type { LocalBook, LocalBookFormat, LocalReadingProgress } from "../lib/local-reader-types";
 import { formatAiTimestamp, formatProgress } from "../lib/formatters";
 import {
   askLocalReaderSelectionQuestion,
@@ -128,6 +128,28 @@ type LocalReaderSearchMatch = {
   id: string;
   startOffset: number;
   endOffset: number;
+};
+
+type LocalReaderMarkdownBlockKind =
+  | "blank"
+  | "blockquote"
+  | "codeFence"
+  | "codeLine"
+  | "heading"
+  | "horizontalRule"
+  | "listItem"
+  | "paragraph";
+
+type LocalReaderMarkdownBlock = {
+  id: string;
+  kind: LocalReaderMarkdownBlockKind;
+  startOffset: number;
+  endOffset: number;
+  textEndOffset: number;
+  level?: number;
+  markerEndOffset?: number;
+  visibleTextEndOffset?: number;
+  listOrdered?: boolean;
 };
 
 async function readLocalReaderProgressSafely(
@@ -242,7 +264,7 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
   const [error, setError] = useState<string>();
   const [loadAttempt, setLoadAttempt] = useState(0);
   const readerRef = useRef<HTMLDivElement>(null);
-  const contentRef = useRef<HTMLPreElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const restoreScrollRef = useRef(false);
   const pendingPreferenceScrollRatioRef = useRef<number>();
   const pendingProgressSaveRef = useRef<PendingProgressSave>();
@@ -296,7 +318,14 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
       };
     });
   }, [contentSegments]);
-  const readerOutline = useMemo(() => buildLocalReaderOutline(content), [content]);
+  const markdownBlocks = useMemo(
+    () => (book?.format === "markdown" ? buildLocalReaderMarkdownBlocks(content) : []),
+    [book?.format, content]
+  );
+  const readerOutline = useMemo(
+    () => buildLocalReaderOutline(content, book?.format),
+    [book?.format, content]
+  );
   const searchMatches = useMemo(
     () => buildLocalReaderSearchMatches(content, searchQuery),
     [content, searchQuery]
@@ -1842,7 +1871,9 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
         : saveState === "error"
           ? "保存失败"
           : "本地进度";
-  const readerStatusFormat = book ? `${book.format.toUpperCase()} · 本地文本阅读` : "本地文本阅读";
+  const readerStatusFormat = book
+    ? `${formatLocalReaderFormatLabel(book.format)} · 本地文本阅读`
+    : "本地文本阅读";
 
   function handleRetryOpenBook() {
     setLoadAttempt((current) => current + 1);
@@ -1864,7 +1895,7 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
                 <p>本地书库 / 正在阅读</p>
                 <h3>{book?.title ?? "本地图书"}</h3>
                 <small aria-label="阅读来源边界">
-                  {book?.author || "未知作者"} · {book?.format.toUpperCase() ?? "TXT"} · 本地版本 · 与微信书架隔离
+                  {book?.author || "未知作者"} · {book ? formatLocalReaderFormatLabel(book.format) : "TXT"} · 本地版本 · 与微信书架隔离
                 </small>
               </div>
             </div>
@@ -2169,49 +2200,39 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
               onMouseUp={handleSelectionChange}
               onKeyUp={handleSelectionChange}
             >
-              <pre ref={contentRef}>
-                {content
-                  ? contentRenderSegments.map((segment, index) => {
-                      if (segment.kind === "highlight") {
-                        const isRevealed = isLocalReaderRangeRevealed(
-                          revealedThoughtRange,
-                          segment.highlight
-                        );
-                        return (
-                          <mark
-                            key={`${segment.highlight.id}-${index}`}
-                            className={`local-reader-highlight local-reader-highlight--${segment.highlight.tone}${
-                              isRevealed ? " is-revealed" : ""
-                            }`}
-                            title={segment.highlight.text}
-                            role="button"
-                            tabIndex={0}
-                            onClick={(event) => handleOpenHighlightMenu(segment.highlight, event)}
-                            onMouseUp={(event) => event.stopPropagation()}
-                            onKeyDown={(event) => handleHighlightKeyDown(segment.highlight, event)}
-                          >
-                            {renderLocalReaderSegmentText(
-                              segment.text,
-                              segment.startOffset,
-                              activeSearchMatch
-                            )}
-                          </mark>
-                        );
-                      }
-
-                      return (
-                        <Fragment key={`text-${index}`}>
-                          {renderLocalReaderSegmentText(
-                            segment.text,
-                            segment.startOffset,
-                            activeSearchMatch,
-                            revealedThoughtRange
-                          )}
-                        </Fragment>
-                      );
+              <div
+                ref={contentRef}
+                className={
+                  book.format === "markdown"
+                    ? "local-reader-content local-reader-content--markdown"
+                    : "local-reader-content local-reader-content--plain"
+                }
+              >
+                {content ? (
+                  book.format === "markdown" ? (
+                    renderLocalReaderMarkdownContent({
+                      activeSearchMatch,
+                      blocks: markdownBlocks,
+                      contentRenderSegments,
+                      handleHighlightKeyDown,
+                      handleOpenHighlightMenu,
+                      revealedThoughtRange
                     })
-                  : "本书暂无可显示内容。"}
-              </pre>
+                  ) : (
+                    <pre>
+                      {renderLocalReaderInlineSegments({
+                        activeSearchMatch,
+                        contentRenderSegments,
+                        handleHighlightKeyDown,
+                        handleOpenHighlightMenu,
+                        revealedThoughtRange
+                      })}
+                    </pre>
+                  )
+                ) : (
+                  "本书暂无可显示内容。"
+                )}
+              </div>
             </article>
           ) : null}
 
@@ -3371,16 +3392,28 @@ function clampNumber(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-function buildLocalReaderOutline(content: string): LocalReaderOutlineItem[] {
+export function buildLocalReaderOutline(
+  content: string,
+  format?: LocalBookFormat
+): LocalReaderOutlineItem[] {
   const items: LocalReaderOutlineItem[] = [];
   let offset = 0;
+  let isMarkdownCodeBlock = false;
 
   for (const rawLine of content.split(/\n/)) {
     const title = rawLine.trim();
-    if (isLocalReaderOutlineHeading(title)) {
+    if (format === "markdown" && isMarkdownFenceLine(title)) {
+      isMarkdownCodeBlock = !isMarkdownCodeBlock;
+    }
+
+    const markdownHeading =
+      format === "markdown" && !isMarkdownCodeBlock
+        ? parseMarkdownOutlineHeading(title)
+        : undefined;
+    if (markdownHeading || isLocalReaderOutlineHeading(title)) {
       items.push({
         id: `outline-${items.length}-${offset}`,
-        title,
+        title: markdownHeading ?? title,
         offset
       });
     }
@@ -3389,6 +3422,24 @@ function buildLocalReaderOutline(content: string): LocalReaderOutlineItem[] {
   }
 
   return items.slice(0, 80);
+}
+
+function parseMarkdownOutlineHeading(title: string): string | undefined {
+  const match = /^(#{1,6})\s+(.+?)\s*#*$/.exec(title);
+  if (!match) {
+    return undefined;
+  }
+
+  const heading = match[2]?.trim();
+  if (!heading || heading.length > 80) {
+    return undefined;
+  }
+
+  return heading;
+}
+
+function isMarkdownFenceLine(title: string): boolean {
+  return title.startsWith("```") || title.startsWith("~~~");
 }
 
 function isLocalReaderOutlineHeading(title: string): boolean {
@@ -3428,6 +3479,386 @@ function buildLocalReaderSearchMatches(
   }
 
   return matches;
+}
+
+function buildLocalReaderMarkdownBlocks(content: string): LocalReaderMarkdownBlock[] {
+  if (!content) {
+    return [];
+  }
+
+  const blocks: LocalReaderMarkdownBlock[] = [];
+  const linePattern = /.*(?:\n|$)/g;
+  let match: RegExpExecArray | null;
+  let isCodeBlock = false;
+
+  while ((match = linePattern.exec(content))) {
+    const rawLine = match[0] ?? "";
+    if (!rawLine) {
+      break;
+    }
+
+    const startOffset = match.index;
+    const endOffset = startOffset + rawLine.length;
+    const textEndOffset = endOffset - (rawLine.endsWith("\n") ? 1 : 0);
+    const line = rawLine.endsWith("\n") ? rawLine.slice(0, -1) : rawLine;
+    const trimmed = line.trim();
+    const id = `markdown-block-${blocks.length}-${startOffset}`;
+
+    if (isCodeBlock) {
+      blocks.push({
+        id,
+        kind: isMarkdownFenceLine(trimmed) ? "codeFence" : "codeLine",
+        startOffset,
+        endOffset,
+        textEndOffset,
+        markerEndOffset: isMarkdownFenceLine(trimmed) ? textEndOffset : undefined
+      });
+      if (isMarkdownFenceLine(trimmed)) {
+        isCodeBlock = false;
+      }
+      continue;
+    }
+
+    if (isMarkdownFenceLine(trimmed)) {
+      blocks.push({
+        id,
+        kind: "codeFence",
+        startOffset,
+        endOffset,
+        textEndOffset,
+        markerEndOffset: textEndOffset
+      });
+      isCodeBlock = true;
+      continue;
+    }
+
+    const heading = parseMarkdownBlockHeading(line);
+    if (heading) {
+      blocks.push({
+        id,
+        kind: "heading",
+        startOffset,
+        endOffset,
+        textEndOffset,
+        markerEndOffset: startOffset + heading.markerLength,
+        visibleTextEndOffset: textEndOffset - heading.trailingMarkerLength,
+        level: heading.level
+      });
+      continue;
+    }
+
+    const blockquote = /^(\s*>\s?)/.exec(line);
+    if (blockquote?.[1]) {
+      blocks.push({
+        id,
+        kind: "blockquote",
+        startOffset,
+        endOffset,
+        textEndOffset,
+        markerEndOffset: startOffset + blockquote[1].length
+      });
+      continue;
+    }
+
+    const listItem = /^(\s*)([-*+]|\d{1,3}[.)])(\s+)/.exec(line);
+    if (listItem?.[0]) {
+      blocks.push({
+        id,
+        kind: "listItem",
+        startOffset,
+        endOffset,
+        textEndOffset,
+        markerEndOffset: startOffset + listItem[0].length,
+        listOrdered: /\d/.test(listItem[2] ?? "")
+      });
+      continue;
+    }
+
+    if (/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line)) {
+      blocks.push({
+        id,
+        kind: "horizontalRule",
+        startOffset,
+        endOffset,
+        textEndOffset,
+        markerEndOffset: textEndOffset
+      });
+      continue;
+    }
+
+    blocks.push({
+      id,
+      kind: trimmed ? "paragraph" : "blank",
+      startOffset,
+      endOffset,
+      textEndOffset
+    });
+  }
+
+  return blocks;
+}
+
+function parseMarkdownBlockHeading(
+  line: string
+): { level: number; markerLength: number; trailingMarkerLength: number } | undefined {
+  const match = /^(#{1,6})(\s+)(.*)$/.exec(line);
+  if (!match) {
+    return undefined;
+  }
+
+  const body = match[3] ?? "";
+  if (!body.trim()) {
+    return undefined;
+  }
+
+  const trailingMarkerMatch = /\s+#{1,}\s*$/.exec(body);
+  return {
+    level: match[1]?.length ?? 1,
+    markerLength: (match[1]?.length ?? 0) + (match[2]?.length ?? 0),
+    trailingMarkerLength: trailingMarkerMatch?.[0]?.length ?? 0
+  };
+}
+
+function renderLocalReaderInlineSegments({
+  activeSearchMatch,
+  contentRenderSegments,
+  handleHighlightKeyDown,
+  handleOpenHighlightMenu,
+  rangeStartOffset,
+  rangeEndOffset,
+  revealedThoughtRange
+}: {
+  activeSearchMatch: LocalReaderSearchMatch | undefined;
+  contentRenderSegments: Array<ReturnType<typeof buildLocalReaderHighlightSegments>[number] & {
+    startOffset: number;
+    endOffset: number;
+  }>;
+  handleHighlightKeyDown: (
+    highlight: LocalReaderHighlight,
+    event: KeyboardEvent<HTMLElement>
+  ) => void;
+  handleOpenHighlightMenu: (
+    highlight: LocalReaderHighlight,
+    event: MouseEvent<HTMLElement>
+  ) => void;
+  rangeStartOffset?: number;
+  rangeEndOffset?: number;
+  revealedThoughtRange?: Pick<SelectionMenuState, "startOffset" | "endOffset">;
+}) {
+  const start = rangeStartOffset ?? 0;
+  const end = rangeEndOffset ?? Number.POSITIVE_INFINITY;
+  const nodes: JSX.Element[] = [];
+
+  contentRenderSegments.forEach((segment, index) => {
+    const sliceStart = Math.max(segment.startOffset, start);
+    const sliceEnd = Math.min(segment.endOffset, end);
+    if (sliceStart >= sliceEnd) {
+      return;
+    }
+
+    const text = segment.text.slice(
+      sliceStart - segment.startOffset,
+      sliceEnd - segment.startOffset
+    );
+
+    if (segment.kind === "highlight") {
+      const isRevealed = isLocalReaderRangeRevealed(revealedThoughtRange, segment.highlight);
+      nodes.push(
+        <mark
+          key={`${segment.highlight.id}-${index}-${sliceStart}-${sliceEnd}`}
+          className={`local-reader-highlight local-reader-highlight--${segment.highlight.tone}${
+            isRevealed ? " is-revealed" : ""
+          }`}
+          title={segment.highlight.text}
+          role="button"
+          tabIndex={0}
+          onClick={(event) => handleOpenHighlightMenu(segment.highlight, event)}
+          onMouseUp={(event) => event.stopPropagation()}
+          onKeyDown={(event) => handleHighlightKeyDown(segment.highlight, event)}
+        >
+          {renderLocalReaderSegmentText(text, sliceStart, activeSearchMatch)}
+        </mark>
+      );
+      return;
+    }
+
+    nodes.push(
+      <Fragment key={`text-${index}-${sliceStart}-${sliceEnd}`}>
+        {renderLocalReaderSegmentText(
+          text,
+          sliceStart,
+          activeSearchMatch,
+          revealedThoughtRange
+        )}
+      </Fragment>
+    );
+  });
+
+  return nodes;
+}
+
+function renderLocalReaderMarkdownContent({
+  activeSearchMatch,
+  blocks,
+  contentRenderSegments,
+  handleHighlightKeyDown,
+  handleOpenHighlightMenu,
+  revealedThoughtRange
+}: {
+  activeSearchMatch: LocalReaderSearchMatch | undefined;
+  blocks: LocalReaderMarkdownBlock[];
+  contentRenderSegments: Array<ReturnType<typeof buildLocalReaderHighlightSegments>[number] & {
+    startOffset: number;
+    endOffset: number;
+  }>;
+  handleHighlightKeyDown: (
+    highlight: LocalReaderHighlight,
+    event: KeyboardEvent<HTMLElement>
+  ) => void;
+  handleOpenHighlightMenu: (
+    highlight: LocalReaderHighlight,
+    event: MouseEvent<HTMLElement>
+  ) => void;
+  revealedThoughtRange?: Pick<SelectionMenuState, "startOffset" | "endOffset">;
+}) {
+  return blocks.map((block) => {
+    const commonProps = {
+      key: block.id,
+      className: `local-reader-markdown-block local-reader-markdown-block--${block.kind}`,
+      "data-reader-block-kind": block.kind
+    };
+    const contentNode = renderLocalReaderMarkdownBlockInline({
+      activeSearchMatch,
+      block,
+      contentRenderSegments,
+      handleHighlightKeyDown,
+      handleOpenHighlightMenu,
+      revealedThoughtRange
+    });
+
+    if (block.kind === "heading") {
+      const HeadingTag = `h${Math.min(6, Math.max(1, block.level ?? 2))}` as keyof JSX.IntrinsicElements;
+      return <HeadingTag {...commonProps}>{contentNode}</HeadingTag>;
+    }
+
+    if (block.kind === "blockquote") {
+      return <blockquote {...commonProps}>{contentNode}</blockquote>;
+    }
+
+    if (block.kind === "listItem") {
+      return (
+        <p
+          {...commonProps}
+          data-list-marker={block.listOrdered ? "ordered" : "unordered"}
+        >
+          {contentNode}
+        </p>
+      );
+    }
+
+    if (block.kind === "codeFence") {
+      return (
+        <p {...commonProps} aria-hidden="true">
+          {contentNode}
+        </p>
+      );
+    }
+
+    if (block.kind === "codeLine") {
+      return <pre {...commonProps}>{contentNode}</pre>;
+    }
+
+    if (block.kind === "horizontalRule") {
+      return (
+        <div {...commonProps} role="separator">
+          {contentNode}
+        </div>
+      );
+    }
+
+    if (block.kind === "blank") {
+      return <p {...commonProps}>{contentNode}</p>;
+    }
+
+    return <p {...commonProps}>{contentNode}</p>;
+  });
+}
+
+function renderLocalReaderMarkdownBlockInline({
+  activeSearchMatch,
+  block,
+  contentRenderSegments,
+  handleHighlightKeyDown,
+  handleOpenHighlightMenu,
+  revealedThoughtRange
+}: {
+  activeSearchMatch: LocalReaderSearchMatch | undefined;
+  block: LocalReaderMarkdownBlock;
+  contentRenderSegments: Array<ReturnType<typeof buildLocalReaderHighlightSegments>[number] & {
+    startOffset: number;
+    endOffset: number;
+  }>;
+  handleHighlightKeyDown: (
+    highlight: LocalReaderHighlight,
+    event: KeyboardEvent<HTMLElement>
+  ) => void;
+  handleOpenHighlightMenu: (
+    highlight: LocalReaderHighlight,
+    event: MouseEvent<HTMLElement>
+  ) => void;
+  revealedThoughtRange?: Pick<SelectionMenuState, "startOffset" | "endOffset">;
+}) {
+  const contentStart = block.markerEndOffset ?? block.startOffset;
+  const contentEnd = block.visibleTextEndOffset ?? block.textEndOffset;
+  const hasHiddenPrefix = contentStart > block.startOffset;
+  const hasHiddenSuffix = contentEnd < block.textEndOffset;
+  const visibleContent =
+    contentStart < contentEnd
+      ? renderLocalReaderInlineSegments({
+          activeSearchMatch,
+          contentRenderSegments,
+          handleHighlightKeyDown,
+          handleOpenHighlightMenu,
+          rangeStartOffset: contentStart,
+          rangeEndOffset: contentEnd,
+          revealedThoughtRange
+        })
+      : null;
+
+  return (
+    <>
+      {hasHiddenPrefix ? (
+        <span className="local-reader-markdown-syntax">
+          {renderLocalReaderInlineSegments({
+            activeSearchMatch,
+            contentRenderSegments,
+            handleHighlightKeyDown,
+            handleOpenHighlightMenu,
+            rangeStartOffset: block.startOffset,
+            rangeEndOffset: contentStart,
+            revealedThoughtRange
+          })}
+        </span>
+      ) : null}
+      {visibleContent}
+      {hasHiddenSuffix ? (
+        <span className="local-reader-markdown-syntax">
+          {renderLocalReaderInlineSegments({
+            activeSearchMatch,
+            contentRenderSegments,
+            handleHighlightKeyDown,
+            handleOpenHighlightMenu,
+            rangeStartOffset: contentEnd,
+            rangeEndOffset: block.textEndOffset,
+            revealedThoughtRange
+          })}
+        </span>
+      ) : null}
+      {block.endOffset > block.textEndOffset ? (
+        <span className="local-reader-markdown-newline">{"\n"}</span>
+      ) : null}
+    </>
+  );
 }
 
 function renderLocalReaderSegmentText(
@@ -3516,6 +3947,14 @@ function formatLineSpacingLabel(value: LocalReaderLineSpacing): string {
 
 function formatReaderThemeLabel(value: LocalReaderTheme): string {
   return THEME_OPTIONS.find((option) => option.value === value)?.label ?? "纸张";
+}
+
+function formatLocalReaderFormatLabel(format: LocalBookFormat): string {
+  if (format === "markdown") {
+    return "Markdown";
+  }
+
+  return format.toUpperCase();
 }
 
 function isLocalReaderToolbarPanelTarget(target: EventTarget | null): boolean {
@@ -3831,7 +4270,7 @@ function findTextPointAtOffset(
 }
 
 function snapScrollTopToTextLine(reader: HTMLElement, scrollTop: number): number {
-  const textRoot = reader.querySelector<HTMLElement>("pre") ?? reader;
+  const textRoot = reader.querySelector<HTMLElement>(".local-reader-content") ?? reader;
   const lineHeight = Number.parseFloat(window.getComputedStyle(textRoot).lineHeight);
 
   if (!Number.isFinite(lineHeight) || lineHeight <= 0) {

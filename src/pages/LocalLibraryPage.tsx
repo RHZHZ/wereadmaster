@@ -60,8 +60,10 @@ type LocalReadingProgressReadResult = {
 const filterLabels: Record<LocalBookFilter, string> = {
   all: "全部",
   epub: "EPUB",
-  txt: "TXT"
+  txt: "TXT",
+  markdown: "Markdown"
 };
+const localBookFilters: LocalBookFilter[] = ["all", "epub", "txt", "markdown"];
 
 type LocalLibraryPageProps = {
   onOpenBook?: (bookId: string) => void;
@@ -206,7 +208,7 @@ export function LocalLibraryPage({ onOpenBook, wereadEntries = [] }: LocalLibrar
   async function importLocalBookFromPath(rawPath: string) {
     const normalizedPath = rawPath.trim();
     if (!normalizedPath) {
-      setError("请输入 EPUB 或 TXT 文件路径。");
+      setError("请输入 EPUB、TXT 或 Markdown 文件路径。");
       setWarning(undefined);
       return;
     }
@@ -280,7 +282,7 @@ export function LocalLibraryPage({ onOpenBook, wereadEntries = [] }: LocalLibrar
             )}
           </label>
           <div className="local-library-filter-tabs" role="tablist" aria-label="本地书库格式筛选">
-            {(["all", "epub", "txt"] as LocalBookFilter[]).map((item) => (
+            {localBookFilters.map((item) => (
               <button
                 key={item}
                 type="button"
@@ -293,19 +295,6 @@ export function LocalLibraryPage({ onOpenBook, wereadEntries = [] }: LocalLibrar
               </button>
             ))}
           </div>
-          <button
-            className="local-library-import-primary"
-            type="button"
-            onClick={() => void handleImportLocalBook()}
-            disabled={isImporting || isChoosing || !filePath.trim()}
-          >
-            {isImporting ? (
-              <Loader2 aria-hidden="true" size={18} className="spin" />
-            ) : (
-              <Import aria-hidden="true" size={18} />
-            )}
-            {isImporting ? "导入中" : "导入 EPUB/TXT"}
-          </button>
         </div>
       </header>
 
@@ -399,7 +388,7 @@ export function LocalLibraryPage({ onOpenBook, wereadEntries = [] }: LocalLibrar
             </span>
           </div>
           <h3>选择或粘贴本地图书</h3>
-          <p>支持 EPUB / TXT 格式</p>
+          <p>支持 EPUB / TXT / Markdown 格式</p>
           <label className="local-library-path-field">
             <FileText aria-hidden="true" size={18} />
             <input
@@ -409,15 +398,30 @@ export function LocalLibraryPage({ onOpenBook, wereadEntries = [] }: LocalLibrar
               disabled={isImporting}
             />
           </label>
-          <button
-            className="local-library-choose-button"
-            type="button"
-            onClick={() => void handleChooseLocalBookFile()}
-            disabled={isImporting || isChoosing}
-          >
-            {isChoosing ? "选择中" : isImporting ? "导入中" : "选择文件"}
-          </button>
-          <small>选择文件，或粘贴本地路径后导入。</small>
+          <div className="local-library-import-actions">
+            <button
+              className="local-library-choose-button"
+              type="button"
+              onClick={() => void handleChooseLocalBookFile()}
+              disabled={isImporting || isChoosing}
+            >
+              {isChoosing ? "选择中" : isImporting ? "导入中" : "选择文件"}
+            </button>
+            <button
+              className="local-library-path-import-button"
+              type="button"
+              onClick={() => void handleImportLocalBook()}
+              disabled={isImporting || isChoosing || !filePath.trim()}
+            >
+              {isImporting ? (
+                <Loader2 aria-hidden="true" size={17} className="spin" />
+              ) : (
+                <Import aria-hidden="true" size={17} />
+              )}
+              {isImporting ? "导入中" : "导入路径"}
+            </button>
+          </div>
+          <small>选择文件会直接导入；也可以粘贴本地路径后点击导入路径。</small>
         </aside>
       </div>
     </section>
@@ -466,7 +470,7 @@ function LocalBookRow({
   return (
     <article
       className={`local-book-row ${onOpen ? "local-book-row--interactive" : ""}`}
-      aria-label={`${book.title} ${book.format}`}
+      aria-label={`${book.title} ${formatLocalBookFormatLabel(book.format)}`}
       role={onOpen ? "button" : undefined}
       tabIndex={onOpen ? 0 : undefined}
       onClick={onOpen}
@@ -480,13 +484,13 @@ function LocalBookRow({
           <BookOpen size={17} />
         </span>
         <strong className="local-book-cover-title">{coverTitle}</strong>
-        <span className="local-book-cover-format">{book.format.toUpperCase()}</span>
+        <span className="local-book-cover-format">{formatLocalBookFormatBadge(book.format)}</span>
       </span>
       <span className="local-book-row-main">
         <strong>{book.title}</strong>
         <small>{book.author || "未知作者"}</small>
         <span className="local-book-row-badges" aria-label="本地图书来源">
-          <span className="local-book-format-badge">{book.format.toUpperCase()}</span>
+          <span className="local-book-format-badge">{formatLocalBookFormatLabel(book.format)}</span>
           <span className="local-book-source-badge">本地版本</span>
           {wereadMatch ? (
             <span
@@ -533,7 +537,7 @@ function LocalLibraryEmpty() {
     <section className="local-library-list-empty" aria-label="本地书库为空">
       <FileText aria-hidden="true" size={42} />
       <h3>还没有本地图书</h3>
-      <p>从右侧导入 EPUB/TXT 后，这里会按最近阅读展示本地版本和阅读进度。</p>
+      <p>从右侧导入 EPUB/TXT/Markdown 后，这里会按最近阅读展示本地版本和阅读进度。</p>
     </section>
   );
 }
@@ -608,6 +612,18 @@ export function resolveLocalBookCoverTone(
   const hash = Array.from(seed).reduce((total, character) => total + character.charCodeAt(0), 0);
 
   return (hash % 5) + 1;
+}
+
+export function formatLocalBookFormatLabel(format: LocalBookFormat): string {
+  return filterLabels[format];
+}
+
+export function formatLocalBookFormatBadge(format: LocalBookFormat): string {
+  if (format === "markdown") {
+    return "MD";
+  }
+
+  return format.toUpperCase();
 }
 
 async function readLocalReadingProgressSafely(

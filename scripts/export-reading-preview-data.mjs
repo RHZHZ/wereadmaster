@@ -103,6 +103,21 @@ const shelfEntries = runSqliteJson(
   `
 );
 
+const shelfArchives = runOptionalSqliteJson(
+  dbPath,
+  `
+    SELECT
+      id,
+      name,
+      book_ids_json AS bookIdsJson,
+      matched_entry_count AS matchedEntryCount,
+      missing_book_count AS missingBookCount,
+      raw_json AS rawJson
+    FROM shelf_archives
+    ORDER BY sort_order ASC, name ASC, id ASC;
+  `
+);
+
 const readingItemStates = runSqliteJson(
   dbPath,
   `
@@ -167,6 +182,7 @@ const payload = {
   shelfSyncState,
   notesSyncState,
   shelfEntries,
+  shelfArchives,
   readingItemStates,
   notebookBooks,
   statsRows,
@@ -183,6 +199,7 @@ console.log(
       statsRowCount: statsRows.length,
       reviewRowCount: reviewRows.length,
       shelfEntryCount: shelfEntries.length,
+      shelfArchiveCount: shelfArchives.length,
       readingItemStateCount: readingItemStates.length,
       notebookBookCount: notebookBooks.length
     },
@@ -202,6 +219,18 @@ function runSqliteJson(dbFilePath, sql) {
   }
 
   return JSON.parse(output);
+}
+
+function runOptionalSqliteJson(dbFilePath, sql) {
+  try {
+    return runSqliteJson(dbFilePath, sql);
+  } catch (error) {
+    if (String(error?.stderr ?? error?.message ?? "").includes("no such table")) {
+      return [];
+    }
+
+    throw error;
+  }
 }
 
 function collapseSql(sql) {

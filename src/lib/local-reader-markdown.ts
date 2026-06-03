@@ -44,7 +44,7 @@ export function buildLocalReaderMarkdownExport(
     "",
     "- 来源：本地书库",
     `- 作者：${input.book.author || "未知作者"}`,
-    `- 格式：${input.book.format.toUpperCase()}`,
+    `- 格式：${formatLocalReaderBookFormat(input.book.format)}`,
     `- 阅读进度：${formatProgress(input.progress?.progressPercent ?? 0)}`,
     `- 导出时间：${formatAiTimestamp(exportedAt) || exportedAt}`,
     "- 数据边界：仅包含本地阅读器划线、想法和 AI 提问记录，不读取微信读书笔记，不触发 AI。",
@@ -60,6 +60,14 @@ export function buildLocalReaderMarkdownExport(
     fileName,
     markdown: lines.join("\n")
   };
+}
+
+function formatLocalReaderBookFormat(format: LocalBook["format"]): string {
+  if (format === "markdown") {
+    return "Markdown";
+  }
+
+  return format.toUpperCase();
 }
 
 export function downloadLocalReaderMarkdownFile(fileName: string, markdown: string) {

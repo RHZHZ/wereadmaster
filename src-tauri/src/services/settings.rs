@@ -19,6 +19,7 @@ use crate::{
 
 const CACHE_TABLES: &[&str] = &[
     "shelf_entries",
+    "shelf_archives",
     "book_details",
     "book_progress",
     "chapters",
@@ -33,6 +34,7 @@ const CACHE_TABLES: &[&str] = &[
 
 const DIAGNOSTIC_TABLES: &[&str] = &[
     "shelf_entries",
+    "shelf_archives",
     "book_details",
     "book_progress",
     "chapters",

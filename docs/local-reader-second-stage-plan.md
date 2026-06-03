@@ -34,6 +34,8 @@
 
 第二阶段应在这些能力上做真实数据闭环、稳定性和验收，不重新设计信息架构。
 
+Markdown 作为第三种本地文本格式的后续扩展，独立规划见 [本地书库 Markdown 导入扩展计划](./local-reader-markdown-import-plan.md)。该扩展只接入 `.md / .markdown` 的文本阅读闭环，不把本地书库升级为 PDF/DOCX/HTML 通用文档阅读器。
+
 ## 范围
 
 ### 必须做

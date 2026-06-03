@@ -212,4 +212,21 @@ describe("local-reader-markdown", () => {
     expect(result.markdown).toContain('title: "标题: \\"带换行\\"\\n本地版"');
     expect(result.markdown).toContain('author: "作者: A\\nB"');
   });
+
+  it("Markdown 来源导出时保留 format 字段并展示可读格式", () => {
+    const result = buildLocalReaderMarkdownExport({
+      book: {
+        ...book,
+        format: "markdown",
+        storagePath: "books/local.md"
+      },
+      highlights: [],
+      thoughts: [],
+      progress,
+      exportedAt: "2026-05-27T12:00:00.000Z"
+    });
+
+    expect(result.markdown).toContain("format: markdown");
+    expect(result.markdown).toContain("- 格式：Markdown");
+  });
 });

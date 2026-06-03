@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -31,8 +33,20 @@ pub struct BookshelfSummaryRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct ShelfArchiveRecord {
+    pub id: String,
+    pub name: String,
+    pub book_ids: Vec<String>,
+    pub matched_entry_count: usize,
+    pub missing_book_count: usize,
+    pub raw_json: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct BookshelfSnapshot {
     pub entries: Vec<ShelfEntryRecord>,
+    pub archives: Vec<ShelfArchiveRecord>,
     pub summary: BookshelfSummaryRecord,
 }
 
@@ -68,8 +82,13 @@ pub fn map_shelf_response(value: &Value) -> BookshelfSnapshot {
     }
 
     let summary = summarize_entries(&entries);
+    let archives = map_archive_entries(value, &entries);
 
-    BookshelfSnapshot { entries, summary }
+    BookshelfSnapshot {
+        entries,
+        archives,
+        summary,
+    }
 }
 
 pub fn summarize_entries(entries: &[ShelfEntryRecord]) -> BookshelfSummaryRecord {
@@ -158,12 +177,105 @@ fn map_mp_entry(value: &Value) -> ShelfEntryRecord {
     }
 }
 
+fn map_archive_entries(value: &Value, entries: &[ShelfEntryRecord]) -> Vec<ShelfArchiveRecord> {
+    let book_entry_ids = entries
+        .iter()
+        .filter(|entry| entry.entry_type == "book")
+        .map(|entry| entry.id.as_str())
+        .collect::<HashSet<_>>();
+
+    value
+        .get("archive")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .enumerate()
+        .filter_map(|(index, archive)| map_archive_entry(index, archive, &book_entry_ids))
+        .collect()
+}
+
+fn map_archive_entry(
+    index: usize,
+    value: &Value,
+    book_entry_ids: &HashSet<&str>,
+) -> Option<ShelfArchiveRecord> {
+    if !value.is_object() {
+        return None;
+    }
+
+    let name = string_field(value, "name").unwrap_or_else(|| "未命名书单".to_string());
+    let book_ids = book_ids_field(value, "bookIds");
+    let unique_book_ids = book_ids.iter().map(String::as_str).collect::<HashSet<_>>();
+    let matched_entry_count = unique_book_ids
+        .iter()
+        .filter(|book_id| book_entry_ids.contains(**book_id))
+        .count();
+    let missing_book_count = unique_book_ids.len().saturating_sub(matched_entry_count);
+
+    Some(ShelfArchiveRecord {
+        id: archive_id(index, &name),
+        name,
+        book_ids,
+        matched_entry_count,
+        missing_book_count,
+        raw_json: value.to_string(),
+    })
+}
+
+fn archive_id(index: usize, name: &str) -> String {
+    let mut normalized = String::new();
+
+    for character in name.chars() {
+        if character.is_ascii_alphanumeric() {
+            normalized.push(character.to_ascii_lowercase());
+        } else if (character.is_whitespace() || character == '-' || character == '_')
+            && !normalized.ends_with('-')
+        {
+            normalized.push('-');
+        }
+    }
+
+    let normalized = normalized.trim_matches('-');
+    let slug = if normalized.is_empty() {
+        "unnamed"
+    } else {
+        normalized
+    };
+
+    format!("archive:{index}:{slug}")
+}
+
+fn book_ids_field(value: &Value, key: &str) -> Vec<String> {
+    let Some(items) = value.get(key).and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut seen = HashSet::new();
+    let mut book_ids = Vec::new();
+
+    for item in items {
+        let Some(book_id) = string_value(item) else {
+            continue;
+        };
+
+        if seen.insert(book_id.clone()) {
+            book_ids.push(book_id);
+        }
+    }
+
+    book_ids
+}
+
 fn string_field(value: &Value, key: &str) -> Option<String> {
-    value.get(key).and_then(|field| match field {
+    value.get(key).and_then(string_value)
+}
+
+fn string_value(value: &Value) -> Option<String> {
+    match value {
         Value::String(text) if !text.trim().is_empty() => Some(text.to_string()),
         Value::Number(number) => Some(number.to_string()),
         _ => None,
-    })
+    }
 }
 
 fn integer_field(value: &Value, key: &str) -> Option<i64> {
@@ -210,6 +322,7 @@ mod tests {
         }));
 
         assert_eq!(snapshot.entries.len(), 4);
+        assert!(snapshot.archives.is_empty());
         assert_eq!(snapshot.summary.total_visible_entries, 4);
         assert_eq!(snapshot.summary.book_count, 2);
         assert_eq!(snapshot.summary.album_count, 1);
@@ -236,5 +349,33 @@ mod tests {
         assert_eq!(album.entry_type, "album");
         assert_eq!(album.title, "听书专辑");
         assert_eq!(album.last_read_at, Some(1_700_000_000));
+    }
+
+    #[test]
+    fn map_shelf_response_preserves_archive_metadata() {
+        let snapshot = map_shelf_response(&json!({
+            "books": [
+                { "bookId": "b1", "title": "书一" },
+                { "bookId": "b2", "title": "书二" }
+            ],
+            "albums": [{
+                "albumInfo": { "albumId": "b3", "name": "听书专辑" }
+            }],
+            "archive": [
+                { "name": "待读书单", "bookIds": ["b1", "b1", "b3", "missing"] },
+                { "name": "待读书单", "bookIds": [2, "b2"] }
+            ]
+        }));
+
+        assert_eq!(snapshot.archives.len(), 2);
+        assert_eq!(snapshot.archives[0].id, "archive:0:unnamed");
+        assert_eq!(snapshot.archives[0].name, "待读书单");
+        assert_eq!(snapshot.archives[0].book_ids, vec!["b1", "b3", "missing"]);
+        assert_eq!(snapshot.archives[0].matched_entry_count, 1);
+        assert_eq!(snapshot.archives[0].missing_book_count, 2);
+        assert_eq!(snapshot.archives[1].id, "archive:1:unnamed");
+        assert_eq!(snapshot.archives[1].book_ids, vec!["2", "b2"]);
+        assert_eq!(snapshot.archives[1].matched_entry_count, 1);
+        assert_eq!(snapshot.archives[1].missing_book_count, 1);
     }
 }

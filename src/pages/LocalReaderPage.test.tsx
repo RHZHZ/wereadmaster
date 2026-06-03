@@ -13,6 +13,7 @@ vi.mock("@tauri-apps/plugin-updater", () => ({
 }));
 
 import {
+  buildLocalReaderOutline,
   resolveLocalReaderProgressLoadWarning,
   resolveLocalReaderProgressSaveErrorNotice,
   shouldIgnoreLocalReaderProgressSaveResult,
@@ -74,5 +75,22 @@ describe("local reader progress warning", () => {
         requestSaveSessionId: 1
       })
     ).toBe(false);
+  });
+
+  it("Markdown 目录识别标题并忽略代码块内标题", () => {
+    const outline = buildLocalReaderOutline(
+      [
+        "# 第一章",
+        "",
+        "正文",
+        "```",
+        "# 代码里的标题",
+        "```",
+        "## 第二节"
+      ].join("\n"),
+      "markdown"
+    );
+
+    expect(outline.map((item) => item.title)).toEqual(["第一章", "第二节"]);
   });
 });

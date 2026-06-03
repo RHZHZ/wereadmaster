@@ -1,4 +1,4 @@
-export type LocalBookFormat = "epub" | "txt";
+export type LocalBookFormat = "epub" | "txt" | "markdown";
 export type LocalBookSource = "local";
 
 export type LocalBook = {

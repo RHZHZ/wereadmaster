@@ -88,7 +88,7 @@ fn pick_local_book_file(app: &AppHandle) -> Option<std::path::PathBuf> {
     app.dialog()
         .file()
         .set_title("选择本地图书")
-        .add_filter("图书文件", &["epub", "txt"])
+        .add_filter("图书文件", &["epub", "txt", "md", "markdown"])
         .blocking_pick_file()
         .and_then(|path| path.into_path().ok())
 }

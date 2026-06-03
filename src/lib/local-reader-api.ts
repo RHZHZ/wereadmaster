@@ -108,6 +108,7 @@ const LOCAL_READER_PREVIEW_BOOKS: LocalBook[] = [
   createPreviewBook("preview-sapiens", "人类简史", "尤瓦尔·赫拉利", "epub", 2_228_224, "2025-05-17T16:08:00+08:00"),
   createPreviewBook("preview-three-body", "三体（全集）", "刘慈欣", "epub", 3_145_728, "2025-05-16T22:19:00+08:00"),
   createPreviewBook("preview-wanli", "万历十五年", "黄仁宇", "epub", 1_048_576, "2025-05-15T11:02:00+08:00"),
+  createPreviewBook("preview-markdown", "阅读设计笔记", "本地 Markdown", "markdown", 64_512, "2025-05-14T18:20:00+08:00"),
   createPreviewBook("preview-prince", "小王子", "[法] 安托万·德·圣埃克苏佩里", "txt", 221_184, "2025-05-14T09:55:00+08:00"),
   createPreviewBook("preview-walden", "瓦尔登湖", "梭罗", "epub", 1_032_192, "2025-05-13T20:44:00+08:00")
 ];
@@ -119,6 +120,7 @@ const LOCAL_READER_PREVIEW_PROGRESS: Record<string, LocalReadingProgress> = {
   "preview-sapiens": createPreviewProgress("preview-sapiens", 41, "2025-05-17T16:08:00+08:00"),
   "preview-three-body": createPreviewProgress("preview-three-body", 55, "2025-05-16T22:19:00+08:00"),
   "preview-wanli": createPreviewProgress("preview-wanli", 100, "2025-05-15T11:02:00+08:00"),
+  "preview-markdown": createPreviewProgress("preview-markdown", 9, "2025-05-14T18:20:00+08:00"),
   "preview-prince": createPreviewProgress("preview-prince", 23, "2025-05-14T09:55:00+08:00"),
   "preview-walden": createPreviewProgress("preview-walden", 27, "2025-05-13T20:44:00+08:00")
 };
@@ -131,6 +133,8 @@ function createPreviewBook(
   fileSize: number,
   updatedAt: string
 ): LocalBook {
+  const storageExtension = format === "markdown" ? "md" : format;
+
   return {
     id,
     source: "local",
@@ -139,7 +143,7 @@ function createPreviewBook(
     format,
     fileHash: `${id}-hash`,
     fileSize,
-    storagePath: `local-reader-preview/${id}/source.${format}`,
+    storagePath: `local-reader-preview/${id}/source.${storageExtension}`,
     importedAt: updatedAt,
     updatedAt
   };
@@ -162,6 +166,19 @@ function createPreviewProgress(
 }
 
 const LOCAL_READER_PREVIEW_TEXT: Record<string, string> = {
+  "preview-markdown": [
+    "# 第一节：阅读边界",
+    "",
+    "Markdown 导入在首版保持文本阅读模式，保留原始标记，优先保证选区、划线和想法偏移稳定。",
+    "",
+    "```md",
+    "# 代码块标题不应进入目录",
+    "```",
+    "",
+    "## 第二节：划线与 AI",
+    "",
+    "用户仍然通过正文选区发起划线、写想法和向 AI 提问，不因为 Markdown 来源而自动发送整篇文档。"
+  ].join("\n"),
   "preview-prince": [
     "第一章",
     "",
