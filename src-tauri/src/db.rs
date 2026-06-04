@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use rusqlite::{Connection, OptionalExtension, Result as SqliteResult};
@@ -9,6 +10,7 @@ use tauri::{AppHandle, Manager};
 
 pub const DATABASE_FILE_NAME: &str = "reading-cache.sqlite3";
 pub const DATA_DIRECTORY_CONFIG_FILE_NAME: &str = "local-data-directory.json";
+const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -134,6 +136,7 @@ pub fn open_connection(app: &AppHandle) -> Result<Connection, String> {
 }
 
 pub fn initialize_schema(connection: &Connection) -> SqliteResult<()> {
+    connection.busy_timeout(Duration::from_millis(SQLITE_BUSY_TIMEOUT_MS))?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
     let _ = connection.pragma_update(None, "journal_mode", "WAL");
     connection.execute_batch(
@@ -352,6 +355,135 @@ pub fn initialize_schema(connection: &Connection) -> SqliteResult<()> {
     add_column_if_missing(connection, "thoughts", "range_text", "TEXT")?;
     add_column_if_missing(connection, "thoughts", "deep_link", "TEXT")?;
     ensure_local_books_support_markdown(connection)?;
+    ensure_local_reading_progress_schema(connection)?;
+
+    Ok(())
+}
+
+fn ensure_local_reading_progress_schema(connection: &Connection) -> SqliteResult<()> {
+    let table_sql = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'local_reading_progress'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+
+    if let Some(sql) = table_sql.as_deref() {
+        if !sql.to_ascii_lowercase().contains("book_id text primary key")
+            || !table_references(connection, "local_reading_progress", "local_books")?
+        {
+            return rebuild_local_reading_progress_table(connection);
+        }
+    }
+
+    add_column_if_missing(
+        connection,
+        "local_reading_progress",
+        "locator",
+        "TEXT NOT NULL DEFAULT 'text:0:0'",
+    )?;
+    add_column_if_missing(
+        connection,
+        "local_reading_progress",
+        "progress_percent",
+        "INTEGER NOT NULL DEFAULT 0 CHECK(progress_percent BETWEEN 0 AND 100)",
+    )?;
+    add_column_if_missing(
+        connection,
+        "local_reading_progress",
+        "read_time_seconds",
+        "INTEGER NOT NULL DEFAULT 0 CHECK(read_time_seconds >= 0)",
+    )?;
+    add_column_if_missing(
+        connection,
+        "local_reading_progress",
+        "updated_at",
+        "TEXT NOT NULL DEFAULT '0'",
+    )
+}
+
+fn rebuild_local_reading_progress_table(connection: &Connection) -> SqliteResult<()> {
+    let columns = table_columns(connection, "local_reading_progress")?;
+    let has_book_id = columns.iter().any(|name| name == "book_id");
+    let locator_expr = if columns.iter().any(|name| name == "locator") {
+        "COALESCE(NULLIF(locator, ''), 'text:0:0')"
+    } else {
+        "'text:0:0'"
+    };
+    let progress_expr = if columns.iter().any(|name| name == "progress_percent") {
+        "MIN(100, MAX(0, COALESCE(progress_percent, 0)))"
+    } else {
+        "0"
+    };
+    let read_time_expr = if columns.iter().any(|name| name == "read_time_seconds") {
+        "MAX(0, COALESCE(read_time_seconds, 0))"
+    } else {
+        "0"
+    };
+    let updated_at_expr = if columns.iter().any(|name| name == "updated_at") {
+        "COALESCE(NULLIF(updated_at, ''), '0')"
+    } else {
+        "'0'"
+    };
+    let book_id_expr = if has_book_id { "book_id" } else { "NULL" };
+    let source_filter = if has_book_id {
+        "
+        WHERE book_id IS NOT NULL
+            AND book_id != ''
+            AND EXISTS (
+                SELECT 1
+                FROM local_books
+                WHERE local_books.id = local_reading_progress_before_migration.book_id
+            )
+        "
+    } else {
+        "WHERE 0"
+    };
+
+    let migration = connection.execute_batch(&format!(
+        "
+        PRAGMA foreign_keys = OFF;
+        BEGIN IMMEDIATE;
+
+        ALTER TABLE local_reading_progress RENAME TO local_reading_progress_before_migration;
+
+        CREATE TABLE local_reading_progress (
+            book_id TEXT PRIMARY KEY NOT NULL,
+            locator TEXT NOT NULL,
+            progress_percent INTEGER NOT NULL DEFAULT 0 CHECK(progress_percent BETWEEN 0 AND 100),
+            read_time_seconds INTEGER NOT NULL DEFAULT 0 CHECK(read_time_seconds >= 0),
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(book_id) REFERENCES local_books(id) ON DELETE CASCADE
+        );
+
+        INSERT OR REPLACE INTO local_reading_progress (
+            book_id,
+            locator,
+            progress_percent,
+            read_time_seconds,
+            updated_at
+        )
+        SELECT
+            {book_id_expr},
+            {locator_expr},
+            {progress_expr},
+            {read_time_expr},
+            {updated_at_expr}
+        FROM local_reading_progress_before_migration
+        {source_filter};
+
+        DROP TABLE local_reading_progress_before_migration;
+
+        COMMIT;
+        PRAGMA foreign_keys = ON;
+        "
+    ));
+
+    if let Err(error) = migration {
+        let _ = connection.execute_batch("ROLLBACK; PRAGMA foreign_keys = ON;");
+        return Err(error);
+    }
 
     Ok(())
 }
@@ -480,10 +612,7 @@ fn add_column_if_missing(
     column_name: &str,
     column_type: &str,
 ) -> SqliteResult<()> {
-    let mut statement = connection.prepare(&format!("PRAGMA table_info({table_name})"))?;
-    let columns = statement
-        .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<SqliteResult<Vec<_>>>()?;
+    let columns = table_columns(connection, table_name)?;
 
     if columns.iter().any(|name| name == column_name) {
         return Ok(());
@@ -497,12 +626,36 @@ fn add_column_if_missing(
     Ok(())
 }
 
+fn table_columns(connection: &Connection, table_name: &str) -> SqliteResult<Vec<String>> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table_name})"))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<SqliteResult<Vec<_>>>()?;
+
+    Ok(columns)
+}
+
+fn table_references(
+    connection: &Connection,
+    table_name: &str,
+    referenced_table_name: &str,
+) -> SqliteResult<bool> {
+    let mut statement = connection.prepare(&format!("PRAGMA foreign_key_list({table_name})"))?;
+    let referenced_tables = statement
+        .query_map([], |row| row.get::<_, String>(2))?
+        .collect::<SqliteResult<Vec<_>>>()?;
+
+    Ok(referenced_tables
+        .iter()
+        .any(|table| table == referenced_table_name))
+}
+
 #[cfg(test)]
 mod tests {
     use rusqlite::Connection;
 
     use super::{
-        initialize_schema, read_custom_export_directory_config,
+        initialize_schema, read_custom_export_directory_config, SQLITE_BUSY_TIMEOUT_MS,
         write_custom_export_directory_config,
     };
 
@@ -538,6 +691,19 @@ mod tests {
             .expect("table count should be readable");
 
         assert_eq!(table_count, 16);
+    }
+
+    #[test]
+    fn initialize_schema_sets_busy_timeout() {
+        let connection = Connection::open_in_memory().expect("in-memory database should open");
+
+        initialize_schema(&connection).expect("schema should initialize");
+
+        let timeout_ms: i64 = connection
+            .pragma_query_value(None, "busy_timeout", |row| row.get(0))
+            .expect("busy timeout should read");
+
+        assert_eq!(timeout_ms, SQLITE_BUSY_TIMEOUT_MS as i64);
     }
 
     #[test]
@@ -641,6 +807,244 @@ mod tests {
             .expect("format should read");
 
         assert_eq!(format, "markdown");
+    }
+
+    #[test]
+    fn initialize_schema_rebuilds_legacy_local_reading_progress_without_conflict_key() {
+        let connection = Connection::open_in_memory().expect("in-memory database should open");
+        connection
+            .execute_batch(
+                "
+                PRAGMA foreign_keys = ON;
+                CREATE TABLE local_books (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    title TEXT NOT NULL,
+                    author TEXT,
+                    format TEXT NOT NULL CHECK(format IN ('epub', 'txt', 'markdown')),
+                    file_hash TEXT NOT NULL,
+                    file_size INTEGER NOT NULL,
+                    storage_path TEXT NOT NULL,
+                    cover_path TEXT,
+                    imported_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(file_hash)
+                );
+                INSERT INTO local_books (
+                    id,
+                    title,
+                    format,
+                    file_hash,
+                    file_size,
+                    storage_path,
+                    imported_at,
+                    updated_at
+                )
+                VALUES (
+                    'local_old',
+                    '旧本地图书',
+                    'txt',
+                    'hash-old',
+                    128,
+                    'local-books/local_old/source.txt',
+                    '100',
+                    '100'
+                );
+                CREATE TABLE local_reading_progress (
+                    book_id TEXT NOT NULL,
+                    locator TEXT,
+                    progress_percent INTEGER
+                );
+                INSERT INTO local_reading_progress (
+                    book_id,
+                    locator,
+                    progress_percent
+                )
+                VALUES (
+                    'local_old',
+                    'text:20:100',
+                    20
+                );
+                INSERT INTO local_reading_progress (
+                    book_id,
+                    locator,
+                    progress_percent
+                )
+                VALUES (
+                    'missing_local',
+                    'text:30:100',
+                    30
+                );
+                ",
+            )
+            .expect("legacy schema should be created");
+
+        initialize_schema(&connection).expect("schema should migrate");
+
+        connection
+            .execute(
+                "
+                INSERT INTO local_reading_progress (
+                    book_id,
+                    locator,
+                    progress_percent,
+                    read_time_seconds,
+                    updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5)
+                ON CONFLICT(book_id) DO UPDATE SET
+                    locator = excluded.locator,
+                    progress_percent = excluded.progress_percent,
+                    read_time_seconds = excluded.read_time_seconds,
+                    updated_at = excluded.updated_at
+                ",
+                rusqlite::params!["local_old", "text:50:100", 50, 12, "120"],
+            )
+            .expect("migrated progress table should support upsert");
+
+        let row: (String, i64, i64, String) = connection
+            .query_row(
+                "
+                SELECT locator, progress_percent, read_time_seconds, updated_at
+                FROM local_reading_progress
+                WHERE book_id = 'local_old'
+                ",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("migrated progress should read");
+        let missing_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM local_reading_progress WHERE book_id = 'missing_local'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("orphan progress count should read");
+
+        assert_eq!(row, ("text:50:100".to_string(), 50, 12, "120".to_string()));
+        assert_eq!(missing_count, 0);
+    }
+
+    #[test]
+    fn initialize_schema_rebuilds_local_reading_progress_with_stale_book_foreign_key() {
+        let connection = Connection::open_in_memory().expect("in-memory database should open");
+        connection
+            .execute_batch(
+                "
+                PRAGMA foreign_keys = OFF;
+                CREATE TABLE local_books (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    title TEXT NOT NULL,
+                    author TEXT,
+                    format TEXT NOT NULL CHECK(format IN ('epub', 'txt', 'markdown')),
+                    file_hash TEXT NOT NULL,
+                    file_size INTEGER NOT NULL,
+                    storage_path TEXT NOT NULL,
+                    cover_path TEXT,
+                    imported_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(file_hash)
+                );
+                INSERT INTO local_books (
+                    id,
+                    title,
+                    format,
+                    file_hash,
+                    file_size,
+                    storage_path,
+                    imported_at,
+                    updated_at
+                )
+                VALUES (
+                    'local_old',
+                    '旧本地图书',
+                    'txt',
+                    'hash-old',
+                    128,
+                    'local-books/local_old/source.txt',
+                    '100',
+                    '100'
+                );
+                CREATE TABLE local_reading_progress (
+                    book_id TEXT PRIMARY KEY NOT NULL,
+                    locator TEXT NOT NULL,
+                    progress_percent INTEGER NOT NULL DEFAULT 0 CHECK(progress_percent BETWEEN 0 AND 100),
+                    read_time_seconds INTEGER NOT NULL DEFAULT 0 CHECK(read_time_seconds >= 0),
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(book_id) REFERENCES local_books_before_markdown(id) ON DELETE CASCADE
+                );
+                INSERT INTO local_reading_progress (
+                    book_id,
+                    locator,
+                    progress_percent,
+                    read_time_seconds,
+                    updated_at
+                )
+                VALUES (
+                    'local_old',
+                    'text:20:100',
+                    20,
+                    8,
+                    '110'
+                );
+                PRAGMA foreign_keys = ON;
+                ",
+            )
+            .expect("stale progress schema should be created");
+
+        initialize_schema(&connection).expect("schema should migrate stale progress foreign key");
+
+        assert!(super::table_references(
+            &connection,
+            "local_reading_progress",
+            "local_books"
+        )
+        .expect("progress foreign key should read"));
+        assert!(!super::table_references(
+            &connection,
+            "local_reading_progress",
+            "local_books_before_markdown"
+        )
+        .expect("stale progress foreign key should read"));
+        connection
+            .execute(
+                "
+                INSERT INTO local_reading_progress (
+                    book_id,
+                    locator,
+                    progress_percent,
+                    read_time_seconds,
+                    updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5)
+                ON CONFLICT(book_id) DO UPDATE SET
+                    locator = excluded.locator,
+                    progress_percent = excluded.progress_percent,
+                    read_time_seconds = excluded.read_time_seconds,
+                    updated_at = excluded.updated_at
+                ",
+                rusqlite::params!["local_old", "text:70:100", 70, 20, "120"],
+            )
+            .expect("rebuilt progress table should support upsert");
+
+        let row: (String, i64, i64, String) = connection
+            .query_row(
+                "
+                SELECT locator, progress_percent, read_time_seconds, updated_at
+                FROM local_reading_progress
+                WHERE book_id = 'local_old'
+                ",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("migrated progress should read");
+        let foreign_key_error_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .expect("foreign key check should run");
+
+        assert_eq!(row, ("text:70:100".to_string(), 70, 20, "120".to_string()));
+        assert_eq!(foreign_key_error_count, 0);
     }
 
     #[test]

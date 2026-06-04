@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { auditVisualScroll } from "./visual-scroll-helpers";
 
 const LOCAL_READER_URL = "/?local-reader-preview=1";
 const LOCAL_READER_ORIGIN = "http://127.0.0.1:5173";
@@ -1020,6 +1021,48 @@ test.describe("本地阅读器想法详情", () => {
     await expect(page.locator(".local-reader-thought-modal-panel")).toHaveCount(0);
     await expect(thoughtItem).not.toHaveClass(/is-delete-pending/);
   });
+
+  test("本地书库和阅读器逐屏滚动视觉回归", async ({ page }) => {
+    await page.setViewportSize({ width: 1366, height: 900 });
+    await openPreviewLocalLibrary(page);
+    await auditVisualScroll(page, {
+      id: "local-library",
+      label: "本地书库",
+      suite: "local-reader-desktop"
+    });
+
+    await page.getByRole("button", { name: /小王子 TXT/ }).click();
+    await expect(page.getByLabel("本地阅读器")).toBeVisible();
+    await auditVisualScroll(page, {
+      id: "local-reader-document",
+      label: "本地阅读器正文",
+      scrollTarget: ".local-reader-document",
+      suite: "local-reader-desktop"
+    });
+    await auditVisualScroll(page, {
+      id: "local-reader-inspector",
+      label: "本地阅读器侧栏",
+      scrollTarget: ".local-reader-inspector-panel",
+      suite: "local-reader-desktop"
+    });
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openPreviewLocalLibrary(page);
+    await auditVisualScroll(page, {
+      id: "local-library",
+      label: "本地书库窄屏",
+      suite: "local-reader-narrow"
+    });
+
+    await page.getByRole("button", { name: /小王子 TXT/ }).click();
+    await expect(page.getByLabel("本地阅读器")).toBeVisible();
+    await auditVisualScroll(page, {
+      id: "local-reader-document",
+      label: "本地阅读器正文窄屏",
+      scrollTarget: ".local-reader-document",
+      suite: "local-reader-narrow"
+    });
+  });
 });
 
 async function seedLocalThought(page: Page, note: string) {
@@ -1428,6 +1471,19 @@ async function openPreviewMarkdownReader(page: Page) {
   await page.getByRole("button", { name: /阅读设计笔记 Markdown/ }).click();
   await expect(page.getByLabel("本地阅读器")).toBeVisible();
   await expect(page.getByRole("heading", { name: "阅读设计笔记" })).toBeVisible();
+}
+
+async function openPreviewLocalLibrary(page: Page) {
+  await gotoLocalReaderPreview(page);
+  const mobileTrigger = page.getByRole("button", { name: "打开主导航", exact: true });
+  if (await mobileTrigger.isVisible()) {
+    await mobileTrigger.click();
+    await expect(page.locator(".sidebar")).toBeVisible();
+  }
+
+  await page.locator(".sidebar").getByRole("button", { name: "书架", exact: true }).click();
+  await page.getByLabel("书架子菜单").getByRole("button", { name: "本地书库" }).click();
+  await expect(page.getByLabel("本地书库")).toBeVisible();
 }
 
 async function gotoLocalReaderPreview(page: Page) {

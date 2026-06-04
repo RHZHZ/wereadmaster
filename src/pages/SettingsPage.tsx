@@ -136,8 +136,7 @@ const settingsCategories: SettingsCategory[] = [
     id: "account",
     label: "账户与同步",
     description: "微信读书凭据",
-    heroDescription:
-      "连接微信读书后，才能把书架、笔记和统计沉淀到本地阅读资产库；已保存的 Key 只在本机安全存储中读取。",
+    heroDescription: "连接后可同步书架、笔记和统计，凭据仅在本机使用。",
     icon: KeyRound,
   },
   {
@@ -577,7 +576,7 @@ export function SettingsPage({
       applyAiProviderSettings(nextAiState.provider);
       setAiApiKey("");
       showToast({
-        message: "已移除本机保存的 AI API Key。历史 AI 阅读资产缓存不会被删除。",
+        message: "已移除本机保存的 AI API Key。历史 AI 阅读成果缓存不会被删除。",
         tone: "success",
       });
       setPendingAction(undefined);
@@ -942,7 +941,7 @@ export function SettingsPage({
                         <h3>先把凭据安全地留在本机</h3>
                         <p>
                           API Key 来自微信读书 Skill 页面，只保存在当前设备。
-                          连接后可以同步书架、读取笔记、回顾统计并导出阅读资产；前端页面不会读取或展示明文，后续同步只通过本地 Rust 层完成。
+                          连接后可以同步书架、读取笔记、回顾统计并导出阅读成果；页面不会显示已保存密钥。
                         </p>
                         <ul className="settings-onboarding-points">
                           <li>绑定后即可同步书架、笔记、统计和发现数据</li>
@@ -967,8 +966,8 @@ export function SettingsPage({
                   </div>
                   <p>
                     {credential?.hasCredential
-                      ? "同步会通过本地 Rust 层读取凭据；前端只知道是否已绑定，已缓存资产仍保留在本机。"
-                      : "保存微信读书 Skill API Key 后即可同步书架、笔记、统计和发现数据，作为后续复盘和导出的资产底座。"}
+                      ? "凭据仅在本机使用，已缓存内容仍保留在本机。"
+                      : "保存微信读书 Skill API Key 后即可同步书架、笔记、统计和发现数据。"}
                   </p>
                   <p className="credential-help-note">
                     会在新窗口打开技能页面；如果被拦截，链接会复制到剪贴板。
@@ -1082,7 +1081,7 @@ export function SettingsPage({
                       <Bot aria-hidden="true" size={20} />
                     </span>
                     <div>
-                      <p className="section-kicker">AI 阅读资产</p>
+                      <p className="section-kicker">AI 阅读成果</p>
                       <h3>
                         {aiState?.credential.hasCredential
                           ? "已配置 AI Provider"
@@ -1091,13 +1090,12 @@ export function SettingsPage({
                     </div>
                   </div>
                   <p>
-                    AI 只在你点击生成书籍复盘、阅读指南、统计复盘或选书决策时调用配置的
-                    Provider；不会自动上传书架、其他书笔记或任何 API Key。
+                    AI 仅在点击生成时调用配置的 Provider，并使用确认的输入范围。
                   </p>
                   <ul className="settings-onboarding-points">
                     <li>单本复盘只发送当前书的本地划线和想法</li>
                     <li>阅读指南和选书决策只使用你确认的当前书、候选书和本地统计信号</li>
-                    <li>已生成结果会作为本地阅读资产缓存，后续可查看和导出</li>
+                    <li>已生成结果会保存在本机，后续可查看和导出</li>
                   </ul>
                   <dl className="settings-dl">
                     <div>
@@ -2118,7 +2116,7 @@ export function SettingsPage({
           <ConfirmDialog
             open={pendingAction === "removeAiCredential"}
             title="确认移除 AI API Key？"
-            description="移除后将无法生成新的 AI 阅读资产。已缓存的书籍复盘、阅读报告和阅读指南不会被删除，清除本地缓存时才会删除。"
+            description="移除后将无法生成新的 AI 阅读成果。已缓存的书籍复盘、阅读报告和阅读指南不会被删除，清除本地缓存时才会删除。"
             confirmLabel="确认移除"
             isDanger
             isBusy={isSavingAiCredential}
@@ -2347,7 +2345,7 @@ function tableLabel(table: string): string {
     highlights: "划线",
     thoughts: "想法",
     reading_stats: "阅读统计",
-    ai_outputs: "AI 阅读资产",
+    ai_outputs: "AI 阅读成果",
     raw_cache: "原始缓存",
     sync_state: "同步状态",
     reading_item_states: "本地阅读状态",

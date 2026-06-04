@@ -32,7 +32,7 @@ export function StatsSummarySection({
             icon={<Clock3 aria-hidden="true" size={20} />}
             label="累计时长"
             value={formatDuration(stats?.totalReadTimeSeconds)}
-            detail="全部历史累计资产"
+            detail="全部历史累计成果"
           />
           <StatTile
             icon={<CalendarDays aria-hidden="true" size={20} />}

@@ -27,9 +27,9 @@ describe("prepared asset update prompt", () => {
     );
 
     expect(markup).toContain("准备更新上一版书籍复盘");
-    expect(markup).toContain("Prompt book-notes-summary-v3");
-    expect(markup).toContain("只有点击“生成复盘”才会读取并发送当前书的划线和想法");
-    expect(markup).toContain("没有本地缓存时，只有点击“生成复盘”才会读取并发送当前书笔记");
+    expect(markup).toContain("基于上一阶段书籍复盘更新");
+    expect(markup).toContain("点击“生成复盘”时使用当前书笔记");
+    expect(markup).toContain("点击“生成复盘”后，会使用当前书笔记生成阅读报告");
   });
 
   test("reading route generation page shows prepared update context without auto generation", () => {
@@ -51,9 +51,8 @@ describe("prepared asset update prompt", () => {
     );
 
     expect(markup).toContain("正在准备更新上一版阅读指南");
-    expect(markup).toContain("Prompt reading-route-v2.1");
-    expect(markup).toContain("需要你手动点击“生成更新版本”才会调用 AI");
-    expect(markup).toContain("不会自动同步远端或发送完整反馈明细");
+    expect(markup).toContain("来源版本：当前阅读指南");
+    expect(markup).toContain("点击“生成更新版本”后使用当前书上下文生成新版本");
   });
 });
 

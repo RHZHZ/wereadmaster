@@ -17,6 +17,43 @@ vi.mock("@tauri-apps/plugin-updater", () => ({
 }));
 
 describe("dashboard page reading persona overview", () => {
+  test("renders daily workbench primary action before auxiliary actions", () => {
+    const markup = renderToStaticMarkup(
+      <DashboardPage
+        credentialStatus={{ hasCredential: true }}
+        isLoading={false}
+        isSyncing={false}
+        onSync={() => undefined}
+        onOpenBookshelf={() => undefined}
+        onOpenNotes={() => undefined}
+        onOpenStats={() => undefined}
+        onOpenReadingReview={() => undefined}
+        onOpenDiscovery={() => undefined}
+        onOpenShelfEntry={() => undefined}
+        onOpenBookNotes={() => undefined}
+        onOpenCandidateBook={() => undefined}
+        onOpenSettings={() => undefined}
+        onOpenReadingRoute={() => undefined}
+        onOpenBookDecision={() => undefined}
+        readingStatsCache={{}}
+        onReadingStatsCacheChange={() => undefined}
+      />
+    );
+
+    expect(markup).toContain("今日阅读工作台");
+    expect(markup).toContain("今日最值得做");
+    expect(markup).toContain("为什么现在做");
+    expect(markup).toContain("完成后得到");
+    expect(markup).toContain("今日卡片");
+    expect(markup).toContain("本地进展");
+    expect(markup).toContain("阅读进度");
+    expect(markup).toContain("先同步书架缓存");
+    expect(markup).toContain("辅助动作");
+    expect(markup.indexOf("今日最值得做")).toBeLessThan(markup.indexOf("辅助动作"));
+    expect(markup.indexOf("辅助动作")).toBeLessThan(markup.indexOf("今日卡片"));
+    expect(markup.indexOf("今日卡片")).toBeLessThan(markup.indexOf("阅读进度"));
+  });
+
   test("renders monthly reading persona instead of the legacy habit profile card", () => {
     const readingStatsCache: ReadingStatsCache = {
       "monthly:1725955200": createMonthlyStatsResponse()
@@ -30,6 +67,7 @@ describe("dashboard page reading persona overview", () => {
         onSync={() => undefined}
         onOpenBookshelf={() => undefined}
         onOpenNotes={() => undefined}
+        onOpenStats={() => undefined}
         onOpenReadingReview={() => undefined}
         onOpenDiscovery={() => undefined}
         onOpenShelfEntry={() => undefined}
@@ -88,6 +126,7 @@ describe("dashboard page reading persona overview", () => {
         onSync={() => undefined}
         onOpenBookshelf={() => undefined}
         onOpenNotes={() => undefined}
+        onOpenStats={() => undefined}
         onOpenReadingReview={() => undefined}
         onOpenDiscovery={() => undefined}
         onOpenShelfEntry={() => undefined}

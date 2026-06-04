@@ -402,7 +402,7 @@ export function NotesPage({
       {!hasCredential ? (
         <CredentialSetupCard
           title="先保存 API Key"
-          description="笔记同步通过本地 Rust 命令执行。"
+          description="保存凭据后可同步笔记。"
           onOpenSettings={onOpenSettings}
         />
       ) : null}
@@ -420,7 +420,7 @@ export function NotesPage({
             <div>
               <p className="section-kicker">建议复盘</p>
               <h3>优先整理这些有想法的书</h3>
-              <p>只基于本地笔记数量和已生成复盘缓存排序，不会自动调用 AI。</p>
+              <p>按本机笔记数量和已生成报告排序。</p>
             </div>
             <span>{reviewCandidates.length} 本</span>
           </div>
@@ -786,7 +786,7 @@ function BulkExportWizard({
             ariaLabel="批量导出报告"
             error={exportError}
             contextTitle="当前不会丢失预检结果和导出设置"
-            contextDescription="可以直接重试，也可以返回设置调整策略；不会静默同步微信读书远端或自动生成 AI 复盘。"
+            contextDescription="可以直接重试，也可以返回设置调整策略。"
           />
         ) : null}
 
@@ -1148,7 +1148,7 @@ function bulkExportProgressDescription(
     case "syncMissingNotes":
       return `按有界队列读取缺失书籍后导出，当前同步并发 ${concurrency}。已完成内容会保留在报告中。`;
     case "selectedBooksOnly":
-      return `正在处理 ${selectedCount} 本选中书籍，不会自动生成 AI 复盘。`;
+      return `正在处理 ${selectedCount} 本选中书籍。`;
     case "localCachedOnly":
     default:
       return "只导出本地已缓存笔记和已有复盘，未缓存书籍会在报告中标记需要同步。";

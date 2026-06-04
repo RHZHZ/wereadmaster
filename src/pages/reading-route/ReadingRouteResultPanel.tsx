@@ -14,6 +14,7 @@ import {
 } from "../../lib/ai-action-items";
 import { copyTextToClipboard } from "../../lib/clipboard";
 import { formatAiResponseFormat, formatAiTimestamp } from "../../lib/formatters";
+import { formatArtifactCopiedMessage } from "../../lib/reading-artifacts";
 import type {
   ReadingRoute,
   ReadingRouteBookInput,
@@ -99,7 +100,7 @@ export function ReadingRouteResultPanel({
 
     try {
       await copyTextToClipboard(formatReadingRouteActionChecklist(guideDetails.actions, actionFeedbackByItemId));
-      showToast({ message: "已复制行动清单", tone: "success" });
+      showToast({ message: formatArtifactCopiedMessage("action-checklist"), tone: "success" });
     } catch (copyError) {
       showToast({
         message: copyError instanceof Error ? copyError.message : "复制失败，请稍后重试。",
@@ -243,7 +244,6 @@ export function ReadingRouteResultPanel({
 
           <div className="ai-summary-meta">
             <span>生成时间：{formatAiTimestamp(route.generatedAt) || "尚未生成"}</span>
-            <span>Prompt：{route.promptVersion ?? "reading-route-v2.1"}</span>
             {route.responseFormat ? <span>{formatAiResponseFormat(route.responseFormat)}</span> : null}
             {routeResponse?.providerModel ? <span>模型：{routeResponse.providerModel}</span> : null}
             {routeResponse?.cachedUpdatedAt ? (

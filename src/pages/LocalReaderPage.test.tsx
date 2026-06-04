@@ -13,11 +13,14 @@ vi.mock("@tauri-apps/plugin-updater", () => ({
 }));
 
 import {
+  buildProgressSaveKey,
   buildLocalReaderOutline,
   resolveLocalReaderProgressLoadWarning,
   resolveLocalReaderProgressSaveErrorNotice,
+  resolveLocalReaderSaveStateLabel,
   shouldIgnoreLocalReaderProgressSaveResult,
-  shouldNotifyLocalReaderProgressSaveError
+  shouldNotifyLocalReaderProgressSaveError,
+  shouldRetryLocalReaderProgressSave
 } from "./LocalReaderPage";
 
 describe("local reader progress warning", () => {
@@ -30,15 +33,40 @@ describe("local reader progress warning", () => {
 
   it("保存进度失败时展示带上下文的错误提示", () => {
     expect(resolveLocalReaderProgressSaveErrorNotice("数据库暂时不可用")).toEqual({
-      message: "阅读进度保存失败：数据库暂时不可用",
-      tone: "error"
+      message: "本地阅读进度暂未保存，系统会自动重试：数据库暂时不可用",
+      tone: "neutral"
     });
+  });
+
+  it("保存状态文案保持阅读场景的非阻塞语气", () => {
+    expect(resolveLocalReaderSaveStateLabel("idle")).toBe("本地进度");
+    expect(resolveLocalReaderSaveStateLabel("saving")).toBe("保存中");
+    expect(resolveLocalReaderSaveStateLabel("saved")).toBe("已保存");
+    expect(resolveLocalReaderSaveStateLabel("error")).toBe("暂未保存");
   });
 
   it("同一条保存错误重复出现时不反复提示", () => {
     expect(shouldNotifyLocalReaderProgressSaveError(undefined, "数据库暂时不可用")).toBe(true);
     expect(shouldNotifyLocalReaderProgressSaveError("数据库暂时不可用", "数据库暂时不可用")).toBe(false);
     expect(shouldNotifyLocalReaderProgressSaveError("数据库暂时不可用", "文件被占用")).toBe(true);
+  });
+
+  it("保存进度失败后只自动重试一次", () => {
+    expect(shouldRetryLocalReaderProgressSave(undefined)).toBe(true);
+    expect(shouldRetryLocalReaderProgressSave(0)).toBe(true);
+    expect(shouldRetryLocalReaderProgressSave(1)).toBe(false);
+  });
+
+  it("保存进度去重键不受重试次数影响", () => {
+    const progressSave = {
+      progressPercent: 42,
+      locator: "text:120:300",
+      readTimeSeconds: 18
+    };
+
+    expect(buildProgressSaveKey(progressSave)).toBe(
+      buildProgressSaveKey({ ...progressSave, retryAttempt: 1 })
+    );
   });
 
   it("忽略旧书或旧加载轮次返回的保存结果", () => {

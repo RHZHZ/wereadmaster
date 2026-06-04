@@ -9,6 +9,7 @@ import {
   Sparkles
 } from "lucide-react";
 import type { BookDetail, PreparedAssetUpdate, ReadingProgress, ShelfEntry } from "../lib/types";
+import { formatArtifactExportedMessage } from "../lib/reading-artifacts";
 import { ReadingRouteInputPanel } from "./reading-route/ReadingRouteInputPanel";
 import { ReadingRouteResultPanel } from "./reading-route/ReadingRouteResultPanel";
 import { useReadingRoutePageState } from "./reading-route/useReadingRoutePageState";
@@ -49,7 +50,7 @@ export function ReadingRoutePage({
         <div>
           <p className="section-kicker">AI 阅读指南</p>
           <h3>{state.currentBook?.title ? `围绕《${state.currentBook.title}》规划下一步` : state.pageTitle}</h3>
-          <p>默认把当前书整理成下一步阅读指南；加入候选书后切换为跨书路线图。不会自动发送笔记，也不会写回微信读书。</p>
+          <p>先生成本书指南；加入候选后生成跨书路线。</p>
           {state.currentBook?.author ? <small>{state.currentBook.author}</small> : null}
         </div>
         <div className="ai-summary-hero-side">
@@ -101,7 +102,7 @@ export function ReadingRoutePage({
           <Settings aria-hidden="true" size={20} />
           <div>
             <strong>需要先配置 AI Provider</strong>
-            <p>阅读指南和跨书路线沿用本机 AI Provider 设置，API Key 不会暴露给前端。</p>
+            <p>阅读指南和跨书路线沿用本机 AI Provider 设置。</p>
           </div>
           <button className="secondary-action" type="button" onClick={onOpenSettings}>
             去设置
@@ -115,8 +116,7 @@ export function ReadingRoutePage({
           <div>
             <strong>正在准备更新上一版阅读指南</strong>
             <p>
-              来源版本：{preparedUpdate.versionTitle || "阅读指南"} · Prompt {preparedUpdate.promptVersion}。
-              本页只带入当前书上下文；需要你手动点击“{regenerateLabel}”才会调用 AI，不会自动同步远端或发送完整反馈明细。
+              来源版本：{preparedUpdate.versionTitle || "阅读指南"}。点击“{regenerateLabel}”后使用当前书上下文生成新版本。
             </p>
             {state.missingPreparedCandidateCount > 0 ? (
               <p>
@@ -147,7 +147,10 @@ export function ReadingRoutePage({
         <div className="status-message status-message--neutral">
           <Download aria-hidden="true" size={18} />
           <span>
-            已导出 {state.exportResult.fileName}，路径：{state.exportResult.path}
+            {formatArtifactExportedMessage("reading-route-markdown", {
+              fileName: state.exportResult.fileName,
+              path: state.exportResult.path
+            })}
           </span>
         </div>
       ) : null}

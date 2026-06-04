@@ -63,12 +63,12 @@ export function LifetimeReadingReportDialog({
 
         <div className="reading-route-dialog-heading">
           <div>
-            <p className="section-kicker">长期资产复盘</p>
+            <p className="section-kicker">长期成果复盘</p>
             <h3 id="lifetime-reading-report-dialog-title">长期阅读复盘</h3>
             <p>
               {isSelectStep
                 ? "第一步确认范围是全部历史；下一步再读取总计统计并生成 16:9 分享图。"
-                : "第二步检查长期资产报告的预览效果，再导出横版 PNG。"}
+                : "第二步检查长期成果报告的预览效果，再导出横版 PNG。"}
             </p>
           </div>
         </div>
@@ -83,7 +83,7 @@ export function LifetimeReadingReportDialog({
             <div className="monthly-report-period-selector-heading">
               <div>
                 <span>报告目标</span>
-                <strong>全部历史 · 长期阅读资产</strong>
+                <strong>全部历史 · 长期阅读成果</strong>
               </div>
               <small>
                 <CalendarDays aria-hidden="true" size={14} />
@@ -97,7 +97,7 @@ export function LifetimeReadingReportDialog({
           <section className="monthly-report-select-summary lifetime-reading-report-select-summary" aria-label="长期复盘生成前确认">
             <CalendarDays aria-hidden="true" size={24} />
             <div>
-              <strong>将生成：全部历史长期阅读资产报告</strong>
+              <strong>将生成：全部历史长期阅读成果报告</strong>
               <p>
                 这不是某一年或某个月的报告，而是用总计统计回看长期投入、代表书目、稳定分类和作者信号。
               </p>

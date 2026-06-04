@@ -21,7 +21,7 @@ describe("settings page onboarding artwork", () => {
 
     expect(markup).toContain("onboarding-local-vault");
     expect(markup).toContain("API Key 来自微信读书 Skill 页面，只保存在当前设备");
-    expect(markup).toContain("前端页面不会读取或展示明文");
+    expect(markup).toContain("页面不会显示已保存密钥");
   });
 
   it("does not show onboarding artwork after WeRead credential is already saved", () => {

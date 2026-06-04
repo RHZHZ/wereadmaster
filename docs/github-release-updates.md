@@ -24,6 +24,7 @@ Release 页面不要只写“修了什么”，还要先回答“这个产品解
 
 - 应用内 updater 插件已接入。
 - 设置页侧边栏已提供“应用更新”菜单，内部包含“检查更新 / 安装更新”入口。
+- 更新说明弹窗已限制最大高度；当 GitHub Release 摘要过长时，仅摘要区域内部滚动，版本信息和操作按钮保持可见。
 - 构建配置已开启 `createUpdaterArtifacts`。
 - GitHub Actions 已新增 tag 触发的 Windows 发布流程。
 - GitHub Actions 已新增 Android APK 发布流程。
@@ -220,6 +221,7 @@ type AppUpdateFlowState =
    - `ANDROID_KEY_BASE64`
    - `ANDROID_KEY_ALIAS`
    - `ANDROID_KEY_PASSWORD`
+   - `ANDROID_STORE_PASSWORD`
 
    如果私钥没有设置密码，`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 可以留空或先不配置。
 
@@ -375,7 +377,7 @@ type AppUpdateFlowState =
 - 签名方式：自有 keystore
 - 不依赖 Google Play
 - 需要在 GitHub Actions Secrets 中提供 Android 签名材料
-- APK 由 Android job 构建后，直接上传到 GitHub Release
+- APK 由 Android job 构建后，先排除 unsigned 产物并通过 `apksigner verify --verbose` 校验，再上传到 GitHub Release
 
 ## 验收标准
 

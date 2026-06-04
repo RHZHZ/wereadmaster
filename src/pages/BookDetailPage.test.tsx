@@ -24,6 +24,20 @@ afterEach(() => {
 });
 
 describe("book detail local version notice", () => {
+  it("展示本书整理状态并指向现有下一步动作", () => {
+    const markup = renderPage({
+      shelfEntry: makeShelfEntry("weread-1", "深度工作", "卡尔·纽波特"),
+      detailResponse: makeDetailResponse("weread-1", "深度工作", "卡尔·纽波特"),
+      localBooks: []
+    });
+
+    expect(markup).toContain('aria-label="本书整理状态"');
+    expect(markup).toContain("阅读中");
+    expect(markup).toContain("继续积累可复盘材料");
+    expect(markup).toContain("微信进度 12%");
+    expect(markup).toContain("本书阅读指南");
+  });
+
   it("微信书籍详情页只读提示疑似本地版本", () => {
     const markup = renderPage({
       shelfEntry: makeShelfEntry("weread-1", "小王子", "圣埃克苏佩里"),
@@ -33,7 +47,7 @@ describe("book detail local version notice", () => {
 
     expect(markup).toContain('aria-label="疑似本地版本"');
     expect(markup).toContain("可能存在本地版本");
-    expect(markup).toContain("不会合并微信读书笔记、本地划线、进度或 AI 缓存");
+    expect(markup).toContain("不会自动合并笔记、划线或进度");
   });
 
   it("作者冲突时不展示本地版本提示", () => {
@@ -107,6 +121,9 @@ function renderPage(input: {
         onRetry={() => undefined}
         onOpenBook={() => undefined}
         onOpenChapter={() => undefined}
+        onOpenNotes={() => undefined}
+        onOpenAiSummary={() => undefined}
+        onOpenReadingRoute={() => undefined}
       />
     </ToastProvider>
   );

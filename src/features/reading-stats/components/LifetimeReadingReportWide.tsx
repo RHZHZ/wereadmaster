@@ -50,7 +50,7 @@ export function LifetimeReadingReportWide({ data }: LifetimeReadingReportWidePro
   return (
     <article
       className={`monthly-report-wide lifetime-reading-report-wide is-${visual.tone}`}
-      aria-label="长期阅读资产报告预览"
+      aria-label="长期阅读成果报告预览"
     >
       <span className="monthly-report-wide-corner top-left" aria-hidden="true" />
       <span className="monthly-report-wide-corner bottom-right" aria-hidden="true" />
@@ -60,7 +60,7 @@ export function LifetimeReadingReportWide({ data }: LifetimeReadingReportWidePro
           <span>wxreadmaster 长期复盘</span>
           <h3>
             <span className="monthly-report-wide-title-period">{data.periodAnchor}</span>
-            <span className="monthly-report-wide-title-subject">阅读资产</span>
+            <span className="monthly-report-wide-title-subject">阅读成果</span>
           </h3>
         </header>
 
@@ -83,7 +83,7 @@ export function LifetimeReadingReportWide({ data }: LifetimeReadingReportWidePro
         </footer>
       </section>
 
-      <section className="monthly-report-wide-analysis lifetime-reading-report-analysis" aria-label="长期阅读资产分析">
+      <section className="monthly-report-wide-analysis lifetime-reading-report-analysis" aria-label="长期阅读成果分析">
         <div className="monthly-report-wide-metrics">
           {data.metrics.slice(0, 4).map((metric, index) => (
             <article key={metric.label}>

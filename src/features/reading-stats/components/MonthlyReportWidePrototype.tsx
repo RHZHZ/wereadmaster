@@ -43,7 +43,7 @@ export function MonthlyReportWidePrototype({ data }: MonthlyReportWidePrototypeP
   const topCategory = data.categories[0]?.label ?? data.metrics[2]?.value ?? "阅读";
   const secondCategory = data.categories[1]?.label ?? topCategory;
   const focusBook = data.books[0]?.label ?? "本期重点书";
-  const suggestion = data.persona.suggestion ?? "下个周期可以补一本系统型主题书，把零散兴趣沉淀成稳定路径。";
+  const suggestion = data.persona.suggestion ?? "下个周期可以补一本系统型主题书，把零散兴趣整理成稳定路径。";
   const overviewMetrics = [
     data.metrics[0],
     data.metrics[1],
@@ -53,7 +53,7 @@ export function MonthlyReportWidePrototype({ data }: MonthlyReportWidePrototypeP
   const actionItems = [
     `延续「${compactReportLabel(topCategory, 8)}」主线做一次主题复盘。`,
     `补一本「${compactReportLabel(secondCategory, 8)}」相关书，平衡阅读结构。`,
-    `围绕《${compactReportLabel(focusBook, 10)}》沉淀 3 条可复用笔记。`
+    `围绕《${compactReportLabel(focusBook, 10)}》整理 3 条可复用笔记。`
   ];
 
   return (

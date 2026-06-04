@@ -55,12 +55,12 @@ export function MonthlyReportCardSet({
   const topCategory = data.categories[0]?.label ?? data.metrics[2]?.value ?? "阅读";
   const secondCategory = data.categories[1]?.label ?? topCategory;
   const focusBook = data.books[0]?.label ?? "本期重点书";
-  const suggestion = data.persona.suggestion ?? "下个周期可以补一条更稳定的阅读主线，把零散兴趣沉淀成可复用笔记。";
+  const suggestion = data.persona.suggestion ?? "下个周期可以补一条更稳定的阅读主线，把零散兴趣整理成可复用笔记。";
   const evidence = data.persona.evidence.length > 0 ? data.persona.evidence : [data.persona.basisNotice];
   const actionItems = [
     `围绕「${compactCardText(topCategory, 8)}」做一次主题复盘。`,
     `补一本「${compactCardText(secondCategory, 8)}」相关书，平衡阅读结构。`,
-    `给《${compactCardText(focusBook, 10)}》沉淀 3 条可复用笔记。`
+    `给《${compactCardText(focusBook, 10)}》整理 3 条可复用笔记。`
   ];
   const context: MonthlyReportStoryContext = {
     actionItems,

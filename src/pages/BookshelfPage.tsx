@@ -307,7 +307,7 @@ export function BookshelfPage({
       {!hasCredential ? (
         <CredentialSetupCard
           title="先保存 API Key"
-          description="书架同步只通过本地 Tauri 命令执行，明文 Key 不会暴露给前端页面。"
+          description="保存凭据后可同步书架。"
           onOpenSettings={onOpenSettings}
         />
       ) : null}
@@ -595,7 +595,7 @@ function EmptyShelf({
         <p>
           {hasCredential
             ? "同步后会把电子书、有声书和文章收藏写入本机缓存，作为后续复盘和整理的入口。"
-            : "保存 API Key 后即可把个人书架同步到本机缓存，开始沉淀阅读资产。"}
+            : "保存 API Key 后即可把个人书架同步到本机缓存，继续整理阅读成果。"}
         </p>
         <button
           className="secondary-action"

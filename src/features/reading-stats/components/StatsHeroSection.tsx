@@ -46,7 +46,7 @@ export function StatsHeroSection({
         <p>
           {hasStatsData
             ? isOverallMode
-              ? `累计资产 ${formatDuration(stats?.totalReadTimeSeconds)}，用于回看长期投入方向、代表书目和稳定偏好。`
+              ? `累计成果 ${formatDuration(stats?.totalReadTimeSeconds)}，用于回看长期投入方向、代表书目和稳定偏好。`
               : `总阅读/收听 ${formatDuration(stats?.totalReadTimeSeconds)}，对应 ${formatReadingStatsPeriodMetricLabel(activePeriod)} 的固定周期统计。`
             : "支持在当前页面内查看总计、历史年份和历史月份的统计表现。"}
         </p>

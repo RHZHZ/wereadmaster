@@ -14,7 +14,9 @@ import {
   type BookshelfResponse,
   type ReadingStatsResponse
 } from "../lib/reading-api";
+import { useToast } from "../components/ToastProvider";
 import { formatAiResponseFormat, formatAiTimestamp } from "../lib/formatters";
+import { formatArtifactExportedMessage } from "../lib/reading-artifacts";
 import {
   buildAiActionItemId,
   getAiActionItemStorage,
@@ -93,6 +95,7 @@ export function BookDecisionPage({
   onSessionChange,
   onBack
 }: BookDecisionPageProps) {
+  const { showToast } = useToast();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(
     () => new Set(session?.selectedIds ?? [])
   );
@@ -248,6 +251,10 @@ export function BookDecisionPage({
     try {
       const result = await exportBookDecisionMarkdown(decisionCandidates, decisionGoal);
       setExportStatus({ type: "success", path: result.path, fileName: result.fileName });
+      showToast({
+        message: formatArtifactExportedMessage("book-decision-markdown"),
+        tone: "success"
+      });
     } catch (exportError) {
       setExportStatus({ type: "error", message: getCommandErrorMessage(exportError) });
     }
@@ -275,7 +282,7 @@ export function BookDecisionPage({
           <BookOpen aria-hidden="true" size={24} />
           <div>
             <strong>还没有选书决策结果</strong>
-            <p>默认引导页已移除，生成入口统一放在候选书架，避免在结果页重复配置输入。</p>
+            <p>从候选书架确认输入后生成结果。</p>
           </div>
         </section>
       </section>
@@ -350,7 +357,12 @@ export function BookDecisionPage({
       {exportStatus.type === "success" ? (
         <div className="status-message status-message--success" aria-label="选书决策导出结果">
           <CheckCircle2 aria-hidden="true" size={18} />
-          <span>已导出 {exportStatus.fileName}：{exportStatus.path}</span>
+          <span>
+            {formatArtifactExportedMessage("book-decision-markdown", {
+              fileName: exportStatus.fileName,
+              path: exportStatus.path
+            })}
+          </span>
         </div>
       ) : null}
 
@@ -566,7 +578,6 @@ function BookDecisionResult({
 
       <div className="ai-summary-meta">
         <span>生成时间：{formatAiTimestamp(decision.generatedAt) || "尚未生成"}</span>
-        <span>Prompt：{decision.promptVersion ?? "book-decision-v1"}</span>
         {decision.responseFormat ? <span>{formatAiResponseFormat(decision.responseFormat)}</span> : null}
         {response.providerModel ? <span>模型：{response.providerModel}</span> : null}
         {response.cachedUpdatedAt ? <span>缓存更新：{formatAiTimestamp(response.cachedUpdatedAt)}</span> : null}

@@ -44,7 +44,7 @@ const reportPeriodOptions: Array<{ mode: ReadingStatsMode; label: string; descri
   { mode: "weekly", label: "周报", description: "短周期节奏回看" },
   { mode: "monthly", label: "月报", description: "月度分享和主题复盘" },
   { mode: "annually", label: "年报", description: "年度结构和代表书目" },
-  { mode: "overall", label: "总计复盘", description: "长期阅读资产沉淀" }
+  { mode: "overall", label: "总计复盘", description: "长期阅读成果整理" }
 ];
 
 type ReportGenerationWizardDialogProps = {
@@ -285,7 +285,7 @@ export function ReportGenerationWizardDialog({
               <div>
                 <span>{isLifetimeReportMode ? "报告范围" : `${activeReportOption?.label ?? "报告"}时间`}</span>
                 <strong>
-                  {isLifetimeReportMode ? "全部历史 · 长期阅读资产" : formatReadingStatsPeriodAnchor(draftPeriod)}
+                  {isLifetimeReportMode ? "全部历史 · 长期阅读成果" : formatReadingStatsPeriodAnchor(draftPeriod)}
                 </strong>
               </div>
               <small>
@@ -299,7 +299,7 @@ export function ReportGenerationWizardDialog({
                 <CalendarDays aria-hidden="true" size={24} />
                 <div>
                   <strong>长期复盘默认覆盖全部历史</strong>
-                  <span>这一类报告不需要选择具体年份或月份，会读取总计统计来生成长期资产视角。</span>
+                  <span>这一类报告不需要选择具体年份或月份，会读取总计统计来生成长期成果视角。</span>
                 </div>
               </div>
             ) : (
@@ -718,7 +718,7 @@ function buildReportKindHint(mode: ReadingStatsMode): string {
   }
 
   if (mode === "overall") {
-    return "适合回看长期资产、峰值年份和稳定偏好";
+    return "适合回看长期成果、峰值年份和稳定偏好";
   }
 
   if (mode === "annually") {

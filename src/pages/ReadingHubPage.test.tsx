@@ -55,7 +55,7 @@ describe("reading hub asset history section", () => {
     expect(markup).toContain("规划当前书");
     expect(markup).toContain("回顾一段时间");
     expect(markup).toContain("决定下一本");
-    expect(markup).toContain("不会自动同步、自动生成或打开通用聊天");
+    expect(markup).toContain("模板连接现有页面和已确认输入范围");
   });
 
   test("renders collapsed lightweight history rows with required metadata", () => {
@@ -73,7 +73,7 @@ describe("reading hub asset history section", () => {
     );
 
     expect(markup).toContain("历史版本");
-    expect(markup).toContain("reading-route-v1.9");
+    expect(markup).not.toContain("reading-route-v1.9");
     expect(markup).toContain("建立框架");
     expect(markup).toContain("进度 36%");
     expect(markup).toContain("阅读阶段变化");
@@ -113,7 +113,7 @@ describe("reading hub asset history section", () => {
     );
 
     expect(markup).toContain("跨书路线历史");
-    expect(markup).toContain("reading-route-v1.9");
+    expect(markup).not.toContain("reading-route-v1.9");
     expect(markup).toContain("参与路线 B");
     expect((markup.match(/ai-asset-history-row/g) ?? []).length).toBe(2);
   });
@@ -351,7 +351,7 @@ describe("reading hub asset history section", () => {
     expect(markup).toContain("《测试书籍》阅读指南");
     expect(markup).toContain("本书指南");
     expect(markup).toContain("本地缓存");
-    expect(markup).toContain("技术信息：Prompt reading-route-v2.1");
+    expect(markup).not.toContain("技术信息：Prompt reading-route-v2.1");
     expect(markup).toContain("查看指南");
     expect(markup).toContain("ai-asset-ref-heading-actions");
     expect(markup).toContain("button");

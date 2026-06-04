@@ -47,7 +47,7 @@ describe("ReportGenerationWizardDialog", () => {
     );
 
     expect(markup).toContain("总计复盘");
-    expect(markup).toContain("长期阅读资产沉淀");
+    expect(markup).toContain("长期阅读成果整理");
     expect(markup).toContain("下一步：确认长期范围");
     expect(markup).not.toContain("当前选择：");
   });

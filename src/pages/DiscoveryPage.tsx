@@ -512,7 +512,7 @@ export function DiscoveryPage({
       {!hasCredential ? (
         <CredentialSetupCard
           title="先保存 API Key"
-          description="发现页只调用本地 Tauri 命令；保存凭据后才能搜索和获取推荐。"
+          description="保存凭据后可搜索和获取推荐。"
           onOpenSettings={onOpenSettings}
         />
       ) : null}
@@ -703,7 +703,7 @@ export function DiscoveryPage({
               <section className="discovery-empty discovery-empty--compact">
                 <Compass aria-hidden="true" size={28} />
                 <h3>先同步书架，再沿着自己的阅读轨迹继续扩展</h3>
-                <p>发现页会优先消费本地书架线索，帮你把下一批候选书沉淀下来。</p>
+                <p>发现页会优先使用本机书架线索，帮你保存下一批候选书。</p>
               </section>
             )}
               </section>
@@ -790,8 +790,7 @@ export function DiscoveryPage({
         <section className="stats-footnote discovery-footnote">
           <strong>使用说明</strong>
           <p>
-            搜索翻页使用最后一条 searchIdx；相似书翻页使用 idx 和 sessionId。不可用书籍仍会展示，
-            但进入详情时可能受微信读书接口限制。
+            不可用书籍仍会展示，进入详情时可能受微信读书接口限制。
           </p>
         </section>
       ) : (
@@ -799,7 +798,7 @@ export function DiscoveryPage({
           <Compass aria-hidden="true" size={24} />
           <div>
             <h3>发现页只做你的个人阅读扩展</h3>
-            <p>它不会读取好友关系，也不会把搜索记录上传到自建服务器，只服务你的本地候选沉淀。</p>
+            <p>搜索只服务候选书保存和个人阅读扩展。</p>
           </div>
           <Sparkles aria-hidden="true" size={24} />
         </section>

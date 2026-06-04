@@ -52,7 +52,7 @@ export type LifetimeReadingReportSeriesPoint = {
 export type LifetimeReadingReportData = {
   reportType: "overall";
   periodAnchor: "全部历史";
-  rangeLabel: "长期阅读资产";
+  rangeLabel: "长期阅读成果";
   dataCompleteness: LifetimeReadingReportCompleteness;
   fileName: string;
   title: string;
@@ -115,10 +115,10 @@ export function buildLifetimeReadingReportData(
   return {
     reportType: "overall",
     periodAnchor: "全部历史",
-    rangeLabel: "长期阅读资产",
+    rangeLabel: "长期阅读成果",
     dataCompleteness,
-    fileName: sanitizeFileName("全部历史-长期阅读资产报告"),
-    title: "长期阅读资产报告",
+    fileName: sanitizeFileName("全部历史-长期阅读成果报告"),
+    title: "长期阅读成果报告",
     headline,
     summary,
     persona,
@@ -250,7 +250,7 @@ function drawLifetimeReportCover(
   context.font = "700 68px 'Noto Serif SC', 'Songti SC', 'SimSun', Georgia, serif";
   drawCanvasTextLimited(context, data.periodAnchor, x, 220, width - 32, 74, 1);
   context.font = "700 78px 'Noto Serif SC', 'Songti SC', 'SimSun', Georgia, serif";
-  drawCanvasTextLimited(context, "阅读资产", x, 302, width - 28, 84, 1);
+  drawCanvasTextLimited(context, "阅读成果", x, 302, width - 28, 84, 1);
 
   drawLifetimeArchImagePanel(
     context,
@@ -1217,7 +1217,7 @@ function buildLifetimeKeywords(persona: ReadingPersona, themes: string[]): strin
   const values = [
     persona.displayTitle ?? persona.label,
     ...themes,
-    "长期资产",
+    "长期成果",
     "稳定偏好"
   ];
 

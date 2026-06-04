@@ -23,8 +23,16 @@ import {
 } from "../lib/reading-api";
 import { useToast } from "../components/ToastProvider";
 import { formatUnixDate } from "../lib/formatters";
+import {
+  formatArtifactCreatedMessage,
+  formatArtifactExportedMessage
+} from "../lib/reading-artifacts";
 import type { DefaultNotesView } from "../lib/preferences";
 import type { BookNotes, ChapterNoteGroup, Highlight, NotebookBook, Thought } from "../lib/types";
+import {
+  buildBookNotesReviewStatus,
+  type BookNotesReviewStatus
+} from "./book-notes-review-status";
 
 type BookNotesPageProps = {
   book?: NotebookBook;
@@ -88,6 +96,7 @@ export function BookNotesPage({
   const randomIdSet = new Set(randomCardIds);
   const visibleCards =
     randomCardIds.length > 0 ? orderedCards.filter((card) => randomIdSet.has(card.id)) : orderedCards;
+  const notesReviewStatus = notes ? buildBookNotesReviewStatus(notes) : undefined;
 
   useEffect(() => {
     if (!targetBookId) {
@@ -140,7 +149,10 @@ export function BookNotesPage({
         bookTitle: displayBook?.title || notes?.bookId || targetBookId || "单本笔记",
         author: displayBook?.author
       });
-      showToast({ message: `已生成分享图片：${fileName}`, tone: "success" });
+      showToast({
+        message: formatArtifactCreatedMessage("note-card-image", { fileName }),
+        tone: "success"
+      });
     } catch (shareImageError) {
       setShareError(
         shareImageError instanceof Error ? shareImageError.message : "生成分享图片失败。"
@@ -172,7 +184,10 @@ export function BookNotesPage({
           exportedCount: cards.length
         })
       });
-      showToast({ message: `已生成组合分享图片：${fileName}`, tone: "success" });
+      showToast({
+        message: formatArtifactCreatedMessage("note-card-image", { fileName }),
+        tone: "success"
+      });
     } catch (shareImageError) {
       setShareError(
         shareImageError instanceof Error ? shareImageError.message : "生成组合分享图片失败。"
@@ -194,6 +209,10 @@ export function BookNotesPage({
     try {
       const response = await exportBookNotesMarkdown(targetBookId);
       setExportResult(response);
+      showToast({
+        message: formatArtifactExportedMessage("notes-markdown"),
+        tone: "success"
+      });
     } catch (exportError) {
       setError(getCommandErrorMessage(exportError));
     } finally {
@@ -312,6 +331,8 @@ export function BookNotesPage({
         </section>
       ) : null}
 
+      {notesReviewStatus ? <BookNotesReviewStatusCard status={notesReviewStatus} /> : null}
+
       {notes && !isLoading ? (
         <section className="book-notes-view-panel" aria-label="单本笔记视图">
           <div className="book-notes-view-row">
@@ -416,7 +437,7 @@ export function BookNotesPage({
 
           {viewMode === "cards" && randomCardIds.length > 0 ? (
             <p className="book-notes-random-note">
-              已从当前筛选条件中随机抽取 {visibleCards.length} 条笔记，只使用本地已加载内容。
+              已随机抽取 {visibleCards.length} 条当前笔记。
             </p>
           ) : null}
         </section>
@@ -432,7 +453,12 @@ export function BookNotesPage({
       {exportResult ? (
         <div className="status-message status-message--neutral">
           <Download aria-hidden="true" size={18} />
-          <span>已导出 {exportResult.fileName}，路径：{exportResult.path}</span>
+          <span>
+            {formatArtifactExportedMessage("notes-markdown", {
+              fileName: exportResult.fileName,
+              path: exportResult.path
+            })}
+          </span>
         </div>
       ) : null}
 
@@ -476,6 +502,34 @@ export function BookNotesPage({
           isGroupSharing={isSharingGroup}
         />
       ) : null}
+    </section>
+  );
+}
+
+function BookNotesReviewStatusCard({ status }: { status: BookNotesReviewStatus }) {
+  return (
+    <section className={`book-notes-review-status-card is-${status.tone}`} aria-label="复盘输入状态">
+      <div className="book-notes-review-status-copy">
+        <span>{status.label}</span>
+        <div>
+          <h3>{status.title}</h3>
+          <p>{status.body}</p>
+        </div>
+      </div>
+      <dl className="book-notes-review-status-metrics">
+        <div>
+          <dt>{status.primaryMetricLabel}</dt>
+          <dd>{status.primaryMetricValue}</dd>
+        </div>
+        <div>
+          <dt>{status.secondaryMetricLabel}</dt>
+          <dd>{status.secondaryMetricValue}</dd>
+        </div>
+      </dl>
+      <div className="book-notes-review-status-next">
+        <strong>{status.nextActionLabel}</strong>
+        <small>{status.nextActionReason}</small>
+      </div>
     </section>
   );
 }
@@ -957,7 +1011,7 @@ function buildGroupShareScopeLabel({
   const scope = isRandomGroup ? "随机一组" : "当前筛选";
   const countLabel = totalCount > exportedCount ? `导出前 ${exportedCount} 条，共 ${totalCount} 条` : `导出 ${exportedCount} 条`;
 
-  return `${scope} · ${filterLabel} · ${sortLabel} · ${countLabel} · 仅使用本地已加载笔记`;
+  return `${scope} · ${filterLabel} · ${sortLabel} · ${countLabel}`;
 }
 
 function drawCanvasText(

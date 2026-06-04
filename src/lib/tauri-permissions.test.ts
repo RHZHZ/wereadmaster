@@ -29,6 +29,7 @@ describe("Tauri window configuration", () => {
     expect(windowConfig.height).toBeGreaterThanOrEqual(820);
     expect(windowConfig.minWidth).toBe(960);
     expect(windowConfig.minHeight).toBe(640);
+    expect(windowConfig.center).toBe(true);
     expect(windowConfig.resizable).toBe(true);
   });
 
@@ -93,6 +94,7 @@ function readMainWindowConfig() {
         height?: number;
         minWidth?: number;
         minHeight?: number;
+        center?: boolean;
         resizable?: boolean;
         decorations?: boolean;
       }>;

@@ -12,6 +12,28 @@ val tauriProperties = Properties().apply {
         propFile.inputStream().use { load(it) }
     }
 }
+val keystoreProperties = Properties().apply {
+    val propFile = rootProject.file("keystore.properties")
+    if (propFile.exists()) {
+        propFile.inputStream().use { load(it) }
+    }
+}
+
+val requiredSigningPropertyNames = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
+val hasReleaseSigningConfig = requiredSigningPropertyNames.all { name ->
+    !keystoreProperties.getProperty(name).isNullOrBlank()
+}
+
+fun keystoreProperty(name: String): String = keystoreProperties.getProperty(name)
+
+gradle.taskGraph.whenReady {
+    val runsReleaseBuild = allTasks.any { task -> task.name.contains("Release") }
+    if (runsReleaseBuild && !hasReleaseSigningConfig) {
+        throw GradleException(
+            "Android release signing is required. Missing one of: ${requiredSigningPropertyNames.joinToString(", ")}"
+        )
+    }
+}
 
 android {
     compileSdk = 36
@@ -24,13 +46,24 @@ android {
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
     }
+    signingConfigs {
+        if (hasReleaseSigningConfig) {
+            create("release") {
+                storeFile = file(keystoreProperty("storeFile"))
+                storePassword = keystoreProperty("storePassword")
+                keyAlias = keystoreProperty("keyAlias")
+                keyPassword = keystoreProperty("keyPassword")
+            }
+        }
+    }
     buildTypes {
         getByName("debug") {
             manifestPlaceholders["usesCleartextTraffic"] = "true"
             isDebuggable = true
             isJniDebuggable = true
             isMinifyEnabled = false
-            packaging {                jniLibs.keepDebugSymbols.add("*/arm64-v8a/*.so")
+            packaging {
+                jniLibs.keepDebugSymbols.add("*/arm64-v8a/*.so")
                 jniLibs.keepDebugSymbols.add("*/armeabi-v7a/*.so")
                 jniLibs.keepDebugSymbols.add("*/x86/*.so")
                 jniLibs.keepDebugSymbols.add("*/x86_64/*.so")
@@ -38,6 +71,9 @@ android {
         }
         getByName("release") {
             isMinifyEnabled = true
+            if (hasReleaseSigningConfig) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }
                     .plus(getDefaultProguardFile("proguard-android-optimize.txt"))

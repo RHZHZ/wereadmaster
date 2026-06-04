@@ -43,6 +43,11 @@ import {
   syncReadingStats,
   type ReadingStatsResponse
 } from "../lib/reading-api";
+import {
+  formatArtifactCreatedMessage,
+  formatArtifactExportedMessage,
+  type ReadingArtifactKind
+} from "../lib/reading-artifacts";
 import type { CredentialStatus, ReadingStatsAiReviewResponse, ReadingStatsMode } from "../lib/types";
 import {
   buildReadingStatsPeriod,
@@ -422,7 +427,12 @@ export function ReadingReviewPage({
       {exportResult ? (
         <div className="status-message status-message--neutral">
           <Download aria-hidden="true" size={18} />
-          <span>已导出 {exportResult.fileName}，路径：{exportResult.path}</span>
+          <span>
+            {formatArtifactExportedMessage("period-report-image", {
+              fileName: exportResult.fileName,
+              path: exportResult.path
+            })}
+          </span>
         </div>
       ) : null}
 
@@ -524,24 +534,24 @@ export function ReadingReviewPage({
 
     try {
       if (mode === "wide") {
-        showReportExportSuccess(await downloadPeriodReportWideReport(periodReportData), "已生成横版报告。");
+        showReportExportSuccess(await downloadPeriodReportWideReport(periodReportData), "period-report-image");
         return;
       }
 
       if (mode === "cards-current") {
         showReportExportSuccess(
           await downloadPeriodReportStoryPage(periodReportData, storyPageIndex),
-          "已生成当前轮播页。"
+          "period-report-image"
         );
         return;
       }
 
       if (mode === "cards-all") {
-        showReportExportSuccess(await downloadPeriodReportStoryPages(periodReportData), "已生成全部轮播页。");
+        showReportExportSuccess(await downloadPeriodReportStoryPages(periodReportData), "period-report-image");
         return;
       }
 
-      showReportExportSuccess(await downloadPeriodReportPoster(periodReportData), "已生成阅读报告。");
+      showReportExportSuccess(await downloadPeriodReportPoster(periodReportData), "period-report-image");
     } catch (posterError) {
       showToast({
         message: posterError instanceof Error ? posterError.message : "生成阅读报告图片失败。",
@@ -560,7 +570,7 @@ export function ReadingReviewPage({
     setIsReportDownloading(true);
 
     try {
-      showReportExportSuccess(await downloadLifetimeReadingReportWide(lifetimeReportData), "已生成长期复盘报告。");
+      showReportExportSuccess(await downloadLifetimeReadingReportWide(lifetimeReportData), "lifetime-report-image");
     } catch (posterError) {
       showToast({
         message: posterError instanceof Error ? posterError.message : "生成长期复盘图片失败。",
@@ -608,22 +618,24 @@ export function ReadingReviewPage({
 
   function showReportExportSuccess(
     result: ReportImageExportResult | ReportImageExportResult[],
-    browserFallbackMessage: string
+    artifactKind: Extract<ReadingArtifactKind, "period-report-image" | "lifetime-report-image">
   ) {
     const results = Array.isArray(result) ? result : [result];
     const exportDirResult = results.find((item) => item.source === "exportDir");
     if (exportDirResult?.path) {
       showToast({
-        message:
+        message: formatArtifactExportedMessage(
+          artifactKind,
           results.length > 1
-            ? `已保存 ${results.length} 张图片到应用导出目录。`
-            : `已保存到应用导出目录：${exportDirResult.path}`,
+            ? { count: results.length, unit: "张图片", path: exportDirResult.path }
+            : { path: exportDirResult.path }
+        ),
         tone: "success"
       });
       return;
     }
 
-    showToast({ message: browserFallbackMessage, tone: "success" });
+    showToast({ message: formatArtifactCreatedMessage(artifactKind), tone: "success" });
   }
 }
 

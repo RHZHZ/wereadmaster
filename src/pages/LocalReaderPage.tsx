@@ -93,6 +93,7 @@ type PendingProgressSave = {
   progressPercent: number;
   locator: string;
   readTimeSeconds: number;
+  retryAttempt?: number;
 };
 type LocalReaderProgressReadResult = {
   progress?: LocalReadingProgress;
@@ -171,9 +172,23 @@ export function resolveLocalReaderProgressLoadWarning(progressErrorMessage: stri
 
 export function resolveLocalReaderProgressSaveErrorNotice(progressErrorMessage: string) {
   return {
-    message: `阅读进度保存失败：${progressErrorMessage}`,
-    tone: "error" as const
+    message: `本地阅读进度暂未保存，系统会自动重试：${progressErrorMessage}`,
+    tone: "neutral" as const
   };
+}
+
+export function resolveLocalReaderSaveStateLabel(saveState: SaveState) {
+  switch (saveState) {
+    case "saving":
+      return "保存中";
+    case "saved":
+      return "已保存";
+    case "error":
+      return "暂未保存";
+    case "idle":
+    default:
+      return "本地进度";
+  }
 }
 
 export function shouldNotifyLocalReaderProgressSaveError(
@@ -181,6 +196,18 @@ export function shouldNotifyLocalReaderProgressSaveError(
   nextErrorMessage: string
 ) {
   return previousErrorMessage !== nextErrorMessage;
+}
+
+export function shouldRetryLocalReaderProgressSave(retryAttempt: number | undefined) {
+  return (retryAttempt ?? 0) < LOCAL_READER_PROGRESS_SAVE_MAX_RETRIES;
+}
+
+export function buildProgressSaveKey({
+  progressPercent,
+  locator,
+  readTimeSeconds
+}: PendingProgressSave) {
+  return `${progressPercent}:${readTimeSeconds}:${locator}`;
 }
 
 export function shouldIgnoreLocalReaderProgressSaveResult({
@@ -204,6 +231,8 @@ export function shouldIgnoreLocalReaderProgressSaveResult({
 }
 
 const FLOATING_LAYER_PADDING = 16;
+const LOCAL_READER_PROGRESS_SAVE_RETRY_DELAY_MS = 2_500;
+const LOCAL_READER_PROGRESS_SAVE_MAX_RETRIES = 1;
 const SELECTION_POPOVER_WIDTH = 520;
 const SELECTION_POPOVER_BASE_HEIGHT = 58;
 const SELECTION_POPOVER_RELATED_GROUP_HEIGHT = 174;
@@ -269,6 +298,8 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
   const pendingPreferenceScrollRatioRef = useRef<number>();
   const pendingProgressSaveRef = useRef<PendingProgressSave>();
   const saveTimerRef = useRef<number>();
+  const retryProgressSaveTimerRef = useRef<number>();
+  const latestProgressSaveKeyRef = useRef<string>();
   const lastSavedPercentRef = useRef(-1);
   const lastProgressSaveErrorMessageRef = useRef<string>();
   const progressSaveSessionRef = useRef(0);
@@ -405,7 +436,9 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
       window.clearTimeout(saveTimerRef.current);
       saveTimerRef.current = undefined;
     }
+    clearProgressSaveRetryTimer();
     pendingProgressSaveRef.current = undefined;
+    latestProgressSaveKeyRef.current = undefined;
     lastProgressSaveErrorMessageRef.current = undefined;
 
     async function loadBook() {
@@ -458,6 +491,7 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
     return () => {
       isMounted = false;
       progressSaveSessionRef.current += 1;
+      clearProgressSaveRetryTimer();
       flushPendingProgressSave();
     };
   }, [bookId, loadAttempt]);
@@ -741,12 +775,15 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
     if (saveTimerRef.current) {
       window.clearTimeout(saveTimerRef.current);
     }
+    clearProgressSaveRetryTimer();
 
-    pendingProgressSaveRef.current = {
+    const pendingProgressSave = {
       progressPercent,
       locator,
       readTimeSeconds: progress?.readTimeSeconds ?? 0
     };
+    pendingProgressSaveRef.current = pendingProgressSave;
+    latestProgressSaveKeyRef.current = buildProgressSaveKey(pendingProgressSave);
     saveTimerRef.current = window.setTimeout(() => {
       const pendingProgress = pendingProgressSaveRef.current;
       pendingProgressSaveRef.current = undefined;
@@ -777,9 +814,34 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
     }).catch(() => undefined);
   }
 
-  async function saveProgress({ progressPercent, locator, readTimeSeconds }: PendingProgressSave) {
+  function clearProgressSaveRetryTimer() {
+    if (retryProgressSaveTimerRef.current) {
+      window.clearTimeout(retryProgressSaveTimerRef.current);
+      retryProgressSaveTimerRef.current = undefined;
+    }
+  }
+
+  function scheduleProgressSaveRetry(progressSave: PendingProgressSave) {
+    clearProgressSaveRetryTimer();
+    const retryProgressSave = {
+      ...progressSave,
+      retryAttempt: (progressSave.retryAttempt ?? 0) + 1
+    };
+    const retryProgressSaveKey = buildProgressSaveKey(retryProgressSave);
+    retryProgressSaveTimerRef.current = window.setTimeout(() => {
+      retryProgressSaveTimerRef.current = undefined;
+      if (latestProgressSaveKeyRef.current !== retryProgressSaveKey) {
+        return;
+      }
+      void saveProgress(retryProgressSave);
+    }, LOCAL_READER_PROGRESS_SAVE_RETRY_DELAY_MS);
+  }
+
+  async function saveProgress(progressSave: PendingProgressSave) {
+    const { progressPercent, locator, readTimeSeconds, retryAttempt } = progressSave;
     const requestBookId = bookId;
     const requestSaveSessionId = progressSaveSessionRef.current;
+    const requestSaveKey = buildProgressSaveKey(progressSave);
 
     try {
       setSaveState("saving");
@@ -797,9 +859,11 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
           requestSaveSessionId,
           resultBookId: savedProgress.bookId
         })
+        || latestProgressSaveKeyRef.current !== requestSaveKey
       ) {
         return;
       }
+      clearProgressSaveRetryTimer();
       lastSavedPercentRef.current = savedProgress.progressPercent;
       lastProgressSaveErrorMessageRef.current = undefined;
       setProgress(savedProgress);
@@ -813,6 +877,7 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
           activeSaveSessionId: progressSaveSessionRef.current,
           requestSaveSessionId
         })
+        || latestProgressSaveKeyRef.current !== requestSaveKey
       ) {
         return;
       }
@@ -821,6 +886,9 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
         showToast(resolveLocalReaderProgressSaveErrorNotice(message));
       }
       lastProgressSaveErrorMessageRef.current = message;
+      if (shouldRetryLocalReaderProgressSave(retryAttempt)) {
+        scheduleProgressSaveRetry(progressSave);
+      }
     }
   }
 
@@ -1863,14 +1931,7 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
     });
   }
 
-  const saveStateLabel =
-    saveState === "saving"
-      ? "保存中"
-      : saveState === "saved"
-        ? "已保存"
-        : saveState === "error"
-          ? "保存失败"
-          : "本地进度";
+  const saveStateLabel = resolveLocalReaderSaveStateLabel(saveState);
   const readerStatusFormat = book
     ? `${formatLocalReaderFormatLabel(book.format)} · 本地文本阅读`
     : "本地文本阅读";

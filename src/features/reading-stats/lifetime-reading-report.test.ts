@@ -178,7 +178,7 @@ describe("buildLifetimeReadingReportData", () => {
 
     expect(result.reportType).toBe("overall");
     expect(result.periodAnchor).toBe("全部历史");
-    expect(result.rangeLabel).toBe("长期阅读资产");
+    expect(result.rangeLabel).toBe("长期阅读成果");
     expect(result.dataCompleteness).toBe("cached");
     expect(result.metrics[0]).toEqual({
       label: "累计时长",
@@ -189,7 +189,7 @@ describe("buildLifetimeReadingReportData", () => {
     expect(result.categories[0]?.label).toBe("历史");
     expect(result.authors[0]?.label).toBe("张玮");
     expect(result.authors[0]?.meta).toContain("2 本");
-    expect(result.keywords).toContain("长期资产");
+    expect(result.keywords).toContain("长期成果");
     expect(result.yearSeries.map((point) => point.label)).toEqual(["2022", "2023", "2024"]);
     expect(result.peakYear).toBe("2024 年");
   });

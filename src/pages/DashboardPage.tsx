@@ -19,6 +19,18 @@ import { buildReadingPersona, calculateTotalNotes, resolveReadingPersona } from 
 import { formatUnixDate } from "../lib/formatters";
 import { getPersonaVisual } from "../lib/persona-visuals";
 import {
+  buildDailyWorkbenchActions,
+  type DailyWorkbenchAction
+} from "./dashboard-workbench-actions";
+import {
+  buildDailyReadingCard,
+  type DailyReadingCard
+} from "./dashboard-daily-card";
+import {
+  buildDashboardLocalProgress,
+  type DashboardLocalProgress
+} from "./dashboard-local-progress";
+import {
   getCommandErrorMessage,
   getAiSettingsState,
   getLatestReadingStatsReview,
@@ -57,6 +69,7 @@ type DashboardPageProps = {
   onSync: () => void;
   onOpenBookshelf: () => void;
   onOpenNotes: () => void;
+  onOpenStats: () => void;
   onOpenReadingReview: () => void;
   onOpenDiscovery: () => void;
   onOpenShelfEntry: (entry: ShelfEntry) => void;
@@ -107,6 +120,7 @@ export function DashboardPage({
   onSync,
   onOpenBookshelf,
   onOpenNotes,
+  onOpenStats,
   onOpenReadingReview,
   onOpenDiscovery,
   onOpenShelfEntry,
@@ -222,6 +236,104 @@ export function DashboardPage({
       onOpenBookDecision
     ]
   );
+  const workbenchActions = useMemo(() => buildDailyWorkbenchActions(todayActions), [todayActions]);
+  const topDecision = bookDecisionSession?.response.decision.topCandidates[0];
+  const dailyReadingCard = useMemo(
+    () =>
+      buildDailyReadingCard({
+        reviewActions,
+        topDecisionTitle: topDecision?.title,
+        topDecisionReason:
+          topDecision?.prerequisiteAction || bookDecisionSession?.response.decision.nextActions[0],
+        reviewItemTitle: reviewItems[0]?.title,
+        reviewItemMeta: reviewItems[0]?.meta,
+        recentBookTitle: recentEntries[0]?.title,
+        recentBookMeta: recentEntries[0] ? formatRecentMeta(recentEntries[0]) : undefined,
+        candidateTitle: candidateItems[0]?.title,
+        candidateMeta: candidateItems[0]?.meta,
+        personaSnapshot: hasMonthlyStatsData ? overviewPersonaSnapshot : undefined,
+        hasCredential,
+        hasShelfData,
+        hasNotesData: notesBooks.length > 0
+      }),
+    [
+      reviewActions,
+      topDecision,
+      bookDecisionSession?.response.decision.nextActions,
+      reviewItems,
+      recentEntries,
+      candidateItems,
+      hasMonthlyStatsData,
+      overviewPersonaSnapshot,
+      hasCredential,
+      hasShelfData,
+      notesBooks.length
+    ]
+  );
+  const localProgress = useMemo(
+    () =>
+      buildDashboardLocalProgress({
+        readingStates,
+        reviewQueueCount: reviewItems.length,
+        candidateQueueCount: candidateItems.length,
+        notesBookCount: notesBooks.length
+      }),
+    [readingStates, reviewItems.length, candidateItems.length, notesBooks.length]
+  );
+
+  function handleDailyReadingCardClick() {
+    if (dailyReadingCard.tone === "stats") {
+      onOpenReadingReview();
+      return;
+    }
+
+    if (dailyReadingCard.tone === "decision") {
+      onOpenBookDecision();
+      return;
+    }
+
+    if (dailyReadingCard.tone === "review") {
+      reviewItems[0]?.onClick();
+      return;
+    }
+
+    if (dailyReadingCard.tone === "book") {
+      const latestBook = recentEntries[0];
+      if (latestBook) {
+        onOpenShelfEntry(latestBook);
+      } else {
+        onOpenBookshelf();
+      }
+      return;
+    }
+
+    if (dailyReadingCard.tone === "candidate") {
+      candidateItems[0]?.onClick();
+      return;
+    }
+
+    if (dailyReadingCard.tone === "persona") {
+      onOpenStats();
+      return;
+    }
+
+    if (!hasCredential) {
+      onOpenSettings();
+      return;
+    }
+
+    if (!hasShelfData) {
+      onOpenBookshelf();
+      return;
+    }
+
+    if (notesBooks.length === 0) {
+      onOpenNotes();
+      return;
+    }
+
+    onOpenBookshelf();
+  }
 
   useEffect(() => {
     let isMounted = true;
@@ -388,8 +500,8 @@ export function DashboardPage({
       <article className="hero-panel">
         <img src={heroReadingDashboard} alt="" />
         <div className="hero-copy">
-          <p className="section-kicker">阅读资产</p>
-          <h3>把微信读书里的阅读记录，沉淀成你的本地阅读资产。</h3>
+          <p className="section-kicker">阅读工作台</p>
+          <h3>把微信读书里的阅读记录，整理成你的本机阅读工作台。</h3>
           <p>
             {hasCredential
               ? "这里会优先读取本机缓存，帮助你继续阅读、复盘和整理输出。"
@@ -437,11 +549,11 @@ export function DashboardPage({
       <article className={`dashboard-status-strip ${hasCredential ? "is-connected" : "is-warning"}`}>
         {hasCredential ? <CheckCircle2 aria-hidden="true" size={18} /> : <KeyRound aria-hidden="true" size={18} />}
         <div>
-          <strong>{hasCredential ? "已连接本地阅读工作台" : "先连接微信读书，建立本地资产底座"}</strong>
+          <strong>{hasCredential ? "已连接本地阅读工作台" : "先连接微信读书，建立阅读数据基础"}</strong>
           <span>
             {hasCredential
-              ? "前端只调用本地 Tauri 命令，API Key 保存在本机安全存储中。"
-              : "API Key 会保存到本机安全存储，前端页面不会读取明文。"}
+              ? "仅通过本机服务读取，API Key 保存在本机安全存储中。"
+              : "API Key 会保存到本机安全存储，页面不会显示密钥。"}
           </span>
         </div>
         <button className="text-button" type="button" onClick={onOpenSettings}>
@@ -450,11 +562,16 @@ export function DashboardPage({
         </button>
       </article>
 
+      <DailyWorkbenchPanel
+        primaryAction={workbenchActions.primaryAction}
+        secondaryActions={workbenchActions.secondaryActions}
+      />
+
       <article className="today-actions-panel" aria-label="今日可做">
         <div className="activity-heading">
           <div>
             <p className="section-kicker">今日可做</p>
-            <h3>下一步阅读动作</h3>
+            <h3>辅助动作</h3>
           </div>
           <span>{todayActions.length} 项</span>
         </div>
@@ -477,6 +594,10 @@ export function DashboardPage({
           ))}
         </div>
       </article>
+
+      <DailyReadingCardPanel card={dailyReadingCard} onClick={handleDailyReadingCardClick} />
+
+      <DashboardLocalProgressPanel progress={localProgress} />
 
       <section className="dashboard-insight-grid" aria-label="近期阅读摘要">
         <article
@@ -598,7 +719,7 @@ export function DashboardPage({
               ))}
             </div>
           ) : (
-            <p>还没有本地候选或推荐缓存。</p>
+            <p>还没有候选书或推荐缓存。</p>
           )}
         </article>
       </section>
@@ -765,6 +886,12 @@ function buildReviewItems({
     .filter((state) => state.itemType === "book" && state.status === "reviewing")
     .sort((left, right) => Number(right.updatedAt) - Number(left.updatedAt));
   const localReviewIds = new Set(localReviewStates.map((state) => state.itemId));
+  const organizedBookIds = new Set(
+    readingStates
+      .filter((state) => state.itemType === "book" && state.status === "organized")
+      .map((state) => state.itemId)
+  );
+  const excludedReviewBookIds = new Set([...localReviewIds, ...organizedBookIds]);
   const localItems = localReviewStates.map((state) => {
     const notesBook = notesBookMap.get(state.itemId);
     const shelfEntry = shelfEntryMap.get(state.itemId);
@@ -798,7 +925,7 @@ function buildReviewItems({
       }
     };
   });
-  const notesItems = getNotebookReviewCandidates(notesBooks, localReviewIds).map((book) => ({
+  const notesItems = getNotebookReviewCandidates(notesBooks, excludedReviewBookIds).map((book) => ({
     id: `review-notes-${book.bookId}`,
     subjectKey: subjectKey("book", book.bookId),
     title: book.title,
@@ -926,7 +1053,7 @@ function buildTodayActions({
     return [
       {
         title: "先连接微信读书",
-        description: "保存 API Key 后，才能把书架、笔记和统计沉淀到本地。",
+        description: "保存 API Key 后，才能把书架、笔记和统计同步到本机。",
         tone: "gold",
         icon: <KeyRound aria-hidden="true" size={18} />,
         onClick: onOpenSettings
@@ -938,7 +1065,7 @@ function buildTodayActions({
     return [
       {
         title: "同步书架缓存",
-        description: "先把微信读书资产写入本地，再整理复盘、候选和导出内容。",
+        description: "先同步微信读书数据，再整理复盘、候选和导出内容。",
         tone: "green",
         icon: <RefreshCw aria-hidden="true" size={18} />,
         onClick: onOpenBookshelf
@@ -952,7 +1079,7 @@ function buildTodayActions({
   if (latestBook) {
     weightedActions.push({
       title: `继续看《${latestBook.title}》`,
-      description: `${formatRecentMeta(latestBook)} · 继续推进这本书的阅读资产`,
+      description: `${formatRecentMeta(latestBook)} · 继续推进这本书的阅读现场`,
       tone: "green",
       icon: <BookOpen aria-hidden="true" size={18} />,
       onClick: () => onOpenShelfEntry(latestBook),
@@ -1041,7 +1168,7 @@ function buildTodayActions({
   if (candidateItems.length === 0) {
     weightedActions.push({
       title: "去发现页保存候选",
-      description: "先沉淀本地候选，再用候选书架生成选书决策。",
+      description: "先保存候选书，再用候选书架生成选书决策。",
       tone: "muted",
       icon: <Compass aria-hidden="true" size={18} />,
       onClick: onOpenDiscovery,
@@ -1064,7 +1191,7 @@ function buildTodayActions({
     } else {
       weightedActions.push({
         title: "查看书籍复盘",
-        description: "查看已沉淀的复盘资产，或处理有笔记但还没整理的书。",
+        description: "查看已生成的阅读报告，或处理有笔记但还没整理的书。",
         tone: "gold",
         icon: <Sparkles aria-hidden="true" size={18} />,
         onClick: onOpenReadingReview,
@@ -1177,6 +1304,134 @@ function buildDashboardPersonaSnapshot(persona: ReadingPersona, stats?: ReadingS
 
 function categoryValue(category: NonNullable<ReadingStats["categories"]>[number]): number {
   return category.readingTimeSeconds ?? category.value ?? category.readingCount ?? 0;
+}
+
+function DailyReadingCardPanel({ card, onClick }: { card: DailyReadingCard; onClick: () => void }) {
+  return (
+    <article className={`daily-reading-card is-${card.tone}`} aria-label="今日卡片">
+      <div className="daily-reading-card-copy">
+        <p className="section-kicker">今日卡片</p>
+        <h3>{card.title}</h3>
+        <p>{card.body}</p>
+      </div>
+      <footer>
+        <span>{card.sourceLabel}</span>
+        <button type="button" onClick={onClick}>
+          {card.actionLabel}
+          <ArrowRight aria-hidden="true" size={16} />
+        </button>
+      </footer>
+    </article>
+  );
+}
+
+function DashboardLocalProgressPanel({ progress }: { progress: DashboardLocalProgress }) {
+  return (
+    <article className="dashboard-local-progress-card" aria-label="本地进展">
+      <div className="dashboard-local-progress-heading">
+        <div>
+          <p className="section-kicker">本地进展</p>
+          <h3>{progress.title}</h3>
+          <p>{progress.subtitle}</p>
+        </div>
+        <span>{progress.badge}</span>
+      </div>
+
+      <div className="dashboard-local-progress-grid" aria-label="本地进展指标">
+        {progress.metrics.map((metric) => (
+          <div className={`dashboard-local-progress-metric is-${metric.tone}`} key={metric.label}>
+            <strong>{metric.value}</strong>
+            <span>{metric.label}</span>
+            <small>{metric.detail}</small>
+          </div>
+        ))}
+      </div>
+
+      <div className={`dashboard-local-progress-highlight is-${progress.highlight.tone}`}>
+        <CheckCircle2 aria-hidden="true" size={18} />
+        <div>
+          <strong>{progress.highlight.title}</strong>
+          <p>{progress.highlight.body}</p>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function DailyWorkbenchPanel({
+  primaryAction,
+  secondaryActions
+}: {
+  primaryAction?: DailyWorkbenchAction;
+  secondaryActions: DailyWorkbenchAction[];
+}) {
+  return (
+    <article className="daily-workbench-panel" aria-label="今日阅读工作台">
+      <div className="daily-workbench-heading">
+        <div>
+          <p className="section-kicker">今日阅读工作台</p>
+          <h3>今日最值得做</h3>
+        </div>
+        <span>{primaryAction ? formatWorkbenchEffortLabel(primaryAction.effort) : "待确认"}</span>
+      </div>
+
+      {primaryAction ? (
+        <button
+          className={`daily-workbench-primary is-${primaryAction.tone}`}
+          type="button"
+          onClick={primaryAction.onClick}
+          title={`${primaryAction.title}：${primaryAction.reason}；${primaryAction.outcome}`}
+        >
+          <span className="daily-workbench-verb">{primaryAction.verb}</span>
+          <strong>{primaryAction.title}</strong>
+          <span className="daily-workbench-detail">
+            <b>为什么现在做</b>
+            <small>{primaryAction.reason}</small>
+          </span>
+          <span className="daily-workbench-detail">
+            <b>完成后得到</b>
+            <small>{primaryAction.outcome}</small>
+          </span>
+          <ArrowRight aria-hidden="true" size={18} />
+        </button>
+      ) : (
+        <div className="daily-workbench-empty">
+          <strong>暂时没有可处理动作</strong>
+          <span>同步书架或打开笔记后，这里会显示今天最值得做的一件事。</span>
+        </div>
+      )}
+
+      {secondaryActions.length > 0 ? (
+        <div className="daily-workbench-secondary" aria-label="备选动作">
+          {secondaryActions.map((action) => (
+            <button
+              className="daily-workbench-secondary-item"
+              type="button"
+              key={action.title}
+              onClick={action.onClick}
+              title={`${action.title}：${action.reason}`}
+            >
+              <span>{formatWorkbenchEffortLabel(action.effort)}</span>
+              <strong>{action.title}</strong>
+              <small>{action.outcome}</small>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+function formatWorkbenchEffortLabel(effort: DailyWorkbenchAction["effort"]): string {
+  if (effort === "deep") {
+    return "深度 30 分钟";
+  }
+
+  if (effort === "setup") {
+    return "准备 5 分钟";
+  }
+
+  return "轻量 5 分钟";
 }
 
 function MetricCard({ label, value, detail }: { label: string; value: string; detail: string }) {

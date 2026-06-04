@@ -40,6 +40,10 @@ import {
   type SourceVersionPair
 } from "../lib/source-version-matches";
 import type { ReadingItemState, ReadingItemStatus, ShelfEntry } from "../lib/types";
+import {
+  buildBookAssetStatus,
+  type BookAssetStatus
+} from "./book-asset-status";
 
 type BookDetailPageProps = {
   shelfEntry?: ShelfEntry;
@@ -62,7 +66,7 @@ type BookDetailPageProps = {
 
 const localBookStatusOptions: Array<{ status: ReadingItemStatus; label: string; description: string }> = [
   { status: "reviewing", label: "待复盘", description: "需要整理笔记" },
-  { status: "organized", label: "已整理", description: "已完成沉淀" }
+  { status: "organized", label: "已整理", description: "整理完成" }
 ];
 
 export function BookDetailPage({
@@ -423,7 +427,7 @@ function LocalVersionNotice({
       <div>
         <strong>可能存在本地版本</strong>
         <p>
-          本地书库中有《{book.title}》。这只是来源提示，不会合并微信读书笔记、本地划线、进度或 AI 缓存。
+          本地书库中有《{book.title}》。这只是来源提示，不会自动合并笔记、划线或进度。
         </p>
       </div>
       <div className="book-source-boundary-actions">
@@ -478,6 +482,14 @@ function BookActionPanel({
   const candidateCardDescription = isFinished
     ? "这本书已经读完，建议进入复盘或阅读指南，不再加入待读候选。"
     : "保存到候选书架，供跨书路线和选书决策使用";
+  const assetStatus = buildBookAssetStatus({
+    shelfEntry,
+    progress: detailResponse.progress,
+    readingState,
+    canOpenNotes: Boolean(onOpenNotes),
+    canOpenAiSummary: Boolean(onOpenAiSummary),
+    canOpenReadingRoute: Boolean(onOpenReadingRoute)
+  });
 
   return (
     <section className="book-action-panel" aria-label="本书管理">
@@ -494,6 +506,8 @@ function BookActionPanel({
           </span>
         ) : null}
       </div>
+
+      <BookAssetStatusCard status={assetStatus} />
 
       <div className="book-state-options" aria-label="本地整理状态">
         {localBookStatusOptions.map((option) => (
@@ -561,6 +575,31 @@ function BookActionPanel({
         />
       </div>
     </section>
+  );
+}
+
+function BookAssetStatusCard({ status }: { status: BookAssetStatus }) {
+  return (
+    <article className={`book-asset-status-card is-${status.tone}`} aria-label="本书整理状态">
+      <div className="book-asset-status-main">
+        <span className="book-asset-status-label">{status.label}</span>
+        <div>
+          <h4>{status.title}</h4>
+          <p>{status.body}</p>
+        </div>
+      </div>
+      <dl className="book-asset-status-meta">
+        <div>
+          <dt>当前进度</dt>
+          <dd>{status.progressLabel}</dd>
+        </div>
+        <div>
+          <dt>建议动作</dt>
+          <dd>{status.nextActionLabel}</dd>
+        </div>
+      </dl>
+      <p className="book-asset-status-next">{status.nextActionReason}</p>
+    </article>
   );
 }
 

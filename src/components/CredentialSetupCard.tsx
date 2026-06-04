@@ -18,7 +18,7 @@ export function CredentialSetupCard({
         <p className="section-kicker">首次绑定</p>
         <h3>{title}</h3>
         <p>{description}</p>
-        <p>API Key 只保存在当前设备，前端页面不会读取或展示明文。</p>
+        <p>API Key 只保存在当前设备，页面不会显示已保存密钥。</p>
       </div>
       <button className="secondary-action" type="button" onClick={onOpenSettings}>
         打开设置

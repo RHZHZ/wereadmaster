@@ -71,7 +71,7 @@ describe("credential setup onboarding reuse", () => {
 
     pages.forEach((markup) => {
       expect(markup).toContain("onboarding-local-vault");
-      expect(markup).toContain("前端页面不会读取或展示明文");
+      expect(markup).toContain("页面不会显示已保存密钥");
       expect(markup).toContain("打开设置");
     });
   });

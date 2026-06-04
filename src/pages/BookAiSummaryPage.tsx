@@ -34,14 +34,21 @@ import {
 import { copyTextToClipboard } from "../lib/clipboard";
 import {
   exportBookNotesSummaryMarkdown,
+  getReadingItemState,
   getAiReviewFeedback,
   getAiSettingsState,
   getCommandErrorMessage,
   getLatestBookNotesSummary,
   saveAiReviewFeedback,
-  summarizeBookNotes
+  summarizeBookNotes,
+  upsertReadingItemState
 } from "../lib/reading-api";
 import { formatAiResponseFormat, formatAiTimestamp } from "../lib/formatters";
+import {
+  formatArtifactCopiedMessage,
+  formatArtifactExportedMessage,
+  type ReadingArtifactKind
+} from "../lib/reading-artifacts";
 import type {
   AiSettingsState,
   BookAiRepresentativeQuote,
@@ -52,7 +59,8 @@ import type {
   ExportAiMarkdownResponse,
   NotebookBook,
   AiReviewFeedbackExport,
-  PreparedAssetUpdate
+  PreparedAssetUpdate,
+  ReadingItemState
 } from "../lib/types";
 
 type BookAiSummaryPageProps = {
@@ -90,9 +98,12 @@ export function BookAiSummaryPage({
   const [summaryResponse, setSummaryResponse] = useState<BookAiSummaryResponse>();
   const [isLoadingSettings, setIsLoadingSettings] = useState(false);
   const [isLoadingSummaryCache, setIsLoadingSummaryCache] = useState(false);
+  const [isLoadingReadingState, setIsLoadingReadingState] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [exportResult, setExportResult] = useState<ExportAiMarkdownResponse>();
   const [reviewFeedback, setReviewFeedback] = useState<AiReviewFeedbackState>(createEmptyReviewFeedback);
+  const [readingState, setReadingState] = useState<ReadingItemState>();
+  const [readingStateError, setReadingStateError] = useState<string>();
   const [error, setError] = useState<string>();
   const { showToast } = useToast();
   const displayBook = notes?.book && notes.book.bookId === targetBookId ? notes.book : book ?? notes?.book;
@@ -108,6 +119,7 @@ export function BookAiSummaryPage({
     status !== "generating";
   const statusMeta = statusMetaFromState(status, Boolean(summaryResponse?.errorMessage));
   const summaryInputHash = summaryResponse?.inputHash;
+  const isOrganized = readingState?.status === "organized";
 
   useEffect(() => {
     let isMounted = true;
@@ -151,6 +163,42 @@ export function BookAiSummaryPage({
       isMounted = false;
     };
   }, [targetBookId, notes?.exportableCount]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadReadingState() {
+      if (!targetBookId) {
+        setReadingState(undefined);
+        setReadingStateError(undefined);
+        return;
+      }
+
+      setIsLoadingReadingState(true);
+      setReadingStateError(undefined);
+
+      try {
+        const state = await getReadingItemState(targetBookId);
+        if (isMounted) {
+          setReadingState(state);
+        }
+      } catch (stateError) {
+        if (isMounted) {
+          setReadingStateError(getCommandErrorMessage(stateError));
+        }
+      } finally {
+        if (isMounted) {
+          setIsLoadingReadingState(false);
+        }
+      }
+    }
+
+    void loadReadingState();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [targetBookId]);
 
   useEffect(() => {
     let isMounted = true;
@@ -298,10 +346,43 @@ export function BookAiSummaryPage({
     try {
       const response = await exportBookNotesSummaryMarkdown(targetBookId, reviewFeedback);
       setExportResult(response);
+      showToast({
+        message: formatArtifactExportedMessage("book-review-markdown"),
+        tone: "success"
+      });
     } catch (exportError) {
       setError(getCommandErrorMessage(exportError));
     } finally {
       setIsExporting(false);
+    }
+  }
+
+  async function handleMarkOrganized() {
+    if (!targetBookId || !hasSummary) {
+      return;
+    }
+
+    setIsLoadingReadingState(true);
+    setReadingStateError(undefined);
+
+    try {
+      const nextState = await upsertReadingItemState({
+        itemId: targetBookId,
+        itemType: "book",
+        status: "organized",
+        title: displayBook?.title,
+        author: displayBook?.author,
+        cover: displayBook?.cover,
+        note: "用户已确认吸收本书复盘"
+      });
+      setReadingState(nextState);
+      showToast({ message: "已标记为「已整理」", tone: "success" });
+    } catch (stateError) {
+      const message = getCommandErrorMessage(stateError);
+      setReadingStateError(message);
+      showToast({ message, tone: "error" });
+    } finally {
+      setIsLoadingReadingState(false);
     }
   }
 
@@ -312,7 +393,10 @@ export function BookAiSummaryPage({
 
     try {
       await copyTextToClipboard(formatSummarySection(title, items));
-      showToast({ message: `已复制「${title}」`, tone: "success" });
+      showToast({
+        message: formatSummarySectionCopiedMessage(title),
+        tone: "success"
+      });
     } catch (copySectionError) {
       showToast({
         message: copySectionError instanceof Error ? copySectionError.message : "复制失败，请稍后重试。",
@@ -337,7 +421,10 @@ export function BookAiSummaryPage({
           summary
         })
       );
-      showToast({ message: "已复制完整复盘", tone: "success" });
+      showToast({
+        message: formatArtifactCopiedMessage("book-review-markdown"),
+        tone: "success"
+      });
     } catch (copyFullError) {
       showToast({
         message: copyFullError instanceof Error ? copyFullError.message : "复制失败，请稍后重试。",
@@ -385,7 +472,10 @@ export function BookAiSummaryPage({
 
     try {
       await copyTextToClipboard(formatActionChecklist(items, reviewFeedback.actionItems));
-      showToast({ message: "已复制行动清单", tone: "success" });
+      showToast({
+        message: formatArtifactCopiedMessage("action-checklist"),
+        tone: "success"
+      });
     } catch (copyActionChecklistError) {
       showToast({
         message:
@@ -411,9 +501,7 @@ export function BookAiSummaryPage({
         <div>
           <p className="section-kicker">本地 AI 复盘</p>
           <h3>{displayBook?.title ? `《${displayBook.title}》AI 复盘` : "AI 复盘"}</h3>
-          <p>
-            优先读取本地持久化缓存；缓存不存在或重新生成时，才会发送当前书的划线和想法。
-          </p>
+          <p>读取已保存复盘；点击生成时使用当前书笔记。</p>
           {displayBook?.author ? <small>{displayBook.author}</small> : null}
         </div>
         <div className="ai-summary-hero-side">
@@ -476,23 +564,30 @@ export function BookAiSummaryPage({
       <section className="ai-summary-boundary-strip" aria-label="AI 复盘数据边界">
         <Database aria-hidden="true" size={18} />
         <div>
-          <strong>{summaryResponse ? sourceLabelFromResponse(summaryResponse.source) : "待生成：不会自动发送笔记内容"}</strong>
+          <strong>{summaryResponse ? sourceLabelFromResponse(summaryResponse.source) : "待生成"}</strong>
           <p>
             {summaryResponse
-              ? "当前展示内容来自本地缓存或本次手动生成结果；重新生成前不会再次读取并发送笔记。"
-              : "没有本地缓存时，只有点击“生成复盘”才会读取并发送当前书的划线和想法。"}
+              ? "当前展示内容来自本机缓存或本次手动生成结果。"
+              : "点击“生成复盘”时使用当前书笔记。"}
           </p>
         </div>
       </section>
+
+      {hasSummary ? (
+        <ReviewCompletionStrip
+          isOrganized={isOrganized}
+          isLoading={isLoadingReadingState}
+          error={readingStateError}
+          onMarkOrganized={() => void handleMarkOrganized()}
+        />
+      ) : null}
 
       {preparedUpdate ? (
         <section className="ai-summary-boundary-strip ai-summary-boundary-strip--prepared" aria-label="准备更新上下文">
           <RefreshCw aria-hidden="true" size={18} />
           <div>
             <strong>准备更新上一版书籍复盘</strong>
-            <p>
-              { "基于上一阶段书籍复盘更新"} · Prompt {preparedUpdate.promptVersion}
-            </p>
+            <p>基于上一阶段书籍复盘更新。</p>
           </div>
         </section>
       ) : null}
@@ -502,7 +597,7 @@ export function BookAiSummaryPage({
           <Settings aria-hidden="true" size={20} />
           <div>
             <strong>需要先配置 AI Provider</strong>
-            <p>AI Key 只保存在本机安全存储中，前端不会读取或显示已保存的 Key。</p>
+            <p>AI Key 保存在本机安全存储中，页面不会显示已保存密钥。</p>
           </div>
           <button className="secondary-action" type="button" onClick={onOpenSettings}>
             去设置
@@ -530,7 +625,12 @@ export function BookAiSummaryPage({
       {exportResult ? (
         <div className="status-message status-message--neutral">
           <Download aria-hidden="true" size={18} />
-          <span>已导出 {exportResult.fileName}，路径：{exportResult.path}</span>
+          <span>
+            {formatArtifactExportedMessage("book-review-markdown", {
+              fileName: exportResult.fileName,
+              path: exportResult.path
+            })}
+          </span>
         </div>
       ) : null}
 
@@ -628,7 +728,7 @@ export function BookAiSummaryPage({
       ) : (
         <div className="ai-summary-placeholder">
           <Sparkles aria-hidden="true" size={20} />
-          <p>这里不会自动发送笔记内容；没有本地缓存时，只有点击“生成复盘”才会读取并发送当前书笔记。</p>
+          <p>点击“生成复盘”后，会使用当前书笔记生成阅读报告。</p>
         </div>
       )}
 
@@ -649,7 +749,6 @@ export function BookAiSummaryPage({
 
       <div className="ai-summary-meta">
         <span>生成时间：{formatAiTimestamp(summary?.generatedAt) || "尚未生成"}</span>
-        <span>Prompt：{summary?.promptVersion ?? "book-notes-summary-v3"}</span>
         {summary?.responseFormat ? <span>{formatAiResponseFormat(summary.responseFormat)}</span> : null}
         {summaryResponse?.providerModel ? <span>模型：{summaryResponse.providerModel}</span> : null}
         {summaryResponse?.cachedUpdatedAt ? (
@@ -684,6 +783,42 @@ export function BookAiSummaryPage({
       // 后端不可用时仍保留 localStorage 兜底，避免用户刚输入的反馈丢失。
     }
   }
+}
+
+function ReviewCompletionStrip({
+  isOrganized,
+  isLoading,
+  error,
+  onMarkOrganized
+}: {
+  isOrganized: boolean;
+  isLoading: boolean;
+  error?: string;
+  onMarkOrganized: () => void;
+}) {
+  return (
+    <section className={`review-completion-strip${isOrganized ? " is-organized" : ""}`} aria-label="复盘整理状态">
+      <div className="review-completion-icon">
+        {isOrganized ? <CheckCircle2 aria-hidden="true" size={20} /> : <ListChecks aria-hidden="true" size={20} />}
+      </div>
+      <div>
+        <p className="section-kicker">整理状态</p>
+        <h4>{isOrganized ? "已整理" : "待整理"}</h4>
+        <p>
+          {isOrganized
+            ? "这本书的复盘已经被你确认吸收，后续总览会降低它的复盘提醒。"
+            : "这份复盘已经生成；确认吸收后，可以手动标记为已整理。"}
+        </p>
+        {error ? <small>{error}</small> : null}
+      </div>
+      {!isOrganized ? (
+        <button className="secondary-action" type="button" onClick={onMarkOrganized} disabled={isLoading}>
+          {isLoading ? <Loader2 aria-hidden="true" size={18} className="spin" /> : <CheckCircle2 aria-hidden="true" size={18} />}
+          {isLoading ? "标记中" : "标记已整理"}
+        </button>
+      ) : null}
+    </section>
+  );
 }
 
 function SummaryList({
@@ -809,6 +944,19 @@ function ReflectionQuestionChecklist({
 
 function formatSummarySection(title: string, items: string[]): string {
   return [`## ${title}`, ...items.map((item, index) => `${index + 1}. ${item}`)].join("\n");
+}
+
+function formatSummarySectionCopiedMessage(title: string): string {
+  const artifactKind = artifactKindFromSummarySectionTitle(title);
+  return artifactKind ? formatArtifactCopiedMessage(artifactKind) : `已复制「${title}」`;
+}
+
+function artifactKindFromSummarySectionTitle(title: string): ReadingArtifactKind | undefined {
+  if (title === "复盘问题") {
+    return "reflection-questions";
+  }
+
+  return undefined;
 }
 
 function formatActionChecklist(items: string[], feedbackByItemId: AiActionFeedbackByItemId): string {

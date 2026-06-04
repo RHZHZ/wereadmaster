@@ -66,6 +66,7 @@ import type {
   NotebookBook,
   ReadingStatsMode
 } from "../lib/types";
+import { buildBookReviewAssetOverview, type BookReviewAssetOverview } from "./book-review-asset-overview";
 import { BookReviewExportDialog, filterBookAiSummaryItems } from "./BookReviewExportDialog";
 import { ReadingRouteResultPanel } from "./reading-route/ReadingRouteResultPanel";
 import { buildGuideActionText, buildGuideDetailSections } from "./reading-route/guide-prescription";
@@ -327,7 +328,10 @@ export function ReadingHubPage({
   const reviewCandidates = getReviewCandidates(notesOverview?.books ?? [], summaryItems);
   const latestSummaryTime = getLatestSummaryTime(summaryItems);
   const latestAssetTime = getLatestAssetTime(assetSummaries);
-  const summariesWithFeedbackCount = summaryItems.filter((item) => item.feedbackCount > 0).length;
+  const bookReviewAssetOverview = buildBookReviewAssetOverview({
+    summaries: summaryItems,
+    candidates: reviewCandidates
+  });
 
   function handleQueryKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
     if (event.nativeEvent.isComposing) {
@@ -351,6 +355,26 @@ export function ReadingHubPage({
       bookmarkCount: 0,
       totalNoteCount: 0
     });
+  }
+
+  function handleOpenBookReviewOverviewAction() {
+    if (bookReviewAssetOverview.nextActionTarget === "candidate") {
+      const candidate = reviewCandidates.find((book) => book.bookId === bookReviewAssetOverview.nextActionBookId);
+      if (candidate) {
+        onOpenBookSummary(candidate);
+      }
+      return;
+    }
+
+    if (bookReviewAssetOverview.nextActionTarget === "summary") {
+      const summary = summaryItems.find((item) => item.bookId === bookReviewAssetOverview.nextActionBookId);
+      if (summary) {
+        handleOpenSummary(summary);
+      }
+      return;
+    }
+
+    onOpenNotes();
   }
 
   const workflowTemplateActions: Record<ReadingWorkflowTemplateTarget, () => void> = {
@@ -401,8 +425,8 @@ export function ReadingHubPage({
           <div className="reading-hub-books-toolbar">
             <div>
               <p className="section-kicker">书籍复盘</p>
-              <h3>把单本笔记整理成复盘资产</h3>
-              <p>左侧查看已沉淀复盘，右侧选择有笔记但还没整理的书；生成仍需手动确认。</p>
+              <h3>把单本笔记整理成阅读报告</h3>
+              <p>左侧查看已生成报告，右侧选择还没整理的书。</p>
             </div>
             <div className="reading-hub-toolbar-actions">
               <label className="search-field">
@@ -458,24 +482,23 @@ export function ReadingHubPage({
               <Loader2 aria-hidden="true" size={26} className="spin" />
               <div>
                 <h3>正在读取本地笔记索引</h3>
-                <p>用于判断哪些书值得生成复盘，不会自动调用 AI。</p>
+                <p>用于判断哪些书适合生成复盘。</p>
               </div>
             </section>
           ) : null}
 
-          <section className="reading-hub-status-strip" aria-label="书籍复盘状态">
-            <StatusPill label="已生成" value={`${summaryItems.length} 本`} />
-            <StatusPill label="待生成" value={`${reviewCandidates.length} 本`} />
-            <StatusPill label="有反馈" value={`${summariesWithFeedbackCount} 本`} />
-            <StatusPill label="最近更新" value={latestSummaryTime ? formatAiTimestamp(latestSummaryTime) : "暂无"} />
-          </section>
+          <BookReviewAssetOverviewPanel
+            overview={bookReviewAssetOverview}
+            latestUpdatedText={latestSummaryTime ? formatAiTimestamp(latestSummaryTime) : "暂无"}
+            onOpenNext={handleOpenBookReviewOverviewAction}
+          />
 
           <div className="reading-hub-management-layout">
             <section className="reading-hub-generated-panel" aria-label="已生成复盘">
               <div className="reading-hub-section-heading">
                 <div>
                   <p className="section-kicker">已生成</p>
-                  <h3>已沉淀的复盘资产</h3>
+                  <h3>已生成的阅读报告</h3>
                 </div>
                 <span>{filteredItems.length} 本</span>
               </div>
@@ -485,7 +508,7 @@ export function ReadingHubPage({
                   <Loader2 aria-hidden="true" size={26} className="spin" />
                   <div>
                     <h3>正在读取本地复盘缓存</h3>
-                    <p>这里只展示已经手动生成过复盘的书，不会自动调用 AI。</p>
+                    <p>仅展示已生成复盘。</p>
                   </div>
                 </section>
               ) : null}
@@ -494,7 +517,7 @@ export function ReadingHubPage({
                 <section className="empty-inline stats-empty" aria-label="暂无书籍复盘">
                   <Database aria-hidden="true" size={28} />
                   <h3>还没有书籍复盘</h3>
-                  <p>先去笔记页打开一本书并手动生成复盘，这里才会出现可查看和导出的资产。</p>
+                  <p>先去笔记页打开一本书并手动生成复盘，这里才会出现可查看和导出的结果。</p>
                   <button className="secondary-action" type="button" onClick={onOpenNotes}>
                     去笔记中心
                   </button>
@@ -589,12 +612,12 @@ export function ReadingHubPage({
       ) : null}
 
       {activeTab === "guides" && !selectedAssetBookId ? (
-        <section className="reading-hub-books" aria-label="阅读指南资产列表">
+        <section className="reading-hub-books" aria-label="阅读指南成果列表">
           <div className="reading-hub-books-toolbar">
             <div>
               <p className="section-kicker">阅读指南</p>
-              <h3>按书聚合的阅读资产</h3>
-              <p>这里按书整理已经沉淀下来的指南、路线和复盘资产，方便回看、更新和继续导出。</p>
+              <h3>按书聚合的阅读成果</h3>
+              <p>按书归档指南、路线和复盘，方便回看、更新和导出。</p>
             </div>
             <div className="reading-hub-toolbar-actions">
               <label className="search-field">
@@ -603,7 +626,7 @@ export function ReadingHubPage({
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
                   onKeyDown={handleQueryKeyDown}
-                  placeholder="按书名、作者或阶段筛选阅读资产"
+                  placeholder="按书名、作者或阶段筛选阅读成果"
                 />
                 {query ? (
                   <button className="text-button bookshelf-search-clear" type="button" onClick={() => setQuery("")}>
@@ -624,8 +647,8 @@ export function ReadingHubPage({
             </div>
           ) : null}
 
-          <section className="reading-hub-status-strip" aria-label="阅读指南资产状态">
-            <StatusPill label="资产书籍" value={`${assetSummaries.length} 本`} />
+          <section className="reading-hub-status-strip" aria-label="阅读指南成果状态">
+            <StatusPill label="书籍" value={`${assetSummaries.length} 本`} />
             <StatusPill label="本书指南" value={`${assetSummaries.filter((item) => item.hasSingleGuide).length} 本`} />
             <StatusPill
               label="跨书路线"
@@ -637,35 +660,35 @@ export function ReadingHubPage({
           <section className="reading-hub-generated-panel" aria-label="已生成阅读指南">
             <div className="reading-hub-section-heading">
               <div>
-                <p className="section-kicker">资产列表</p>
-                <h3>阅读指南与复盘资产</h3>
+                <p className="section-kicker">成果列表</p>
+                <h3>阅读指南与报告</h3>
               </div>
               <span>{filteredAssetSummaries.length} 本</span>
             </div>
 
             {isLoadingAssets ? (
-              <section className="book-detail-loading" aria-label="正在读取阅读资产缓存">
+              <section className="book-detail-loading" aria-label="正在读取阅读成果缓存">
                 <Loader2 aria-hidden="true" size={26} className="spin" />
                 <div>
-                <h3>正在读取本地阅读资产</h3>
-                  <p>只聚合已经生成的本地缓存，不读取远端笔记，也不会自动调用 AI。</p>
+                <h3>正在读取阅读成果</h3>
+                  <p>读取已保存的 AI 结果。</p>
                 </div>
               </section>
             ) : null}
 
             {!isLoadingAssets && assetSummaries.length === 0 ? (
-              <section className="empty-inline stats-empty" aria-label="暂无阅读指南资产">
+              <section className="empty-inline stats-empty" aria-label="暂无阅读指南成果">
                 <Waypoints aria-hidden="true" size={28} />
-                <h3>还没有沉淀阅读资产</h3>
+                <h3>还没有阅读成果</h3>
                 <p>从书籍详情生成本书阅读指南、跨书路线或书籍复盘后，这里会按书归档展示。</p>
               </section>
             ) : null}
 
             {!isLoadingAssets && assetSummaries.length > 0 && filteredAssetSummaries.length === 0 ? (
-              <section className="empty-inline stats-empty" aria-label="筛选无阅读资产">
+              <section className="empty-inline stats-empty" aria-label="筛选无阅读成果">
                 <SearchX aria-hidden="true" size={28} />
-                <h3>没有匹配的阅读资产</h3>
-                <p>搜索只过滤当前资产列表，不影响已生成缓存。</p>
+                <h3>没有匹配的阅读成果</h3>
+                <p>搜索只过滤当前成果列表，不影响已生成缓存。</p>
               </section>
             ) : null}
 
@@ -729,6 +752,53 @@ function StatusPill({ label, value }: { label: string; value: string }) {
   );
 }
 
+function BookReviewAssetOverviewPanel({
+  overview,
+  latestUpdatedText,
+  onOpenNext
+}: {
+  overview: BookReviewAssetOverview;
+  latestUpdatedText: string;
+  onOpenNext: () => void;
+}) {
+  return (
+    <section
+      className={`book-review-asset-overview is-${overview.tone}`}
+      aria-label="复盘进度"
+    >
+      <div className="book-review-asset-overview-copy">
+        <p className="section-kicker">{overview.label}</p>
+        <h3>{overview.title}</h3>
+        <p>{overview.body}</p>
+        <p className="book-review-asset-overview-meta">最近更新：{latestUpdatedText}</p>
+      </div>
+      <div className="book-review-asset-overview-metrics" aria-label="复盘指标">
+        <span>
+          <small>已生成</small>
+          <strong>{overview.generatedCount} 本</strong>
+        </span>
+        <span>
+          <small>待整理</small>
+          <strong>{overview.pendingCount} 本</strong>
+        </span>
+        <span>
+          <small>有反馈</small>
+          <strong>{overview.feedbackCount} 本</strong>
+        </span>
+      </div>
+      <div className="book-review-asset-overview-next" aria-label="复盘下一步">
+        <span>{overview.nextActionLabel}</span>
+        <strong>{overview.nextActionTitle}</strong>
+        <p>{overview.nextActionReason}</p>
+        <button className="secondary-action" type="button" onClick={onOpenNext}>
+          {overview.nextActionButtonLabel}
+          <ChevronRight aria-hidden="true" size={16} />
+        </button>
+      </div>
+    </section>
+  );
+}
+
 function ReadingWorkflowTemplateStrip({
   actions
 }: {
@@ -739,9 +809,9 @@ function ReadingWorkflowTemplateStrip({
       <div className="reading-workflow-template-heading">
         <div>
           <p className="section-kicker">工作流模板</p>
-          <h3>把阅读数据变成可继续使用的资产</h3>
+          <h3>把阅读数据变成可继续使用的成果</h3>
         </div>
-        <p>模板只连接现有页面和已确认输入范围，不会自动同步、自动生成或打开通用聊天。</p>
+        <p>模板连接现有页面和已确认输入范围。</p>
       </div>
       <div className="reading-workflow-template-grid">
         {readingWorkflowTemplates.map((template) => (
@@ -876,15 +946,15 @@ export function AIAssetDetailView({
   const routeCount = (detail?.mainCrossRoutes.length ?? 0) + (detail?.participantCrossRoutes.length ?? 0);
 
   return (
-    <section className="reading-hub-books ai-asset-detail" aria-label="书籍阅读资产详情">
+    <section className="reading-hub-books ai-asset-detail" aria-label="书籍阅读成果详情">
       <div className="ai-asset-detail-hero">
         <button className="text-button" type="button" onClick={onBack}>
           <ChevronLeft aria-hidden="true" size={16} />
           返回阅读指南库
         </button>
         <div>
-          <p className="section-kicker">书籍资产</p>
-          <h3>{detail?.title ?? "正在读取资产详情"}</h3>
+          <p className="section-kicker">书籍成果</p>
+          <h3>{detail?.title ?? "正在读取成果详情"}</h3>
           <p>
             {detail?.author || "未知作者"} ·{" "}
             {detail?.readingStageLabel ? `${detail.readingStageLabel}阶段` : "暂无阶段"} ·{" "}
@@ -895,32 +965,32 @@ export function AIAssetDetailView({
           <div className="ai-asset-detail-refresh">
             <strong>建议更新</strong>
             <span>{refreshReasonLabel(detail.refreshReason)}</span>
-            <p>生成新版本时会优先参考当前阶段、本地笔记变化和最近阅读状态，不会静默读取未缓存远端内容。</p>
+            <p>生成新版本时会参考当前阶段、本地笔记变化和最近阅读状态。</p>
           </div>
         ) : null}
       </div>
 
       {isLoading ? (
-        <section className="book-detail-loading" aria-label="正在读取书籍资产详情">
+        <section className="book-detail-loading" aria-label="正在读取书籍成果详情">
           <Loader2 aria-hidden="true" size={26} className="spin" />
           <div>
-            <h3>正在读取资产详情</h3>
-            <p>只读取本地 AI 缓存引用，不触发生成。</p>
+            <h3>正在读取成果详情</h3>
+            <p>读取已保存的 AI 结果。</p>
           </div>
         </section>
       ) : null}
 
       {!isLoading && !detail ? (
-        <section className="empty-inline stats-empty" aria-label="没有书籍资产详情">
+        <section className="empty-inline stats-empty" aria-label="没有书籍成果详情">
           <Database aria-hidden="true" size={28} />
-          <h3>没有可展示的资产详情</h3>
+          <h3>没有可展示的成果详情</h3>
           <p>当前书还没有本书指南、跨书路线或书籍复盘缓存。</p>
         </section>
       ) : null}
 
       {detail ? (
         <>
-          <div className="ai-asset-detail-tabs" role="tablist" aria-label="资产详情分类">
+          <div className="ai-asset-detail-tabs" role="tablist" aria-label="成果详情分类">
             <AssetTabButton
               id="guide"
               label="阅读指南"
@@ -958,7 +1028,7 @@ export function AIAssetDetailView({
           ) : null}
 
           {activeTab === "routes" ? (
-            <section className="ai-asset-detail-section" aria-label="跨书路线资产">
+            <section className="ai-asset-detail-section" aria-label="跨书路线">
               <AssetRefSection
                 title="以本书为起点的跨书路线"
                 emptyTitle="还没有主路线"
@@ -1091,12 +1161,11 @@ function AssetRefSection({
                   </button>
                 </div>
               </div>
-              <div className="ai-asset-ref-status" aria-label="资产版本状态">
+              <div className="ai-asset-ref-status" aria-label="版本状态">
                 <span>{formatAiTimestamp(item.generatedAt) || "未知生成时间"}</span>
                 <span>{assetRefScopeLabel(item)}</span>
                 {item.providerModel ? <span>{item.providerModel}</span> : null}
               </div>
-              <p className="ai-asset-ref-technical">技术信息：Prompt {item.promptVersion}</p>
             </article>
           ))}
         </div>
@@ -1233,7 +1302,6 @@ export function AssetVersionHistorySection({
                     <span>阶段：{item.readingStageLabel || "未知阶段"}</span>
                     <span>{typeof item.progress === "number" ? `进度 ${item.progress}%` : "无进度缓存"}</span>
                     <span>触发：{refreshReasonLabel(item.refreshReason)}</span>
-                    <span>Prompt：{item.promptVersion}</span>
                     <span>{historySourceLabel(item.source)}</span>
                     {item.previousVersion ? <span>上一版：{item.previousVersion.title || "未命名版本"}</span> : null}
                   </div>
@@ -1411,17 +1479,17 @@ export function AIAssetVersionDetailView({
   }
 
   return (
-    <section className="reading-hub-books ai-asset-detail" aria-label="AI 资产版本详情">
+    <section className="reading-hub-books ai-asset-detail" aria-label="AI 结果版本详情">
       <div className="ai-asset-detail-hero">
         <button className="text-button" type="button" onClick={onBack}>
           <ChevronLeft aria-hidden="true" size={16} />
-          返回书籍资产详情
+          返回书籍成果详情
         </button>
         <div>
-          <p className="section-kicker">资产版本</p>
+          <p className="section-kicker">结果版本</p>
           <h3>{detail ? assetVersionStableTitle(detail, assetBook) : "正在读取完整内容"}</h3>
           <p>
-            {detail ? assetFeatureLabel(detail.feature) : "AI 资产"} ·{" "}
+            {detail ? assetFeatureLabel(detail.feature) : "AI 结果"} ·{" "}
             {detail?.readingStageLabel ? `${detail.readingStageLabel}阶段` : "暂无阶段"} ·{" "}
             {typeof detail?.progress === "number" ? `进度 ${detail.progress}%` : "无进度缓存"}
           </p>
@@ -1463,7 +1531,7 @@ export function AIAssetVersionDetailView({
       </div>
 
       {isLoading ? (
-        <section className="book-detail-loading" aria-label="正在读取 AI 资产版本详情">
+        <section className="book-detail-loading" aria-label="正在读取 AI 结果版本详情">
           <Loader2 aria-hidden="true" size={26} className="spin" />
           <div>
             <h3>正在读取完整版本内容</h3>
@@ -1649,7 +1717,7 @@ function AIAssetUpdateDialog({
 
           <section className="ai-asset-update-boundary" aria-label="更新边界">
             <strong>边界</strong>
-            <p>不会在这里静默读取未缓存远端笔记，也不会自动发送完整反馈明细。跳转后仍需手动确认生成。</p>
+            <p>跳转后可确认输入范围，并手动生成新版本。</p>
           </section>
         </div>
 
@@ -1806,7 +1874,6 @@ function BookReviewVersionContent({
 
       <div className="ai-summary-meta">
         <span>生成时间：{formatAiTimestamp(summary.generatedAt) || "尚未生成"}</span>
-        <span>Prompt：{summary.promptVersion}</span>
         {summary.responseFormat ? <span>{formatAiResponseFormat(summary.responseFormat)}</span> : null}
         {providerModel ? <span>模型：{providerModel}</span> : null}
         {updatedAt ? <span>缓存更新：{formatAiTimestamp(updatedAt)}</span> : null}

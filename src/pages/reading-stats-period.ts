@@ -155,7 +155,7 @@ export function formatReadingStatsPeriodTitle(
   variant: ReadingStatsTitleVariant
 ): string {
   if (period.mode === "overall") {
-    return variant === "review" ? "长期阅读画像" : "长期阅读资产";
+    return variant === "review" ? "长期阅读画像" : "长期阅读成果";
   }
 
   const dateParts = getPeriodDateParts(period.baseTime);

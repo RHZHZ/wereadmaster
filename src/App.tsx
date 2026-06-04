@@ -1129,7 +1129,7 @@ export function App() {
             </div>
             <div className="brand-copy">
               <p className="brand-kicker">WxReadMaster</p>
-              <h1>阅读资产库</h1>
+              <h1>阅读工作台</h1>
             </div>
           </div>
           <button
@@ -1363,6 +1363,7 @@ export function App() {
             onSync={handleSyncShelf}
             onOpenBookshelf={() => handleNavigate("shelf")}
             onOpenNotes={() => handleNavigate("notes")}
+            onOpenStats={() => handleNavigate("stats")}
             onOpenReadingReview={() => handleOpenReadingReviewTab("report")}
             onOpenDiscovery={() => handleNavigate("discovery")}
             onOpenShelfEntry={handleOpenBookDetail}
