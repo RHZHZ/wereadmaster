@@ -14,7 +14,10 @@ use crate::{
     db::{self, DATABASE_FILE_NAME},
     errors::AppError,
     repositories::sync_state::{SyncStateRecord, SyncStateRepository},
-    services::credentials::{CredentialService, CredentialServiceError, CredentialStatus},
+    services::{
+        credentials::{CredentialService, CredentialServiceError, CredentialStatus},
+        weread_gateway::normalize_weread_proxy_url,
+    },
 };
 
 const CACHE_TABLES: &[&str] = &[
@@ -66,6 +69,7 @@ pub struct SettingsStateResponse {
     pub sync_states: Vec<SyncStateRecord>,
     pub local_data: LocalDataState,
     pub export_data: ExportDataState,
+    pub network: NetworkState,
     pub app_version: String,
     pub supports_native_updater: bool,
 }
@@ -97,6 +101,13 @@ pub struct ExportDataState {
     pub export_dir: String,
     pub default_export_dir: String,
     pub is_custom_export_dir: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkState {
+    pub weread_proxy_url: Option<String>,
+    pub is_custom_weread_proxy: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -192,6 +203,18 @@ pub struct ResetExportDirectoryResponse {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SaveWereadProxyResponse {
+    pub state: SettingsStateResponse,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResetWereadProxyResponse {
+    pub state: SettingsStateResponse,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RemoteAppUpdateManifestResponse {
     pub version: String,
     pub notes: Option<String>,
@@ -255,6 +278,7 @@ impl SettingsService {
             sync_states,
             local_data: self.local_data_state(&connection)?,
             export_data: self.export_data_state()?,
+            network: self.network_state()?,
             app_version: env!("CARGO_PKG_VERSION").to_string(),
             supports_native_updater: cfg!(desktop),
         })
@@ -573,6 +597,31 @@ impl SettingsService {
         })
     }
 
+    pub fn save_weread_proxy_url(
+        &self,
+        proxy_url: String,
+    ) -> Result<SaveWereadProxyResponse, AppError> {
+        let proxy_url = normalize_weread_proxy_url(&proxy_url)?.ok_or_else(|| {
+            AppError::InvalidPayload("请先输入微信读书网络代理地址。".to_string())
+        })?;
+        let default_data_dir = db::default_data_dir(&self.app).map_err(AppError::Storage)?;
+        db::write_weread_proxy_url_config(&default_data_dir, Some(&proxy_url))
+            .map_err(AppError::Storage)?;
+
+        Ok(SaveWereadProxyResponse {
+            state: self.settings_state()?,
+        })
+    }
+
+    pub fn reset_weread_proxy_url(&self) -> Result<ResetWereadProxyResponse, AppError> {
+        let default_data_dir = db::default_data_dir(&self.app).map_err(AppError::Storage)?;
+        db::write_weread_proxy_url_config(&default_data_dir, None).map_err(AppError::Storage)?;
+
+        Ok(ResetWereadProxyResponse {
+            state: self.settings_state()?,
+        })
+    }
+
     pub async fn remote_app_update_manifest() -> Result<RemoteAppUpdateManifestResponse, AppError> {
         let response = HttpClient::new()
             .get(APP_UPDATE_RELEASE_FEED_URL)
@@ -660,6 +709,17 @@ impl SettingsService {
             build_export_data_state(&default_data_dir, custom_export_dir.as_deref())
                 .with_paths(export_dir, default_export_dir),
         )
+    }
+
+    fn network_state(&self) -> Result<NetworkState, AppError> {
+        let config_dir = db::default_data_dir(&self.app).map_err(AppError::Storage)?;
+        let weread_proxy_url =
+            db::read_weread_proxy_url_config(&config_dir).map_err(AppError::Storage)?;
+
+        Ok(NetworkState {
+            is_custom_weread_proxy: weread_proxy_url.is_some(),
+            weread_proxy_url,
+        })
     }
 
     fn open_connection(&self) -> Result<rusqlite::Connection, AppError> {
@@ -1206,6 +1266,23 @@ fn serialize_diagnostics_markdown(state: &SettingsStateResponse, exported_at: &s
     );
     let _ = writeln!(markdown);
 
+    let _ = writeln!(markdown, "## 网络设置");
+    let _ = writeln!(
+        markdown,
+        "- 微信读书代理：{}",
+        if state.network.is_custom_weread_proxy {
+            "已启用"
+        } else {
+            "默认网络"
+        }
+    );
+    let _ = writeln!(
+        markdown,
+        "- 代理地址：{}",
+        optional_diagnostic_text(state.network.weread_proxy_url.as_deref())
+    );
+    let _ = writeln!(markdown);
+
     let _ = writeln!(markdown, "## 本地数据");
     let _ = writeln!(
         markdown,
@@ -1363,7 +1440,7 @@ mod tests {
         sanitize_png_file_name, select_custom_data_directory, serialize_diagnostics_markdown,
         table_count, validate_backup_manifest, validate_custom_data_directory,
         write_data_operation_state, DataOperationState, ExportDataState, LocalDataState,
-        SettingsStateResponse, TableCountRecord,
+        NetworkState, SettingsStateResponse, TableCountRecord,
     };
 
     #[test]
@@ -1630,6 +1707,10 @@ mod tests {
                 default_export_dir: "C:/Users/RHZ/AppData/Roaming/wxreadmaster/exports".to_string(),
                 is_custom_export_dir: true,
             },
+            network: NetworkState {
+                weread_proxy_url: Some("http://127.0.0.1:7890".to_string()),
+                is_custom_weread_proxy: true,
+            },
             app_version: "0.1.0".to_string(),
             supports_native_updater: true,
         };
@@ -1641,6 +1722,8 @@ mod tests {
         assert!(markdown.contains("app.db"));
         assert!(markdown.contains("最近迁移/恢复错误"));
         assert!(markdown.contains("目标目录不可写"));
+        assert!(markdown.contains("微信读书代理：已启用"));
+        assert!(markdown.contains("http://127.0.0.1:7890"));
         assert!(markdown.contains("- shelf_entries：2"));
         assert!(markdown.contains("- shelf：success"));
         assert!(markdown.contains("只包含本地状态摘要，不包含 API Key 明文"));

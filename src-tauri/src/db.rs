@@ -17,6 +17,7 @@ const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
 struct DataDirectoryConfig {
     custom_data_dir: Option<String>,
     custom_export_dir: Option<String>,
+    weread_proxy_url: Option<String>,
 }
 
 pub fn default_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -99,6 +100,24 @@ pub fn write_custom_export_directory_config(
     write_data_directory_config(config_dir, config)
 }
 
+pub fn read_weread_proxy_url_config(config_dir: &Path) -> Result<Option<String>, String> {
+    let config = read_data_directory_config(config_dir)?;
+
+    Ok(config
+        .weread_proxy_url
+        .filter(|proxy_url| !proxy_url.trim().is_empty()))
+}
+
+pub fn write_weread_proxy_url_config(
+    config_dir: &Path,
+    proxy_url: Option<&str>,
+) -> Result<(), String> {
+    let mut config = read_data_directory_config(config_dir)?;
+    config.weread_proxy_url = proxy_url.map(str::to_string);
+
+    write_data_directory_config(config_dir, config)
+}
+
 fn read_data_directory_config(config_dir: &Path) -> Result<DataDirectoryConfig, String> {
     let config_path = config_dir.join(DATA_DIRECTORY_CONFIG_FILE_NAME);
     if !config_path.is_file() {
@@ -116,7 +135,10 @@ fn write_data_directory_config(
     fs::create_dir_all(config_dir).map_err(|error| error.to_string())?;
     let config_path = config_dir.join(DATA_DIRECTORY_CONFIG_FILE_NAME);
 
-    if config.custom_data_dir.is_none() && config.custom_export_dir.is_none() {
+    if config.custom_data_dir.is_none()
+        && config.custom_export_dir.is_none()
+        && config.weread_proxy_url.is_none()
+    {
         if config_path.exists() {
             fs::remove_file(config_path).map_err(|error| error.to_string())?;
         }
@@ -370,7 +392,9 @@ fn ensure_local_reading_progress_schema(connection: &Connection) -> SqliteResult
         .optional()?;
 
     if let Some(sql) = table_sql.as_deref() {
-        if !sql.to_ascii_lowercase().contains("book_id text primary key")
+        if !sql
+            .to_ascii_lowercase()
+            .contains("book_id text primary key")
             || !table_references(connection, "local_reading_progress", "local_books")?
         {
             return rebuild_local_reading_progress_table(connection);
@@ -655,8 +679,8 @@ mod tests {
     use rusqlite::Connection;
 
     use super::{
-        initialize_schema, read_custom_export_directory_config, SQLITE_BUSY_TIMEOUT_MS,
-        write_custom_export_directory_config,
+        initialize_schema, read_custom_export_directory_config,
+        write_custom_export_directory_config, SQLITE_BUSY_TIMEOUT_MS,
     };
 
     #[test]
@@ -993,12 +1017,10 @@ mod tests {
 
         initialize_schema(&connection).expect("schema should migrate stale progress foreign key");
 
-        assert!(super::table_references(
-            &connection,
-            "local_reading_progress",
-            "local_books"
-        )
-        .expect("progress foreign key should read"));
+        assert!(
+            super::table_references(&connection, "local_reading_progress", "local_books")
+                .expect("progress foreign key should read")
+        );
         assert!(!super::table_references(
             &connection,
             "local_reading_progress",

@@ -63,6 +63,13 @@ impl CredentialServiceError {
         }
     }
 
+    pub fn diagnostic_message(&self) -> Option<String> {
+        match self {
+            Self::Storage(message) if !message.trim().is_empty() => Some(message.clone()),
+            _ => None,
+        }
+    }
+
     fn storage(error: impl fmt::Display) -> Self {
         Self::Storage(error.to_string())
     }

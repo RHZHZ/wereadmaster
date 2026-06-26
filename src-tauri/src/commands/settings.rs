@@ -7,8 +7,9 @@ use crate::{
         ChooseDataDirectoryResponse, ChooseExportDirectoryResponse, ClearAiOutputCacheResponse,
         ClearLocalCacheResponse, ExportBackupResponse, ExportDiagnosticsResponse,
         ExportImageResponse, MigrateDataDirectoryResponse, RemoteAppUpdateManifestResponse,
-        ResetExportDirectoryResponse, RestoreBackupResponse, SaveExportDirectoryResponse,
-        SettingsService, SettingsStateResponse,
+        ResetExportDirectoryResponse, ResetWereadProxyResponse, RestoreBackupResponse,
+        SaveExportDirectoryResponse, SaveWereadProxyResponse, SettingsService,
+        SettingsStateResponse,
     },
 };
 
@@ -17,6 +18,7 @@ use crate::{
 pub struct AppCommandError {
     code: String,
     message: String,
+    detail: Option<String>,
 }
 
 impl From<AppError> for AppCommandError {
@@ -24,6 +26,7 @@ impl From<AppError> for AppCommandError {
         Self {
             code: error.code().to_string(),
             message: error.user_message(),
+            detail: error.diagnostic_message(),
         }
     }
 }
@@ -142,6 +145,21 @@ pub async fn reset_custom_export_directory(
     run_blocking(move || SettingsService::new(app).reset_custom_export_directory()).await
 }
 
+#[tauri::command]
+pub async fn save_weread_proxy_url(
+    app: AppHandle,
+    proxy_url: String,
+) -> Result<SaveWereadProxyResponse, AppCommandError> {
+    run_blocking(move || SettingsService::new(app).save_weread_proxy_url(proxy_url)).await
+}
+
+#[tauri::command]
+pub async fn reset_weread_proxy_url(
+    app: AppHandle,
+) -> Result<ResetWereadProxyResponse, AppCommandError> {
+    run_blocking(move || SettingsService::new(app).reset_weread_proxy_url()).await
+}
+
 async fn run_blocking<T>(
     task: impl FnOnce() -> Result<T, AppError> + Send + 'static,
 ) -> Result<T, AppCommandError>
@@ -153,6 +171,7 @@ where
         .map_err(|error| AppCommandError {
             code: "settings_task_failed".to_string(),
             message: format!("本地设置任务执行失败：{error}"),
+            detail: None,
         })?
         .map_err(Into::into)
 }

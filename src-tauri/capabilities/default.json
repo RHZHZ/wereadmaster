@@ -85,6 +85,8 @@
     "allow-choose-custom-export-directory",
     "allow-save-custom-export-directory",
     "allow-reset-custom-export-directory",
+    "allow-save-weread-proxy-url",
+    "allow-reset-weread-proxy-url",
     "opener:allow-open-url",
     "opener:allow-default-urls",
     "dialog:allow-open"

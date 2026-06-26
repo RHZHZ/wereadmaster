@@ -243,8 +243,10 @@ impl NotesService {
             .mark_syncing(NOTES_SECTION, &started_at)
             .map_err(AppError::from)?;
 
-        let gateway = WereadGateway::new(self.app.clone());
-        let result = fetch_all_notebooks(&gateway, page_size).await;
+        let result = match WereadGateway::new(self.app.clone()) {
+            Ok(gateway) => fetch_all_notebooks(&gateway, page_size).await,
+            Err(error) => Err(error),
+        };
 
         match result {
             Ok((books, raw_pages)) => {
@@ -283,13 +285,11 @@ impl NotesService {
             }
             Err(error) => {
                 let attempted_at = current_unix_seconds();
+                let error_message = error
+                    .diagnostic_message()
+                    .unwrap_or_else(|| error.user_message());
                 SyncStateRepository::new(&connection)
-                    .mark_failed(
-                        NOTES_SECTION,
-                        &attempted_at,
-                        error.code(),
-                        &error.user_message(),
-                    )
+                    .mark_failed(NOTES_SECTION, &attempted_at, error.code(), &error_message)
                     .map_err(AppError::from)?;
 
                 Err(error)
@@ -305,8 +305,10 @@ impl NotesService {
             .mark_syncing(NOTES_SECTION, &started_at)
             .map_err(AppError::from)?;
 
-        let gateway = WereadGateway::new(self.app.clone());
-        let result = fetch_book_notes(&gateway, &normalized_book_id).await;
+        let result = match WereadGateway::new(self.app.clone()) {
+            Ok(gateway) => fetch_book_notes(&gateway, &normalized_book_id).await,
+            Err(error) => Err(error),
+        };
 
         match result {
             Ok((bookmark_raw, bookmark_record, thoughts, review_raw_pages)) => {
@@ -355,13 +357,11 @@ impl NotesService {
             }
             Err(error) => {
                 let attempted_at = current_unix_seconds();
+                let error_message = error
+                    .diagnostic_message()
+                    .unwrap_or_else(|| error.user_message());
                 SyncStateRepository::new(&connection)
-                    .mark_failed(
-                        NOTES_SECTION,
-                        &attempted_at,
-                        error.code(),
-                        &error.user_message(),
-                    )
+                    .mark_failed(NOTES_SECTION, &attempted_at, error.code(), &error_message)
                     .map_err(AppError::from)?;
 
                 Err(error)

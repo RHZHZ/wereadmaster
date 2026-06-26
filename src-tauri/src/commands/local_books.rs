@@ -14,6 +14,7 @@ use crate::{
 pub struct AppCommandError {
     code: String,
     message: String,
+    detail: Option<String>,
 }
 
 impl From<AppError> for AppCommandError {
@@ -21,6 +22,7 @@ impl From<AppError> for AppCommandError {
         Self {
             code: error.code().to_string(),
             message: error.user_message(),
+            detail: error.diagnostic_message(),
         }
     }
 }
@@ -109,6 +111,7 @@ where
         .map_err(|error| AppCommandError {
             code: "local_task_failed".to_string(),
             message: format!("本地任务执行失败：{error}"),
+            detail: None,
         })?
         .map_err(Into::into)
 }

@@ -39,17 +39,25 @@ impl ShelfService {
         let started_at = current_unix_seconds();
         self.mark_syncing(&started_at).await?;
 
-        let gateway = WereadGateway::new(self.app.clone());
-        match with_sync_timing(
-            "shelf.network",
-            gateway.call(WereadApi::SyncShelf, json!({})),
-        )
-        .await
-        {
+        let result = match WereadGateway::new(self.app.clone()) {
+            Ok(gateway) => {
+                with_sync_timing(
+                    "shelf.network",
+                    gateway.call(WereadApi::SyncShelf, json!({})),
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        };
+
+        match result {
             Ok(raw) => with_sync_timing("shelf.persist", self.persist_synced_shelf(raw)).await,
             Err(error) => {
                 let attempted_at = current_unix_seconds();
-                self.mark_failed(&attempted_at, error.code(), &error.user_message())
+                let error_message = error
+                    .diagnostic_message()
+                    .unwrap_or_else(|| error.user_message());
+                self.mark_failed(&attempted_at, error.code(), &error_message)
                     .await?;
                 Err(error)
             }

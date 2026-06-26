@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, time::Duration};
 
-use reqwest::{Client as HttpClient, StatusCode};
+use reqwest::{Client as HttpClient, Proxy, StatusCode, Url};
 use serde_json::{json, Map, Value};
 use tauri::AppHandle;
 
@@ -72,14 +72,13 @@ pub struct WereadGateway {
 }
 
 impl WereadGateway {
-    pub fn new(app: AppHandle) -> Self {
-        Self {
-            http_client: HttpClient::builder()
-                .timeout(Duration::from_secs(20))
-                .build()
-                .expect("failed to build WeRead HTTP client"),
+    pub fn new(app: AppHandle) -> Result<Self, AppError> {
+        let http_client = build_http_client(&app)?;
+
+        Ok(Self {
+            http_client,
             credential_service: CredentialService::new(app),
-        }
+        })
     }
 
     pub fn build_payload(api: WereadApi, params: Value) -> Result<Value, AppError> {
@@ -126,6 +125,59 @@ impl WereadGateway {
 
         normalize_gateway_response(status, value)
     }
+}
+
+fn build_http_client(app: &AppHandle) -> Result<HttpClient, AppError> {
+    let mut builder = HttpClient::builder().timeout(Duration::from_secs(20));
+
+    if let Some(proxy_url) = read_weread_proxy_url(app)? {
+        let proxy = Proxy::all(&proxy_url).map_err(|error| {
+            AppError::InvalidPayload(format!("微信读书代理地址无效：{error}。"))
+        })?;
+        builder = builder.proxy(proxy);
+    }
+
+    builder
+        .build()
+        .map_err(|error| AppError::Network(format!("无法初始化微信读书 HTTP 客户端：{error}")))
+}
+
+fn read_weread_proxy_url(app: &AppHandle) -> Result<Option<String>, AppError> {
+    let config_dir = crate::db::default_data_dir(app).map_err(AppError::Storage)?;
+    crate::db::read_weread_proxy_url_config(&config_dir).map_err(AppError::Storage)
+}
+
+pub(crate) fn normalize_weread_proxy_url(value: &str) -> Result<Option<String>, AppError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+
+    let url = Url::parse(trimmed)
+        .map_err(|_| AppError::InvalidPayload("微信读书代理地址格式不正确。".to_string()))?;
+    let is_supported_scheme = matches!(
+        url.scheme(),
+        "http" | "https" | "socks4" | "socks4a" | "socks5" | "socks5h"
+    );
+    if !is_supported_scheme {
+        return Err(AppError::InvalidPayload(
+            "微信读书代理仅支持 http、https 或 socks 代理地址。".to_string(),
+        ));
+    }
+
+    if url.host_str().is_none() {
+        return Err(AppError::InvalidPayload(
+            "微信读书代理地址缺少主机。".to_string(),
+        ));
+    }
+
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(AppError::InvalidPayload(
+            "微信读书代理地址暂不支持在 URL 中保存用户名或密码。".to_string(),
+        ));
+    }
+
+    Ok(Some(trimmed.to_string()))
 }
 
 fn flatten_params(params: Value) -> Result<Map<String, Value>, AppError> {
@@ -217,7 +269,7 @@ mod tests {
     use reqwest::StatusCode;
     use serde_json::json;
 
-    use super::{normalize_gateway_response, WereadApi, WereadGateway};
+    use super::{normalize_gateway_response, normalize_weread_proxy_url, WereadApi, WereadGateway};
     use crate::{
         config::WEREAD_SKILL_VERSION,
         errors::{AppError, UpgradeInfo},
@@ -312,5 +364,31 @@ mod tests {
 
         assert_eq!(error.code(), "gateway_error");
         assert_eq!(error.user_message(), "请求失败");
+    }
+
+    #[test]
+    fn normalize_weread_proxy_url_accepts_http_and_socks() {
+        assert_eq!(
+            normalize_weread_proxy_url(" http://127.0.0.1:7890 ")
+                .expect("http proxy should be valid"),
+            Some("http://127.0.0.1:7890".to_string())
+        );
+        assert_eq!(
+            normalize_weread_proxy_url("socks5://127.0.0.1:1080")
+                .expect("socks proxy should be valid"),
+            Some("socks5://127.0.0.1:1080".to_string())
+        );
+        assert_eq!(
+            normalize_weread_proxy_url("   ").expect("blank proxy should clear"),
+            None
+        );
+    }
+
+    #[test]
+    fn normalize_weread_proxy_url_rejects_credentials() {
+        let error = normalize_weread_proxy_url("http://user:pass@127.0.0.1:7890")
+            .expect_err("proxy credentials should not be persisted");
+
+        assert_eq!(error.code(), "invalid_gateway_payload");
     }
 }

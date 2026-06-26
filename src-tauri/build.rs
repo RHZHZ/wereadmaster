@@ -63,7 +63,11 @@ fn main() {
             "clear_local_cache",
             "clear_ai_output_cache",
             "export_report_image",
+            "choose_custom_export_directory",
             "save_custom_export_directory",
+            "reset_custom_export_directory",
+            "save_weread_proxy_url",
+            "reset_weread_proxy_url",
         ]),
     ))
     .expect("failed to run Tauri build script")

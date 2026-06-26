@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-reset-weread-proxy-url"
+description = "Enables the reset_weread_proxy_url command without any pre-configured scope."
+commands.allow = ["reset_weread_proxy_url"]
+
+[[permission]]
+identifier = "deny-reset-weread-proxy-url"
+description = "Denies the reset_weread_proxy_url command without any pre-configured scope."
+commands.deny = ["reset_weread_proxy_url"]

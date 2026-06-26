@@ -33,14 +33,17 @@ import {
   listReadingItemStates,
   probeAiProviderCapabilities,
   resetCustomExportDirectory,
+  resetWereadProxyUrl,
   saveAiSettings,
   saveAiReviewFeedback,
   saveCustomExportDirectory,
+  saveWereadProxyUrl,
   summarizeBookNotes,
   summarizeReadingRoute,
   syncShelf,
   testAiConnection,
-  validateAiCredential
+  validateAiCredential,
+  getCommandErrorMessage
 } from "./reading-api";
 
 const invokeMock = vi.mocked(invoke);
@@ -82,6 +85,10 @@ describe("settings export directory API", () => {
         defaultExportDir: "C:/Users/RHZ/AppData/Roaming/wxreadmaster/exports",
         isCustomExportDir: true
       },
+      network: {
+        wereadProxyUrl: "http://127.0.0.1:7890",
+        isCustomWereadProxy: true
+      },
       appVersion: "0.1.0",
       supportsNativeUpdater: true
     });
@@ -93,12 +100,28 @@ describe("settings export directory API", () => {
       defaultExportDir: "C:/Users/RHZ/AppData/Roaming/wxreadmaster/exports",
       isCustomExportDir: true
     });
+    expect(state.network).toEqual({
+      wereadProxyUrl: "http://127.0.0.1:7890",
+      isCustomWereadProxy: true
+    });
     expect(state.localData.lastDataOperationError).toBe("迁移失败：目标目录不可写");
     expect(state.credentialError).toEqual({
       code: "credential_storage_error",
       message: "本地凭据存储暂时不可用，请稍后重试。",
       detail: "mock storage failure"
     });
+  });
+
+  test("includes command diagnostic detail when available", () => {
+    expect(
+      getCommandErrorMessage({
+        code: "gateway_network_error",
+        message: "微信读书接口暂时无法连接，请稍后重试。",
+        detail: "error sending request for url (https://i.weread.qq.com/api/agent/gateway): operation timed out"
+      })
+    ).toBe(
+      "微信读书接口暂时无法连接，请稍后重试。 诊断：error sending request for url (https://i.weread.qq.com/api/agent/gateway): operation timed out"
+    );
   });
 
   test("choose, save and reset export directory commands keep selection separate from persistence", async () => {
@@ -143,6 +166,43 @@ describe("settings export directory API", () => {
     expect(chosen.path).toBe("D:/ReadingExports");
     expect(saved.state.exportData.isCustomExportDir).toBe(true);
     expect(reset.state.exportData.isCustomExportDir).toBe(false);
+  });
+
+  test("save and reset WeRead proxy commands update network settings", async () => {
+    invokeMock
+      .mockResolvedValueOnce({
+        state: {
+          credential: { hasCredential: true },
+          syncStates: [],
+          localData: {},
+          exportData: {},
+          network: {
+            wereadProxyUrl: "http://127.0.0.1:7890",
+            isCustomWereadProxy: true
+          }
+        }
+      })
+      .mockResolvedValueOnce({
+        state: {
+          credential: { hasCredential: true },
+          syncStates: [],
+          localData: {},
+          exportData: {},
+          network: {
+            isCustomWereadProxy: false
+          }
+        }
+      });
+
+    const saved = await saveWereadProxyUrl("http://127.0.0.1:7890");
+    const reset = await resetWereadProxyUrl();
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "save_weread_proxy_url", {
+      proxyUrl: "http://127.0.0.1:7890"
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "reset_weread_proxy_url");
+    expect(saved.state.network.wereadProxyUrl).toBe("http://127.0.0.1:7890");
+    expect(reset.state.network.isCustomWereadProxy).toBe(false);
   });
 
   test("AI provider settings commands pass preset and response format policy", async () => {
@@ -257,6 +317,21 @@ describe("settings export directory API", () => {
       model: "gpt-4o-mini",
       presetId: "openai",
       responseFormatPolicy: "jsonSchemaFirst"
+    });
+  });
+
+  test("WeRead proxy save command also fails fast when native invoke does not settle", async () => {
+    vi.useFakeTimers();
+    invokeMock.mockImplementation(() => new Promise(() => undefined));
+
+    const savePromise = saveWereadProxyUrl("http://127.0.0.1:7890");
+    const expectation = expect(savePromise).rejects.toThrow("本地设置保存超时");
+
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    await expectation;
+    expect(invokeMock).toHaveBeenCalledWith("save_weread_proxy_url", {
+      proxyUrl: "http://127.0.0.1:7890"
     });
   });
 

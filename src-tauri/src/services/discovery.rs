@@ -180,8 +180,10 @@ impl DiscoveryService {
             .mark_syncing(DISCOVERY_SECTION, &started_at)
             .map_err(AppError::from)?;
 
-        let gateway = WereadGateway::new(self.app.clone());
-        let result = gateway.call(api, params).await;
+        let result = match WereadGateway::new(self.app.clone()) {
+            Ok(gateway) => gateway.call(api, params).await,
+            Err(error) => Err(error),
+        };
 
         match result {
             Ok(raw) => {
@@ -199,12 +201,15 @@ impl DiscoveryService {
             }
             Err(error) => {
                 let attempted_at = current_unix_seconds();
+                let error_message = error
+                    .diagnostic_message()
+                    .unwrap_or_else(|| error.user_message());
                 SyncStateRepository::new(&connection)
                     .mark_failed(
                         DISCOVERY_SECTION,
                         &attempted_at,
                         error.code(),
-                        &error.user_message(),
+                        &error_message,
                     )
                     .map_err(AppError::from)?;
 

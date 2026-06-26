@@ -14,6 +14,7 @@ use crate::{
 pub struct AppCommandError {
     code: String,
     message: String,
+    detail: Option<String>,
 }
 
 impl From<AppError> for AppCommandError {
@@ -21,6 +22,7 @@ impl From<AppError> for AppCommandError {
         Self {
             code: error.code().to_string(),
             message: error.user_message(),
+            detail: error.diagnostic_message(),
         }
     }
 }

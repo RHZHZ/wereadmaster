@@ -86,8 +86,10 @@ import type {
   SyncStatus,
   RestoreBackupResult,
   ResetExportDirectoryResult,
+  ResetWereadProxyResult,
   AppUpdateRuntime,
   AppUpdateStatus,
+  SaveWereadProxyResult,
   Thought
 } from "./types";
 import { calculateTotalNotes } from "./business-rules";
@@ -438,6 +440,10 @@ type SettingsStateResponseRecord = {
     defaultExportDir?: unknown;
     isCustomExportDir?: unknown;
   };
+  network?: {
+    wereadProxyUrl?: unknown;
+    isCustomWereadProxy?: unknown;
+  };
   appVersion?: unknown;
   supportsNativeUpdater?: unknown;
 };
@@ -507,6 +513,14 @@ type SaveExportDirectoryResponseRecord = {
 };
 
 type ResetExportDirectoryResponseRecord = {
+  state?: SettingsStateResponseRecord;
+};
+
+type SaveWereadProxyResponseRecord = {
+  state?: SettingsStateResponseRecord;
+};
+
+type ResetWereadProxyResponseRecord = {
   state?: SettingsStateResponseRecord;
 };
 
@@ -1562,6 +1576,27 @@ export async function resetCustomExportDirectory(): Promise<ResetExportDirectory
   };
 }
 
+export async function saveWereadProxyUrl(proxyUrl: string): Promise<SaveWereadProxyResult> {
+  const response = await invokeSettingsCommand<SaveWereadProxyResponseRecord>(
+    "save_weread_proxy_url",
+    { proxyUrl }
+  );
+
+  return {
+    state: mapSettingsState(response.state ?? {})
+  };
+}
+
+export async function resetWereadProxyUrl(): Promise<ResetWereadProxyResult> {
+  const response = await invokeSettingsCommand<ResetWereadProxyResponseRecord>(
+    "reset_weread_proxy_url"
+  );
+
+  return {
+    state: mapSettingsState(response.state ?? {})
+  };
+}
+
 const WEB_READING_PREVIEW_DATA_URL = "/.codex-temp/reading-preview-data.json";
 
 let webReadingPreviewDataPromise: Promise<WebReadingPreviewData | undefined> | undefined;
@@ -2274,7 +2309,8 @@ export function getCommandErrorMessage(error: unknown): string {
         return "本地命令调用失败，请确认应用在桌面环境中运行。";
       }
 
-      return message;
+      const detail = stringValue((error as { detail?: unknown }).detail);
+      return detail && detail !== message ? `${message} 诊断：${detail}` : message;
     }
   }
 
@@ -2645,6 +2681,10 @@ function mapSettingsState(response: SettingsStateResponseRecord): SettingsState 
       exportDir: stringValue(response.exportData?.exportDir) || "",
       defaultExportDir: stringValue(response.exportData?.defaultExportDir) || "",
       isCustomExportDir: booleanValue(response.exportData?.isCustomExportDir)
+    },
+    network: {
+      wereadProxyUrl: stringValue(response.network?.wereadProxyUrl),
+      isCustomWereadProxy: booleanValue(response.network?.isCustomWereadProxy)
     },
     appVersion: stringValue(response.appVersion) || "0.1.0",
     supportsNativeUpdater: booleanValue(response.supportsNativeUpdater)

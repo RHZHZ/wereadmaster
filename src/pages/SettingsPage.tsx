@@ -60,10 +60,12 @@ import {
   removeAiCredential,
   removeCredential,
   resetCustomExportDirectory,
+  resetWereadProxyUrl,
   restoreLocalDataBackup,
   saveCustomExportDirectory,
   saveAiSettings,
   saveCredential,
+  saveWereadProxyUrl,
   testAiConnection,
   validateAiCredential,
   validateCredential,
@@ -245,6 +247,9 @@ export function SettingsPage({
   const [isResettingExportDirectory, setIsResettingExportDirectory] =
     useState(false);
   const [exportDirectoryInput, setExportDirectoryInput] = useState("");
+  const [wereadProxyInput, setWereadProxyInput] = useState("");
+  const [isSavingWereadProxy, setIsSavingWereadProxy] = useState(false);
+  const [isResettingWereadProxy, setIsResettingWereadProxy] = useState(false);
   const [isExportingDiagnostics, setIsExportingDiagnostics] = useState(false);
   const [lastBackup, setLastBackup] = useState<ExportBackupResult>();
   const [pendingStorageMigration, setPendingStorageMigration] =
@@ -371,6 +376,7 @@ export function SettingsPage({
       setAiState(nextAiState);
       applyAiProviderSettings(nextAiState.provider);
       setExportDirectoryInput(nextState.exportData.exportDir);
+      setWereadProxyInput(nextState.network.wereadProxyUrl ?? "");
       onCredentialChange(nextState.credential);
     } catch (loadError) {
       setError(getCommandErrorMessage(loadError));
@@ -835,6 +841,52 @@ export function SettingsPage({
     }
   }
 
+  async function handleSaveWereadProxy() {
+    const proxyUrl = wereadProxyInput.trim();
+    if (!proxyUrl) {
+      setError("请先输入微信读书网络代理地址。");
+      return;
+    }
+
+    setIsSavingWereadProxy(true);
+    setError(undefined);
+
+    try {
+      const result = await saveWereadProxyUrl(proxyUrl);
+      setState(result.state);
+      setWereadProxyInput(result.state.network.wereadProxyUrl ?? "");
+      onCredentialChange(result.state.credential);
+      showToast({
+        message: "微信读书网络代理已保存，后续同步会使用该代理。",
+        tone: "success",
+      });
+    } catch (saveError) {
+      setError(getCommandErrorMessage(saveError));
+    } finally {
+      setIsSavingWereadProxy(false);
+    }
+  }
+
+  async function handleResetWereadProxy() {
+    setIsResettingWereadProxy(true);
+    setError(undefined);
+
+    try {
+      const result = await resetWereadProxyUrl();
+      setState(result.state);
+      setWereadProxyInput("");
+      onCredentialChange(result.state.credential);
+      showToast({
+        message: "已恢复微信读书默认网络连接。",
+        tone: "success",
+      });
+    } catch (resetError) {
+      setError(getCommandErrorMessage(resetError));
+    } finally {
+      setIsResettingWereadProxy(false);
+    }
+  }
+
   if (!open) {
     return null;
   }
@@ -1013,6 +1065,37 @@ export function SettingsPage({
                       />
                     </label>
                   </div>
+                  <div className="settings-control-row">
+                    <label className="credential-input">
+                      <span>微信读书网络代理</span>
+                      <input
+                        value={wereadProxyInput}
+                        type="url"
+                        autoComplete="off"
+                        placeholder="如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080"
+                        onChange={(event) =>
+                          setWereadProxyInput(event.target.value)
+                        }
+                      />
+                    </label>
+                  </div>
+                  <dl className="settings-dl">
+                    <div>
+                      <dt>代理状态</dt>
+                      <dd>
+                        {state?.network.isCustomWereadProxy
+                          ? "已启用"
+                          : "默认网络"}
+                      </dd>
+                    </div>
+                    <div className="wide-row">
+                      <dt>作用范围</dt>
+                      <dd>仅微信读书同步接口</dd>
+                    </div>
+                  </dl>
+                  <p className="credential-help-note">
+                    Android 代理工具通常会提供 HTTP 或 SOCKS 本地端口；如系统代理不生效，可在这里填写对应地址。
+                  </p>
                   {aiProviderProbe ? (
                     <section
                       className="ai-provider-probe"
@@ -1075,6 +1158,32 @@ export function SettingsPage({
                       }
                     >
                       移除凭据
+                    </button>
+                  </div>
+                  <div className="settings-actions settings-card-actions">
+                    <button
+                      className="secondary-action"
+                      type="button"
+                      onClick={() => void handleSaveWereadProxy()}
+                      disabled={
+                        isSavingWereadProxy ||
+                        isResettingWereadProxy ||
+                        !wereadProxyInput.trim()
+                      }
+                    >
+                      {isSavingWereadProxy ? "保存中" : "保存代理"}
+                    </button>
+                    <button
+                      className="sync-button"
+                      type="button"
+                      onClick={() => void handleResetWereadProxy()}
+                      disabled={
+                        isSavingWereadProxy ||
+                        isResettingWereadProxy ||
+                        !state?.network.isCustomWereadProxy
+                      }
+                    >
+                      {isResettingWereadProxy ? "重置中" : "重置代理"}
                     </button>
                   </div>
                 </section>

@@ -3891,8 +3891,11 @@ fn build_reading_stats_review_input(
 
 fn reading_persona_config() -> &'static ReadingPersonaConfig {
     READING_PERSONA_CONFIG.get_or_init(|| {
-        serde_json::from_str(include_str!("../../../src/reading-persona.config.json"))
-            .expect("reading persona config should be valid JSON")
+        serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/reading-persona.config.json"
+        )))
+        .expect("reading persona config should be valid JSON")
     })
 }
 
@@ -9386,8 +9389,11 @@ mod tests {
     }
 
     fn load_reading_persona_fixture_cases() -> Vec<ReadingPersonaFixtureCase> {
-        serde_json::from_str(include_str!("../../../src/reading-persona.fixtures.json"))
-            .expect("reading persona fixtures should be valid JSON")
+        serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/reading-persona.fixtures.json"
+        )))
+        .expect("reading persona fixtures should be valid JSON")
     }
 
     fn reading_stats_record_from_fixture(stats: &ReadingPersonaFixtureStats) -> ReadingStatsRecord {

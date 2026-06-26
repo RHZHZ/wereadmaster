@@ -43,7 +43,7 @@ impl BookService {
 
     pub async fn get_book_detail(&self, book_id: String) -> Result<BookDetailResponse, AppError> {
         let normalized_book_id = normalize_book_id(&book_id)?;
-        let gateway = WereadGateway::new(self.app.clone());
+        let gateway = WereadGateway::new(self.app.clone())?;
 
         let detail_raw = gateway
             .call(

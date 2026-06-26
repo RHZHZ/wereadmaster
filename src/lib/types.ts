@@ -879,6 +879,7 @@ export type SettingsState = {
   syncStates: SyncState[];
   localData: LocalDataState;
   exportData: ExportDataState;
+  network: NetworkState;
   appVersion: string;
   supportsNativeUpdater: boolean;
 };
@@ -918,6 +919,11 @@ export type ExportDataState = {
   exportDir: string;
   defaultExportDir: string;
   isCustomExportDir: boolean;
+};
+
+export type NetworkState = {
+  wereadProxyUrl?: string;
+  isCustomWereadProxy: boolean;
 };
 
 export type TableCountRecord = {
@@ -984,5 +990,13 @@ export type MigrateDataDirectoryResult = {
 };
 
 export type ResetExportDirectoryResult = {
+  state: SettingsState;
+};
+
+export type SaveWereadProxyResult = {
+  state: SettingsState;
+};
+
+export type ResetWereadProxyResult = {
   state: SettingsState;
 };

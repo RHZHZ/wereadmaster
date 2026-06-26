@@ -107,7 +107,9 @@ pub fn run() {
             commands::settings::migrate_local_data_directory,
             commands::settings::choose_custom_export_directory,
             commands::settings::save_custom_export_directory,
-            commands::settings::reset_custom_export_directory
+            commands::settings::reset_custom_export_directory,
+            commands::settings::save_weread_proxy_url,
+            commands::settings::reset_weread_proxy_url
         ])
         .run(tauri::generate_context!())
         .expect("failed to run personal reading app");
