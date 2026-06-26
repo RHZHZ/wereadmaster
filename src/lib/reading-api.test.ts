@@ -36,6 +36,8 @@ import {
   saveAiSettings,
   saveAiReviewFeedback,
   saveCustomExportDirectory,
+  summarizeBookNotes,
+  summarizeReadingRoute,
   syncShelf,
   testAiConnection,
   validateAiCredential
@@ -59,6 +61,11 @@ describe("settings export directory API", () => {
   test("maps export location from settings state", async () => {
     invokeMock.mockResolvedValue({
       credential: { hasCredential: true },
+      credentialError: {
+        code: "credential_storage_error",
+        message: "本地凭据存储暂时不可用，请稍后重试。",
+        detail: "mock storage failure"
+      },
       syncStates: [],
         localData: {
           dataDir: "C:/Users/RHZ/AppData/Roaming/wxreadmaster",
@@ -87,6 +94,11 @@ describe("settings export directory API", () => {
       isCustomExportDir: true
     });
     expect(state.localData.lastDataOperationError).toBe("迁移失败：目标目录不可写");
+    expect(state.credentialError).toEqual({
+      code: "credential_storage_error",
+      message: "本地凭据存储暂时不可用，请稍后重试。",
+      detail: "mock storage failure"
+    });
   });
 
   test("choose, save and reset export directory commands keep selection separate from persistence", async () => {
@@ -400,6 +412,158 @@ describe("settings export directory API", () => {
     });
     expect(loaded.actionItems["0:写一页复盘"].status).toBe("completed");
     expect(saved.actionItems["0:写一页复盘"].note).toBe("已完成");
+  });
+
+  test("reads and saves reading route feedback with asset identity", async () => {
+    const feedback = {
+      actionItems: {
+        "0:今天安排45分钟读完第2章": {
+          status: "completed" as const,
+          note: "已整理成一页笔记",
+          updatedAt: "2024-01-01T00:00:00.000Z"
+        }
+      },
+      reflectionQuestions: {}
+    };
+    invokeMock.mockResolvedValueOnce(feedback).mockResolvedValueOnce(feedback);
+
+    const loaded = await getAiReviewFeedback({
+      feature: "reading-route",
+      scopeId: "book:book_1",
+      inputHash: "route_hash"
+    });
+    const saved = await saveAiReviewFeedback({
+      feature: "reading-route",
+      scopeId: "book:book_1",
+      inputHash: "route_hash",
+      feedback
+    });
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "get_ai_review_feedback", {
+      feature: "reading-route",
+      scopeId: "book:book_1",
+      inputHash: "route_hash"
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "save_ai_review_feedback", {
+      feature: "reading-route",
+      scopeId: "book:book_1",
+      inputHash: "route_hash",
+      feedback
+    });
+    expect(loaded.actionItems["0:今天安排45分钟读完第2章"].status).toBe("completed");
+    expect(saved.actionItems["0:今天安排45分钟读完第2章"].note).toBe("已整理成一页笔记");
+  });
+
+  test("passes reading route update context to generation command", async () => {
+    const response = {
+      bookId: "book_1",
+      scopeId: "book:book_1",
+      promptVersion: "reading-route-v2.1",
+      inputHash: "route_hash_v2",
+      source: "generated" as const,
+      route: {
+        routeOverview: "更新后的指南。",
+        books: [],
+        dependencies: [],
+        reviewCheckpoints: [],
+        nextActions: [],
+        sourceStats: {
+          currentBookCount: 1,
+          candidateCount: 0,
+          summaryCount: 0,
+          statsSignalCount: 0,
+          localStatusCount: 0
+        },
+        generatedAt: "150",
+        promptVersion: "reading-route-v2.1",
+        basisNotice: "基于上一版行动反馈生成。"
+      }
+    };
+    invokeMock.mockResolvedValue(response);
+
+    const result = await summarizeReadingRoute({
+      request: {
+        book: {
+          bookId: "book_1",
+          title: "深度工作"
+        },
+        candidates: []
+      },
+      regenerate: true,
+      updateFrom: {
+        feature: "reading-route",
+        scopeId: "book:book_1",
+        inputHash: "route_hash_v1"
+      }
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith("summarize_reading_route", {
+      request: {
+        book: {
+          bookId: "book_1",
+          title: "深度工作"
+        },
+        candidates: []
+      },
+      regenerate: true,
+      updateFrom: {
+        feature: "reading-route",
+        scopeId: "book:book_1",
+        inputHash: "route_hash_v1"
+      }
+    });
+    expect(result.inputHash).toBe("route_hash_v2");
+  });
+
+  test("passes book review update context to generation command", async () => {
+    const response = {
+      bookId: "book_1",
+      promptVersion: "book-notes-summary-v3",
+      inputHash: "summary_hash_v2",
+      source: "generated" as const,
+      summary: {
+        overview: "更新后的复盘。",
+        keyIdeas: [],
+        myFocus: [],
+        actionItems: [],
+        themeTags: [],
+        representativeQuotes: [],
+        reflectionQuestions: [],
+        sourceStats: {
+          highlightCount: 1,
+          thoughtCount: 0,
+          bookmarkCount: 0,
+          chapterCount: 1,
+          includedHighlightCount: 1,
+          includedThoughtCount: 0
+        },
+        generatedAt: "150",
+        promptVersion: "book-notes-summary-v3",
+        basisNotice: "基于上一版反馈生成。"
+      }
+    };
+    invokeMock.mockResolvedValue(response);
+
+    const result = await summarizeBookNotes({
+      bookId: "book_1",
+      regenerate: true,
+      updateFrom: {
+        feature: "book-review",
+        scopeId: "book_1",
+        inputHash: "summary_hash_v1"
+      }
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith("summarize_book_notes", {
+      bookId: "book_1",
+      regenerate: true,
+      updateFrom: {
+        feature: "book-review",
+        scopeId: "book_1",
+        inputHash: "summary_hash_v1"
+      }
+    });
+    expect(result.inputHash).toBe("summary_hash_v2");
   });
 
   test("maps updater metadata including release notes and publish date", async () => {

@@ -200,8 +200,7 @@ export function readAiAssetActionItemFeedback(
     return {};
   }
 
-  const exactKey = buildAiAssetActionItemStateKey(feature, scopeId, inputHash);
-  const exact = readFeedbackByKey(storage, exactKey);
+  const exact = readExactAiAssetActionItemFeedback(storage, feature, scopeId, inputHash);
   if (exact.hasReadableState) {
     return exact.feedbackByItemId;
   }
@@ -209,6 +208,7 @@ export function readAiAssetActionItemFeedback(
   try {
     const prefix = `${AI_ASSET_ACTION_ITEM_STORAGE_PREFIX}:${feature}:${scopeId}:`;
     const fallback: AiActionFeedbackByItemId = {};
+    const exactKey = buildAiAssetActionItemStateKey(feature, scopeId, inputHash);
 
     for (let index = 0; index < storageLength(storage); index += 1) {
       const key = readStorageKey(storage, index);
@@ -223,6 +223,19 @@ export function readAiAssetActionItemFeedback(
   } catch {
     return {};
   }
+}
+
+export function readExactAiAssetActionItemFeedback(
+  storage: AiActionItemStorage | undefined,
+  feature: string,
+  scopeId: string,
+  inputHash: string
+): { feedbackByItemId: AiActionFeedbackByItemId; hasReadableState: boolean } {
+  if (!storage) {
+    return { feedbackByItemId: {}, hasReadableState: false };
+  }
+
+  return readFeedbackByKey(storage, buildAiAssetActionItemStateKey(feature, scopeId, inputHash));
 }
 
 export function writeAiAssetActionItemFeedback(

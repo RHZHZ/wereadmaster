@@ -51,7 +51,7 @@ pub mod stronghold {
 
     #[derive(Default, Serialize, Deserialize)]
     struct MobileStrongholdData {
-        clients: HashMap<String, HashMap<Vec<u8>, Vec<u8>>>,
+        clients: HashMap<String, HashMap<String, Vec<u8>>>,
     }
 
     impl Stronghold {
@@ -118,7 +118,7 @@ pub mod stronghold {
             Ok(data
                 .clients
                 .get(&client_key)
-                .and_then(|client| client.get(key).cloned()))
+                .and_then(|client| client.get(&record_key(key)).cloned()))
         }
 
         pub fn insert(
@@ -132,7 +132,7 @@ pub mod stronghold {
             data.clients
                 .entry(client_key)
                 .or_default()
-                .insert(key, value);
+                .insert(record_key(&key), value);
             Ok(())
         }
 
@@ -140,7 +140,7 @@ pub mod stronghold {
             let client_key = client_key(&self.path);
             let mut data = self.data.lock().map_err(|error| error.to_string())?;
             if let Some(client) = data.clients.get_mut(&client_key) {
-                client.remove(key);
+                client.remove(&record_key(key));
             }
             Ok(())
         }
@@ -148,6 +148,16 @@ pub mod stronghold {
 
     fn client_key(path: &[u8]) -> String {
         String::from_utf8_lossy(path).to_string()
+    }
+
+    fn record_key(key: &[u8]) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut encoded = String::with_capacity(key.len() * 2);
+        for byte in key {
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+        encoded
     }
 }
 

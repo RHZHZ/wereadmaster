@@ -372,6 +372,14 @@ pub struct BookAiSummarySourceStats {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct FeedbackOutcomeSummary {
+    pub summary: String,
+    #[serde(default)]
+    pub applied_changes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct BookAiSummary {
     pub overview: String,
     pub key_ideas: Vec<String>,
@@ -386,6 +394,8 @@ pub struct BookAiSummary {
     pub prompt_version: String,
     pub response_format: Option<AiResponseFormatKind>,
     pub basis_notice: String,
+    #[serde(default)]
+    pub feedback_outcome_summary: Option<FeedbackOutcomeSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -444,6 +454,14 @@ pub struct BookAiSummaryResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BookAiSummaryUpdateContext {
+    pub feature: String,
+    pub scope_id: String,
+    pub input_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingRouteUpdateContext {
     pub feature: String,
     pub scope_id: String,
     pub input_hash: String,
@@ -599,6 +617,8 @@ pub struct ReadingRoute {
     pub prompt_version: String,
     pub response_format: Option<AiResponseFormatKind>,
     pub basis_notice: String,
+    #[serde(default)]
+    pub feedback_outcome_summary: Option<FeedbackOutcomeSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1216,7 +1236,11 @@ impl AiService {
             .get_book_notes(book_id)
             .await
             .map_err(AiServiceError::from_source_notes)?;
-        let update_context = self.book_summary_update_context(&notes.book_id, update_from)?;
+        let update_context = if regenerate {
+            self.book_summary_update_context(&notes.book_id, update_from)?
+        } else {
+            None
+        };
         let summary_input = build_summary_input(&notes, update_context.as_ref())?;
         let input_hash = stable_hash_json(&summary_input.payload)?;
         let source_stats = summary_input.source_stats.clone();
@@ -1291,22 +1315,8 @@ impl AiService {
         book_id: &str,
         update_from: Option<BookAiSummaryUpdateContext>,
     ) -> Result<Option<BookSummaryUpdateContext>, AiServiceError> {
-        let Some(update_from) = update_from else {
-            return Ok(None);
-        };
-
-        if update_from.feature != "book-review" || update_from.scope_id != book_id {
-            return Ok(None);
-        }
-
         let connection = self.open_connection()?;
-        let feedback =
-            read_ai_review_feedback(&connection, "book-review", book_id, &update_from.input_hash)?;
-
-        Ok(Some(BookSummaryUpdateContext {
-            source_input_hash: update_from.input_hash,
-            feedback,
-        }))
+        resolve_book_summary_update_context(&connection, book_id, update_from)
     }
 
     pub fn get_latest_book_notes_summary(
@@ -1725,8 +1735,21 @@ impl AiService {
         &self,
         request: ReadingRouteRequest,
         regenerate: bool,
+        update_from: Option<ReadingRouteUpdateContext>,
     ) -> Result<ReadingRouteResponse, AiServiceError> {
-        let route_input = build_reading_route_input(&self.open_connection()?, request)?;
+        let connection = self.open_connection()?;
+        let base_route_input = build_reading_route_input(&connection, request.clone(), None)?;
+        let update_context = reading_route_update_context(
+            &connection,
+            &base_route_input.scope_id,
+            update_from,
+            regenerate,
+        )?;
+        let route_input = if update_context.is_some() {
+            build_reading_route_input(&connection, request, update_context.as_ref())?
+        } else {
+            base_route_input
+        };
         let input_hash = stable_hash_json(&route_input.payload)?;
 
         if !regenerate {
@@ -1832,7 +1855,7 @@ impl AiService {
         &self,
         request: ReadingRouteRequest,
     ) -> Result<Option<ReadingRouteResponse>, AiServiceError> {
-        let route_input = build_reading_route_input(&self.open_connection()?, request)?;
+        let route_input = build_reading_route_input(&self.open_connection()?, request, None)?;
         let input_hash = stable_hash_json(&route_input.payload)?;
 
         if let Some(cached) = self.get_cached_output(
@@ -2438,6 +2461,12 @@ struct SummaryInput {
 
 #[derive(Debug, Clone)]
 struct BookSummaryUpdateContext {
+    source_input_hash: String,
+    feedback: AiReviewFeedbackState,
+}
+
+#[derive(Debug, Clone)]
+struct ReadingRouteUpdateContextData {
     source_input_hash: String,
     feedback: AiReviewFeedbackState,
 }
@@ -3092,7 +3121,7 @@ fn models_url(base_url: &str) -> String {
 }
 
 fn book_notes_summary_system_prompt() -> &'static str {
-    "你是个人阅读复盘助手。只基于用户提供的当前书籍本地笔记生成总结，不补写未提供的书籍内容，不假装读过全文，不输出内部 ID。必须使用简体中文，只输出一个顶层 JSON 对象，不要 Markdown。顶层字段名必须使用英文 camelCase，且必须包含 overview、keyIdeas、myFocus、actionItems、themeTags、representativeQuotes、reflectionQuestions。overview 必须是字符串，写 3-5 句；keyIdeas 为 3-8 条字符串；myFocus 为字符串数组；actionItems 为字符串数组；themeTags 为 5-10 个短标签；representativeQuotes 为 3-6 条对象，每条包含 quote、reason、chapter、noteType，noteType 只能是“划线”或“想法”，quote 必须来自提供的划线或想法原文，可截短但不可改写；reflectionQuestions 为 3-6 个适合用户复盘的问题。如果输入里包含 updateContext，则必须优先参考上一版复盘的用户反馈，把已完成、暂不做、不适合和文字备注转化为新的总结依据，并避免重复生成已经明确完成或明确不适合的建议。如果笔记数量太少，必须在 overview 中说明总结依据有限。"
+    "你是个人阅读复盘助手。只基于用户提供的当前书籍本地笔记生成总结，不补写未提供的书籍内容，不假装读过全文，不输出内部 ID。必须使用简体中文，只输出一个顶层 JSON 对象，不要 Markdown。顶层字段名必须使用英文 camelCase，且必须包含 overview、keyIdeas、myFocus、actionItems、themeTags、representativeQuotes、reflectionQuestions。overview 必须是字符串，写 3-5 句；keyIdeas 为 3-8 条字符串；myFocus 为字符串数组；actionItems 为字符串数组；themeTags 为 5-10 个短标签；representativeQuotes 为 3-6 条对象，每条包含 quote、reason、chapter、noteType，noteType 只能是“划线”或“想法”，quote 必须来自提供的划线或想法原文，可截短但不可改写；reflectionQuestions 为 3-6 个适合用户复盘的问题。如果输入里包含 updateContext，则必须优先参考上一版复盘的用户反馈，把已完成、暂不做、不适合和文字备注转化为新的总结依据，并避免重复生成已经明确完成或明确不适合的建议；可以额外返回 feedbackOutcomeSummary 对象，其中 summary 用 1-2 句整理上一版反馈沉淀出的阅读成果，appliedChanges 用 1-3 条说明本次如何调整建议，不得评价用户执行力、完成率或表现。如果笔记数量太少，必须在 overview 中说明总结依据有限。"
 }
 
 fn reading_stats_review_system_prompt() -> &'static str {
@@ -3100,7 +3129,7 @@ fn reading_stats_review_system_prompt() -> &'static str {
 }
 
 fn reading_route_system_prompt() -> &'static str {
-    "你是个人阅读指南规划助手。只基于用户提供的当前书、用户显式选择的候选书、已生成复盘摘要、结构化统计信号和本地状态生成建议，不编造未提供的书籍内容，不输出内部 ID 以外的隐私信息，不假装写回微信读书。必须使用简体中文，只输出一个顶层 JSON 对象，不要 Markdown。字段必须使用英文 camelCase，且必须包含 routeOverview、books、dependencies、reviewCheckpoints、nextActions、readingStage。readingStage 必须是对象，且必须包含 stage、label、progressPercent；其中 stage 和 label 必须与输入里的 currentBookStage 保持一致，progressPercent 必须使用当前书对应的进度值，不得自造新的阶段。routeOverview 必须是非空字符串，只写 1 句、60 字以内的主线结论，不写免责声明，不解释输入来源，不使用“目前只有/因此/由于缺少”这类过程说明；候选书为 0 时生成单本书阅读指南，必须像阅读处方：写清下一段先读哪里、带着什么问题读、读完交付什么；候选书大于 0 时生成跨书阅读路线图，聚焦多本书的先后关系。必须按输入里的 readingStage 进度阶段生成建议：starting/起步强调阅读目的和验证问题，framing/建立主线强调是否继续读和早期判断，deepening/深入推进强调核心问题和笔记沉淀，closing/收束整理强调复盘框架和输出产物，completed/完成归档强调生成复盘和归档。章节只能作为辅助依据；缺少章节、目录未缓存或 currentChapter 不可用时，必须回退到进度百分比、最近笔记、本地状态和已有复盘摘要继续生成，不得拒绝生成。不得生成逐章任务清单，不得承诺实时章节追踪，不得输出“每天自动读第 X 章”或后台自动安排。books 是推进步骤数组，每项必须包含 bookId、title、author、order、role、readingPurpose、estimatedEffort、localStatus、basis；只允许使用输入中出现的 bookId。单本书时 books[0].readingPurpose 必须是具体阅读任务，不写“建立习惯、沉淀模板、长期投入、可复用方法论”等空泛话术；estimatedEffort 必须包含明确时长或阅读时段；basis 优先写进度阶段、最近笔记、复盘依据和可用章节线索，能落到“当前进度/下一段/最近笔记章节”这类范围，但不能把章节作为强制任务。dependencies 是跨书依赖关系数组，每项包含 fromBookId、toBookId、reason；没有候选书或没有依赖返回空数组。reviewCheckpoints 是复盘点数组，每项包含 timing、question、suggestedOutput；单本书时 question 必须是一个可在阅读中验证的具体问题，suggestedOutput 必须包含数量或格式和验收标准，例如“写 3 条...并为每条...”。nextActions 是 2-5 条可执行下一步；每条以动词开头，并包含时间、范围或完成标准中的至少两项。所有依据必须来自输入里的摘要、候选书、统计或本地状态；如果候选书不足，把补充候选作为 nextActions，不要写进 routeOverview。"
+    "你是个人阅读指南规划助手。只基于用户提供的当前书、用户显式选择的候选书、已生成复盘摘要、结构化统计信号和本地状态生成建议，不编造未提供的书籍内容，不输出内部 ID 以外的隐私信息，不假装写回微信读书。必须使用简体中文，只输出一个顶层 JSON 对象，不要 Markdown。字段必须使用英文 camelCase，且必须包含 routeOverview、books、dependencies、reviewCheckpoints、nextActions、readingStage。readingStage 必须是对象，且必须包含 stage、label、progressPercent；其中 stage 和 label 必须与输入里的 currentBookStage 保持一致，progressPercent 必须使用当前书对应的进度值，不得自造新的阶段。routeOverview 必须是非空字符串，只写 1 句、60 字以内的主线结论，不写免责声明，不解释输入来源，不使用“目前只有/因此/由于缺少”这类过程说明；候选书为 0 时生成单本书阅读指南，必须像阅读处方：写清下一段先读哪里、带着什么问题读、读完交付什么；候选书大于 0 时生成跨书阅读路线图，聚焦多本书的先后关系。必须按输入里的 readingStage 进度阶段生成建议：starting/起步强调阅读目的和验证问题，framing/建立主线强调是否继续读和早期判断，deepening/深入推进强调核心问题和笔记沉淀，closing/收束整理强调复盘框架和输出产物，completed/完成归档强调生成复盘和归档。章节只能作为辅助依据；缺少章节、目录未缓存或 currentChapter 不可用时，必须回退到进度百分比、最近笔记、本地状态和已有复盘摘要继续生成，不得拒绝生成。不得生成逐章任务清单，不得承诺实时章节追踪，不得输出“每天自动读第 X 章”或后台自动安排。books 是推进步骤数组，每项必须包含 bookId、title、author、order、role、readingPurpose、estimatedEffort、localStatus、basis；只允许使用输入中出现的 bookId。单本书时 books[0].readingPurpose 必须是具体阅读任务，不写“建立习惯、沉淀模板、长期投入、可复用方法论”等空泛话术；estimatedEffort 必须包含明确时长或阅读时段；basis 优先写进度阶段、最近笔记、复盘依据和可用章节线索，能落到“当前进度/下一段/最近笔记章节”这类范围，但不能把章节作为强制任务。dependencies 是跨书依赖关系数组，每项包含 fromBookId、toBookId、reason；没有候选书或没有依赖返回空数组。reviewCheckpoints 是复盘点数组，每项包含 timing、question、suggestedOutput；单本书时 question 必须是一个可在阅读中验证的具体问题，suggestedOutput 必须包含数量或格式和验收标准，例如“写 3 条...并为每条...”。nextActions 是 2-5 条可执行下一步；每条以动词开头，并包含时间、范围或完成标准中的至少两项。所有依据必须来自输入里的摘要、候选书、统计或本地状态；如果候选书不足，把补充候选作为 nextActions，不要写进 routeOverview。如果输入里包含 updateContext，可以额外返回 feedbackOutcomeSummary 对象，其中 summary 用 1-2 句整理上一版反馈沉淀出的阅读成果，appliedChanges 用 1-3 条说明本次如何调整建议，不得评价用户执行力、完成率或表现。"
 }
 
 fn book_decision_system_prompt() -> &'static str {
@@ -3203,6 +3232,18 @@ fn book_notes_summary_json_schema() -> Value {
             "reflectionQuestions": {
                 "type": "array",
                 "items": { "type": "string" }
+            },
+            "feedbackOutcomeSummary": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["summary", "appliedChanges"],
+                "properties": {
+                    "summary": { "type": "string" },
+                    "appliedChanges": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    }
+                }
             }
         }
     })
@@ -3314,6 +3355,18 @@ fn reading_route_json_schema() -> Value {
                     "refreshReason": {
                         "type": "string",
                         "enum": ["stage_changed", "notes_changed", "stalled", "completed"]
+                    }
+                }
+            },
+            "feedbackOutcomeSummary": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["summary", "appliedChanges"],
+                "properties": {
+                    "summary": { "type": "string" },
+                    "appliedChanges": {
+                        "type": "array",
+                        "items": { "type": "string" }
                     }
                 }
             }
@@ -3653,6 +3706,69 @@ fn book_summary_update_context_payload(context: &BookSummaryUpdateContext) -> Va
     })
 }
 
+fn resolve_book_summary_update_context(
+    connection: &rusqlite::Connection,
+    book_id: &str,
+    update_from: Option<BookAiSummaryUpdateContext>,
+) -> Result<Option<BookSummaryUpdateContext>, AiServiceError> {
+    let Some(update_from) = update_from else {
+        return Ok(None);
+    };
+
+    if update_from.feature != "book-review" || update_from.scope_id != book_id {
+        return Ok(None);
+    }
+
+    let feedback =
+        read_ai_review_feedback(connection, "book-review", book_id, &update_from.input_hash)?;
+    if !has_ai_review_or_reflection_feedback(&feedback) {
+        return Ok(None);
+    }
+
+    Ok(Some(BookSummaryUpdateContext {
+        source_input_hash: update_from.input_hash,
+        feedback,
+    }))
+}
+
+fn reading_route_update_context(
+    connection: &rusqlite::Connection,
+    scope_id: &str,
+    update_from: Option<ReadingRouteUpdateContext>,
+    regenerate: bool,
+) -> Result<Option<ReadingRouteUpdateContextData>, AiServiceError> {
+    let Some(update_from) = update_from else {
+        return Ok(None);
+    };
+
+    if !regenerate || update_from.feature != "reading-route" || update_from.scope_id != scope_id {
+        return Ok(None);
+    }
+
+    let feedback = read_ai_review_feedback(
+        connection,
+        "reading-route",
+        scope_id,
+        &update_from.input_hash,
+    )?;
+    if !has_ai_action_feedback(&feedback) {
+        return Ok(None);
+    }
+
+    Ok(Some(ReadingRouteUpdateContextData {
+        source_input_hash: update_from.input_hash,
+        feedback,
+    }))
+}
+
+fn reading_route_update_context_payload(context: &ReadingRouteUpdateContextData) -> Value {
+    json!({
+        "sourceInputHash": context.source_input_hash,
+        "instruction": "生成新版本时参考用户对上一版阅读指南下一步行动的反馈：已完成可沉淀为进展，暂不做/不适合应减少重复建议，备注只作为用户阅读成果和路线调整依据。",
+        "actionFeedback": feedback_records_payload(&context.feedback.action_items)
+    })
+}
+
 fn feedback_records_payload(feedback: &HashMap<String, AiFeedbackExportRecord>) -> Vec<Value> {
     let mut records = feedback
         .iter()
@@ -3678,6 +3794,14 @@ fn feedback_records_payload(feedback: &HashMap<String, AiFeedbackExportRecord>) 
             )
     });
     records
+}
+
+fn has_ai_review_or_reflection_feedback(feedback: &AiReviewFeedbackExport) -> bool {
+    !feedback.action_items.is_empty() || !feedback.reflection_questions.is_empty()
+}
+
+fn has_ai_action_feedback(feedback: &AiReviewFeedbackExport) -> bool {
+    !feedback.action_items.is_empty()
 }
 
 fn build_reading_stats_review_input(
@@ -4604,6 +4728,7 @@ fn reading_persona_percent(value: f64) -> i64 {
 fn build_reading_route_input(
     connection: &rusqlite::Connection,
     request: ReadingRouteRequest,
+    update_context: Option<&ReadingRouteUpdateContextData>,
 ) -> Result<ReadingRouteInput, AiServiceError> {
     let current_book = normalize_route_book_input(request.book)?;
     let candidates = normalize_route_candidates(request.candidates, &current_book.book_id)?;
@@ -4703,9 +4828,15 @@ fn build_reading_route_input(
         local_status_count,
     };
     let allowed_book_ids = book_ids.iter().cloned().collect::<HashSet<_>>();
-    let payload = json!({
+    let update_context_payload = update_context.map(reading_route_update_context_payload);
+    let basis = if update_context_payload.is_some() {
+        "基于当前书、用户显式选择的候选书、已生成复盘摘要、结构化统计信号、本地状态，并参考上一版阅读指南行动反馈生成，不包含其他书原始笔记或全量书架。"
+    } else {
+        "基于当前书、用户显式选择的候选书、已生成复盘摘要、结构化统计信号和本地状态生成，不包含其他书原始笔记或全量书架。"
+    };
+    let mut payload = json!({
         "promptVersion": READING_ROUTE_PROMPT_VERSION,
-        "basis": "基于当前书、用户显式选择的候选书、已生成复盘摘要、结构化统计信号和本地状态生成，不包含其他书原始笔记或全量书架。",
+        "basis": basis,
         "chapterPolicy": {
             "usage": "章节只作为辅助依据，可用于章节分组、回跳、引用来源和最近笔记章节线索，不作为强制任务。",
             "fallback": "章节缺失或目录未缓存时，必须回退到阅读进度、最近笔记、本地状态和已有复盘摘要。",
@@ -4719,6 +4850,12 @@ fn build_reading_route_input(
         "latestStatsSignals": latest_stats.map(route_stats_signal_payload),
         "sourceStats": source_stats
     });
+    if let Some(update_context_payload) = update_context_payload {
+        payload
+            .as_object_mut()
+            .expect("reading route payload should be an object")
+            .insert("updateContext".to_string(), update_context_payload);
+    }
 
     Ok(ReadingRouteInput {
         book_id: current_book.book_id,
@@ -5021,6 +5158,13 @@ fn normalize_summary_output(
         prompt_version: prompt_version.to_string(),
         response_format,
         basis_notice: "基于本地笔记生成，不代表整本书全文内容。".to_string(),
+        feedback_outcome_summary: feedback_outcome_summary_value(
+            output
+                .get("feedbackOutcomeSummary")
+                .or_else(|| output.get("feedback_outcome_summary"))
+                .or_else(|| value.get("feedbackOutcomeSummary"))
+                .or_else(|| value.get("feedback_outcome_summary")),
+        ),
     })
 }
 
@@ -5200,6 +5344,13 @@ fn normalize_reading_route_output(
         basis_notice:
             "基于本地缓存、已生成复盘和用户选择的候选书生成，不代表微信读书远端计划，也不会写回微信读书。"
                 .to_string(),
+        feedback_outcome_summary: feedback_outcome_summary_value(
+            output
+                .get("feedbackOutcomeSummary")
+                .or_else(|| output.get("feedback_outcome_summary"))
+                .or_else(|| value.get("feedbackOutcomeSummary"))
+                .or_else(|| value.get("feedback_outcome_summary")),
+        ),
     };
 
     validate_reading_route_quality(&route)?;
@@ -5703,6 +5854,7 @@ fn empty_summary_response(
             prompt_version: BOOK_NOTES_SUMMARY_PROMPT_VERSION.to_string(),
             response_format: None,
             basis_notice: "基于本地笔记生成，不代表整本书全文内容。".to_string(),
+            feedback_outcome_summary: None,
         },
         cached_updated_at: None,
         error_message: None,
@@ -5915,6 +6067,16 @@ fn sanitize_cached_reading_route(mut route: ReadingRoute) -> ReadingRoute {
         .into_iter()
         .map(|item| humanize_route_text(&item))
         .collect();
+    if let Some(summary) = route.feedback_outcome_summary.as_mut() {
+        summary.summary = humanize_route_text(&summary.summary);
+        summary.applied_changes = summary
+            .applied_changes
+            .iter()
+            .map(|item| humanize_route_text(item))
+            .filter(|item| !item.is_empty())
+            .take(3)
+            .collect();
+    }
     route
 }
 
@@ -5922,6 +6084,27 @@ fn reading_stage_value(value: Option<&Value>) -> Option<ReadingStageSignal> {
     value
         .cloned()
         .and_then(|item| serde_json::from_value::<ReadingStageSignal>(item).ok())
+}
+
+fn feedback_outcome_summary_value(value: Option<&Value>) -> Option<FeedbackOutcomeSummary> {
+    let value = value?;
+    let summary = string_value_any(value, &["summary", "overview", "成果回顾"])
+        .map(|item| humanize_route_text(&item))
+        .filter(|item| !item.is_empty())?;
+    let applied_changes = string_list_any(
+        value,
+        &["appliedChanges", "applied_changes", "changes", "调整说明"],
+    )
+    .into_iter()
+    .map(|item| humanize_route_text(&item))
+    .filter(|item| !item.is_empty())
+    .take(3)
+    .collect();
+
+    Some(FeedbackOutcomeSummary {
+        summary,
+        applied_changes,
+    })
 }
 
 fn sanitize_cached_book_decision(mut decision: BookDecision) -> BookDecision {
@@ -9112,23 +9295,24 @@ mod tests {
         read_ai_asset_version_detail, read_ai_asset_version_history, read_ai_output,
         read_ai_review_feedback, read_book_summary_export_items, read_book_summary_list,
         read_latest_ai_output, read_local_book_notes, read_provider_settings,
-        reading_route_json_schema, reading_stats_review_json_schema,
+        reading_route_json_schema, reading_route_update_context, reading_stats_review_json_schema,
         recommend_response_format_policy, require_ai_credential_for_uncached_summary,
-        resolve_reading_persona, save_ai_review_feedback, serialize_book_summary_export_index,
-        stable_hash_json, upsert_ai_output, AiCachedOutputRecord, AiFeedbackExportRecord,
-        AiOutputUpsert, AiProviderCapabilityStatus, AiResponseFormatKind, AiResponseFormatPolicy,
-        AiReviewFeedbackExport, AiReviewFeedbackState, AiService, AiServiceError,
-        BookAiSummarySource, BookAiSummarySourceStats, BookDecisionCandidateInput,
+        resolve_book_summary_update_context, resolve_reading_persona, save_ai_review_feedback,
+        serialize_book_summary_export_index, stable_hash_json, upsert_ai_output,
+        AiCachedOutputRecord, AiFeedbackExportRecord, AiOutputUpsert, AiProviderCapabilityStatus,
+        AiResponseFormatKind, AiResponseFormatPolicy, AiReviewFeedbackExport,
+        AiReviewFeedbackState, AiService, AiServiceError, BookAiSummarySource,
+        BookAiSummarySourceStats, BookAiSummaryUpdateContext, BookDecisionCandidateInput,
         BookDecisionSourceStats, BookSummaryExportItem, BookSummaryUpdateContext,
         LocalReaderSelectionBookInput, LocalReaderSelectionContextInput, LocalReaderSelectionInput,
         LocalReaderSelectionQuestionInput, ReadingPersonaPatch, ReadingRouteBookInput,
-        ReadingRouteRequest, ReadingRouteSourceStats, ReadingStageSignal,
-        ReadingStatsAiReviewSourceStats, SourceItemInput, BOOK_DECISION_PROMPT_VERSION,
-        BOOK_NOTES_SUMMARY_FEATURE, BOOK_NOTES_SUMMARY_PROMPT_VERSION,
-        LOCAL_READER_SELECTION_QA_PROMPT_VERSION, MAX_LOCAL_READER_ANSWER_CHARS,
-        MAX_LOCAL_READER_CONTEXT_TEXT_CHARS, MAX_LOCAL_READER_LIST_ITEM_CHARS,
-        READING_ROUTE_FEATURE, READING_ROUTE_PROMPT_VERSION, READING_STATS_REVIEW_FEATURE,
-        READING_STATS_REVIEW_PROMPT_VERSION,
+        ReadingRouteRequest, ReadingRouteSourceStats, ReadingRouteUpdateContext,
+        ReadingRouteUpdateContextData, ReadingStageSignal, ReadingStatsAiReviewSourceStats,
+        SourceItemInput, BOOK_DECISION_PROMPT_VERSION, BOOK_NOTES_SUMMARY_FEATURE,
+        BOOK_NOTES_SUMMARY_PROMPT_VERSION, LOCAL_READER_SELECTION_QA_PROMPT_VERSION,
+        MAX_LOCAL_READER_ANSWER_CHARS, MAX_LOCAL_READER_CONTEXT_TEXT_CHARS,
+        MAX_LOCAL_READER_LIST_ITEM_CHARS, READING_ROUTE_FEATURE, READING_ROUTE_PROMPT_VERSION,
+        READING_STATS_REVIEW_FEATURE, READING_STATS_REVIEW_PROMPT_VERSION,
     };
 
     #[derive(Debug, Deserialize)]
@@ -9482,6 +9666,7 @@ mod tests {
                 },
                 candidates: Vec::new(),
             },
+            None,
         )
         .expect("reading route input should build");
 
@@ -9509,6 +9694,179 @@ mod tests {
         assert_eq!(
             input.payload["books"][0]["chapterSignals"]["hasCachedChapters"],
             json!(false)
+        );
+    }
+
+    #[test]
+    fn reading_route_input_includes_update_context_action_feedback() {
+        let connection = Connection::open_in_memory().expect("in-memory database should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        let request = ReadingRouteRequest {
+            book: ReadingRouteBookInput {
+                book_id: "book_deep_work".to_string(),
+                title: "深度工作".to_string(),
+                author: Some("卡尔".to_string()),
+                category: Some("效率".to_string()),
+                local_status: Some("reading".to_string()),
+                progress_percent: Some(55),
+                is_finished: Some(false),
+            },
+            candidates: Vec::new(),
+        };
+        let without_context = build_reading_route_input(&connection, request.clone(), None)
+            .expect("reading route input should build");
+        let mut action_items = HashMap::new();
+        action_items.insert(
+            "0:今天安排45分钟读完第2章".to_string(),
+            AiFeedbackExportRecord {
+                status: "completed".to_string(),
+                note: Some("已整理成一页笔记".to_string()),
+                updated_at: "2026-05-23T00:00:00Z".to_string(),
+            },
+        );
+        let update_context = ReadingRouteUpdateContextData {
+            source_input_hash: "route-hash-v1".to_string(),
+            feedback: AiReviewFeedbackExport {
+                action_items,
+                reflection_questions: HashMap::new(),
+            },
+        };
+        let with_context = build_reading_route_input(&connection, request, Some(&update_context))
+            .expect("reading route input with update context should build");
+
+        let without_hash = stable_hash_json(&without_context.payload).expect("hash should build");
+        let with_hash = stable_hash_json(&with_context.payload).expect("hash should build");
+
+        assert_ne!(without_hash, with_hash);
+        assert_eq!(
+            with_context.payload["updateContext"]["sourceInputHash"],
+            json!("route-hash-v1")
+        );
+        assert_eq!(
+            with_context.payload["updateContext"]["actionFeedback"][0]["status"],
+            json!("completed")
+        );
+        assert_eq!(
+            with_context.payload["updateContext"]["actionFeedback"][0]["note"],
+            json!("已整理成一页笔记")
+        );
+        assert!(with_context.payload["basis"]
+            .as_str()
+            .expect("basis should be a string")
+            .contains("上一版阅读指南行动反馈"));
+    }
+
+    #[test]
+    fn reading_route_update_context_requires_regenerate_matching_route_scope() {
+        let mut connection = Connection::open_in_memory().expect("in-memory database should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        let mut feedback = AiReviewFeedbackState::default();
+        feedback.action_items.insert(
+            "0:今天安排45分钟读完第2章".to_string(),
+            AiFeedbackExportRecord {
+                status: "completed".to_string(),
+                note: Some("已整理成一页笔记".to_string()),
+                updated_at: "2026-05-23T00:00:00Z".to_string(),
+            },
+        );
+        save_ai_review_feedback(
+            &mut connection,
+            "reading-route",
+            "book:book_deep_work",
+            "route-hash-v1",
+            feedback,
+        )
+        .expect("feedback should save");
+
+        let matching_update = ReadingRouteUpdateContext {
+            feature: "reading-route".to_string(),
+            scope_id: "book:book_deep_work".to_string(),
+            input_hash: "route-hash-v1".to_string(),
+        };
+
+        assert!(reading_route_update_context(
+            &connection,
+            "book:book_deep_work",
+            Some(matching_update.clone()),
+            false,
+        )
+        .expect("update context should resolve")
+        .is_none());
+        assert!(reading_route_update_context(
+            &connection,
+            "book:other",
+            Some(matching_update.clone()),
+            true,
+        )
+        .expect("update context should resolve")
+        .is_none());
+        assert!(reading_route_update_context(
+            &connection,
+            "book:book_deep_work",
+            Some(ReadingRouteUpdateContext {
+                feature: "book-review".to_string(),
+                ..matching_update.clone()
+            }),
+            true,
+        )
+        .expect("update context should resolve")
+        .is_none());
+        assert!(reading_route_update_context(
+            &connection,
+            "book:book_deep_work",
+            Some(ReadingRouteUpdateContext {
+                input_hash: "route-hash-empty".to_string(),
+                ..matching_update.clone()
+            }),
+            true,
+        )
+        .expect("empty feedback should resolve")
+        .is_none());
+
+        let mut reflection_only = AiReviewFeedbackState::default();
+        reflection_only.reflection_questions.insert(
+            "0:这一段如何复盘？".to_string(),
+            AiFeedbackExportRecord {
+                status: "completed".to_string(),
+                note: Some("这里只是历史兼容数据".to_string()),
+                updated_at: "2026-05-24T00:00:00Z".to_string(),
+            },
+        );
+        save_ai_review_feedback(
+            &mut connection,
+            "reading-route",
+            "book:book_deep_work",
+            "route-hash-reflection-only",
+            reflection_only,
+        )
+        .expect("reflection-only feedback should save");
+        assert!(reading_route_update_context(
+            &connection,
+            "book:book_deep_work",
+            Some(ReadingRouteUpdateContext {
+                input_hash: "route-hash-reflection-only".to_string(),
+                ..matching_update.clone()
+            }),
+            true,
+        )
+        .expect("reflection-only feedback should resolve")
+        .is_none());
+
+        let context = reading_route_update_context(
+            &connection,
+            "book:book_deep_work",
+            Some(matching_update),
+            true,
+        )
+        .expect("update context should resolve")
+        .expect("matching route update should include feedback");
+
+        assert_eq!(context.source_input_hash, "route-hash-v1");
+        assert_eq!(
+            context.feedback.action_items["0:今天安排45分钟读完第2章"]
+                .note
+                .as_deref(),
+            Some("已整理成一页笔记")
         );
     }
 
@@ -11455,6 +11813,76 @@ mod tests {
     }
 
     #[test]
+    fn book_summary_update_context_requires_matching_scope_and_real_feedback() {
+        let mut connection = Connection::open_in_memory().expect("in-memory database should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        let mut feedback = AiReviewFeedbackState::default();
+        feedback.reflection_questions.insert(
+            "0:这本书改变了什么判断？".to_string(),
+            AiFeedbackExportRecord {
+                status: "completed".to_string(),
+                note: Some("明确了接下来先收敛输入源".to_string()),
+                updated_at: "2026-05-23T00:00:00Z".to_string(),
+            },
+        );
+        save_ai_review_feedback(
+            &mut connection,
+            "book-review",
+            "book_1",
+            "summary-hash-v1",
+            feedback,
+        )
+        .expect("feedback should save");
+
+        let matching_update = BookAiSummaryUpdateContext {
+            feature: "book-review".to_string(),
+            scope_id: "book_1".to_string(),
+            input_hash: "summary-hash-v1".to_string(),
+        };
+
+        assert!(resolve_book_summary_update_context(
+            &connection,
+            "book_2",
+            Some(matching_update.clone()),
+        )
+        .expect("update context should resolve")
+        .is_none());
+        assert!(resolve_book_summary_update_context(
+            &connection,
+            "book_1",
+            Some(BookAiSummaryUpdateContext {
+                feature: "reading-route".to_string(),
+                ..matching_update.clone()
+            }),
+        )
+        .expect("update context should resolve")
+        .is_none());
+        assert!(resolve_book_summary_update_context(
+            &connection,
+            "book_1",
+            Some(BookAiSummaryUpdateContext {
+                input_hash: "summary-hash-empty".to_string(),
+                ..matching_update.clone()
+            }),
+        )
+        .expect("empty feedback should resolve")
+        .is_none());
+
+        let context =
+            resolve_book_summary_update_context(&connection, "book_1", Some(matching_update))
+                .expect("update context should resolve")
+                .expect("matching book summary update should include feedback");
+
+        assert_eq!(context.source_input_hash, "summary-hash-v1");
+        assert_eq!(
+            context.feedback.reflection_questions["0:这本书改变了什么判断？"]
+                .note
+                .as_deref(),
+            Some("明确了接下来先收敛输入源")
+        );
+    }
+
+    #[test]
     fn humanize_review_text_rewrites_seconds_and_timestamps() {
         let text = "本月总阅读时长 7112秒，单次高峰时段出现在 1777996800 对应的时间（3739秒）。";
         let output = humanize_review_text(text);
@@ -11839,7 +12267,11 @@ mod tests {
                     "chapter": "第一章",
                     "noteType": "划线"
                 }],
-                "reflectionQuestions": ["我能如何应用？"]
+                "reflectionQuestions": ["我能如何应用？"],
+                "feedbackOutcomeSummary": {
+                    "summary": "上一版已完成观点整理，本次聚焦复盘输出。",
+                    "appliedChanges": ["不再重复生成观点整理", "保留现实应用输出"]
+                }
             }),
             BookAiSummarySourceStats {
                 highlight_count: 1,
@@ -11868,6 +12300,23 @@ mod tests {
         assert_eq!(
             summary.reflection_questions,
             vec!["我能如何应用？".to_string()]
+        );
+        assert_eq!(
+            summary
+                .feedback_outcome_summary
+                .as_ref()
+                .map(|item| item.summary.as_str()),
+            Some("上一版已完成观点整理，本次聚焦复盘输出。")
+        );
+        assert_eq!(
+            summary
+                .feedback_outcome_summary
+                .as_ref()
+                .map(|item| item.applied_changes.clone()),
+            Some(vec![
+                "不再重复生成观点整理".to_string(),
+                "保留现实应用输出".to_string()
+            ])
         );
     }
 
@@ -11921,6 +12370,87 @@ mod tests {
     }
 
     #[test]
+    fn normalize_outputs_ignore_invalid_feedback_outcome_summary() {
+        let summary = normalize_summary_output(
+            json!({
+                "overview": "概览",
+                "keyIdeas": ["观点一"],
+                "myFocus": ["关注点"],
+                "actionItems": ["行动"],
+                "themeTags": ["专注"],
+                "representativeQuotes": [{
+                    "quote": "原文摘录",
+                    "reason": "可以代表关注点",
+                    "chapter": "第一章",
+                    "noteType": "划线"
+                }],
+                "reflectionQuestions": ["我能如何应用？"],
+                "feedbackOutcomeSummary": {
+                    "appliedChanges": ["缺少 summary 时应忽略"]
+                }
+            }),
+            BookAiSummarySourceStats {
+                highlight_count: 1,
+                thought_count: 1,
+                bookmark_count: 0,
+                chapter_count: 1,
+                included_highlight_count: 1,
+                included_thought_count: 1,
+            },
+            "100".to_string(),
+            "book-notes-summary-v3",
+            Some(AiResponseFormatKind::JsonSchema),
+        )
+        .expect("summary should normalize without optional feedback outcome summary");
+
+        assert_eq!(summary.overview, "概览");
+        assert!(summary.feedback_outcome_summary.is_none());
+
+        let route = normalize_reading_route_output(
+            json!({
+                "routeOverview": "围绕《深度工作》先完成关键阅读，再输出 1 页复盘。",
+                "books": [{
+                    "bookId": "book_deep_work",
+                    "title": "深度工作",
+                    "author": "卡尔·纽波特",
+                    "order": 1,
+                    "role": "当前书",
+                    "readingPurpose": "今天先读当前进度后的下一段，确认专注工作最难坚持的 1 个场景。",
+                    "estimatedEffort": "1 个 45 分钟阅读时段",
+                    "localStatus": "reading",
+                    "basis": "当前进度 55%，已进入深入推进阶段。"
+                }],
+                "dependencies": [],
+                "reviewCheckpoints": [{
+                    "timing": "读完这一段后",
+                    "question": "哪条专注规则最值得本周先试一次？",
+                    "suggestedOutput": "写 3 条观察，并选 1 条作为本周实验，完成标准：能落实到具体场景。"
+                }],
+                "nextActions": ["今天读 45 分钟并写 3 条专注观察，完成标准：选出 1 条本周实验。"],
+                "feedbackOutcomeSummary": {
+                    "summary": ""
+                }
+            }),
+            HashSet::from(["book_deep_work".to_string()]),
+            ReadingRouteSourceStats {
+                current_book_count: 1,
+                candidate_count: 0,
+                summary_count: 0,
+                stats_signal_count: 0,
+                local_status_count: 1,
+            },
+            None,
+            "100".to_string(),
+            READING_ROUTE_PROMPT_VERSION,
+            Some(AiResponseFormatKind::JsonSchema),
+        )
+        .expect("route should normalize without optional feedback outcome summary");
+
+        assert_eq!(route.books.len(), 1);
+        assert!(route.feedback_outcome_summary.is_none());
+    }
+
+    #[test]
     fn normalize_summary_output_rejects_missing_overview() {
         let error = normalize_summary_output(
             json!({
@@ -11967,7 +12497,11 @@ mod tests {
                     "question": "哪些专注方法可以在本周执行？",
                     "suggestedOutput": "写3条专注行动，并为每条补1个完成标准。"
                 }],
-                "nextActions": ["今天安排45分钟读完第2章，完成标准：输出3条专注行动。"]
+                "nextActions": ["今天安排45分钟读完第2章，完成标准：输出3条专注行动。"],
+                "feedbackOutcomeSummary": {
+                    "summary": "上一版已完成基础整理，本次转为验证行动。",
+                    "appliedChanges": ["跳过已完成整理", "保留验证问题", "压缩下一步行动", "忽略多余变化"]
+                }
             }),
             HashSet::from(["book_deep_work".to_string()]),
             ReadingRouteSourceStats {
@@ -12001,6 +12535,24 @@ mod tests {
         assert_eq!(
             route.next_actions,
             vec!["今天安排45分钟读完第2章，完成标准：输出3条专注行动。".to_string()]
+        );
+        assert_eq!(
+            route
+                .feedback_outcome_summary
+                .as_ref()
+                .map(|item| item.summary.as_str()),
+            Some("上一版已完成基础整理，本次转为验证行动。")
+        );
+        assert_eq!(
+            route
+                .feedback_outcome_summary
+                .as_ref()
+                .map(|item| item.applied_changes.clone()),
+            Some(vec![
+                "跳过已完成整理".to_string(),
+                "保留验证问题".to_string(),
+                "压缩下一步行动".to_string()
+            ])
         );
     }
 

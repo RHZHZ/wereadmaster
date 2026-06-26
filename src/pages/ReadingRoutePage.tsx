@@ -118,6 +118,7 @@ export function ReadingRoutePage({
             <p>
               来源版本：{preparedUpdate.versionTitle || "阅读指南"}。点击“{regenerateLabel}”后使用当前书上下文生成新版本。
             </p>
+            <p>将参考你上次记录的阅读成果生成新版，避免重复给出已完成或不适合的建议。</p>
             {state.missingPreparedCandidateCount > 0 ? (
               <p>
                 有 {state.missingPreparedCandidateCount} 本上一版候选书未在本地候选书架中找到，需要先调整输入范围后再生成更新版本。

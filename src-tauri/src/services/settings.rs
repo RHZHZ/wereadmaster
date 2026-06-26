@@ -14,7 +14,7 @@ use crate::{
     db::{self, DATABASE_FILE_NAME},
     errors::AppError,
     repositories::sync_state::{SyncStateRecord, SyncStateRepository},
-    services::credentials::{CredentialService, CredentialStatus},
+    services::credentials::{CredentialService, CredentialServiceError, CredentialStatus},
 };
 
 const CACHE_TABLES: &[&str] = &[
@@ -62,11 +62,20 @@ const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 #[serde(rename_all = "camelCase")]
 pub struct SettingsStateResponse {
     pub credential: CredentialStatus,
+    pub credential_error: Option<SettingsCredentialError>,
     pub sync_states: Vec<SyncStateRecord>,
     pub local_data: LocalDataState,
     pub export_data: ExportDataState,
     pub app_version: String,
     pub supports_native_updater: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsCredentialError {
+    pub code: String,
+    pub message: String,
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -227,12 +236,22 @@ impl SettingsService {
         let sync_states = SyncStateRepository::new(&connection)
             .list()
             .map_err(AppError::from)?;
-        let credential = CredentialService::new(self.app.clone())
-            .credential_status()
-            .map_err(AppError::from)?;
+        let (credential, credential_error) =
+            match CredentialService::new(self.app.clone()).credential_status() {
+                Ok(credential) => (credential, None),
+                Err(error) => (
+                    CredentialStatus {
+                        has_credential: false,
+                        last_validated_at: None,
+                        last_validation_error: Some(error.user_message()),
+                    },
+                    Some(settings_credential_error(error)),
+                ),
+            };
 
         Ok(SettingsStateResponse {
             credential,
+            credential_error,
             sync_states,
             local_data: self.local_data_state(&connection)?,
             export_data: self.export_data_state()?,
@@ -730,6 +749,21 @@ fn validate_backup_manifest(file_names: &[String]) -> Result<(), AppError> {
     }
 
     Ok(())
+}
+
+fn settings_credential_error(error: CredentialServiceError) -> SettingsCredentialError {
+    let detail = match &error {
+        CredentialServiceError::Storage(detail) if !detail.trim().is_empty() => {
+            Some(detail.clone())
+        }
+        _ => None,
+    };
+
+    SettingsCredentialError {
+        code: error.code().to_string(),
+        message: error.user_message(),
+        detail,
+    }
 }
 
 fn existing_database_file_manifest(data_dir: &Path) -> Result<Vec<String>, AppError> {
@@ -1567,6 +1601,7 @@ mod tests {
                 last_validated_at: Some("100".to_string()),
                 last_validation_error: None,
             },
+            credential_error: None,
             sync_states: vec![SyncStateRecord {
                 section: "shelf".to_string(),
                 status: "success".to_string(),

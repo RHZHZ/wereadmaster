@@ -1,5 +1,5 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { BookMarked, CheckCircle2, Copy, GitBranch, Sparkles } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { BookOpenText, BookMarked, CheckCircle2, Copy, GitBranch, Sparkles, X } from "lucide-react";
 import { AiActionFeedbackChecklist } from "../../components/AiActionFeedbackChecklist";
 import { useToast } from "../../components/ToastProvider";
 import {
@@ -8,6 +8,7 @@ import {
   deriveAiAssetActionItemFeedback,
   getAiActionItemStorage,
   readAiAssetActionItemFeedback,
+  readExactAiAssetActionItemFeedback,
   writeAiAssetActionItemFeedback,
   type AiActionFeedbackByItemId,
   type AiActionFeedbackRecord
@@ -15,6 +16,7 @@ import {
 import { copyTextToClipboard } from "../../lib/clipboard";
 import { formatAiResponseFormat, formatAiTimestamp } from "../../lib/formatters";
 import { formatArtifactCopiedMessage } from "../../lib/reading-artifacts";
+import { getAiReviewFeedback, saveAiReviewFeedback } from "../../lib/reading-api";
 import type {
   ReadingRoute,
   ReadingRouteBookInput,
@@ -22,8 +24,10 @@ import type {
 } from "../../lib/types";
 import {
   buildGuideActionText,
+  buildGuideActionDetails,
   buildGuideDetailSections,
-  buildGuidePrescriptionItems,
+  buildGuideFocusItems,
+  type GuideMapNode,
   buildSingleBookGuideNodes
 } from "./guide-prescription";
 import { buildReadingRouteContinuity, type ReadingRouteContinuity } from "./route-continuity";
@@ -49,22 +53,86 @@ export function ReadingRouteResultPanel({
   const assetScopeId = routeResponse?.scopeId;
   const assetInputHash = routeResponse?.inputHash;
   const [actionFeedbackByItemId, setActionFeedbackByItemId] = useState<AiActionFeedbackByItemId>({});
+  const persistedActionFeedbackRef = useRef<AiActionFeedbackByItemId>({});
+  const touchedActionFeedbackIdsRef = useRef<Set<string>>(new Set());
   const { showToast } = useToast();
 
   useEffect(() => {
+    let isMounted = true;
+
     if (!assetScopeId || !assetInputHash) {
       setActionFeedbackByItemId({});
-      return;
+      persistedActionFeedbackRef.current = {};
+      touchedActionFeedbackIdsRef.current = new Set();
+      return () => {
+        isMounted = false;
+      };
     }
+    const scopeId = assetScopeId;
+    const inputHash = assetInputHash;
 
-    const reusableFeedbackByMatchKey = readAiAssetActionItemFeedback(
-      getAiActionItemStorage(),
-      assetFeature,
-      assetScopeId,
-      assetInputHash
+    const storage = getAiActionItemStorage();
+    const exactLocalFeedback = readExactAiAssetActionItemFeedback(storage, assetFeature, scopeId, inputHash);
+    const reusableFeedbackByMatchKey = readAiAssetActionItemFeedback(storage, assetFeature, scopeId, inputHash);
+    const localFeedback = deriveAiAssetActionItemFeedback(
+      buildReadingRouteActionTexts(guideDetails.actions),
+      reusableFeedbackByMatchKey
+    );
+    const currentVersionLocalFeedback = deriveAiAssetActionItemFeedback(
+      buildReadingRouteActionTexts(guideDetails.actions),
+      exactLocalFeedback.feedbackByItemId
     );
 
-    setActionFeedbackByItemId(deriveAiAssetActionItemFeedback(buildReadingRouteActionTexts(guideDetails.actions), reusableFeedbackByMatchKey));
+    setActionFeedbackByItemId(localFeedback);
+    persistedActionFeedbackRef.current = {};
+    touchedActionFeedbackIdsRef.current = new Set();
+
+    async function loadStoredFeedback() {
+      try {
+        const stored = await getAiReviewFeedback({
+          feature: assetFeature,
+          scopeId,
+          inputHash
+        });
+        if (!isMounted) {
+          return;
+        }
+
+        if (hasActionFeedback(stored.actionItems)) {
+          const nextPersisted = mergeStoredReadingRouteFeedback(
+            stored.actionItems,
+            persistedActionFeedbackRef.current,
+            touchedActionFeedbackIdsRef.current
+          );
+          persistedActionFeedbackRef.current = nextPersisted;
+          setActionFeedbackByItemId(
+            mergeStoredReadingRouteFeedback(localFeedback, nextPersisted, touchedActionFeedbackIdsRef.current)
+          );
+          return;
+        }
+
+        if (!hasActionFeedback(persistedActionFeedbackRef.current)) {
+          const nextLocalFeedback = exactLocalFeedback.hasReadableState
+            ? mergeStoredReadingRouteFeedback(
+                currentVersionLocalFeedback,
+                persistedActionFeedbackRef.current,
+                touchedActionFeedbackIdsRef.current
+              )
+            : {};
+          setActionFeedbackByItemId(nextLocalFeedback);
+        }
+      } catch {
+        if (isMounted && !hasActionFeedback(persistedActionFeedbackRef.current)) {
+          setActionFeedbackByItemId(localFeedback);
+        }
+      }
+    }
+
+    void loadStoredFeedback();
+
+    return () => {
+      isMounted = false;
+    };
   }, [assetFeature, assetInputHash, assetScopeId, route.nextActions]);
 
   function handleActionFeedbackChange(itemId: string, feedback: AiActionFeedbackRecord | undefined) {
@@ -72,25 +140,18 @@ export function ReadingRouteResultPanel({
       return;
     }
 
-    setActionFeedbackByItemId((current) => {
-      const next = { ...current };
-
-      if (feedback) {
-        next[itemId] = feedback;
-      } else {
-        delete next[itemId];
-      }
-
-      writeAiAssetActionItemFeedback(
-        getAiActionItemStorage(),
-        assetFeature,
-        assetScopeId,
-        assetInputHash,
-        deriveAiAssetActionFeedbackMatchKeys(buildReadingRouteActionTexts(guideDetails.actions), next)
-      );
-
-      return next;
-    });
+    setActionFeedbackByItemId((current) => updateFeedbackById(current, itemId, feedback));
+    touchedActionFeedbackIdsRef.current.add(itemId);
+    const nextPersisted = updateFeedbackById(persistedActionFeedbackRef.current, itemId, feedback);
+    persistedActionFeedbackRef.current = nextPersisted;
+    writeAiAssetActionItemFeedback(
+      getAiActionItemStorage(),
+      assetFeature,
+      assetScopeId,
+      assetInputHash,
+      deriveAiAssetActionFeedbackMatchKeys(buildReadingRouteActionTexts(guideDetails.actions), nextPersisted)
+    );
+    void saveReadingRouteFeedbackState(assetScopeId, assetInputHash, nextPersisted);
   }
 
   async function handleCopyActionChecklist() {
@@ -123,6 +184,17 @@ export function ReadingRouteResultPanel({
         <GuideMap currentBook={currentBook} route={route} isCrossBookRoute={isCrossBookRoute} />
       </section>
 
+      <ActionChecklistCardList
+        title="下一步行动"
+        ariaLabel="下一步行动卡片列表"
+        icon={<Sparkles aria-hidden="true" size={18} />}
+        items={guideDetails.actions}
+        emptyText="这次路线没有生成下一步行动。"
+        feedbackByItemId={actionFeedbackByItemId}
+        onFeedbackChange={handleActionFeedbackChange}
+        onCopyActionChecklist={handleCopyActionChecklist}
+      />
+
       <section className="reading-route-focus-card" aria-label={isCrossBookRoute ? "路线主线" : "本书指南重点"}>
         <div className="reading-route-focus-heading">
           <CheckCircle2 aria-hidden="true" size={20} />
@@ -132,7 +204,7 @@ export function ReadingRouteResultPanel({
           </div>
         </div>
         <div className="reading-route-focus-grid">
-          {buildGuidePrescriptionItems(route, isCrossBookRoute).map((item) => (
+          {buildGuideFocusItems(route, isCrossBookRoute).map((item) => (
             <article key={item.label} className="reading-route-focus-item">
               <span>{item.label}</span>
               <strong>{item.title}</strong>
@@ -163,7 +235,7 @@ export function ReadingRouteResultPanel({
             <div className="reading-route-section-heading">
               <div>
                 <p className="section-kicker">{isCrossBookRoute ? "阅读顺序" : "推进任务"}</p>
-                <h3>{isCrossBookRoute ? "按这个顺序推进" : "先完成这个阅读任务"}</h3>
+                <h3>{isCrossBookRoute ? "按这个顺序推进" : "核对本轮阅读依据"}</h3>
               </div>
               <span>{guideDetails.steps.length} 本</span>
             </div>
@@ -215,16 +287,6 @@ export function ReadingRouteResultPanel({
                 meta: `验收：${item.acceptance}`
               }))}
               emptyText="这次路线没有生成复盘点。"
-            />
-            <ActionChecklistCardList
-              title="下一步行动"
-              ariaLabel="下一步行动卡片列表"
-              icon={<Sparkles aria-hidden="true" size={18} />}
-              items={guideDetails.actions}
-              emptyText="这次路线没有生成下一步行动。"
-              feedbackByItemId={actionFeedbackByItemId}
-              onFeedbackChange={handleActionFeedbackChange}
-              onCopyActionChecklist={handleCopyActionChecklist}
             />
           </div>
 
@@ -451,6 +513,62 @@ function actionFeedbackStatusLabel(status: AiActionFeedbackRecord["status"]): st
   return "待处理";
 }
 
+async function saveReadingRouteFeedbackState(
+  scopeId: string,
+  inputHash: string,
+  actionItems: AiActionFeedbackByItemId
+) {
+  try {
+    await saveAiReviewFeedback({
+      feature: "reading-route",
+      scopeId,
+      inputHash,
+      feedback: {
+        actionItems,
+        reflectionQuestions: {}
+      }
+    });
+  } catch {
+    // 后端不可用时 localStorage 仍作为兜底，避免用户刚输入的反馈丢失。
+  }
+}
+
+function hasActionFeedback(feedbackByItemId: AiActionFeedbackByItemId): boolean {
+  return Object.keys(feedbackByItemId).length > 0;
+}
+
+function updateFeedbackById(
+  feedbackByItemId: AiActionFeedbackByItemId,
+  itemId: string,
+  feedback: AiActionFeedbackRecord | undefined
+): AiActionFeedbackByItemId {
+  const next = { ...feedbackByItemId };
+
+  if (feedback) {
+    next[itemId] = feedback;
+  } else {
+    delete next[itemId];
+  }
+
+  return next;
+}
+
+export function mergeStoredReadingRouteFeedback(
+  stored: AiActionFeedbackByItemId,
+  current: AiActionFeedbackByItemId,
+  touchedItemIds: Set<string>
+): AiActionFeedbackByItemId {
+  const next = { ...stored, ...current };
+
+  for (const itemId of touchedItemIds) {
+    if (!current[itemId]) {
+      delete next[itemId];
+    }
+  }
+
+  return next;
+}
+
 function buildReadingRouteActionTexts(
   items: Array<{
     title: string;
@@ -469,31 +587,218 @@ function GuideMap({
   route: ReadingRoute;
   isCrossBookRoute: boolean;
 }) {
+  const [activeNode, setActiveNode] = useState<GuideMapNode | undefined>();
+  const nodeButtonRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
+  const { showToast } = useToast();
+  const routeActions = buildGuideActionDetails(route);
   const nodes = isCrossBookRoute
     ? route.books.map((book, index) => ({
         id: `${book.bookId}-${book.order}`,
         label: book.title,
         eyebrow: index === 0 ? "当前书" : `第 ${index + 1} 本`,
         detail: shortGuideText(book.readingPurpose, 48),
-        meta: shortGuideText([book.role, book.estimatedEffort].filter(Boolean).join(" · "), 34)
+        meta: shortGuideText([book.role, book.estimatedEffort].filter(Boolean).join(" · "), 34),
+        fullDetail: book.readingPurpose,
+        fullMeta: [book.role, book.estimatedEffort].filter(Boolean).join(" · "),
+        fields: buildCrossBookNodeFields(book, route),
+        associatedActions: buildCrossBookAssociatedActions(book, routeActions, index)
       }))
     : buildSingleBookGuideNodes(currentBook, route);
 
+  async function handleCopyNode(node: GuideMapNode) {
+    try {
+      await copyTextToClipboard(formatGuideNodeDetail(node));
+      showToast({ message: "已复制：阅读节点详情", tone: "success" });
+    } catch (copyError) {
+      showToast({
+        message: copyError instanceof Error ? copyError.message : "复制失败，请稍后重试。",
+        tone: "warning"
+      });
+    }
+  }
+
+  function handleCloseNode() {
+    const nodeId = activeNode?.id;
+    setActiveNode(undefined);
+    if (nodeId) {
+      window.setTimeout(() => nodeButtonRefs.current.get(nodeId)?.focus(), 0);
+    }
+  }
+
   return (
-    <div className={isCrossBookRoute ? "reading-guide-map reading-guide-map--cross" : "reading-guide-map"} role="list">
-      {nodes.map((node, index) => (
-        <div className="reading-guide-map-item" key={node.id} role="listitem">
-          <article className="reading-guide-node">
+    <>
+      <div className={isCrossBookRoute ? "reading-guide-map reading-guide-map--cross" : "reading-guide-map"} role="list">
+        {nodes.map((node, index) => (
+          <div className="reading-guide-map-item" key={node.id} role="listitem">
+            <button
+              className="reading-guide-node reading-guide-node--interactive"
+              type="button"
+              ref={(element) => {
+                if (element) {
+                  nodeButtonRefs.current.set(node.id, element);
+                } else {
+                  nodeButtonRefs.current.delete(node.id);
+                }
+              }}
+              onClick={() => setActiveNode(node)}
+              aria-label={`查看${node.label}的完整阅读节点详情`}
+            >
+              <span>{node.eyebrow}</span>
+              <strong>{node.label}</strong>
+              <p>{node.detail}</p>
+              {node.meta ? <small>{node.meta}</small> : null}
+              <BookOpenText className="reading-guide-node-action" aria-hidden="true" size={16} />
+            </button>
+            {index < nodes.length - 1 ? <span className="reading-guide-connector" aria-hidden="true" /> : null}
+          </div>
+        ))}
+      </div>
+      {activeNode ? (
+        <GuideNodeDetailDialog
+          node={activeNode}
+          onClose={handleCloseNode}
+          onCopy={() => void handleCopyNode(activeNode)}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function GuideNodeDetailDialog({
+  node,
+  onClose,
+  onCopy
+}: {
+  node: GuideMapNode;
+  onClose: () => void;
+  onCopy: () => void;
+}) {
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    }
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  const fields = node.fields?.filter((field) => field.value) ?? [];
+  const associatedActions = node.associatedActions?.filter((item) => item.title && item.done) ?? [];
+
+  return (
+    <div className="reading-guide-node-dialog-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        className="reading-guide-node-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={`reading-guide-node-title-${node.id}`}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="reading-guide-node-dialog-heading">
+          <div>
             <span>{node.eyebrow}</span>
-            <strong>{node.label}</strong>
-            <p>{node.detail}</p>
-            {node.meta ? <small>{node.meta}</small> : null}
-          </article>
-          {index < nodes.length - 1 ? <span className="reading-guide-connector" aria-hidden="true" /> : null}
+            <h4 id={`reading-guide-node-title-${node.id}`}>{node.label}</h4>
+          </div>
+          <button className="dialog-close" type="button" onClick={onClose} aria-label="关闭阅读节点详情">
+            <X aria-hidden="true" size={18} />
+          </button>
         </div>
-      ))}
+        <div className="reading-guide-node-dialog-body">
+          <p>{node.fullDetail || node.detail}</p>
+          {node.fullMeta || node.meta ? <small>{node.fullMeta || node.meta}</small> : null}
+          {fields.length > 0 ? (
+            <dl className="reading-guide-node-dialog-fields">
+              {fields.map((field) => (
+                <div key={`${field.label}-${field.value}`}>
+                  <dt>{field.label}</dt>
+                  <dd>{field.value}</dd>
+                </div>
+              ))}
+            </dl>
+          ) : null}
+          {associatedActions.length > 0 ? (
+            <section className="reading-guide-node-dialog-linked-actions" aria-label="关联行动">
+              <strong>关联行动</strong>
+              <div>
+                {associatedActions.map((item, index) => (
+                  <article key={`${item.title}-${index}`}>
+                    <span>{item.title}</span>
+                    <small>完成标准：{item.done}</small>
+                  </article>
+                ))}
+              </div>
+            </section>
+          ) : null}
+        </div>
+        <div className="reading-guide-node-dialog-actions">
+          <button className="secondary-action" type="button" onClick={onCopy}>
+            <Copy aria-hidden="true" size={15} />
+            复制节点内容
+          </button>
+          <button className="primary-action" type="button" onClick={onClose}>
+            关闭
+          </button>
+        </div>
+      </section>
     </div>
   );
+}
+
+function buildCrossBookNodeFields(book: ReadingRoute["books"][number], route: ReadingRoute): GuideMapNode["fields"] {
+  const previous = route.dependencies.filter((item) => item.toBookId === book.bookId);
+  const next = route.dependencies.filter((item) => item.fromBookId === book.bookId);
+
+  return [
+    { label: "作者", value: book.author ?? "" },
+    { label: "角色", value: book.role },
+    { label: "阅读目的", value: book.readingPurpose },
+    { label: "预计投入", value: book.estimatedEffort },
+    { label: "本地状态", value: book.localStatus ?? "" },
+    { label: "依据", value: book.basis },
+    { label: "前置依赖", value: previous.map((item) => `${item.fromBookId}：${item.reason}`).join("\n") },
+    { label: "后续依赖", value: next.map((item) => `${item.toBookId}：${item.reason}`).join("\n") }
+  ].filter((item) => item.value);
+}
+
+export function buildCrossBookAssociatedActions(
+  book: ReadingRoute["books"][number],
+  actions: ReturnType<typeof buildGuideActionDetails>,
+  index: number
+): GuideMapNode["associatedActions"] {
+  if (index === 0) {
+    return undefined;
+  }
+
+  const title = book.title.trim();
+  const bookId = book.bookId.trim();
+  const associatedActions = actions.filter((item) => {
+    const text = buildGuideActionText(item);
+    return Boolean(
+      (title && (text.includes(`《${title}》`) || text.includes(title))) ||
+        (bookId && text.includes(bookId))
+    );
+  });
+
+  return associatedActions.length > 0 ? associatedActions : undefined;
+}
+
+export function formatGuideNodeDetail(node: GuideMapNode): string {
+  const fields = node.fields?.filter((field) => field.value) ?? [];
+  const associatedActions = node.associatedActions?.filter((item) => item.title && item.done) ?? [];
+
+  return [
+    `# ${node.label}`,
+    `标签：${node.eyebrow}`,
+    node.fullDetail || node.detail,
+    node.fullMeta || node.meta ? `补充：${node.fullMeta || node.meta}` : "",
+    ...fields.map((field) => `${field.label}：${field.value}`),
+    associatedActions.length > 0 ? "关联行动：" : "",
+    ...associatedActions.map((item) => `- ${item.title}，完成标准：${item.done}`)
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function shortGuideText(value: string, maxLength: number) {

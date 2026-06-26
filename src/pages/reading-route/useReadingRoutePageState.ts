@@ -211,7 +211,11 @@ export function useReadingRoutePageState({ shelfEntry, detail, progress, prepare
     setExportResult(undefined);
 
     try {
-      const response = await summarizeReadingRoute({ request, regenerate });
+      const response = await summarizeReadingRoute({
+        request,
+        regenerate,
+        updateFrom: regenerate && isPreparedUpdate ? preparedUpdate : undefined
+      });
       setRouteResponse(response);
       setStatus(statusFromSource(response.source));
       setError(response.errorMessage);

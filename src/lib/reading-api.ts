@@ -61,6 +61,7 @@ import type {
   ReadingCategory,
   ReadingRouteRequest,
   ReadingRouteResponse,
+  ReadingRouteUpdateContext,
   ReadingPersonaPatch,
   ReadingStatsAiReviewResponse,
   Recommendation,
@@ -74,6 +75,7 @@ import type {
   SearchGroup,
   SearchResult,
   SearchScope,
+  SettingsCredentialError,
   SettingsState,
   SaveExportDirectoryResult,
   ShelfArchive,
@@ -426,6 +428,7 @@ type SimilarBooksResponseRecord = {
 
 type SettingsStateResponseRecord = {
   credential?: CredentialStatus;
+  credentialError?: Partial<SettingsCredentialError>;
   syncStates?: SyncState[];
   localData?: Partial<LocalDataState>;
   exportData?: {
@@ -952,12 +955,14 @@ export async function exportReadingStatsReviewMarkdown({
 
 export async function summarizeReadingRoute({
   request,
-  regenerate = false
+  regenerate = false,
+  updateFrom
 }: {
   request: ReadingRouteRequest;
   regenerate?: boolean;
+  updateFrom?: ReadingRouteUpdateContext;
 }): Promise<ReadingRouteResponse> {
-  return invoke<ReadingRouteResponse>("summarize_reading_route", { request, regenerate });
+  return invoke<ReadingRouteResponse>("summarize_reading_route", { request, regenerate, updateFrom });
 }
 
 export async function getLatestReadingRoute(
@@ -2590,6 +2595,7 @@ function mapSettingsState(response: SettingsStateResponseRecord): SettingsState 
     credential: response.credential ?? {
       hasCredential: false
     },
+    credentialError: mapSettingsCredentialError(response.credentialError),
     syncStates: (response.syncStates ?? []).map(normalizeSyncState).filter(isDefined),
     localData: {
       dataDir: stringValue(response.localData?.dataDir) || "",
@@ -2610,6 +2616,25 @@ function mapSettingsState(response: SettingsStateResponseRecord): SettingsState 
     },
     appVersion: stringValue(response.appVersion) || "0.1.0",
     supportsNativeUpdater: booleanValue(response.supportsNativeUpdater)
+  };
+}
+
+function mapSettingsCredentialError(
+  error: SettingsStateResponseRecord["credentialError"]
+): SettingsCredentialError | undefined {
+  if (!error) {
+    return undefined;
+  }
+
+  const message = stringValue(error.message);
+  if (!message) {
+    return undefined;
+  }
+
+  return {
+    code: stringValue(error.code) || "credential_storage_error",
+    message,
+    detail: stringValue(error.detail)
   };
 }
 

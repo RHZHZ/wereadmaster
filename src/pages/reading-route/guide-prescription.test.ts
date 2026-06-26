@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildGuideDetailSections, buildGuidePrescriptionItems, buildSingleBookGuideNodes } from "./guide-prescription";
+import {
+  buildGuideDetailSections,
+  buildGuideFocusItems,
+  buildGuidePrescriptionItems,
+  buildSingleBookGuideNodes
+} from "./guide-prescription";
 import type { ReadingRoute } from "../../lib/types";
 
 describe("reading guide prescription", () => {
@@ -62,6 +67,16 @@ describe("reading guide prescription", () => {
     expect(visibleText).not.toContain("整书复盘沉淀");
   });
 
+  it("builds focus items as a separate summary layer instead of duplicating map labels", () => {
+    const items = buildGuideFocusItems(baseRoute, false);
+
+    expect(items.map((item) => item.label)).toEqual(["当前优先级", "验证判断", "本轮收束"]);
+    expect(items[0].title).toBe("今天安排 45 分钟读完第 2 章");
+    expect(items[0].body).toBe("完成标准：标出 3 条可以直接实践的专注规则。");
+    expect(items[1].title).toBe("哪些干扰最常打断你的深度工作？");
+    expect(items[2].title).toBe("3 条干扰清单");
+  });
+
   it("uses the same prescription logic for the single-book guide map", () => {
     const nodes = buildSingleBookGuideNodes(
       {
@@ -78,6 +93,55 @@ describe("reading guide prescription", () => {
     expect(nodes[2].label).toBe("哪些干扰最常打断你的深度工作？");
     expect(nodes[3].label).toBe("3 条干扰清单");
     expect(nodes[4].detail).toBe("完成本书复盘后，只有主题需要横向比较时再加入候选书。");
+    expect(nodes[1].associatedActions).toEqual([
+      {
+        title: "今天安排 45 分钟读完第 2 章",
+        done: "标出 3 条可以直接实践的专注规则。"
+      }
+    ]);
+    expect(nodes[4].associatedActions).toBeUndefined();
+  });
+
+  it("does not guess node action links when the output action cannot be matched", () => {
+    const nodes = buildSingleBookGuideNodes(
+      {
+        bookId: "book-deep-work",
+        title: "深度工作"
+      },
+      {
+        ...baseRoute,
+        nextActions: [
+          "今天安排 45 分钟读完第 2 章，并标出 3 条可以直接实践的专注规则。",
+          "周末整理一页项目计划，完成标准：列出 2 个会议动作。"
+        ]
+      }
+    );
+
+    expect(nodes[3].label).toBe("3 条干扰清单");
+    expect(nodes[3].associatedActions).toBeUndefined();
+  });
+
+  it("links an output node only when the action clearly matches the checkpoint output", () => {
+    const nodes = buildSingleBookGuideNodes(
+      {
+        bookId: "book-deep-work",
+        title: "深度工作"
+      },
+      {
+        ...baseRoute,
+        nextActions: [
+          "今天安排 45 分钟读完第 2 章，并标出 3 条可以直接实践的专注规则。",
+          "周末写 3 条干扰清单，并为每条补 1 个阻断动作。"
+        ]
+      }
+    );
+
+    expect(nodes[3].associatedActions).toEqual([
+      {
+        title: "周末写 3 条干扰清单",
+        done: "为每条补 1 个阻断动作。"
+      }
+    ]);
   });
 
   it("turns verbose AI fields into scannable detail sections", () => {
@@ -88,8 +152,8 @@ describe("reading guide prescription", () => {
         index: 1,
         title: "深度工作",
         meta: "卡尔·纽波特 · 待复盘",
-        taskLabel: "阅读任务",
-        task: "读完第 2 章到第 3 章",
+        taskLabel: "核对依据",
+        task: "围绕《深度工作》核对本轮阅读依据",
         effort: "2 个 45 分钟阅读时段",
         evidence: "当前进度 42%；优先完成第 2 章到第 3 章的核心方法阅读"
       }

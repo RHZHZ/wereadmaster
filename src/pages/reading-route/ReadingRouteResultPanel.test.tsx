@@ -2,7 +2,14 @@ import { describe, expect, test } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ToastProvider } from "../../components/ToastProvider";
 import { buildAiActionItemId, createAiActionFeedbackRecord } from "../../lib/ai-action-items";
-import { ReadingRouteResultPanel, formatReadingRouteActionChecklist } from "./ReadingRouteResultPanel";
+import {
+  ReadingRouteResultPanel,
+  buildCrossBookAssociatedActions,
+  formatGuideNodeDetail,
+  formatReadingRouteActionChecklist,
+  mergeStoredReadingRouteFeedback
+} from "./ReadingRouteResultPanel";
+import { buildGuideActionDetails } from "./guide-prescription";
 import type { ReadingRoute, ReadingRouteResponse } from "../../lib/types";
 
 describe("reading route result panel", () => {
@@ -24,6 +31,13 @@ describe("reading route result panel", () => {
     expect(markup).toContain("记录反馈");
     expect(markup).toContain("复制行动清单");
     expect(markup).toContain("结构化约束：JSON Schema");
+    expect(markup).toContain("查看深度工作的完整阅读节点详情");
+    expect(markup).toContain("reading-guide-node--interactive");
+    expect(markup).toContain("当前优先级");
+    expect(markup).toContain("验证判断");
+    expect(markup).toContain("本轮收束");
+    expect(markup.indexOf("aria-label=\"下一步行动卡片列表\"")).toBeLessThan(markup.indexOf("aria-label=\"完整阅读指南\""));
+    expect(markup).not.toContain("role=\"dialog\"");
   });
 
   test("formats action checklist with completion markers", () => {
@@ -49,6 +63,29 @@ describe("reading route result panel", () => {
     expect(checklist).toContain("- [ ] 周末输出1页复盘，完成标准：保留2条下周继续执行的动作。");
   });
 
+  test("merges stored route feedback without reviving locally cleared items", () => {
+    const completedId = buildAiActionItemId("今天安排45分钟读完第2章，写下3条专注规则。", 0);
+    const skippedId = buildAiActionItemId("周末输出1页复盘，完成标准：保留2条下周继续执行的动作。", 1);
+    const next = mergeStoredReadingRouteFeedback(
+      {
+        [completedId]: createAiActionFeedbackRecord("completed", "后端旧记录", "2024-01-01T00:00:00.000Z"),
+        [skippedId]: createAiActionFeedbackRecord("skipped", "稍后再做", "2024-01-01T00:00:00.000Z")
+      },
+      {
+        [completedId]: createAiActionFeedbackRecord("notApplicable", "当前版本已不适合", "2024-01-02T00:00:00.000Z")
+      },
+      new Set([completedId, skippedId])
+    );
+
+    expect(next).toEqual({
+      [completedId]: {
+        status: "notApplicable",
+        note: "当前版本已不适合",
+        updatedAt: "2024-01-02T00:00:00.000Z"
+      }
+    });
+  });
+
   test("shows route continuity guidance for cross-book route", () => {
     const markup = renderToStaticMarkup(
       <ToastProvider>
@@ -68,6 +105,54 @@ describe("reading route result panel", () => {
     expect(markup).toContain("何时切换");
     expect(markup).toContain("接续动作");
     expect(markup).toContain("打开《原子习惯》");
+  });
+
+  test("links cross-book node actions only when the target book is explicit", () => {
+    const route = createCrossBookRoute();
+    const actions = buildGuideActionDetails(route);
+
+    expect(buildCrossBookAssociatedActions(route.books[0], actions, 0)).toBeUndefined();
+    expect(buildCrossBookAssociatedActions(route.books[1], actions, 1)).toEqual([
+      {
+        title: "完成《深度工作》一页复盘后",
+        done: "再打开《原子习惯》。"
+      }
+    ]);
+
+    const unclearRoute = {
+      ...route,
+      nextActions: ["完成第一本复盘后，再打开下一本。"]
+    };
+    expect(buildCrossBookAssociatedActions(unclearRoute.books[1], buildGuideActionDetails(unclearRoute), 1)).toBeUndefined();
+  });
+
+  test("formats full guide node detail for copying", () => {
+    const detail = formatGuideNodeDetail({
+      id: "book-atomic-habits-2",
+      eyebrow: "第 2 本",
+      label: "原子习惯",
+      detail: "用习惯设计校准深度工作的执行方式。",
+      meta: "候选书 · 2 个 45 分钟阅读时段",
+      fields: [
+        { label: "阅读目的", value: "用习惯设计校准深度工作的执行方式。" },
+        { label: "依据", value: "与当前主题存在实践衔接。" }
+      ],
+      associatedActions: [
+        {
+          title: "打开《原子习惯》",
+          done: "读完第一章后写下 1 个可执行习惯调整。"
+        }
+      ]
+    });
+
+    expect(detail).toContain("# 原子习惯");
+    expect(detail).toContain("标签：第 2 本");
+    expect(detail).toContain("阅读目的：用习惯设计校准深度工作的执行方式。");
+    expect(detail).toContain("依据：与当前主题存在实践衔接。");
+    expect(detail).toContain("关联行动：");
+    expect(detail).toContain("- 打开《原子习惯》，完成标准：读完第一章后写下 1 个可执行习惯调整。");
+    expect(detail).not.toContain("已完成");
+    expect(detail).not.toContain("记录反馈");
   });
 });
 

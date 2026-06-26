@@ -10,6 +10,12 @@ export type CredentialValidationResult = {
   message?: string;
 };
 
+export type SettingsCredentialError = {
+  code: string;
+  message: string;
+  detail?: string;
+};
+
 export type AiCredentialStatus = {
   hasCredential: boolean;
   lastValidatedAt?: string;
@@ -90,6 +96,11 @@ export type BookAiSummarySourceStats = {
   includedThoughtCount: number;
 };
 
+export type FeedbackOutcomeSummary = {
+  summary: string;
+  appliedChanges?: string[];
+};
+
 export type BookAiSummary = {
   overview: string;
   keyIdeas: string[];
@@ -109,6 +120,7 @@ export type BookAiSummary = {
   promptVersion: string;
   responseFormat?: AiResponseFormatKind;
   basisNotice: string;
+  feedbackOutcomeSummary?: FeedbackOutcomeSummary;
 };
 
 export type BookAiRepresentativeQuote = {
@@ -263,6 +275,8 @@ export type PreparedAssetUpdate = {
 };
 
 export type BookAiSummaryUpdateContext = Pick<PreparedAssetUpdate, "feature" | "scopeId" | "inputHash">;
+
+export type ReadingRouteUpdateContext = Pick<PreparedAssetUpdate, "feature" | "scopeId" | "inputHash">;
 
 export type ExportAiMarkdownResponse = {
   fileName: string;
@@ -420,6 +434,7 @@ export type ReadingRoute = {
   promptVersion: string;
   responseFormat?: AiResponseFormatKind;
   basisNotice: string;
+  feedbackOutcomeSummary?: FeedbackOutcomeSummary;
 };
 
 export type ReadingRouteResponse = {
@@ -860,6 +875,7 @@ export type SimilarBooksResult = RecommendationResult & {
 
 export type SettingsState = {
   credential: CredentialStatus;
+  credentialError?: SettingsCredentialError;
   syncStates: SyncState[];
   localData: LocalDataState;
   exportData: ExportDataState;

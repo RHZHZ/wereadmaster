@@ -63,6 +63,7 @@ import type {
   BookAiSummaryListItem,
   CredentialStatus,
   ExportAiBulkMarkdownResponse,
+  FeedbackOutcomeSummary,
   NotebookBook,
   ReadingStatsMode
 } from "../lib/types";
@@ -1370,6 +1371,7 @@ export function AIAssetVersionDetailView({
 }) {
   const route = detail?.readingRoute;
   const summary = detail?.bookSummary;
+  const feedbackOutcomeSummary = route?.feedbackOutcomeSummary ?? summary?.feedbackOutcomeSummary;
   const changeSummary = detail ? buildAssetVersionChangeSummary(detail, previousDetail) : undefined;
   const previousVersionRef = detail?.previousVersion;
   const [actionFeedbackByItemId, setActionFeedbackByItemId] = useState<AiActionFeedbackByItemId>(() =>
@@ -1398,9 +1400,38 @@ export function AIAssetVersionDetailView({
       };
     }
 
-    setActionFeedbackByItemId(readAIAssetVersionActionFeedback(detail, getAIAssetVersionActionTexts(detail)));
+    const actionTexts = getAIAssetVersionActionTexts(detail);
+    const legacyActionFeedback = readAIAssetVersionActionFeedback(detail, actionTexts);
+    setActionFeedbackByItemId(legacyActionFeedback);
     if (detail.feature !== "book-review") {
       setReviewFeedback(createEmptyReviewFeedback());
+      async function loadAssetActionFeedback() {
+        if (!detail || detail.feature === "book-review") {
+          return;
+        }
+
+        try {
+          const stored = await getAiReviewFeedback({
+            feature: detail.feature,
+            scopeId: detail.scopeId,
+            inputHash: detail.inputHash
+          });
+          if (!isMounted) {
+            return;
+          }
+
+          if (hasAiActionFeedback(stored.actionItems)) {
+            setActionFeedbackByItemId(stored.actionItems);
+          }
+        } catch {
+          if (isMounted) {
+            setActionFeedbackByItemId(legacyActionFeedback);
+          }
+        }
+      }
+
+      void loadAssetActionFeedback();
+
       return () => {
         isMounted = false;
       };
@@ -1508,6 +1539,7 @@ export function AIAssetVersionDetailView({
               </ul>
             </section>
           ) : null}
+          <FeedbackOutcomeSummarySection summary={feedbackOutcomeSummary} />
         </div>
         {detail ? (
           <div className="ai-asset-detail-refresh">
@@ -1615,6 +1647,26 @@ export function AIAssetVersionDetailView({
   }
 }
 
+function FeedbackOutcomeSummarySection({ summary }: { summary?: FeedbackOutcomeSummary }) {
+  if (!summary?.summary) {
+    return null;
+  }
+
+  return (
+    <section className="ai-asset-version-context" aria-label="上次沉淀">
+      <h4>上次沉淀</h4>
+      <p>{summary.summary}</p>
+      {summary.appliedChanges?.length ? (
+        <ul>
+          {summary.appliedChanges.slice(0, 3).map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+      ) : null}
+    </section>
+  );
+}
+
 function AIAssetUpdateDialog({
   detail,
   previousDetail,
@@ -1717,7 +1769,7 @@ function AIAssetUpdateDialog({
 
           <section className="ai-asset-update-boundary" aria-label="更新边界">
             <strong>边界</strong>
-            <p>跳转后可确认输入范围，并手动生成新版本。</p>
+            <p>将参考你上次记录的阅读成果生成新版，避免重复给出已完成或不适合的建议；跳转后可确认输入范围，并手动生成新版本。</p>
           </section>
         </div>
 
@@ -1938,6 +1990,10 @@ function updateFeedbackById(
   }
 
   return next;
+}
+
+function hasAiActionFeedback(feedbackByItemId: AiActionFeedbackByItemId): boolean {
+  return Object.keys(feedbackByItemId).length > 0;
 }
 
 function getAIAssetVersionActionTexts(detail: AIAssetVersionDetail): string[] {

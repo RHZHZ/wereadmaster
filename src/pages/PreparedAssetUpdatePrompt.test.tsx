@@ -27,7 +27,7 @@ describe("prepared asset update prompt", () => {
     );
 
     expect(markup).toContain("准备更新上一版书籍复盘");
-    expect(markup).toContain("基于上一阶段书籍复盘更新");
+    expect(markup).toContain("将参考你上次记录的阅读成果生成新版");
     expect(markup).toContain("点击“生成复盘”时使用当前书笔记");
     expect(markup).toContain("点击“生成复盘”后，会使用当前书笔记生成阅读报告");
   });
@@ -53,6 +53,7 @@ describe("prepared asset update prompt", () => {
     expect(markup).toContain("正在准备更新上一版阅读指南");
     expect(markup).toContain("来源版本：当前阅读指南");
     expect(markup).toContain("点击“生成更新版本”后使用当前书上下文生成新版本");
+    expect(markup).toContain("将参考你上次记录的阅读成果生成新版");
   });
 });
 

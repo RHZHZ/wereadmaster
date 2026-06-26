@@ -10,7 +10,7 @@ use crate::services::ai::{
     BookDecisionResponse, BookNotesSummariesExportOptions, ExportAiBulkMarkdownResponse,
     ExportAiMarkdownResponse, LocalReaderSelectionQuestionInput,
     LocalReaderSelectionQuestionResponse, ReadingRouteRequest, ReadingRouteResponse,
-    ReadingStatsAiReviewResponse,
+    ReadingRouteUpdateContext, ReadingStatsAiReviewResponse,
 };
 
 #[derive(Debug, Serialize)]
@@ -329,9 +329,10 @@ pub async fn summarize_reading_route(
     app: AppHandle,
     request: ReadingRouteRequest,
     regenerate: Option<bool>,
+    update_from: Option<ReadingRouteUpdateContext>,
 ) -> Result<ReadingRouteResponse, AiCommandError> {
     AiService::new(app)
-        .summarize_reading_route(request, regenerate.unwrap_or(false))
+        .summarize_reading_route(request, regenerate.unwrap_or(false), update_from)
         .await
         .map_err(Into::into)
 }

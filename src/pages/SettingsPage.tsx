@@ -972,6 +972,17 @@ export function SettingsPage({
                   <p className="credential-help-note">
                     会在新窗口打开技能页面；如果被拦截，链接会复制到剪贴板。
                   </p>
+                  {state?.credentialError ? (
+                    <div className="status-message status-message--warning">
+                      <AlertCircle aria-hidden="true" size={18} />
+                      <span>
+                        {state.credentialError.message}
+                        {state.credentialError.detail
+                          ? ` 原因：${state.credentialError.detail}`
+                          : ""}
+                      </span>
+                    </div>
+                  ) : null}
                   <button
                     className="credential-help-link"
                     type="button"

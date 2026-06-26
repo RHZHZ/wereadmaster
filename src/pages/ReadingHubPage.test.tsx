@@ -185,6 +185,57 @@ describe("reading hub asset history section", () => {
     expect(markup).toContain("结构化约束：JSON Schema");
   });
 
+  test("renders feedback outcome summary when the asset version provides one", () => {
+    const detail = createRouteVersionDetail({
+      inputHash: "route-v2",
+      progress: 68,
+      readingStageLabel: "收束整理",
+      refreshReason: "notes_changed",
+      promptVersion: "reading-route-v2.1",
+      routeOverview: "先收束当前书，再整理成一页复盘。",
+      nextActions: ["本周完成1页复盘，保留2条继续执行的动作。"],
+      reviewQuestion: "哪些规则值得下周继续执行？"
+    });
+    detail.readingRoute = {
+      ...detail.readingRoute!,
+      feedbackOutcomeSummary: {
+        summary: "上一版已完成观点整理，本次改为压缩输出一页复盘。",
+        appliedChanges: ["不再重复生成观点整理动作", "保留现实应用相关输出"]
+      }
+    };
+
+    const markup = renderToStaticMarkup(
+      <ToastProvider>
+        <AIAssetVersionDetailView detail={detail} isLoading={false} onBack={() => undefined} />
+      </ToastProvider>
+    );
+
+    expect(markup).toContain("上次沉淀");
+    expect(markup).toContain("上一版已完成观点整理，本次改为压缩输出一页复盘。");
+    expect(markup).toContain("不再重复生成观点整理动作");
+  });
+
+  test("does not render feedback outcome summary when the asset version omits one", () => {
+    const detail = createRouteVersionDetail({
+      inputHash: "route-v2",
+      progress: 68,
+      readingStageLabel: "收束整理",
+      refreshReason: "notes_changed",
+      promptVersion: "reading-route-v2.1",
+      routeOverview: "先收束当前书，再整理成一页复盘。",
+      nextActions: ["本周完成1页复盘，保留2条继续执行的动作。"],
+      reviewQuestion: "哪些规则值得下周继续执行？"
+    });
+
+    const markup = renderToStaticMarkup(
+      <ToastProvider>
+        <AIAssetVersionDetailView detail={detail} isLoading={false} onBack={() => undefined} />
+      </ToastProvider>
+    );
+
+    expect(markup).not.toContain("上次沉淀");
+  });
+
   test("renders local action feedback summary and regeneration boundary", () => {
     const detail = createRouteVersionDetail({
       inputHash: "route-v2",

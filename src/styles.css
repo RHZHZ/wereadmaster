@@ -268,6 +268,7 @@ button:disabled {
 .app-frame[data-effective-theme="dark"] .reading-route-input-panel,
 .app-frame[data-effective-theme="dark"] .reading-route-section,
 .app-frame[data-effective-theme="dark"] .reading-route-dialog,
+.app-frame[data-effective-theme="dark"] .reading-guide-node-dialog,
 .app-frame[data-effective-theme="dark"] .reading-route-focus-card,
 .app-frame[data-effective-theme="dark"] .reading-route-optional-panel,
 .app-frame[data-effective-theme="dark"] .review-candidate-panel,
@@ -343,6 +344,9 @@ button:disabled {
 .app-frame[data-effective-theme="dark"] .reading-route-input-book-card,
 .app-frame[data-effective-theme="dark"] .reading-route-candidate-grid button,
 .app-frame[data-effective-theme="dark"] .reading-route-step,
+.app-frame[data-effective-theme="dark"] .reading-guide-node,
+.app-frame[data-effective-theme="dark"] .reading-guide-node-dialog-fields div,
+.app-frame[data-effective-theme="dark"] .reading-guide-node-dialog-linked-actions,
 .app-frame[data-effective-theme="dark"] .reading-route-detail-step,
 .app-frame[data-effective-theme="dark"] .reading-route-detail-card,
 .app-frame[data-effective-theme="dark"] .note-chapter-directory button,
@@ -13734,6 +13738,7 @@ h6.local-reader-markdown-block--heading {
   position: relative;
   z-index: 1;
   display: grid;
+  width: 100%;
   align-content: start;
   gap: 7px;
   min-height: 148px;
@@ -13741,8 +13746,23 @@ h6.local-reader-markdown-block--heading {
   border: 1px solid rgba(36, 49, 58, 0.12);
   border-radius: 8px;
   padding: 14px;
+  text-align: left;
+  color: inherit;
   background: rgba(255, 253, 248, 0.86);
   box-shadow: 0 18px 44px rgba(36, 49, 58, 0.08);
+}
+
+.reading-guide-node--interactive {
+  cursor: pointer;
+  transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.reading-guide-node--interactive:hover,
+.reading-guide-node--interactive:focus-visible {
+  transform: translateY(-2px);
+  border-color: rgba(47, 111, 94, 0.34);
+  box-shadow: 0 20px 46px rgba(47, 111, 94, 0.13);
+  outline: none;
 }
 
 .reading-guide-node span {
@@ -13783,6 +13803,157 @@ h6.local-reader-markdown-block--heading {
   line-height: 1.5;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+}
+
+.reading-guide-node-action {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  color: var(--green);
+  opacity: 0.72;
+}
+
+.reading-guide-node-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(18, 24, 28, 0.36);
+  backdrop-filter: blur(8px);
+}
+
+.reading-guide-node-dialog {
+  width: min(620px, 100%);
+  max-height: min(760px, calc(100vh - 40px));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  border: 1px solid rgba(36, 49, 58, 0.12);
+  border-radius: 8px;
+  color: var(--ink);
+  background: rgba(255, 253, 248, 0.96);
+  box-shadow: 0 28px 70px rgba(36, 49, 58, 0.22);
+}
+
+.reading-guide-node-dialog-heading,
+.reading-guide-node-dialog-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px;
+}
+
+.reading-guide-node-dialog-heading {
+  border-bottom: 1px solid rgba(36, 49, 58, 0.10);
+}
+
+.reading-guide-node-dialog-heading > div {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.reading-guide-node-dialog-heading span {
+  width: fit-content;
+  border-radius: 999px;
+  padding: 5px 8px;
+  color: #315348;
+  background: rgba(47, 111, 94, 0.10);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.reading-guide-node-dialog-heading h4 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 18px;
+}
+
+.reading-guide-node-dialog-body {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  overflow: auto;
+  padding: 16px;
+}
+
+.reading-guide-node-dialog-body p,
+.reading-guide-node-dialog-body small {
+  margin: 0;
+  line-height: 1.75;
+}
+
+.reading-guide-node-dialog-body small {
+  color: var(--muted);
+}
+
+.reading-guide-node-dialog-fields {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+
+.reading-guide-node-dialog-fields div {
+  display: grid;
+  gap: 4px;
+  border: 1px solid rgba(36, 49, 58, 0.08);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(47, 111, 94, 0.06);
+}
+
+.reading-guide-node-dialog-fields dt {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.reading-guide-node-dialog-fields dd {
+  margin: 0;
+  color: var(--ink);
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.reading-guide-node-dialog-linked-actions {
+  display: grid;
+  gap: 8px;
+  border: 1px solid rgba(47, 111, 94, 0.14);
+  border-radius: 8px;
+  padding: 12px;
+  background: rgba(47, 111, 94, 0.06);
+}
+
+.reading-guide-node-dialog-linked-actions > strong {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.reading-guide-node-dialog-linked-actions > div {
+  display: grid;
+  gap: 8px;
+}
+
+.reading-guide-node-dialog-linked-actions article {
+  display: grid;
+  gap: 4px;
+  border-left: 3px solid rgba(47, 111, 94, 0.36);
+  padding-left: 10px;
+}
+
+.reading-guide-node-dialog-linked-actions span {
+  color: var(--ink);
+  font-weight: 800;
+  line-height: 1.55;
+}
+
+.reading-guide-node-dialog-actions {
+  justify-content: flex-end;
+  border-top: 1px solid rgba(36, 49, 58, 0.10);
 }
 
 .reading-guide-connector {
@@ -13958,7 +14129,12 @@ h6.local-reader-markdown-block--heading {
 }
 
 .reading-route-action-checklist .ai-action-checklist {
+  border: 1px solid rgba(36, 49, 58, 0.10);
   border-radius: 8px;
+  padding: 14px;
+  background:
+    linear-gradient(120deg, rgba(47, 111, 94, 0.08), rgba(49, 95, 136, 0.05)),
+    rgba(255, 253, 248, 0.78);
 }
 
 .reading-route-detail-card-list > p {
@@ -16239,6 +16415,7 @@ h6.local-reader-markdown-block--heading {
   grid-column: 2;
   display: flex;
   flex-wrap: wrap;
+  align-items: flex-start;
   gap: 8px;
   font-size: 12px;
 }
@@ -16692,6 +16869,9 @@ h6.local-reader-markdown-block--heading {
 
 .ai-asset-meta span,
 .ai-asset-meta small {
+  width: fit-content;
+  display: inline-flex;
+  align-items: center;
   border-radius: 999px;
   padding: 4px 8px;
   color: #315348;
@@ -20047,6 +20227,31 @@ h6.local-reader-markdown-block--heading {
 
   .reading-guide-node {
     min-height: 0;
+  }
+
+  .reading-guide-node-dialog-backdrop {
+    align-items: end;
+    padding: 0;
+  }
+
+  .reading-guide-node-dialog {
+    width: 100%;
+    max-height: 82vh;
+    border-radius: 8px 8px 0 0;
+  }
+
+  .reading-guide-node-dialog-heading,
+  .reading-guide-node-dialog-actions {
+    padding: 14px;
+  }
+
+  .reading-guide-node-dialog-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .reading-guide-node-dialog-actions button {
+    justify-content: center;
   }
 
   .reading-guide-connector {

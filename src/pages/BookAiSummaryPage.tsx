@@ -321,7 +321,7 @@ export function BookAiSummaryPage({
       const response = await summarizeBookNotes({
         bookId: targetBookId,
         regenerate,
-        updateFrom: preparedUpdate
+        updateFrom: regenerate ? preparedUpdate : undefined
       });
       setSummaryResponse(response);
       setStatus(statusFromSource(response.source));
@@ -587,7 +587,7 @@ export function BookAiSummaryPage({
           <RefreshCw aria-hidden="true" size={18} />
           <div>
             <strong>准备更新上一版书籍复盘</strong>
-            <p>基于上一阶段书籍复盘更新。</p>
+            <p>将参考你上次记录的阅读成果生成新版，避免重复给出已完成或不适合的建议。</p>
           </div>
         </section>
       ) : null}

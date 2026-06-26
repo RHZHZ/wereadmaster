@@ -15,6 +15,7 @@ import {
   normalizeAiActionFeedbackNote,
   readAiAssetActionItemState,
   readAiAssetActionItemFeedback,
+  readExactAiAssetActionItemFeedback,
   readAiActionItemFeedback,
   readAiReflectionQuestionFeedback,
   readAiReviewFeedback,
@@ -347,6 +348,44 @@ describe("AI action item state", () => {
         note: "已写进复盘",
         updatedAt: "2024-01-01T00:00:00.000Z"
       }
+    });
+  });
+
+  test("can read exact asset feedback without inheriting previous versions", () => {
+    const storage = createMemoryStorage();
+    const previousItems = ["今天安排45分钟读完第2章，并写下3条专注规则。"];
+
+    writeAiAssetActionItemFeedback(
+      storage,
+      "reading-route",
+      "book:deep-work",
+      "route-hash-v1",
+      deriveAiAssetActionFeedbackMatchKeys(previousItems, {
+        [buildAiActionItemId(previousItems[0], 0)]: createAiActionFeedbackRecord(
+          "completed",
+          "旧版本反馈",
+          "2024-01-01T00:00:00.000Z"
+        )
+      })
+    );
+
+    expect(readAiAssetActionItemFeedback(storage, "reading-route", "book:deep-work", "route-hash-v2")).toEqual({
+      [buildAiAssetActionItemMatchKey(previousItems[0])]: {
+        status: "completed",
+        note: "旧版本反馈",
+        updatedAt: "2024-01-01T00:00:00.000Z"
+      }
+    });
+    expect(readExactAiAssetActionItemFeedback(storage, "reading-route", "book:deep-work", "route-hash-v2")).toEqual({
+      feedbackByItemId: {},
+      hasReadableState: false
+    });
+
+    writeAiAssetActionItemFeedback(storage, "reading-route", "book:deep-work", "route-hash-v2", {});
+
+    expect(readExactAiAssetActionItemFeedback(storage, "reading-route", "book:deep-work", "route-hash-v2")).toEqual({
+      feedbackByItemId: {},
+      hasReadableState: true
     });
   });
 });

@@ -730,6 +730,7 @@ type AssetVersionRef = {
 后续评估项：
 
 - 第三阶段规划与实现见 `docs/third-stage-plan.md`。
+- 反馈作为阅读成果、AI 成果回顾与展示层级设计见 `docs/feedback-outcome-review-plan.md`。
 - 是否需要完整版本记录和手动归档。
 - 行动反馈是否需要在现有 `待处理 / 已完成 / 暂不做 / 不适合` 之外增加 `需要调整` 或更正式的完成内容。
 - 刷新时是否把行动反馈和上一版本结构化摘要纳入输入。

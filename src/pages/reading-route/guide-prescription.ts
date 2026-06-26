@@ -6,12 +6,24 @@ export type GuidePrescriptionItem = {
   body: string;
 };
 
+export type GuideActionItem = {
+  title: string;
+  done: string;
+};
+
 export type GuideMapNode = {
   id: string;
   eyebrow: string;
   label: string;
   detail: string;
   meta: string;
+  fullDetail?: string;
+  fullMeta?: string;
+  fields?: Array<{
+    label: string;
+    value: string;
+  }>;
+  associatedActions?: GuideActionItem[];
 };
 
 export type GuideDetailSections = {
@@ -30,10 +42,7 @@ export type GuideDetailSections = {
     output: string;
     acceptance: string;
   }>;
-  actions: Array<{
-    title: string;
-    done: string;
-  }>;
+  actions: GuideActionItem[];
 };
 
 const CHAPTER_RANGE_PATTERN =
@@ -80,11 +89,40 @@ export function buildGuidePrescriptionItems(route: ReadingRoute, isCrossBookRout
   ];
 }
 
+export function buildGuideFocusItems(route: ReadingRoute, isCrossBookRoute: boolean): GuidePrescriptionItem[] {
+  if (isCrossBookRoute) {
+    return buildCrossBookFocusItems(route);
+  }
+
+  const prescription = buildGuidePrescriptionItems(route, false);
+  const actions = buildGuideActionDetails(route);
+  const firstAction = actions[0];
+
+  return [
+    {
+      label: "当前优先级",
+      title: firstAction?.title || prescription[0].title,
+      body: firstAction ? `完成标准：${firstAction.done}` : prescription[0].body
+    },
+    {
+      label: "验证判断",
+      title: prescription[1].title,
+      body: prescription[1].body
+    },
+    {
+      label: "本轮收束",
+      title: prescription[2].title,
+      body: prescription[2].body
+    }
+  ];
+}
+
 export function buildSingleBookGuideNodes(
   currentBook: ReadingRouteBookInput | undefined,
   route: ReadingRoute
 ): GuideMapNode[] {
   const prescription = buildGuidePrescriptionItems(route, false);
+  const actions = buildGuideActionDetails(route);
   const title = cleanGuideText(currentBook?.title || route.books[0]?.title) || "当前书";
 
   return [
@@ -93,35 +131,63 @@ export function buildSingleBookGuideNodes(
       eyebrow: "当前书",
       label: title,
       detail: "先把注意力放回这一本书，不在主线未收束前扩展书单。",
-      meta: cleanGuideText(currentBook?.localStatus || route.books[0]?.localStatus) || ""
+      meta: cleanGuideText(currentBook?.localStatus || route.books[0]?.localStatus) || "",
+      fields: [
+        { label: "书名", value: title },
+        { label: "作者", value: cleanGuideText(currentBook?.author || route.books[0]?.author) },
+        { label: "本地状态", value: cleanGuideText(currentBook?.localStatus || route.books[0]?.localStatus) },
+        { label: "依据", value: cleanGuideText(route.books[0]?.basis) }
+      ].filter((item) => item.value)
     },
     {
       id: "continue-reading",
       eyebrow: "先读哪里",
       label: prescription[0].title,
       detail: prescription[0].body,
-      meta: ""
+      meta: "",
+      fields: [
+        { label: "阅读任务", value: prescription[0].title },
+        { label: "完整说明", value: prescription[0].body },
+        { label: "预计投入", value: cleanGuideText(route.books[0]?.estimatedEffort) },
+        { label: "依据", value: cleanGuideText(route.books[0]?.basis) }
+      ].filter((item) => item.value),
+      associatedActions: maybeAssociatedActions(actions.slice(0, 1))
     },
     {
       id: "book-review",
       eyebrow: "带问题读",
       label: prescription[1].title,
       detail: prescription[1].body,
-      meta: ""
+      meta: "",
+      fields: [
+        { label: "验证问题", value: prescription[1].title },
+        { label: "阅读方式", value: prescription[1].body },
+        { label: "复盘问题", value: cleanGuideText(route.reviewCheckpoints[0]?.question) }
+      ].filter((item) => item.value)
     },
     {
       id: "single-book-output",
       eyebrow: "交付物",
       label: prescription[2].title,
       detail: prescription[2].body,
-      meta: ""
+      meta: "",
+      fields: [
+        { label: "交付物", value: prescription[2].title },
+        { label: "完成说明", value: prescription[2].body },
+        { label: "验收标准", value: cleanGuideText(route.reviewCheckpoints[0]?.suggestedOutput) }
+      ].filter((item) => item.value),
+      associatedActions: maybeAssociatedActions(buildOutputAssociatedActions(actions, route))
     },
     {
       id: "extend-route",
       eyebrow: "延伸判断",
       label: "是否加入候选书",
       detail: "完成本书复盘后，只有主题需要横向比较时再加入候选书。",
-      meta: "候选书可选"
+      meta: "候选书可选",
+      fields: [
+        { label: "判断方式", value: "完成本书复盘后，只有主题需要横向比较时再加入候选书。" },
+        { label: "候选状态", value: "候选书可选" }
+      ]
     }
   ];
 }
@@ -134,10 +200,10 @@ export function buildGuideDetailSections(route: ReadingRoute, isCrossBookRoute: 
       index: book.order || index + 1,
       title: cleanGuideText(book.title) || `第 ${index + 1} 本`,
       meta: [book.author, book.localStatus].map(cleanGuideText).filter(Boolean).join(" · ") || "路线节点",
-      taskLabel: isCrossBookRoute ? "阅读目的" : "阅读任务",
+      taskLabel: isCrossBookRoute ? "阅读目的" : "核对依据",
       task: isCrossBookRoute
         ? shortGuideText(cleanGuideText(book.readingPurpose) || "完成这个节点的阅读和复盘。", 42)
-        : prescription[0]?.title || "完成下一段关键阅读",
+        : buildSingleBookEvidenceTask(book, prescription[0]?.title),
       effort: cleanGuideText(book.estimatedEffort) || "1 个连续阅读时段",
       evidence: buildEvidenceText(book.basis)
     })),
@@ -151,12 +217,16 @@ export function buildGuideDetailSections(route: ReadingRoute, isCrossBookRoute: 
         acceptance: buildAcceptanceText(checkpoint.suggestedOutput)
       };
     }),
-    actions: route.nextActions.map(buildActionDetail).filter((item) => item.title)
+    actions: buildGuideActionDetails(route)
   };
 }
 
 export function buildGuideActionText(item: { title: string; done: string }): string {
   return `${item.title}，${item.done}`;
+}
+
+export function buildGuideActionDetails(route: ReadingRoute): GuideActionItem[] {
+  return route.nextActions.map(buildActionDetail).filter((item) => item.title.trim() && item.done.trim());
 }
 
 function buildCrossBookFocusItems(route: ReadingRoute): GuidePrescriptionItem[] {
@@ -217,6 +287,15 @@ function buildEvidenceText(value: string) {
     .join("；");
 }
 
+function buildSingleBookEvidenceTask(book: ReadingRoute["books"][number], fallbackTask: string | undefined) {
+  const title = cleanGuideText(book.title);
+  if (title) {
+    return `围绕《${title}》核对本轮阅读依据`;
+  }
+
+  return fallbackTask ? `围绕「${fallbackTask}」核对本轮阅读依据` : "核对本轮阅读依据";
+}
+
 function buildOutputTitle(suggestedOutput: string) {
   const normalized = suggestedOutput.replace(CHECKPOINT_VERB_PATTERN, "").trim();
   const beforeComma = normalized.split(/[，,；;]/)[0]?.trim() ?? "";
@@ -245,6 +324,38 @@ function buildActionDetail(value: string) {
     title,
     done: ensureChinesePeriod(done || "完成后立即保存为本书复盘记录")
   };
+}
+
+function maybeAssociatedActions(actions: GuideActionItem[]) {
+  return actions.length > 0 ? actions : undefined;
+}
+
+function buildOutputAssociatedActions(actions: GuideActionItem[], route: ReadingRoute) {
+  const outputSegments = splitComparableOutput(route.reviewCheckpoints[0]?.suggestedOutput ?? "");
+  if (outputSegments.length === 0) {
+    return [];
+  }
+
+  return actions.slice(1).filter((item) => {
+    const actionText = normalizeComparableOutput(buildGuideActionText(item));
+    return outputSegments.every((segment) => actionText.includes(segment));
+  });
+}
+
+function splitComparableOutput(value: string) {
+  return cleanCheckpointOutput(value)
+    .split(/[，,；;]/)
+    .map(normalizeComparableOutput)
+    .filter(Boolean);
+}
+
+function normalizeComparableOutput(value: string) {
+  return cleanGuideText(value)
+    .replace(CHECKPOINT_VERB_PATTERN, "")
+    .replace(/^并/, "")
+    .replace(/\s+/g, "")
+    .replace(/[，,；;。！？]/g, "")
+    .trim();
 }
 
 function extractRequirementAfterComma(value: string) {
