@@ -96,6 +96,8 @@ import type {
   LocalReaderAiQuestionResponse
 } from "./local-reader-ai-requests";
 
+const SETTINGS_COMMAND_TIMEOUT_MS = 15_000;
+
 type ShelfEntryRecord = {
   id?: unknown;
   type?: unknown;
@@ -603,7 +605,7 @@ export async function getAiSettingsState(): Promise<AiSettingsState> {
     };
   }
 
-  return invoke<AiSettingsState>("get_ai_settings_state");
+  return invokeSettingsCommand<AiSettingsState>("get_ai_settings_state");
 }
 
 export async function canAskLocalReaderSelectionQuestion(): Promise<boolean> {
@@ -640,7 +642,7 @@ export async function validateAiCredential({
   presetId?: AiProviderPresetId;
   responseFormatPolicy?: AiResponseFormatPolicy;
 }): Promise<AiCredentialValidationResult> {
-  return invoke<AiCredentialValidationResult>("validate_ai_credential", {
+  return invokeSettingsCommand<AiCredentialValidationResult>("validate_ai_credential", {
     apiKey,
     baseUrl,
     model,
@@ -662,7 +664,7 @@ export async function saveAiCredential({
   presetId?: AiProviderPresetId;
   responseFormatPolicy?: AiResponseFormatPolicy;
 }): Promise<AiSettingsState> {
-  return invoke<AiSettingsState>("save_ai_credential", {
+  return invokeSettingsCommand<AiSettingsState>("save_ai_credential", {
     apiKey,
     baseUrl,
     model,
@@ -684,7 +686,7 @@ export async function saveAiSettings({
   presetId?: AiProviderPresetId;
   responseFormatPolicy?: AiResponseFormatPolicy;
 }): Promise<AiSettingsState> {
-  return invoke<AiSettingsState>("save_ai_settings", {
+  return invokeSettingsCommand<AiSettingsState>("save_ai_settings", {
     apiKey,
     baseUrl,
     model,
@@ -751,7 +753,7 @@ export async function listAiProviderModels({
 }
 
 export async function removeAiCredential(confirm: boolean): Promise<AiSettingsState> {
-  return invoke<AiSettingsState>("remove_ai_credential", { confirm });
+  return invokeSettingsCommand<AiSettingsState>("remove_ai_credential", { confirm });
 }
 
 export async function getAiCachedOutput({
@@ -1030,19 +1032,19 @@ export async function getCredentialStatus(): Promise<CredentialStatus> {
     };
   }
 
-  return invoke<CredentialStatus>("get_credential_status");
+  return invokeSettingsCommand<CredentialStatus>("get_credential_status");
 }
 
 export async function validateCredential(apiKey: string): Promise<CredentialValidationResult> {
-  return invoke<CredentialValidationResult>("validate_credential", { apiKey });
+  return invokeSettingsCommand<CredentialValidationResult>("validate_credential", { apiKey });
 }
 
 export async function saveCredential(apiKey: string): Promise<CredentialStatus> {
-  return invoke<CredentialStatus>("save_credential", { apiKey });
+  return invokeSettingsCommand<CredentialStatus>("save_credential", { apiKey });
 }
 
 export async function removeCredential(confirm: boolean): Promise<CredentialStatus> {
-  return invoke<CredentialStatus>("remove_credential", { confirm });
+  return invokeSettingsCommand<CredentialStatus>("remove_credential", { confirm });
 }
 
 export async function getBookshelf(): Promise<BookshelfResponse> {
@@ -1295,7 +1297,7 @@ export async function getSimilarBooks({
 }
 
 export async function getSettingsState(): Promise<SettingsState> {
-  const response = await invoke<SettingsStateResponseRecord>("get_settings_state");
+  const response = await invokeSettingsCommand<SettingsStateResponseRecord>("get_settings_state");
   return mapSettingsState(response);
 }
 
@@ -1539,9 +1541,10 @@ export async function chooseCustomExportDirectory(): Promise<ChooseExportDirecto
 }
 
 export async function saveCustomExportDirectory(targetDir: string): Promise<SaveExportDirectoryResult> {
-  const response = await invoke<SaveExportDirectoryResponseRecord>("save_custom_export_directory", {
-    targetDir
-  });
+  const response = await invokeSettingsCommand<SaveExportDirectoryResponseRecord>(
+    "save_custom_export_directory",
+    { targetDir }
+  );
 
   return {
     path: stringValue(response.path) || targetDir,
@@ -1550,7 +1553,9 @@ export async function saveCustomExportDirectory(targetDir: string): Promise<Save
 }
 
 export async function resetCustomExportDirectory(): Promise<ResetExportDirectoryResult> {
-  const response = await invoke<ResetExportDirectoryResponseRecord>("reset_custom_export_directory");
+  const response = await invokeSettingsCommand<ResetExportDirectoryResponseRecord>(
+    "reset_custom_export_directory"
+  );
 
   return {
     state: mapSettingsState(response.state ?? {})
@@ -2583,6 +2588,33 @@ function mapSimilarBooksResponse(response: SimilarBooksResponseRecord): SimilarB
     },
     syncState: normalizeSyncState(response.syncState)
   };
+}
+
+async function invokeSettingsCommand<T>(
+  command: string,
+  args?: Record<string, unknown>
+): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(
+        new Error(
+          "本地设置保存超时，请重试；如果在 Android 上反复出现，请完全退出应用后再打开。"
+        )
+      );
+    }, SETTINGS_COMMAND_TIMEOUT_MS);
+  });
+
+  try {
+    const commandPromise =
+      args === undefined ? invoke<T>(command) : invoke<T>(command, args);
+    return await Promise.race([commandPromise, timeoutPromise]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
 }
 
 function mapSettingsState(response: SettingsStateResponseRecord): SettingsState {

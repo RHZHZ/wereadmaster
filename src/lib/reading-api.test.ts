@@ -236,6 +236,30 @@ describe("settings export directory API", () => {
     expect(models.models[0]?.id).toBe("deepseek-chat");
   });
 
+  test("settings save commands fail fast when native invoke does not settle", async () => {
+    vi.useFakeTimers();
+    invokeMock.mockImplementation(() => new Promise(() => undefined));
+
+    const savePromise = saveAiSettings({
+      baseUrl: "https://api.openai.com/v1",
+      model: "gpt-4o-mini",
+      presetId: "openai",
+      responseFormatPolicy: "jsonSchemaFirst"
+    });
+    const expectation = expect(savePromise).rejects.toThrow("本地设置保存超时");
+
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    await expectation;
+    expect(invokeMock).toHaveBeenCalledWith("save_ai_settings", {
+      apiKey: undefined,
+      baseUrl: "https://api.openai.com/v1",
+      model: "gpt-4o-mini",
+      presetId: "openai",
+      responseFormatPolicy: "jsonSchemaFirst"
+    });
+  });
+
   test("exports report image through the configured application export directory", async () => {
     invokeMock.mockResolvedValue({
       fileName: "2026-05-report.png",

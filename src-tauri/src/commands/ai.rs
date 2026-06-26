@@ -30,8 +30,8 @@ impl From<AiServiceError> for AiCommandError {
 }
 
 #[tauri::command]
-pub fn get_ai_settings_state(app: AppHandle) -> Result<AiSettingsState, AiCommandError> {
-    AiService::new(app).settings_state().map_err(Into::into)
+pub async fn get_ai_settings_state(app: AppHandle) -> Result<AiSettingsState, AiCommandError> {
+    run_blocking(move || AiService::new(app).settings_state()).await
 }
 
 #[tauri::command]
@@ -52,7 +52,7 @@ pub fn validate_ai_credential(
 }
 
 #[tauri::command]
-pub fn save_ai_credential(
+pub async fn save_ai_credential(
     app: AppHandle,
     api_key: String,
     base_url: Option<String>,
@@ -60,19 +60,20 @@ pub fn save_ai_credential(
     preset_id: Option<String>,
     response_format_policy: Option<AiResponseFormatPolicy>,
 ) -> Result<AiSettingsState, AiCommandError> {
-    AiService::new(app)
-        .save_credential(
+    run_blocking(move || {
+        AiService::new(app).save_credential(
             &api_key,
             base_url.as_deref(),
             model.as_deref(),
             preset_id.as_deref(),
             response_format_policy,
         )
-        .map_err(Into::into)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn save_ai_settings(
+pub async fn save_ai_settings(
     app: AppHandle,
     api_key: Option<String>,
     base_url: Option<String>,
@@ -80,15 +81,16 @@ pub fn save_ai_settings(
     preset_id: Option<String>,
     response_format_policy: Option<AiResponseFormatPolicy>,
 ) -> Result<AiSettingsState, AiCommandError> {
-    AiService::new(app)
-        .save_settings(
+    run_blocking(move || {
+        AiService::new(app).save_settings(
             api_key.as_deref(),
             base_url.as_deref(),
             model.as_deref(),
             preset_id.as_deref(),
             response_format_policy,
         )
-        .map_err(Into::into)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -146,13 +148,11 @@ pub async fn list_ai_provider_models(
 }
 
 #[tauri::command]
-pub fn remove_ai_credential(
+pub async fn remove_ai_credential(
     app: AppHandle,
     confirm: bool,
 ) -> Result<AiSettingsState, AiCommandError> {
-    AiService::new(app)
-        .remove_credential(confirm)
-        .map_err(Into::into)
+    run_blocking(move || AiService::new(app).remove_credential(confirm)).await
 }
 
 #[tauri::command]
@@ -165,6 +165,21 @@ pub fn get_ai_cached_output(
 ) -> Result<Option<AiCachedOutputRecord>, AiCommandError> {
     AiService::new(app)
         .get_cached_output(feature, scope_id, prompt_version, input_hash)
+        .map_err(Into::into)
+}
+
+async fn run_blocking<T>(
+    task: impl FnOnce() -> Result<T, AiServiceError> + Send + 'static,
+) -> Result<T, AiCommandError>
+where
+    T: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|error| AiCommandError {
+            code: "ai_task_failed".to_string(),
+            message: format!("本地 AI 设置任务执行失败：{error}"),
+        })?
         .map_err(Into::into)
 }
 

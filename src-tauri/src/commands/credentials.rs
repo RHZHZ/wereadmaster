@@ -22,10 +22,10 @@ impl From<CredentialServiceError> for CredentialCommandError {
 }
 
 #[tauri::command]
-pub fn get_credential_status(app: AppHandle) -> Result<CredentialStatus, CredentialCommandError> {
-    CredentialService::new(app)
-        .credential_status()
-        .map_err(Into::into)
+pub async fn get_credential_status(
+    app: AppHandle,
+) -> Result<CredentialStatus, CredentialCommandError> {
+    run_blocking(move || CredentialService::new(app).credential_status()).await
 }
 
 #[tauri::command]
@@ -34,21 +34,32 @@ pub fn validate_credential(api_key: String) -> CredentialValidationResult {
 }
 
 #[tauri::command]
-pub fn save_credential(
+pub async fn save_credential(
     app: AppHandle,
     api_key: String,
 ) -> Result<CredentialStatus, CredentialCommandError> {
-    CredentialService::new(app)
-        .save_credential(&api_key)
-        .map_err(Into::into)
+    run_blocking(move || CredentialService::new(app).save_credential(&api_key)).await
 }
 
 #[tauri::command]
-pub fn remove_credential(
+pub async fn remove_credential(
     app: AppHandle,
     confirm: bool,
 ) -> Result<CredentialStatus, CredentialCommandError> {
-    CredentialService::new(app)
-        .remove_credential(confirm)
+    run_blocking(move || CredentialService::new(app).remove_credential(confirm)).await
+}
+
+async fn run_blocking<T>(
+    task: impl FnOnce() -> Result<T, CredentialServiceError> + Send + 'static,
+) -> Result<T, CredentialCommandError>
+where
+    T: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|error| CredentialCommandError {
+            code: "credential_task_failed".to_string(),
+            message: format!("本地凭据任务执行失败：{error}"),
+        })?
         .map_err(Into::into)
 }

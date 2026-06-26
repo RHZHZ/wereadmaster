@@ -29,10 +29,8 @@ impl From<AppError> for AppCommandError {
 }
 
 #[tauri::command]
-pub fn get_settings_state(app: AppHandle) -> Result<SettingsStateResponse, AppCommandError> {
-    SettingsService::new(app)
-        .settings_state()
-        .map_err(Into::into)
+pub async fn get_settings_state(app: AppHandle) -> Result<SettingsStateResponse, AppCommandError> {
+    run_blocking(move || SettingsService::new(app).settings_state()).await
 }
 
 #[tauri::command]
@@ -130,20 +128,31 @@ pub fn choose_custom_export_directory(
 }
 
 #[tauri::command]
-pub fn save_custom_export_directory(
+pub async fn save_custom_export_directory(
     app: AppHandle,
     target_dir: String,
 ) -> Result<SaveExportDirectoryResponse, AppCommandError> {
-    SettingsService::new(app)
-        .save_custom_export_directory(target_dir)
-        .map_err(Into::into)
+    run_blocking(move || SettingsService::new(app).save_custom_export_directory(target_dir)).await
 }
 
 #[tauri::command]
-pub fn reset_custom_export_directory(
+pub async fn reset_custom_export_directory(
     app: AppHandle,
 ) -> Result<ResetExportDirectoryResponse, AppCommandError> {
-    SettingsService::new(app)
-        .reset_custom_export_directory()
+    run_blocking(move || SettingsService::new(app).reset_custom_export_directory()).await
+}
+
+async fn run_blocking<T>(
+    task: impl FnOnce() -> Result<T, AppError> + Send + 'static,
+) -> Result<T, AppCommandError>
+where
+    T: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|error| AppCommandError {
+            code: "settings_task_failed".to_string(),
+            message: format!("本地设置任务执行失败：{error}"),
+        })?
         .map_err(Into::into)
 }

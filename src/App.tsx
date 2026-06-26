@@ -184,6 +184,7 @@ const readingReviewSubItems: ReadingReviewSubItem[] = [
 ];
 
 const SIDEBAR_COLLAPSED_KEY = "wxreadmaster.sidebarCollapsed";
+const MOBILE_SHELL_MEDIA_QUERY = "(max-width: 980px)";
 
 type PreparedAssetBook = {
   bookId: string;
@@ -218,6 +219,27 @@ function getInitialSystemPrefersDark(): boolean {
   }
 
   return window.matchMedia("(prefers-color-scheme: dark)").matches;
+}
+
+export function isAndroidRuntime(userAgent?: string): boolean {
+  const runtimeUserAgent =
+    userAgent ?? (typeof navigator === "undefined" ? "" : navigator.userAgent);
+
+  return /Android/i.test(runtimeUserAgent);
+}
+
+export function getInitialIsMobileShell(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  return isMobileShellViewport(window.matchMedia);
+}
+
+export function isMobileShellViewport(
+  matchMedia: (query: string) => Pick<MediaQueryList, "matches">,
+): boolean {
+  return matchMedia(MOBILE_SHELL_MEDIA_QUERY).matches;
 }
 
 function getInitialPreferences(): UserPreferences {
@@ -264,6 +286,7 @@ export function App() {
   const [systemPrefersDark, setSystemPrefersDark] = useState(
     getInitialSystemPrefersDark,
   );
+  const [isMobileShell, setIsMobileShell] = useState(getInitialIsMobileShell);
   const [activeView, setActiveView] = useState<ViewId>(
     preferences.defaultStartPage,
   );
@@ -330,6 +353,7 @@ export function App() {
     useState<AppUpdateNoticeState>(readAppUpdateNoticeState);
   const [appUpdateProgress, setAppUpdateProgress] =
     useState<AppUpdateInstallProgress>();
+  const mobileSidebarTriggerRef = useRef<HTMLButtonElement>(null);
   const pendingAppUpdateRef = useRef<
     Awaited<ReturnType<typeof prepareAppUpdate>>["update"]
   >(null);
@@ -389,6 +413,7 @@ export function App() {
     appUpdateNoticeState,
   );
   const appUpdateProgressLabel = formatAppUpdateProgress(appUpdateProgress);
+  const isAndroidShell = isAndroidRuntime();
 
   useEffect(() => {
     let isMounted = true;
@@ -438,13 +463,28 @@ export function App() {
   }, [isSidebarCollapsed]);
 
   useEffect(() => {
+    const mediaQuery = window.matchMedia(MOBILE_SHELL_MEDIA_QUERY);
+    const handleChange = (event: MediaQueryListEvent) => {
+      setIsMobileShell(event.matches);
+      if (!event.matches) {
+        closeMobileSidebar();
+      }
+    };
+
+    setIsMobileShell(mediaQuery.matches);
+    mediaQuery.addEventListener("change", handleChange);
+
+    return () => mediaQuery.removeEventListener("change", handleChange);
+  }, []);
+
+  useEffect(() => {
     if (!isMobileSidebarOpen) {
       return;
     }
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
-        setIsMobileSidebarOpen(false);
+        closeMobileSidebar({ restoreFocus: true });
       }
     }
 
@@ -482,6 +522,16 @@ export function App() {
     );
     setAppUpdateNoticeState(normalized);
     return normalized;
+  }
+
+  function closeMobileSidebar(options: { restoreFocus?: boolean } = {}) {
+    setIsMobileSidebarOpen(false);
+
+    if (options.restoreFocus) {
+      window.requestAnimationFrame(() => {
+        mobileSidebarTriggerRef.current?.focus();
+      });
+    }
   }
 
   useEffect(() => {
@@ -747,7 +797,7 @@ export function App() {
       setPreparedAssetUpdateIntent(undefined);
     }
 
-    setIsMobileSidebarOpen(false);
+    closeMobileSidebar();
     setSidebarMenuState(createCollapsedSidebarMenuState());
     startTransition(() => {
       setActiveView(nextView);
@@ -755,14 +805,14 @@ export function App() {
   }
 
   function handleOpenSettings(preferredCategory?: SettingsCategoryId) {
-    setIsMobileSidebarOpen(false);
+    closeMobileSidebar();
     setSidebarMenuState(createCollapsedSidebarMenuState());
     setSettingsPreferredCategory(preferredCategory);
     setIsSettingsOpen(true);
   }
 
   function handleOpenReadingReviewTab(tab: ReadingHubTab) {
-    setIsMobileSidebarOpen(false);
+    closeMobileSidebar();
     setSidebarMenuState(openSidebarMenuState("readingReview"));
     startTransition(() => {
       setReadingHubTab(tab);
@@ -773,7 +823,7 @@ export function App() {
   function handleOpenShelfTab(tab: ShelfTab) {
     const item =
       shelfSubItems.find((subItem) => subItem.id === tab) ?? shelfSubItems[0];
-    setIsMobileSidebarOpen(false);
+    closeMobileSidebar();
     setSidebarMenuState(openSidebarMenuState("shelf"));
     startTransition(() => {
       setActiveView(item.viewId);
@@ -781,7 +831,7 @@ export function App() {
   }
 
   function handleOpenLocalBook(bookId: string) {
-    setIsMobileSidebarOpen(false);
+    closeMobileSidebar();
     setSidebarMenuState(openSidebarMenuState("shelf"));
     setSelectedLocalBookId(bookId);
     startTransition(() => {
@@ -1106,7 +1156,9 @@ export function App() {
 
   return (
     <div
-      className={`app-frame ${isSidebarCollapsed ? "sidebar-collapsed" : ""} ${
+      className={`app-frame ${isAndroidShell ? "android-shell" : ""} ${
+        isMobileShell ? "mobile-shell" : ""
+      } ${isSidebarCollapsed ? "sidebar-collapsed" : ""} ${
         isMobileSidebarOpen ? "mobile-sidebar-open" : ""
       }`}
       data-theme={preferences.themeMode}
@@ -1114,12 +1166,12 @@ export function App() {
       data-font-scale={preferences.fontScale}
       data-density={preferences.density}
     >
-      <AppTitleBar />
+      {!isAndroidShell ? <AppTitleBar /> : null}
       <button
         className="sidebar-scrim"
         type="button"
         aria-label="关闭主导航"
-        onClick={() => setIsMobileSidebarOpen(false)}
+        onClick={() => closeMobileSidebar({ restoreFocus: true })}
       />
       <aside className="sidebar" id="app-sidebar" aria-label="主导航">
         <div className="brand-row">
@@ -1148,7 +1200,7 @@ export function App() {
           <button
             className="mobile-sidebar-close"
             type="button"
-            onClick={() => setIsMobileSidebarOpen(false)}
+            onClick={() => closeMobileSidebar({ restoreFocus: true })}
             aria-label="关闭主导航"
             title="关闭主导航"
           >
@@ -1337,6 +1389,7 @@ export function App() {
         {activeView !== "localReader" ? (
           <header className="topbar">
             <button
+              ref={mobileSidebarTriggerRef}
               className="mobile-sidebar-trigger"
               type="button"
               aria-label="打开主导航"
