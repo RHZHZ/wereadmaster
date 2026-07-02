@@ -232,6 +232,26 @@ jobs:
             echo "tauri.android.versionCode=$VERSION_CODE"
           } > src-tauri/gen/android/app/tauri.properties
 
+      - name: Patch missing Android consumer ProGuard files
+        run: |
+          set -euo pipefail
+
+          cargo fetch --manifest-path "src-tauri/Cargo.toml"
+
+          CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+          patched=0
+          while IFS= read -r build_file; do
+            android_dir="$(dirname "$build_file")"
+            consumer_file="$android_dir/consumer-rules.pro"
+            if grep -q 'consumerProguardFiles("consumer-rules.pro")' "$build_file" && [ ! -f "$consumer_file" ]; then
+              printf '# Empty consumer ProGuard rules for Android plugin packages that reference this file.\n' > "$consumer_file"
+              patched=$((patched + 1))
+              echo "Created $consumer_file"
+            fi
+          done < <(find "$CARGO_HOME/registry/src" -path '*/tauri-plugin-*/android/build.gradle.kts' -print)
+
+          echo "Patched $patched Android plugin consumer ProGuard file(s)."
+
       - name: Build Android APK
         run: npm run tauri android build -- --apk
 
