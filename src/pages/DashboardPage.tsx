@@ -31,6 +31,7 @@ import {
   type DashboardLocalProgress
 } from "./dashboard-local-progress";
 import {
+  getCommandErrorInfo,
   getCommandErrorMessage,
   getAiSettingsState,
   getLatestReadingStatsReview,
@@ -38,6 +39,7 @@ import {
   getReadingStats,
   listReadingItemStates,
   type BookshelfResponse,
+  type CommandErrorInfo,
   type NotebookOverviewResponse,
   type ReadingStatsResponse
 } from "../lib/reading-api";
@@ -65,7 +67,7 @@ type DashboardPageProps = {
   bookshelf?: BookshelfResponse;
   isLoading: boolean;
   isSyncing: boolean;
-  error?: string;
+  error?: CommandErrorInfo;
   onSync: () => void;
   onOpenBookshelf: () => void;
   onOpenNotes: () => void;
@@ -137,7 +139,7 @@ export function DashboardPage({
   const [readingStates, setReadingStates] = useState<ReadingItemState[]>([]);
   const [isLoadingReadingStates, setIsLoadingReadingStates] = useState(false);
   const [readingStateError, setReadingStateError] = useState<string>();
-  const [statsError, setStatsError] = useState<string>();
+  const [statsError, setStatsError] = useState<CommandErrorInfo>();
   const [aiSettingsState, setAiSettingsState] = useState<AiSettingsState>();
   const [reviewSuggestion, setReviewSuggestion] = useState<ReadingStatsAiReviewResponse>();
   const [reviewSuggestionError, setReviewSuggestionError] = useState<string>();
@@ -445,7 +447,7 @@ export function DashboardPage({
         }
       } catch (loadError) {
         if (isMounted) {
-          setStatsError(getCommandErrorMessage(loadError));
+          setStatsError(getCommandErrorInfo(loadError));
         }
       }
     }
@@ -674,7 +676,11 @@ export function DashboardPage({
               </div>
             </>
           ) : (
-            <p>{statsError ? "统计暂不可用" : "同步统计后，这里会生成最近一个月的阅读人格。"}</p>
+            <p>
+              {statsError
+                ? formatDashboardErrorText(statsError)
+                : "同步统计后，这里会生成最近一个月的阅读人格。"}
+            </p>
           )}
         </article>
 
@@ -784,7 +790,7 @@ export function DashboardPage({
         </div>
 
         {error ? (
-          <StatusMessage tone="error" icon={<AlertCircle aria-hidden="true" size={18} />} text={error} />
+          <StatusMessage tone="error" icon={<AlertCircle aria-hidden="true" size={18} />} text={formatDashboardErrorText(error)} />
         ) : null}
 
         {!hasCredential ? (
@@ -1510,6 +1516,19 @@ function StatusMessage({
       <span>{text}</span>
     </div>
   );
+}
+
+function formatDashboardErrorText(error: CommandErrorInfo): string {
+  const message = getCommandErrorMessage(error);
+  return error.code === "upgrade_required"
+    ? withSkillUpgradePrefix(message)
+    : message;
+}
+
+function withSkillUpgradePrefix(message: string): string {
+  return message.startsWith("微信读书 Skill 需要升级")
+    ? message
+    : `微信读书 Skill 需要升级：${message}`;
 }
 
 function formatSyncDate(value?: string): { value: string; detail: string } {

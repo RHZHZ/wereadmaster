@@ -23,9 +23,15 @@ import {
 } from "lucide-react";
 import emptyShelf from "../assets/empty-shelf.png";
 import { CredentialSetupCard } from "../components/CredentialSetupCard";
+import { SkillUpgradeNotice } from "../components/SkillUpgradeNotice";
 import { useToast } from "../components/ToastProvider";
 import { copyTextToClipboard } from "../lib/clipboard";
-import { getCommandErrorMessage, upsertReadingItemState, type BookshelfResponse } from "../lib/reading-api";
+import {
+  getCommandErrorMessage,
+  upsertReadingItemState,
+  type BookshelfResponse,
+  type CommandErrorInfo
+} from "../lib/reading-api";
 import type { CredentialStatus, ShelfArchive, ShelfEntry } from "../lib/types";
 import {
   ARCHIVE_PREVIEW_LIMIT,
@@ -45,7 +51,7 @@ type BookshelfPageProps = {
   bookshelf?: BookshelfResponse;
   isLoading: boolean;
   isSyncing: boolean;
-  error?: string;
+  error?: CommandErrorInfo;
   onSync: () => void;
   onOpenSettings: () => void;
   onOpenDetail: (entry: ShelfEntry) => void;
@@ -312,10 +318,12 @@ export function BookshelfPage({
         />
       ) : null}
 
-      {error ? (
+      {error?.code === "upgrade_required" ? (
+        <SkillUpgradeNotice error={error} onRetry={onSync} retryLabel="升级后同步" />
+      ) : error ? (
         <div className="status-message status-message--error">
           <AlertCircle aria-hidden="true" size={18} />
-          <span>{error}</span>
+          <span>{getCommandErrorMessage(error)}</span>
         </div>
       ) : null}
 

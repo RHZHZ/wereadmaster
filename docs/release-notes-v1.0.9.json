@@ -1,0 +1,16 @@
+{
+  "version": "v1.0.9",
+  "date": "2026-07-02",
+  "title": "微信读书 Skill 1.0.4 适配与构建修复",
+  "summary": "本版本对齐微信读书 Skill 1.0.4：补齐升级错误提示闭环，停止展示伪造 deepLink，透传发现页链接字段，并修复相似推荐必需分页参数与 Windows 多入口构建路径问题。",
+  "highlights": [
+    "运行时 Skill 版本更新为 1.0.4，并增加版本一致性测试。",
+    "微信读书接口返回 upgrade_required 时，书架、发现、详情、笔记、统计、复盘和单本 AI 复盘会展示专门升级提示。",
+    "书籍详情不再在缺少接口 deepLink 时拼接 weread:// 伪链接。",
+    "搜索、推荐和相似推荐会透传接口返回的 deepLink 字段。",
+    "相似推荐首次请求补齐 count 和 maxIdx，减少误降级为书名搜索。",
+    "设置页同步状态可以识别 Skill 需升级的错误码。",
+    "修复 Vite 多入口构建在 Windows 下偶发解析 website/index.html 输出路径失败的问题。"
+  ],
+  "releaseNotesMarkdown": "## 本次更新\n\n- 适配：微信读书 Skill 运行时版本更新为 `1.0.4`，并增加版本一致性测试。\n- 新增：`upgrade_required` 会在书架、发现、详情、笔记、统计、复盘和单本 AI 复盘中显示专门升级提示。\n- 优化：书籍详情不再在接口缺少 `deepLink` 时拼接伪造的 `weread://` 链接。\n- 优化：搜索、推荐和相似推荐透传接口返回的 `deepLink` 字段。\n- 修复：相似推荐首次请求补齐 `count` 和 `maxIdx`，减少误降级为书名搜索。\n- 修复：Windows 下 Vite 多入口构建可能把 `website/index.html` 解析为跨目录输出路径的问题。\n\n## 更新说明\n\n- 版本：v1.0.9\n- 适用平台：Windows x64 / Android APK\n- 更新方式：Windows 桌面端可在设置 > 应用更新中检查；Android 用户请从 GitHub Release 下载签名 APK。"
+}

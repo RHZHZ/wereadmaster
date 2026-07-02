@@ -155,7 +155,7 @@ function makeDetailResponse(bookId: string, title: string, author?: string): Boo
       isFinished: false
     },
     chapters: [],
-    deepLink: `weread://reading?bId=${bookId}`
+    deepLink: ""
   };
 }
 

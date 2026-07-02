@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { AiActionFeedbackChecklist } from "../components/AiActionFeedbackChecklist";
 import { reflectionFeedbackLabels } from "../components/AiActionFeedbackChecklist";
+import { SkillUpgradeNotice } from "../components/SkillUpgradeNotice";
 import { calculateTotalNotes } from "../lib/business-rules";
 import { buildAssetVersionChangeSummary } from "../lib/ai-asset-version-diff";
 import {
@@ -40,11 +41,13 @@ import {
   getAIAssetVersionDetail,
   getAIAssetVersionHistory,
   getAiReviewFeedback,
+  getCommandErrorInfo,
   getCommandErrorMessage,
   getNotebookOverview,
   listAIAssetSummaries,
   listBookNotesSummaries,
   saveAiReviewFeedback,
+  type CommandErrorInfo,
   type NotebookOverviewResponse,
   type ReadingStatsResponse
 } from "../lib/reading-api";
@@ -126,7 +129,7 @@ export function ReadingHubPage({
   const [isLoadingNotebook, setIsLoadingNotebook] = useState(false);
   const [exportResult, setExportResult] = useState<ExportAiBulkMarkdownResponse>();
   const [isBookReviewExportDialogOpen, setIsBookReviewExportDialogOpen] = useState(false);
-  const [error, setError] = useState<string>();
+  const [error, setError] = useState<CommandErrorInfo>();
   const hasCredential = credentialStatus?.hasCredential === true;
 
   useEffect(() => {
@@ -147,7 +150,7 @@ export function ReadingHubPage({
         }
       } catch (loadError) {
         if (isMounted) {
-          setError(getCommandErrorMessage(loadError));
+          setError(getCommandErrorInfo(loadError));
         }
       } finally {
         if (isMounted) {
@@ -182,7 +185,7 @@ export function ReadingHubPage({
         }
       } catch (loadError) {
         if (isMounted) {
-          setError(getCommandErrorMessage(loadError));
+          setError(getCommandErrorInfo(loadError));
         }
       } finally {
         if (isMounted) {
@@ -241,7 +244,7 @@ export function ReadingHubPage({
         }
       } catch (loadError) {
         if (isMounted) {
-          setError(getCommandErrorMessage(loadError));
+          setError(getCommandErrorInfo(loadError));
         }
       } finally {
         if (isMounted) {
@@ -275,7 +278,7 @@ export function ReadingHubPage({
         }
       } catch (loadError) {
         if (isMounted) {
-          setError(getCommandErrorMessage(loadError));
+          setError(getCommandErrorInfo(loadError));
         }
       } finally {
         if (isMounted) {
@@ -308,7 +311,7 @@ export function ReadingHubPage({
         }
       } catch (loadError) {
         if (isMounted) {
-          setError(getCommandErrorMessage(loadError));
+          setError(getCommandErrorInfo(loadError));
         }
       } finally {
         if (isMounted) {
@@ -462,10 +465,12 @@ export function ReadingHubPage({
 
           <ReadingWorkflowTemplateStrip actions={workflowTemplateActions} />
 
-          {error ? (
+          {error?.code === "upgrade_required" ? (
+            <SkillUpgradeNotice error={error} />
+          ) : error ? (
             <div className="status-message status-message--error">
               <AlertCircle aria-hidden="true" size={18} />
-              <span>{error}</span>
+              <span>{getCommandErrorMessage(error)}</span>
             </div>
           ) : null}
 
@@ -641,10 +646,12 @@ export function ReadingHubPage({
 
           <ReadingWorkflowTemplateStrip actions={workflowTemplateActions} />
 
-          {error ? (
+          {error?.code === "upgrade_required" ? (
+            <SkillUpgradeNotice error={error} />
+          ) : error ? (
             <div className="status-message status-message--error">
               <AlertCircle aria-hidden="true" size={18} />
-              <span>{error}</span>
+              <span>{getCommandErrorMessage(error)}</span>
             </div>
           ) : null}
 

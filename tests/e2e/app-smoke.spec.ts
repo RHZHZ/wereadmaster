@@ -295,9 +295,44 @@ test.describe("个人阅读管理应用 smoke", () => {
 
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(page.getByLabel("今日阅读工作台")).toBeVisible();
+    await expect(page.getByLabel("阅读总览")).toContainText("已连接本地阅读工作台");
     await expectNoHorizontalOverflow(page);
 
     const mobileLayout = await readDailyWorkbenchLayout(page);
+    const mobileDashboardShell = await page.evaluate(() => {
+      const heroPanel = document.querySelector(".hero-panel");
+      const heroImage = document.querySelector(".hero-panel img");
+      const statusStrip = document.querySelector(".dashboard-status-strip");
+      const metricGrid = document.querySelector(".metric-grid");
+      const firstMetric = document.querySelector(".metric-card");
+
+      if (
+        !(heroPanel instanceof HTMLElement) ||
+        !(heroImage instanceof HTMLElement) ||
+        !(statusStrip instanceof HTMLElement) ||
+        !(metricGrid instanceof HTMLElement) ||
+        !(firstMetric instanceof HTMLElement)
+      ) {
+        throw new Error("总览移动端壳层元素缺失");
+      }
+
+      return {
+        heroHeight: Math.round(heroPanel.getBoundingClientRect().height),
+        heroImageDisplay: window.getComputedStyle(heroImage).display,
+        statusTop: Math.round(statusStrip.getBoundingClientRect().top),
+        metricColumnCount: window
+          .getComputedStyle(metricGrid)
+          .gridTemplateColumns.split(" ")
+          .filter(Boolean).length,
+        metricHeight: Math.round(firstMetric.getBoundingClientRect().height),
+      };
+    });
+
+    expect(mobileDashboardShell.heroImageDisplay).toBe("none");
+    expect(mobileDashboardShell.heroHeight).toBeLessThan(260);
+    expect(mobileDashboardShell.statusTop).toBeLessThan(520);
+    expect(mobileDashboardShell.metricColumnCount).toBe(1);
+    expect(mobileDashboardShell.metricHeight).toBeLessThan(96);
     expect(mobileLayout.primaryGridColumnCount).toBe(2);
     expect(mobileLayout.secondaryGridColumnCount).toBe(1);
     expect(mobileLayout.panelLeft).toBeGreaterThanOrEqual(0);
@@ -911,12 +946,12 @@ test.describe("个人阅读管理应用 smoke", () => {
     await expect(page.getByLabel("笔记卡片").getByText("真正有价值的成果，来自长时间无干扰的专注。")).toBeVisible();
     const noteCardDownload = page.waitForEvent("download");
     await page.getByLabel("笔记卡片").getByRole("button", { name: "导出图片" }).first().click();
-    await expect(page.getByLabel("通知").getByText(/已生成：摘录卡片/)).toBeVisible();
+    await expect(page.getByLabel("通知").getByText(/已生成：摘录卡片（深度工作-(划线|想法)\.png）/)).toBeVisible();
     await expect(page.locator(".status-message").filter({ hasText: "已生成：摘录卡片" })).toHaveCount(0);
     expect((await noteCardDownload).suggestedFilename()).toMatch(/深度工作-划线\.png|深度工作-想法\.png/);
     const noteGroupDownload = page.waitForEvent("download");
     await page.getByLabel("卡片视图工具").getByRole("button", { name: "导出当前组" }).click();
-    await expect(page.getByLabel("通知").getByText(/已生成：摘录卡片/)).toBeVisible();
+    await expect(page.getByLabel("通知").getByText("已生成：摘录卡片（深度工作-笔记组合.png）")).toBeVisible();
     await expect(page.locator(".status-message").filter({ hasText: "已生成：摘录卡片" })).toHaveCount(0);
     expect((await noteGroupDownload).suggestedFilename()).toBe("深度工作-笔记组合.png");
     await page.getByRole("tab", { name: "想法" }).click();
@@ -2014,6 +2049,220 @@ test.describe("个人阅读管理应用 smoke", () => {
     await openSettingsCategory(page, "高级维护");
     await page.getByRole("button", { name: "清除本地缓存" }).click();
     await expect(page.getByRole("dialog", { name: "确认清除本地缓存？" })).toBeVisible();
+    await expectNoHorizontalOverflow(page);
+  });
+
+  test("窄屏底部导航承载主入口并收敛低频功能到我的", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await installTauriMock(page);
+    await page.goto("/");
+
+    const bottomNav = page.getByRole("navigation", { name: "移动端主导航" });
+    await expect(bottomNav).toBeVisible();
+    await expect(bottomNav.getByRole("button")).toHaveCount(5);
+    await expect(bottomNav.getByRole("button", { name: "总览" })).toHaveAttribute("aria-current", "page");
+    await expectNoHorizontalOverflow(page);
+
+    await bottomNav.getByRole("button", { name: "书架" }).click();
+    await expect(page.locator(".topbar h2")).toHaveText("书架");
+    await expect(bottomNav.getByRole("button", { name: "书架" })).toHaveAttribute("aria-current", "page");
+
+    await bottomNav.getByRole("button", { name: "笔记" }).click();
+    await expect(page.locator(".topbar h2")).toHaveText("笔记");
+    await expect(bottomNav.getByRole("button", { name: "笔记" })).toHaveAttribute("aria-current", "page");
+
+    await bottomNav.getByRole("button", { name: "复盘" }).click();
+    await expect(page.locator(".topbar h2")).toHaveText("书籍复盘");
+    await expect(bottomNav.getByRole("button", { name: "复盘" })).toHaveAttribute("aria-current", "page");
+
+    await bottomNav.getByRole("button", { name: "我的" }).click();
+    await expect(page.locator(".topbar h2")).toHaveText("我的");
+    await expect(page.getByRole("heading", { name: "本机阅读工作台" })).toBeVisible();
+    await expect(page.getByLabel("快捷入口")).toContainText("统计");
+    await expect(page.getByLabel("快捷入口")).toContainText("发现");
+    await expect(page.getByLabel("快捷入口")).toContainText("设置");
+    await expect(page.getByLabel("快捷入口")).toContainText("本地数据");
+    await expect(bottomNav.getByRole("button", { name: "我的" })).toHaveAttribute("aria-current", "page");
+
+    await page.getByRole("button", { name: /统计 阅读时间和偏好/ }).click();
+    await expect(page.locator(".topbar h2")).toHaveText("统计");
+    await expect(bottomNav.getByRole("button", { name: "我的" })).toHaveAttribute("aria-current", "page");
+
+    await bottomNav.getByRole("button", { name: "我的" }).click();
+    await page.getByRole("button", { name: /设置 账户、AI、外观/ }).click();
+    await expect(page.getByRole("dialog", { name: "设置" })).toBeVisible();
+
+    await expectNoHorizontalOverflow(page);
+    const bottomNavLayout = await page.evaluate(() => {
+      const nav = document.querySelector(".bottom-nav");
+      const workspace = document.querySelector(".workspace");
+      const toastViewport = document.querySelector(".toast-viewport");
+
+      if (
+        !(nav instanceof HTMLElement) ||
+        !(workspace instanceof HTMLElement) ||
+        !(toastViewport instanceof HTMLElement)
+      ) {
+        throw new Error("移动端底部导航布局元素缺失");
+      }
+
+      const navRect = nav.getBoundingClientRect();
+      const workspacePaddingBottom = Number.parseFloat(
+        window.getComputedStyle(workspace).paddingBottom,
+      );
+      const toastBottom = window.getComputedStyle(toastViewport).bottom;
+
+      return {
+        navBottom: Math.round(navRect.bottom),
+        navHeight: Math.round(navRect.height),
+        viewportHeight: window.innerHeight,
+        workspacePaddingBottom,
+        toastBottom,
+      };
+    });
+
+    expect(bottomNavLayout.navBottom).toBe(bottomNavLayout.viewportHeight);
+    expect(bottomNavLayout.navHeight).toBeGreaterThanOrEqual(64);
+    expect(bottomNavLayout.workspacePaddingBottom).toBeGreaterThanOrEqual(92);
+    expect(bottomNavLayout.toastBottom).not.toBe("auto");
+  });
+
+  test("窄屏设置层全屏承载分类并覆盖底部导航", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await installTauriMock(page);
+    await page.goto("/");
+
+    const bottomNav = page.getByRole("navigation", { name: "移动端主导航" });
+    await bottomNav.getByRole("button", { name: "我的" }).click();
+    await page.getByRole("button", { name: /设置 账户、AI、外观/ }).click();
+
+    const dialog = page.getByRole("dialog", { name: "设置" });
+    await expect(dialog).toBeVisible();
+    await expect(page.getByLabel("设置分类")).toContainText("账户与同步");
+    await expect(page.getByLabel("设置分类")).toContainText("AI 设置");
+    await expectNoHorizontalOverflow(page);
+
+    const mobileSettingsLayout = await page.evaluate(() => {
+      const dialogElement = document.querySelector(".settings-modal");
+      const nav = document.querySelector(".settings-modal-nav");
+      const navList = document.querySelector(".settings-modal-nav nav");
+      const content = document.querySelector(".settings-modal-content");
+      const bottomNavigation = document.querySelector(".bottom-nav");
+
+      if (
+        !(dialogElement instanceof HTMLElement) ||
+        !(nav instanceof HTMLElement) ||
+        !(navList instanceof HTMLElement) ||
+        !(content instanceof HTMLElement) ||
+        !(bottomNavigation instanceof HTMLElement)
+      ) {
+        throw new Error("移动端设置层布局元素缺失");
+      }
+
+      const dialogRect = dialogElement.getBoundingClientRect();
+      const navRect = nav.getBoundingClientRect();
+      const navStyle = window.getComputedStyle(navList);
+      const contentStyle = window.getComputedStyle(content);
+      const bottomNavStyle = window.getComputedStyle(bottomNavigation);
+
+      return {
+        dialogTop: Math.round(dialogRect.top),
+        dialogBottom: Math.round(dialogRect.bottom),
+        dialogWidth: Math.round(dialogRect.width),
+        viewportHeight: window.innerHeight,
+        viewportWidth: window.innerWidth,
+        navBottom: Math.round(navRect.bottom),
+        navOverflowX: navStyle.overflowX,
+        contentTop: Math.round(content.getBoundingClientRect().top),
+        contentBottom: Math.round(content.getBoundingClientRect().bottom),
+        contentOverflowY: contentStyle.overflowY,
+        bottomNavZIndex: Number.parseInt(bottomNavStyle.zIndex, 10),
+        dialogZIndex: Number.parseInt(window.getComputedStyle(dialogElement.parentElement!).zIndex, 10),
+      };
+    });
+
+    expect(mobileSettingsLayout.dialogTop).toBe(0);
+    expect(mobileSettingsLayout.dialogBottom).toBe(mobileSettingsLayout.viewportHeight);
+    expect(mobileSettingsLayout.dialogWidth).toBe(mobileSettingsLayout.viewportWidth);
+    expect(mobileSettingsLayout.contentTop).toBeGreaterThanOrEqual(mobileSettingsLayout.navBottom);
+    expect(mobileSettingsLayout.contentBottom).toBeLessThanOrEqual(mobileSettingsLayout.viewportHeight);
+    expect(["auto", "scroll"]).toContain(mobileSettingsLayout.navOverflowX);
+    expect(["auto", "scroll"]).toContain(mobileSettingsLayout.contentOverflowY);
+    expect(mobileSettingsLayout.dialogZIndex).toBeGreaterThan(mobileSettingsLayout.bottomNavZIndex);
+
+    await openSettingsCategory(page, "高级维护");
+    await expect(page.getByRole("heading", { name: "高级维护" })).toBeVisible();
+  });
+
+  test("窄屏书架优先呈现搜索并收敛筛选密度", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await installTauriMock(page);
+    await page.goto("/");
+
+    const bottomNav = page.getByRole("navigation", { name: "移动端主导航" });
+    await bottomNav.getByRole("button", { name: "书架" }).click();
+    await expect(page.locator(".topbar h2")).toHaveText("书架");
+    await expect(page.getByRole("heading", { name: "我的微信读书书架" })).toBeVisible();
+    await expectNoHorizontalOverflow(page);
+
+    const mobileShelfLayout = await page.evaluate(() => {
+      const toolbar = document.querySelector(".bookshelf-toolbar");
+      const searchRow = document.querySelector(".bookshelf-search-row");
+      const filterStack = document.querySelector(".bookshelf-filter-stack");
+      const summaryRow = document.querySelector(".shelf-summary-row");
+      const typeTabs = document.querySelector(".bookshelf-filter-tabs--type");
+      const categoryTabs = document.querySelector(".bookshelf-filter-tabs--category");
+      const bookGrid = document.querySelector(".book-grid");
+      const firstCard = document.querySelector(".shelf-card");
+      const syncButton = document.querySelector(".bookshelf-toolbar .sync-button");
+
+      if (
+        !(toolbar instanceof HTMLElement) ||
+        !(searchRow instanceof HTMLElement) ||
+        !(filterStack instanceof HTMLElement) ||
+        !(summaryRow instanceof HTMLElement) ||
+        !(typeTabs instanceof HTMLElement) ||
+        !(categoryTabs instanceof HTMLElement) ||
+        !(bookGrid instanceof HTMLElement) ||
+        !(firstCard instanceof HTMLElement) ||
+        !(syncButton instanceof HTMLElement)
+      ) {
+        throw new Error("移动端书架布局元素缺失");
+      }
+
+      const countGridColumns = (element: HTMLElement) =>
+        window
+          .getComputedStyle(element)
+          .gridTemplateColumns.split(/\s+/)
+          .filter(Boolean).length;
+
+      return {
+        toolbarTop: Math.round(toolbar.getBoundingClientRect().top),
+        searchTop: Math.round(searchRow.getBoundingClientRect().top),
+        filterTop: Math.round(filterStack.getBoundingClientRect().top),
+        summaryTop: Math.round(summaryRow.getBoundingClientRect().top),
+        typeTabsOverflowX: window.getComputedStyle(typeTabs).overflowX,
+        categoryTabsOverflowX: window.getComputedStyle(categoryTabs).overflowX,
+        summaryOverflowX: window.getComputedStyle(summaryRow).overflowX,
+        bookGridColumnCount: countGridColumns(bookGrid),
+        firstCardRight: Math.round(firstCard.getBoundingClientRect().right),
+        viewportWidth: window.innerWidth,
+        syncButtonHeight: Math.round(syncButton.getBoundingClientRect().height),
+      };
+    });
+
+    expect(mobileShelfLayout.toolbarTop).toBeLessThan(mobileShelfLayout.searchTop);
+    expect(mobileShelfLayout.searchTop).toBeLessThan(mobileShelfLayout.filterTop);
+    expect(mobileShelfLayout.filterTop).toBeLessThan(mobileShelfLayout.summaryTop);
+    expect(["auto", "scroll"]).toContain(mobileShelfLayout.typeTabsOverflowX);
+    expect(["auto", "scroll"]).toContain(mobileShelfLayout.categoryTabsOverflowX);
+    expect(["auto", "scroll"]).toContain(mobileShelfLayout.summaryOverflowX);
+    expect(mobileShelfLayout.bookGridColumnCount).toBe(1);
+    expect(mobileShelfLayout.firstCardRight).toBeLessThanOrEqual(mobileShelfLayout.viewportWidth);
+    expect(mobileShelfLayout.syncButtonHeight).toBeGreaterThanOrEqual(44);
+
+    await page.getByPlaceholder("按书名、作者或分类筛选书架").fill("深度");
+    await expect(page.getByLabel("书架条目列表")).toContainText("深度工作");
     await expectNoHorizontalOverflow(page);
   });
 

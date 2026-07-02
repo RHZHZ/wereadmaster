@@ -23,7 +23,9 @@ import {
   getAiReviewFeedback,
   getAIAssetVersionDetail,
   getAIAssetVersionHistory,
+  getBookDetail,
   getBookshelf,
+  getCommandErrorInfo,
   getCredentialStatus,
   getLatestReadingStatsReview,
   getNotebookOverview,
@@ -38,6 +40,7 @@ import {
   saveAiReviewFeedback,
   saveCustomExportDirectory,
   saveWereadProxyUrl,
+  searchBooks,
   summarizeBookNotes,
   summarizeReadingRoute,
   syncShelf,
@@ -122,6 +125,67 @@ describe("settings export directory API", () => {
     ).toBe(
       "微信读书接口暂时无法连接，请稍后重试。 诊断：error sending request for url (https://i.weread.qq.com/api/agent/gateway): operation timed out"
     );
+  });
+
+  test("keeps upgrade-required command errors structured", () => {
+    expect(
+      getCommandErrorInfo({
+        code: "upgrade_required",
+        message: "微信读书 Skill 需要升级。",
+        detail: "请替换 SKILL.md 后重试。"
+      })
+    ).toEqual({
+      code: "upgrade_required",
+      message: "微信读书 Skill 需要升级。",
+      detail: "请替换 SKILL.md 后重试。"
+    });
+  });
+
+  test("book detail keeps returned deep link but does not fabricate fallback", async () => {
+    invokeMock
+      .mockResolvedValueOnce({
+        detail: { bookId: "b1", title: "书名" },
+        progress: { bookId: "b1", progressPercent: 1 },
+        chapters: [],
+        deepLink: "weread://book/from-api"
+      })
+      .mockResolvedValueOnce({
+        detail: { bookId: "b2", title: "无链接" },
+        progress: { bookId: "b2", progressPercent: 0 },
+        chapters: []
+      });
+
+    await expect(getBookDetail("b1")).resolves.toMatchObject({
+      deepLink: "weread://book/from-api"
+    });
+    await expect(getBookDetail("b2")).resolves.toMatchObject({
+      deepLink: ""
+    });
+  });
+
+  test("search results preserve API deep links when present", async () => {
+    invokeMock.mockResolvedValue({
+      result: {
+        scope: 10,
+        groups: [
+          {
+            title: "电子书",
+            books: [
+              {
+                bookId: "b1",
+                title: "书名",
+                deepLink: "weread://book/search-result"
+              }
+            ]
+          }
+        ]
+      }
+    });
+
+    const response = await searchBooks({ keyword: "书名", scope: 10 });
+
+    expect(response.result.results[0]?.deepLink).toBe("weread://book/search-result");
+    expect(response.result.groups[0]?.books[0]?.deepLink).toBe("weread://book/search-result");
   });
 
   test("choose, save and reset export directory commands keep selection separate from persistence", async () => {

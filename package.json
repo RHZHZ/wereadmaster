@@ -1,7 +1,7 @@
 {
   "name": "personal-reading-app",
   "private": true,
-  "version": "1.0.8",
+  "version": "1.0.9",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,7 +10,8 @@
     "export:reading-preview-data": "node ./scripts/export-reading-preview-data.mjs",
     "test": "vitest run --dir src",
     "e2e": "playwright test",
-    "tauri": "node ./scripts/run-tauri.mjs"
+    "tauri": "node ./scripts/run-tauri.mjs",
+    "android:dev": "node ./scripts/run-tauri.mjs android dev --force-ip-prompt"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.9.0",

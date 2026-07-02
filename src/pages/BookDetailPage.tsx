@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { BookHeader } from "../components/BookHeader";
 import { ChapterList } from "../components/ChapterList";
+import { SkillUpgradeNotice } from "../components/SkillUpgradeNotice";
 import { useToast } from "../components/ToastProvider";
 import { formatUnixDate } from "../lib/formatters";
 import { listLocalBooks } from "../lib/local-reader-api";
@@ -24,7 +25,8 @@ import {
   getReadingItemState,
   removeReadingItemState,
   upsertReadingItemState,
-  type BookDetailResponse
+  type BookDetailResponse,
+  type CommandErrorInfo
 } from "../lib/reading-api";
 import {
   findReadingAssetLinkPair,
@@ -50,7 +52,7 @@ type BookDetailPageProps = {
   detailResponse?: BookDetailResponse;
   isLoading: boolean;
   isOpening: boolean;
-  error?: string;
+  error?: CommandErrorInfo;
   linkMessage?: string;
   backLabel?: string;
   localBooks?: LocalBook[];
@@ -313,12 +315,14 @@ export function BookDetailPage({
         </section>
       ) : null}
 
-      {error ? (
+      {error?.code === "upgrade_required" ? (
+        <SkillUpgradeNotice error={error} onRetry={onRetry} />
+      ) : error ? (
         <section className="setup-card status-card" aria-label="书籍详情错误">
           <AlertCircle aria-hidden="true" size={24} />
           <div>
             <h3>书籍详情暂时不可用</h3>
-            <p>{error}</p>
+            <p>{formatCommandErrorInfo(error)}</p>
           </div>
           <button className="secondary-action" type="button" onClick={onRetry}>
             重试
@@ -444,6 +448,12 @@ function LocalVersionNotice({
       </div>
     </section>
   );
+}
+
+function formatCommandErrorInfo(error: CommandErrorInfo): string {
+  return error.detail && error.detail !== error.message
+    ? `${error.message} 诊断：${error.detail}`
+    : error.message;
 }
 
 function BookActionPanel({

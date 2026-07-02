@@ -840,6 +840,7 @@ export type SearchResult = {
   readingCount?: number;
   soldout?: boolean;
   searchIdx?: number;
+  deepLink?: string;
 };
 
 export type Recommendation = SearchResult & {

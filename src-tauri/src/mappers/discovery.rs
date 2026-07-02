@@ -17,6 +17,7 @@ pub struct DiscoveryBookRecord {
     pub reading_count: Option<i64>,
     pub soldout: Option<bool>,
     pub search_idx: Option<i64>,
+    pub deep_link: Option<String>,
     pub reason: Option<String>,
     #[serde(skip_serializing)]
     pub raw_json: String,
@@ -274,6 +275,7 @@ fn map_discovery_book(value: &Value, wrapper: Option<&Value>) -> Option<Discover
         soldout: value.get("soldout").map(boolish_value),
         search_idx: non_negative_integer_field(wrapper, "searchIdx")
             .or_else(|| non_negative_integer_field(wrapper, "idx")),
+        deep_link: string_field(value, "deepLink").or_else(|| string_field(wrapper, "deepLink")),
         reason: string_field(wrapper, "reason").or_else(|| string_field(value, "reason")),
         raw_json: wrapper.to_string(),
     })
@@ -416,6 +418,30 @@ mod tests {
         assert_eq!(record.groups[0].scope, Some(10));
         assert_eq!(record.results[0].rating_percent, Some(92));
         assert_eq!(record.results[0].soldout, Some(true));
+    }
+
+    #[test]
+    fn search_mapper_reads_book_info_deep_link() {
+        let record = map_search_books_response(
+            10,
+            &json!({
+                "results": [{
+                    "title": "电子书",
+                    "books": [{
+                        "bookInfo": {
+                            "bookId": "b1",
+                            "title": "书名",
+                            "deepLink": "weread://book/search-result"
+                        }
+                    }]
+                }]
+            }),
+        );
+
+        assert_eq!(
+            record.results[0].deep_link,
+            Some("weread://book/search-result".to_string())
+        );
     }
 
     #[test]

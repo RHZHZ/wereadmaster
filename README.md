@@ -15,7 +15,7 @@
 
 - [查看最新发布](https://github.com/RHZHZ/wereadmaster/releases)
 - [查看一键更新说明](docs/github-release-updates.md)
-- 当前版本：`v1.0.8`
+- 当前版本：`v1.0.9`
 
 ## 这是什么
 
@@ -34,7 +34,7 @@ wereadmaster 通过 **微信读书官方 Skills HTTP 接口** 读取你的数据
 ```
 POST https://i.weread.qq.com/api/agent/gateway
 Authorization: Bearer $WEREAD_API_KEY
-{ "api_name": "/shelf/sync", "skill_version": "1.0.3" }
+{ "api_name": "/shelf/sync", "skill_version": "1.0.4" }
 ```
 
 - 🔑 **API Key 由用户在官方页面扫码获取**（weread.qq.com/r/weread-skills），Key 绑用户身份，不存在账号密码/ cookie 抓取
@@ -124,6 +124,7 @@ Authorization: Bearer $WEREAD_API_KEY
 - AI Provider 配置支持常用预设、兼容模式、模型刷新和手动输入兜底。
 - 本地阅读器支持 EPUB、TXT、Markdown 阅读，支持选区划线、想法、AI 提问和 Markdown 导出。
 - Android APK 使用签名 release 产物发布，移动端隐藏桌面窗口控制，并使用更清晰的顶部栏和抽屉导航；凭据存储异常和微信读书网络异常会在设置页/同步结果中展示可排查的错误提示。
+- 适配微信读书 Skill `1.0.4`：升级提示可识别、详情链接不伪造、发现页推荐字段透传，相似推荐分页参数更稳。
 - 支持 Markdown 导出、批量导出、导出报告和索引。
 - 支持候选书管理、阅读指南、跨书路线和选书决策。
 - 支持备份、恢复、数据目录迁移和应用内更新。

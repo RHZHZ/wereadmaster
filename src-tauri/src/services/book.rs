@@ -101,10 +101,10 @@ impl BookService {
         transaction.commit().map_err(AppError::from)?;
 
         Ok(BookDetailResponse {
+            deep_link: detail.deep_link.clone().unwrap_or_default(),
             detail,
             progress,
             chapters,
-            deep_link: reading_deep_link(&normalized_book_id, None),
         })
     }
 

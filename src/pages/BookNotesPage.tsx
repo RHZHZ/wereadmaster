@@ -15,10 +15,13 @@ import {
   Sparkles
 } from "lucide-react";
 import { NoteList } from "../components/NoteList";
+import { SkillUpgradeNotice } from "../components/SkillUpgradeNotice";
 import {
   exportBookNotesMarkdown,
   getBookNotes,
+  getCommandErrorInfo,
   getCommandErrorMessage,
+  type CommandErrorInfo,
   type ExportBookNotesMarkdownResponse
 } from "../lib/reading-api";
 import { useToast } from "../components/ToastProvider";
@@ -79,7 +82,7 @@ export function BookNotesPage({
   const [notes, setNotes] = useState<BookNotes>();
   const [isLoading, setIsLoading] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
-  const [error, setError] = useState<string>();
+  const [error, setError] = useState<CommandErrorInfo>();
   const [exportResult, setExportResult] = useState<ExportBookNotesMarkdownResponse>();
   const [viewMode, setViewMode] = useState<NoteViewMode>(defaultViewMode);
   const [cardFilter, setCardFilter] = useState<NoteCardFilter>("all");
@@ -133,7 +136,7 @@ export function BookNotesPage({
       setNotes(response);
       onNotesChange(response.bookId || nextBookId, response);
     } catch (loadError) {
-      setError(getCommandErrorMessage(loadError));
+      setError(getCommandErrorInfo(loadError));
     } finally {
       setIsLoading(false);
     }
@@ -214,7 +217,7 @@ export function BookNotesPage({
         tone: "success"
       });
     } catch (exportError) {
-      setError(getCommandErrorMessage(exportError));
+      setError(getCommandErrorInfo(exportError));
     } finally {
       setIsExporting(false);
     }
@@ -469,12 +472,14 @@ export function BookNotesPage({
         </div>
       ) : null}
 
-      {error ? (
+      {error?.code === "upgrade_required" ? (
+        <SkillUpgradeNotice error={error} onRetry={() => void loadNotes()} />
+      ) : error ? (
         <section className="setup-card status-card" aria-label="笔记加载错误">
           <AlertCircle aria-hidden="true" size={24} />
           <div>
             <h3>笔记暂时不可用</h3>
-            <p>{error}</p>
+            <p>{getCommandErrorMessage(error)}</p>
           </div>
           <button className="secondary-action" type="button" onClick={() => void loadNotes()}>
             重试

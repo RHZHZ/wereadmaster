@@ -7,6 +7,7 @@ pub struct BookDetailRecord {
     pub book_id: String,
     pub title: String,
     pub author: Option<String>,
+    pub deep_link: Option<String>,
     pub translator: Option<String>,
     pub cover: Option<String>,
     pub intro: Option<String>,
@@ -57,6 +58,7 @@ pub fn map_book_detail_response(book_id: &str, value: &Value) -> BookDetailRecor
         book_id: string_field(source, "bookId").unwrap_or_else(|| book_id.to_string()),
         title: string_field(source, "title").unwrap_or_else(|| "未命名书籍".to_string()),
         author: string_field(source, "author"),
+        deep_link: string_field(source, "deepLink").or_else(|| string_field(value, "deepLink")),
         translator: string_field(source, "translator"),
         cover: string_field(source, "cover"),
         intro: string_field(source, "intro"),
@@ -158,7 +160,29 @@ fn clamp_percent(value: i64) -> i64 {
 mod tests {
     use serde_json::json;
 
-    use super::{map_chapters_response, map_progress_response};
+    use super::{map_book_detail_response, map_chapters_response, map_progress_response};
+
+    #[test]
+    fn book_detail_mapper_reads_deep_link_without_fallback() {
+        let detail = map_book_detail_response(
+            "b1",
+            &json!({
+                "book": {
+                    "bookId": "b1",
+                    "title": "书名",
+                    "deepLink": "weread://book/info-from-api"
+                }
+            }),
+        );
+
+        assert_eq!(
+            detail.deep_link,
+            Some("weread://book/info-from-api".to_string())
+        );
+
+        let missing = map_book_detail_response("b1", &json!({ "book": { "bookId": "b1" } }));
+        assert_eq!(missing.deep_link, None);
+    }
 
     #[test]
     fn progress_one_means_one_percent_not_finished() {

@@ -10,6 +10,7 @@ import {
 import { useToast } from "../components/ToastProvider";
 import { ReadingStatsPeriodJumpPicker } from "../components/ReadingStatsPeriodJumpPicker";
 import { ReadingStatsPeriodNavigator } from "../components/ReadingStatsPeriodNavigator";
+import { SkillUpgradeNotice } from "../components/SkillUpgradeNotice";
 import { ReviewActionsSection } from "../features/reading-review/components/ReviewActionsSection";
 import { ReviewFocusBooksSection } from "../features/reading-review/components/ReviewFocusBooksSection";
 import { ReviewHeroSection } from "../features/reading-review/components/ReviewHeroSection";
@@ -37,10 +38,12 @@ import {
 import type { ReportImageExportResult } from "../features/reading-stats/report-image-export";
 import { hasReadingStatsData } from "../features/reading-stats/reading-stats-view-helpers";
 import {
+  getCommandErrorInfo,
   getCommandErrorMessage,
   getLatestReadingStatsReview,
   getReadingStats,
   syncReadingStats,
+  type CommandErrorInfo,
   type ReadingStatsResponse
 } from "../lib/reading-api";
 import {
@@ -84,7 +87,7 @@ export function ReadingReviewPage({
   const [isReportDownloading, setIsReportDownloading] = useState(false);
   const [isReportDataLoading, setIsReportDataLoading] = useState(false);
   const [isReportPeriodSyncing, setIsReportPeriodSyncing] = useState(false);
-  const [reportDataError, setReportDataError] = useState<string>();
+  const [reportDataError, setReportDataError] = useState<CommandErrorInfo>();
   const [reportPeriod, setReportPeriod] = useState<ReadingStatsPeriod>(() =>
     buildReadingStatsPeriod("monthly")
   );
@@ -166,8 +169,11 @@ export function ReadingReviewPage({
     hasReportStatsData
   );
   const isLifetimeReportMode = reportDataPeriod.mode === "overall";
+  const reportDataErrorMessage = reportDataError
+    ? getCommandErrorMessage(reportDataError)
+    : undefined;
   const reportUnavailableReason =
-    reportDataError ??
+    reportDataErrorMessage ??
     (isLifetimeReportMode
       ? buildLifetimeReportDisabledReason({
           dataCompleteness: lifetimeReportDataCompleteness,
@@ -261,7 +267,7 @@ export function ReadingReviewPage({
         }
       } catch (loadError) {
         if (isMounted) {
-          setReportDataError(getCommandErrorMessage(loadError));
+          setReportDataError(getCommandErrorInfo(loadError));
           setReportResponse(undefined);
         }
       } finally {
@@ -410,10 +416,12 @@ export function ReadingReviewPage({
         </div>
       ) : null}
 
-      {error ? (
+      {error?.code === "upgrade_required" ? (
+        <SkillUpgradeNotice error={error} onRetry={() => void handleSyncStats()} />
+      ) : error ? (
         <div className="status-message status-message--warning">
           <AlertCircle aria-hidden="true" size={18} />
-          <span>{error}</span>
+          <span>{getCommandErrorMessage(error)}</span>
         </div>
       ) : null}
 
@@ -608,8 +616,9 @@ export function ReadingReviewPage({
         tone: "success"
       });
     } catch (syncError) {
-      const message = getCommandErrorMessage(syncError);
-      setReportDataError(message);
+      const info = getCommandErrorInfo(syncError);
+      const message = getCommandErrorMessage(info);
+      setReportDataError(info);
       showToast({ message, tone: "error" });
     } finally {
       setIsReportPeriodSyncing(false);

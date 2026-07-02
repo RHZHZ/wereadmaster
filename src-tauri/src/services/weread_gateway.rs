@@ -291,6 +291,22 @@ mod tests {
     }
 
     #[test]
+    fn runtime_skill_version_matches_local_skill_document() {
+        let skill_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("weread")
+            .join("SKILL.md");
+        let skill = std::fs::read_to_string(skill_path).expect("local weread skill should exist");
+        let document_version = skill
+            .lines()
+            .find_map(|line| line.strip_prefix("version:"))
+            .map(str::trim)
+            .expect("skill frontmatter should include version");
+
+        assert_eq!(document_version, WEREAD_SKILL_VERSION);
+    }
+
+    #[test]
     fn build_payload_rejects_nested_params() {
         let error = WereadGateway::build_payload(
             WereadApi::NotebookOverview,

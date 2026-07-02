@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { AiActionFeedbackChecklist } from "../components/AiActionFeedbackChecklist";
 import { reflectionFeedbackLabels } from "../components/AiActionFeedbackChecklist";
+import { SkillUpgradeNotice } from "../components/SkillUpgradeNotice";
 import { useToast } from "../components/ToastProvider";
 import {
   buildAiActionItemId,
@@ -37,11 +38,13 @@ import {
   getReadingItemState,
   getAiReviewFeedback,
   getAiSettingsState,
+  getCommandErrorInfo,
   getCommandErrorMessage,
   getLatestBookNotesSummary,
   saveAiReviewFeedback,
   summarizeBookNotes,
-  upsertReadingItemState
+  upsertReadingItemState,
+  type CommandErrorInfo
 } from "../lib/reading-api";
 import { formatAiResponseFormat, formatAiTimestamp } from "../lib/formatters";
 import {
@@ -104,7 +107,7 @@ export function BookAiSummaryPage({
   const [reviewFeedback, setReviewFeedback] = useState<AiReviewFeedbackState>(createEmptyReviewFeedback);
   const [readingState, setReadingState] = useState<ReadingItemState>();
   const [readingStateError, setReadingStateError] = useState<string>();
-  const [error, setError] = useState<string>();
+  const [error, setError] = useState<CommandErrorInfo>();
   const { showToast } = useToast();
   const displayBook = notes?.book && notes.book.bookId === targetBookId ? notes.book : book ?? notes?.book;
   const summary = summaryResponse?.summary;
@@ -148,7 +151,7 @@ export function BookAiSummaryPage({
       } catch (settingsError) {
         if (isMounted) {
           setStatus("error");
-          setError(getCommandErrorMessage(settingsError));
+          setError(getCommandErrorInfo(settingsError));
         }
       } finally {
         if (isMounted) {
@@ -272,7 +275,7 @@ export function BookAiSummaryPage({
         if (cached) {
           setSummaryResponse(cached);
           setStatus(statusFromSource(cached.source));
-          setError(cached.errorMessage);
+          setError(cached.errorMessage ? { message: cached.errorMessage } : undefined);
           return;
         }
 
@@ -280,7 +283,7 @@ export function BookAiSummaryPage({
       } catch (cacheError) {
         if (isMounted) {
           setStatus("error");
-          setError(getCommandErrorMessage(cacheError));
+          setError(getCommandErrorInfo(cacheError));
         }
       } finally {
         if (isMounted) {
@@ -299,7 +302,7 @@ export function BookAiSummaryPage({
   async function handleGenerate(regenerate: boolean) {
     if (!targetBookId) {
       setStatus("error");
-      setError("缺少书籍 ID，无法生成 AI 复盘。");
+      setError({ message: "缺少书籍 ID，无法生成 AI 复盘。" });
       return;
     }
 
@@ -326,11 +329,11 @@ export function BookAiSummaryPage({
       setSummaryResponse(response);
       setStatus(statusFromSource(response.source));
       if (response.errorMessage) {
-        setError(response.errorMessage);
+        setError({ message: response.errorMessage });
       }
     } catch (summaryError) {
       setStatus("error");
-      setError(getCommandErrorMessage(summaryError));
+      setError(getCommandErrorInfo(summaryError));
     }
   }
 
@@ -351,7 +354,7 @@ export function BookAiSummaryPage({
         tone: "success"
       });
     } catch (exportError) {
-      setError(getCommandErrorMessage(exportError));
+      setError(getCommandErrorInfo(exportError));
     } finally {
       setIsExporting(false);
     }
@@ -615,10 +618,12 @@ export function BookAiSummaryPage({
         </div>
       ) : null}
 
-      {error ? (
+      {error?.code === "upgrade_required" ? (
+        <SkillUpgradeNotice error={error} onRetry={() => void handleGenerate(true)} />
+      ) : error ? (
         <div className="status-message status-message--warning">
           <AlertCircle aria-hidden="true" size={18} />
-          <span>{error}</span>
+          <span>{getCommandErrorMessage(error)}</span>
         </div>
       ) : null}
 

@@ -385,6 +385,7 @@ type DiscoveryBookRecord = {
   readingCount?: unknown;
   soldout?: unknown;
   searchIdx?: unknown;
+  deepLink?: unknown;
   reason?: unknown;
 };
 
@@ -568,6 +569,12 @@ export type OpenBookLinkResult = {
   opened: boolean;
   deepLink: string;
   message?: string;
+};
+
+export type CommandErrorInfo = {
+  code?: string;
+  message: string;
+  detail?: string;
 };
 
 export type ExportBookNotesMarkdownResponse = {
@@ -2298,23 +2305,42 @@ function createMissingWebPreviewDataError(section: string): Error {
 }
 
 export function getCommandErrorMessage(error: unknown): string {
+  const info = getCommandErrorInfo(error);
+  return info.detail && info.detail !== info.message
+    ? `${info.message} 诊断：${info.detail}`
+    : info.message;
+}
+
+export function getCommandErrorInfo(error: unknown): CommandErrorInfo {
   if (typeof error === "string" && error.trim()) {
-    return error;
+    return { message: error };
   }
 
   if (isObject(error)) {
+    const code = stringValue(error.code);
     const message = error.message;
     if (typeof message === "string" && message.trim()) {
       if (isTauriRuntimeMessage(message)) {
-        return "本地命令调用失败，请确认应用在桌面环境中运行。";
+        return {
+          code,
+          message: "本地命令调用失败，请确认应用在桌面环境中运行。"
+        };
       }
 
       const detail = stringValue((error as { detail?: unknown }).detail);
-      return detail && detail !== message ? `${message} 诊断：${detail}` : message;
+      return {
+        code,
+        message,
+        detail: detail || undefined
+      };
     }
   }
 
-  return "本地命令调用失败，请确认应用在桌面环境中运行。";
+  return { message: "本地命令调用失败，请确认应用在桌面环境中运行。" };
+}
+
+export function isUpgradeRequiredError(error: unknown): boolean {
+  return getCommandErrorInfo(error).code === "upgrade_required";
 }
 
 function isTauriRuntimeMessage(message: string): boolean {
@@ -2427,7 +2453,7 @@ function mapBookDetailResponse(bookId: string, response: BookDetailResponseRecor
     detail,
     progress,
     chapters: (response.chapters ?? []).map((chapter) => mapChapter(detail.bookId, chapter)),
-    deepLink: stringValue(response.deepLink) || `weread://reading?bId=${detail.bookId}`
+    deepLink: stringValue(response.deepLink) || ""
   };
 }
 
@@ -2750,6 +2776,7 @@ function mapDiscoveryBook(record: DiscoveryBookRecord): Recommendation | undefin
         ? undefined
         : booleanValue(record.soldout),
     searchIdx: numberValue(record.searchIdx),
+    deepLink: stringValue(record.deepLink),
     reason: stringValue(record.reason)
   };
 }
@@ -3162,6 +3189,6 @@ function isDefined<T>(value: T | undefined): value is T {
   return value !== undefined;
 }
 
-function isObject(value: unknown): value is { message?: unknown } {
+function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }

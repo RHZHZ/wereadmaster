@@ -11,6 +11,7 @@ import { ReadingStatsPeriodJumpPicker } from "../components/ReadingStatsPeriodJu
 import { ReadingStatsPeriodNavigator } from "../components/ReadingStatsPeriodNavigator";
 import { ReadingRank } from "../components/ReadingRank";
 import { ReadingTrend } from "../components/ReadingTrend";
+import { SkillUpgradeNotice } from "../components/SkillUpgradeNotice";
 import { ReportGenerationWizardDialog } from "../features/reading-stats/components/ReportGenerationWizardDialog";
 import { useReadingStatsPage } from "../features/reading-stats/hooks/useReadingStatsPage";
 import {
@@ -37,10 +38,12 @@ import { StatsSummarySection } from "../features/reading-stats/components/StatsS
 import { buildStatsSummarySparklineSeries } from "../features/reading-stats/stats-sparkline-helpers";
 import { formatUnixDate } from "../lib/formatters";
 import {
+  getCommandErrorInfo,
   getCommandErrorMessage,
   getLatestReadingStatsReview,
   getReadingStats,
   syncReadingStats,
+  type CommandErrorInfo,
   type ReadingStatsResponse
 } from "../lib/reading-api";
 import {
@@ -88,7 +91,7 @@ export function StatisticsPage({
   const [isReportDownloading, setIsReportDownloading] = useState(false);
   const [isReportDataLoading, setIsReportDataLoading] = useState(false);
   const [isReportPeriodSyncing, setIsReportPeriodSyncing] = useState(false);
-  const [reportDataError, setReportDataError] = useState<string>();
+  const [reportDataError, setReportDataError] = useState<CommandErrorInfo>();
   const [reportPeriod, setReportPeriod] = useState<ReadingStatsPeriod>(() =>
     buildReadingStatsPeriod(defaultMode === "overall" ? "monthly" : defaultMode)
   );
@@ -153,8 +156,11 @@ export function StatisticsPage({
     hasReportStatsData
   );
   const isLifetimeReportMode = reportDataPeriod.mode === "overall";
+  const reportDataErrorMessage = reportDataError
+    ? getCommandErrorMessage(reportDataError)
+    : undefined;
   const reportUnavailableReason =
-    reportDataError ??
+    reportDataErrorMessage ??
     (isLifetimeReportMode
       ? buildLifetimeReportDisabledReason({
           dataCompleteness: lifetimeReportDataCompleteness,
@@ -240,7 +246,7 @@ export function StatisticsPage({
         }
       } catch (loadError) {
         if (isMounted) {
-          setReportDataError(getCommandErrorMessage(loadError));
+          setReportDataError(getCommandErrorInfo(loadError));
           setReportResponse(undefined);
         }
       } finally {
@@ -373,10 +379,12 @@ export function StatisticsPage({
         />
       ) : null}
 
-      {error ? (
+      {error?.code === "upgrade_required" ? (
+        <SkillUpgradeNotice error={error} onRetry={() => void handleSync()} />
+      ) : error ? (
         <div className="status-message status-message--error status-message--actionable" aria-label="统计同步错误">
           <AlertCircle aria-hidden="true" size={18} />
-          <span>{error}</span>
+          <span>{getCommandErrorMessage(error)}</span>
           <button
             className="text-button"
             type="button"
@@ -553,8 +561,9 @@ export function StatisticsPage({
         tone: "success"
       });
     } catch (syncError) {
-      const message = getCommandErrorMessage(syncError);
-      setReportDataError(message);
+      const info = getCommandErrorInfo(syncError);
+      const message = getCommandErrorMessage(info);
+      setReportDataError(info);
       showToast({ message, tone: "error" });
     } finally {
       setIsReportPeriodSyncing(false);

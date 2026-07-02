@@ -21,6 +21,8 @@ const DISCOVERY_SECTION: &str = "discovery";
 const DISCOVERY_CACHE_NAMESPACE: &str = "discovery";
 const DEFAULT_SEARCH_SCOPE: i64 = 0;
 const DEFAULT_REVIEW_LIST_TYPE: i64 = 0;
+const DEFAULT_SIMILAR_COUNT: i64 = 12;
+const DEFAULT_SIMILAR_MAX_IDX: i64 = 0;
 const MAX_COUNT: i64 = 50;
 
 #[derive(Debug, Clone, Serialize)]
@@ -119,11 +121,19 @@ impl DiscoveryService {
         let params = build_similar_params(&book_id, count, max_idx, session_id.as_deref())?;
         let raw = self
             .call_and_cache(WereadApi::SimilarBooks, params, || {
+                let normalized_count = normalize_count(count)
+                    .ok()
+                    .flatten()
+                    .unwrap_or(DEFAULT_SIMILAR_COUNT);
+                let normalized_max_idx = validate_non_negative(max_idx, "maxIdx")
+                    .ok()
+                    .flatten()
+                    .unwrap_or(DEFAULT_SIMILAR_MAX_IDX);
                 format!(
                     "similar:{}:{}:{}:{}",
                     book_id,
-                    max_idx.unwrap_or(0),
-                    count.unwrap_or(0),
+                    normalized_max_idx,
+                    normalized_count,
                     session_id.as_deref().unwrap_or("first")
                 )
             })
@@ -262,7 +272,10 @@ fn build_similar_params(
 ) -> Result<Value, AppError> {
     let mut params = Map::new();
     params.insert("bookId".to_string(), json!(book_id));
-    insert_optional_paging(&mut params, count, max_idx)?;
+    let count = normalize_count(count)?.unwrap_or(DEFAULT_SIMILAR_COUNT);
+    let max_idx = validate_non_negative(max_idx, "maxIdx")?.unwrap_or(DEFAULT_SIMILAR_MAX_IDX);
+    params.insert("count".to_string(), json!(count));
+    params.insert("maxIdx".to_string(), json!(max_idx));
 
     if let Some(session_id) = session_id {
         params.insert("sessionId".to_string(), json!(session_id));
@@ -410,8 +423,8 @@ mod tests {
     use serde_json::Value;
 
     use super::{
-        build_public_reviews_params, build_search_params, normalize_count, normalize_keyword,
-        normalize_review_list_type, normalize_search_scope,
+        build_public_reviews_params, build_search_params, build_similar_params, normalize_count,
+        normalize_keyword, normalize_review_list_type, normalize_search_scope,
     };
 
     #[test]
@@ -471,5 +484,17 @@ mod tests {
             Some(3)
         );
         assert_eq!(params.get("synckey").and_then(Value::as_i64), Some(99));
+    }
+
+    #[test]
+    fn similar_params_always_include_required_paging_fields() {
+        let params = build_similar_params("b1", None, None, None).expect("params should build");
+        let Value::Object(params) = params else {
+            panic!("params should be object");
+        };
+
+        assert_eq!(params.get("bookId").and_then(Value::as_str), Some("b1"));
+        assert_eq!(params.get("count").and_then(Value::as_i64), Some(12));
+        assert_eq!(params.get("maxIdx").and_then(Value::as_i64), Some(0));
     }
 }

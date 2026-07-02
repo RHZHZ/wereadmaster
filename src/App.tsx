@@ -20,6 +20,10 @@ import {
 } from "lucide-react";
 import { AppTitleBar } from "./components/AppTitleBar";
 import { AppUpdateDialog } from "./components/AppUpdateDialog";
+import {
+  BottomNavigation,
+  type BottomNavigationId,
+} from "./components/BottomNavigation";
 import { useToast } from "./components/ToastProvider";
 import { DashboardPage } from "./pages/DashboardPage";
 import { BookshelfPage } from "./pages/BookshelfPage";
@@ -35,6 +39,7 @@ import { ReadingRoutePage } from "./pages/ReadingRoutePage";
 import { StatisticsPage } from "./pages/StatisticsPage";
 import { ReadingHubPage } from "./pages/ReadingHubPage";
 import { DiscoveryPage } from "./pages/DiscoveryPage";
+import { MinePage } from "./pages/MinePage";
 import { SettingsPage, type SettingsCategoryId } from "./pages/SettingsPage";
 import type { BookDecisionSession } from "./pages/book-decision-input-model";
 import {
@@ -44,6 +49,7 @@ import {
 import {
   getBookDetail,
   getBookshelf,
+  getCommandErrorInfo,
   getCommandErrorMessage,
   getCredentialStatus,
   getAppUpdateRuntime,
@@ -54,6 +60,7 @@ import {
   syncShelf,
   type BookDetailResponse,
   type BookshelfResponse,
+  type CommandErrorInfo,
   type NotebookOverviewResponse,
   type ReadingStatsResponse,
 } from "./lib/reading-api";
@@ -105,7 +112,8 @@ type ViewId =
   | "readingRoute"
   | "stats"
   | "readingReview"
-  | "discovery";
+  | "discovery"
+  | "mine";
 
 type NavigationId = ViewId | "settings";
 
@@ -182,6 +190,11 @@ const readingReviewSubItems: ReadingReviewSubItem[] = [
   { id: "guides", label: "阅读指南", description: "路线资产", icon: Waypoints },
   { id: "report", label: "阅读报告", description: "周期画像", icon: BarChart3 },
 ];
+
+type BottomNavigationContext = {
+  detailBackView?: "dashboard" | "shelf" | "candidateShelf" | "bookDecision" | "discovery";
+  bookAiBackView?: "bookDetail" | "bookNotes" | "readingReview";
+};
 
 const SIDEBAR_COLLAPSED_KEY = "wxreadmaster.sidebarCollapsed";
 const MOBILE_SHELL_MEDIA_QUERY = "(max-width: 980px)";
@@ -281,6 +294,58 @@ export function toggleSidebarMenuState(
   return openSidebarMenuState(menu);
 }
 
+export function resolveBottomNavigationId(
+  activeView: ViewId,
+  context: BottomNavigationContext = {},
+): BottomNavigationId | undefined {
+  if (activeView === "bookDetail") {
+    if (context.detailBackView === "dashboard") {
+      return "dashboard";
+    }
+
+    if (context.detailBackView === "discovery") {
+      return "mine";
+    }
+  }
+
+  if (
+    activeView === "shelf" ||
+    activeView === "candidateShelf" ||
+    activeView === "localLibrary" ||
+    activeView === "bookDecision" ||
+    activeView === "bookDetail"
+  ) {
+    return "shelf";
+  }
+
+  if (activeView === "notes" || activeView === "bookNotes") {
+    return "notes";
+  }
+
+  if (
+    activeView === "readingReview" ||
+    activeView === "readingRoute" ||
+    (activeView === "bookAiSummary" &&
+      context.bookAiBackView === "readingReview")
+  ) {
+    return "readingReview";
+  }
+
+  if (activeView === "dashboard") {
+    return "dashboard";
+  }
+
+  if (activeView === "stats" || activeView === "discovery" || activeView === "mine") {
+    return "mine";
+  }
+
+  if (activeView === "bookAiSummary") {
+    return "notes";
+  }
+
+  return undefined;
+}
+
 export function App() {
   const [preferences, setPreferences] = useState(getInitialPreferences);
   const [systemPrefersDark, setSystemPrefersDark] = useState(
@@ -336,11 +401,11 @@ export function App() {
   const [bookReloadKey, setBookReloadKey] = useState(0);
   const [isBookLoading, setIsBookLoading] = useState(false);
   const [isOpeningBook, setIsOpeningBook] = useState(false);
-  const [bookError, setBookError] = useState<string>();
+  const [bookError, setBookError] = useState<CommandErrorInfo>();
   const [bookLinkMessage, setBookLinkMessage] = useState<string>();
   const [isLoading, setIsLoading] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [commandError, setCommandError] = useState<string>();
+  const [commandError, setCommandError] = useState<CommandErrorInfo>();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsPreferredCategory, setSettingsPreferredCategory] =
     useState<SettingsCategoryId>();
@@ -406,6 +471,12 @@ export function App() {
                   description: "候选取舍",
                   icon: Compass,
                 }
+            : activeView === "mine"
+              ? {
+                  label: "我的",
+                  description: "本机工作台",
+                  icon: Settings,
+                }
              : (navigationItems.find((item) => item.id === activeView) ??
                navigationItems[0]);
   const hasPendingAppUpdate = shouldShowAppUpdateBadge(
@@ -414,6 +485,12 @@ export function App() {
   );
   const appUpdateProgressLabel = formatAppUpdateProgress(appUpdateProgress);
   const isAndroidShell = isAndroidRuntime();
+  const bottomNavigationActiveId = resolveBottomNavigationId(activeView, {
+    detailBackView,
+    bookAiBackView,
+  });
+  const shouldShowBottomNavigation =
+    isMobileShell && activeView !== "localReader";
 
   useEffect(() => {
     let isMounted = true;
@@ -434,7 +511,7 @@ export function App() {
       if (credentialResult.status === "fulfilled") {
         setCredentialStatus(credentialResult.value);
       } else {
-        setCommandError(getCommandErrorMessage(credentialResult.reason));
+        setCommandError(getCommandErrorInfo(credentialResult.reason));
       }
 
       if (bookshelfResult.status === "fulfilled") {
@@ -442,7 +519,7 @@ export function App() {
           setBookshelf(bookshelfResult.value);
         });
       } else {
-        setCommandError(getCommandErrorMessage(bookshelfResult.reason));
+        setCommandError(getCommandErrorInfo(bookshelfResult.reason));
       }
 
       setIsLoading(false);
@@ -770,7 +847,7 @@ export function App() {
         }
       } catch (error) {
         if (isMounted) {
-          setBookError(getCommandErrorMessage(error));
+          setBookError(getCommandErrorInfo(error));
         }
       } finally {
         if (isMounted) {
@@ -839,9 +916,18 @@ export function App() {
     });
   }
 
+  function handleBottomNavigation(nextId: BottomNavigationId) {
+    if (nextId === "readingReview") {
+      handleOpenReadingReviewTab(readingHubTab);
+      return;
+    }
+
+    handleNavigate(nextId);
+  }
+
   async function handleSyncShelf() {
     if (credentialStatus?.hasCredential !== true) {
-      setCommandError("请先在设置中保存微信读书 API Key，再同步书架。");
+      setCommandError({ message: "请先在设置中保存微信读书 API Key，再同步书架。" });
       handleOpenSettings();
       return;
     }
@@ -855,7 +941,7 @@ export function App() {
         setBookshelf(response);
       });
     } catch (error) {
-      setCommandError(getCommandErrorMessage(error));
+      setCommandError(getCommandErrorInfo(error));
     } finally {
       setIsSyncing(false);
     }
@@ -1616,7 +1702,25 @@ export function App() {
             onClearInitialQuery={() => setDiscoveryInitialQuery(undefined)}
           />
         ) : null}
+        {activeView === "mine" ? (
+          <MinePage
+            credentialStatus={credentialStatus}
+            bookshelf={bookshelf}
+            isSyncing={isSyncing}
+            onSync={() => void handleSyncShelf()}
+            onOpenStats={() => handleNavigate("stats")}
+            onOpenDiscovery={() => handleNavigate("discovery")}
+            onOpenSettings={handleOpenSettings}
+            onOpenLocalLibrary={() => handleNavigate("localLibrary")}
+          />
+        ) : null}
       </main>
+      {shouldShowBottomNavigation ? (
+        <BottomNavigation
+          activeId={bottomNavigationActiveId}
+          onNavigate={handleBottomNavigation}
+        />
+      ) : null}
       <SettingsPage
         open={isSettingsOpen}
         credentialStatus={credentialStatus}

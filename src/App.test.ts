@@ -4,6 +4,7 @@ import {
   isAndroidRuntime,
   isMobileShellViewport,
   openSidebarMenuState,
+  resolveBottomNavigationId,
   toggleSidebarMenuState,
 } from "./App";
 
@@ -97,5 +98,45 @@ describe("mobile shell detection", () => {
         matches: query === "(min-width: 981px)",
       })),
     ).toBe(false);
+  });
+});
+
+describe("bottom navigation active state", () => {
+  test("maps primary views to mobile bottom navigation items", () => {
+    expect(resolveBottomNavigationId("dashboard")).toBe("dashboard");
+    expect(resolveBottomNavigationId("shelf")).toBe("shelf");
+    expect(resolveBottomNavigationId("notes")).toBe("notes");
+    expect(resolveBottomNavigationId("readingReview")).toBe("readingReview");
+    expect(resolveBottomNavigationId("mine")).toBe("mine");
+  });
+
+  test("maps nested views back to their primary mobile destination", () => {
+    expect(resolveBottomNavigationId("candidateShelf")).toBe("shelf");
+    expect(resolveBottomNavigationId("localLibrary")).toBe("shelf");
+    expect(resolveBottomNavigationId("bookDetail")).toBe("shelf");
+    expect(
+      resolveBottomNavigationId("bookDetail", {
+        detailBackView: "dashboard",
+      }),
+    ).toBe("dashboard");
+    expect(
+      resolveBottomNavigationId("bookDetail", {
+        detailBackView: "discovery",
+      }),
+    ).toBe("mine");
+    expect(resolveBottomNavigationId("bookNotes")).toBe("notes");
+    expect(
+      resolveBottomNavigationId("bookAiSummary", {
+        bookAiBackView: "readingReview",
+      }),
+    ).toBe("readingReview");
+    expect(resolveBottomNavigationId("bookAiSummary")).toBe("notes");
+    expect(resolveBottomNavigationId("readingRoute")).toBe("readingReview");
+  });
+
+  test("keeps low-frequency pages under mine and hides local reader", () => {
+    expect(resolveBottomNavigationId("stats")).toBe("mine");
+    expect(resolveBottomNavigationId("discovery")).toBe("mine");
+    expect(resolveBottomNavigationId("localReader")).toBeUndefined();
   });
 });

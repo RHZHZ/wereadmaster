@@ -2383,16 +2383,27 @@ function SettingsSection({
 }
 
 function SyncStateRow({ state }: { state: SyncState }) {
+  const isUpgradeRequired = state.errorCode === "upgrade_required";
+  const errorMessage = isUpgradeRequired && state.errorMessage
+    ? formatSkillUpgradeSyncError(state.errorMessage)
+    : state.errorMessage;
+
   return (
     <article className={`sync-state-row is-${state.status}`}>
       <div>
         <strong>{sectionLabels[state.section] ?? state.section}</strong>
-        <small>{statusLabel(state.status)}</small>
+        <small>{isUpgradeRequired ? "Skill 需升级" : statusLabel(state.status)}</small>
       </div>
       <span>{formatTimestamp(state.lastSuccessAt) || "暂无成功同步"}</span>
-      {state.errorMessage ? <p>{state.errorMessage}</p> : null}
+      {errorMessage ? <p>{errorMessage}</p> : null}
     </article>
   );
+}
+
+function formatSkillUpgradeSyncError(message: string): string {
+  return message.startsWith("微信读书 Skill 需要升级")
+    ? message
+    : `微信读书 Skill 需要升级：${message}`;
 }
 
 function formatTimestamp(value?: string): string {

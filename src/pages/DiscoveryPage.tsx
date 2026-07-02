@@ -11,12 +11,14 @@ import {
 import { CredentialSetupCard } from "../components/CredentialSetupCard";
 import { RecommendationList } from "../components/RecommendationList";
 import { SearchResults } from "../components/SearchResults";
+import { SkillUpgradeNotice } from "../components/SkillUpgradeNotice";
 import { useToast } from "../components/ToastProvider";
 import {
   appendRecentSearchKeyword,
   chooseSearchScope
 } from "../lib/business-rules";
 import {
+  getCommandErrorInfo,
   getCommandErrorMessage,
   getRecommendations,
   getSimilarBooks,
@@ -24,6 +26,7 @@ import {
   searchBooks,
   upsertReadingItemState,
   type BookshelfResponse,
+  type CommandErrorInfo,
   type ReadingStatsResponse
 } from "../lib/reading-api";
 import type {
@@ -115,7 +118,7 @@ export function DiscoveryPage({
   const [candidateMap, setCandidateMap] = useState<Map<string, SearchResult>>(() => new Map());
   const [savingCandidateIds, setSavingCandidateIds] = useState<Set<string>>(() => new Set());
   const [recentSearches, setRecentSearches] = useState<string[]>(getInitialRecentSearches);
-  const [error, setError] = useState<string>();
+  const [error, setError] = useState<CommandErrorInfo>();
   const [similarNotice, setSimilarNotice] = useState<string>();
   const { showToast } = useToast();
   const hasCredential = credentialStatus?.hasCredential === true;
@@ -145,7 +148,7 @@ export function DiscoveryPage({
         }
       } catch (candidateError) {
         if (isMounted) {
-          setError(getCommandErrorMessage(candidateError));
+          setError(getCommandErrorInfo(candidateError));
         }
       }
     }
@@ -212,13 +215,13 @@ export function DiscoveryPage({
     const normalizedKeyword = keyword.trim();
 
     if (!hasCredential) {
-      setError("请先在设置中保存微信读书 API Key，再使用发现搜索。");
+      setError(messageError("请先在设置中保存微信读书 API Key，再使用发现搜索。"));
       onOpenSettings();
       return false;
     }
 
     if (!normalizedKeyword) {
-      setError("请输入搜索关键词。");
+      setError(messageError("请输入搜索关键词。"));
       return false;
     }
 
@@ -232,7 +235,7 @@ export function DiscoveryPage({
       setRecentSearches((current) => appendRecentSearchKeyword(current, normalizedKeyword));
       return true;
     } catch (searchError) {
-      setError(getCommandErrorMessage(searchError));
+      setError(getCommandErrorInfo(searchError));
       return false;
     } finally {
       setIsSearching(false);
@@ -253,7 +256,7 @@ export function DiscoveryPage({
       const response = await searchBooks({ keyword, scope, maxIdx, count: 20 });
       setSearchResult((current) => mergeSearchResults(current, response.result));
     } catch (searchError) {
-      setError(getCommandErrorMessage(searchError));
+      setError(getCommandErrorInfo(searchError));
     } finally {
       setIsSearchPaging(false);
     }
@@ -278,7 +281,7 @@ export function DiscoveryPage({
         isPaging && current ? mergeRecommendationResults(current, response.result) : response.result
       );
     } catch (recommendError) {
-      setError(getCommandErrorMessage(recommendError));
+      setError(getCommandErrorInfo(recommendError));
     } finally {
       setIsLoadingRecommendations(false);
       setIsRecommendationPaging(false);
@@ -287,7 +290,7 @@ export function DiscoveryPage({
 
   async function loadSimilar(book: SearchResult, maxIdx?: number) {
     if (!hasCredential) {
-      setError("请先在设置中保存微信读书 API Key，再获取相似推荐。");
+      setError(messageError("请先在设置中保存微信读书 API Key，再获取相似推荐。"));
       onOpenSettings();
       return;
     }
@@ -316,6 +319,12 @@ export function DiscoveryPage({
       );
       setSimilarNotice(undefined);
     } catch (similarError) {
+      const info = getCommandErrorInfo(similarError);
+      if (info.code === "upgrade_required") {
+        setError(info);
+        return;
+      }
+
       const fallbackKeyword = book.title.trim();
       if (fallbackKeyword && !isPaging) {
         const fallbackScope = chooseSearchScope(fallbackKeyword);
@@ -399,8 +408,9 @@ export function DiscoveryPage({
       setCandidateMap((current) => new Map(current).set(normalizedBookId, mapBookToCandidate(book)));
       showToast({ message: `已保存《${book.title}》到本地候选`, tone: "success" });
     } catch (candidateError) {
+      const info = getCommandErrorInfo(candidateError);
       const message = getCommandErrorMessage(candidateError);
-      setError(message);
+      setError(info);
       showToast({ message, tone: "error" });
     } finally {
       setSavingCandidateIds((current) => {
@@ -517,10 +527,12 @@ export function DiscoveryPage({
         />
       ) : null}
 
-      {error ? (
+      {error?.code === "upgrade_required" ? (
+        <SkillUpgradeNotice error={error} />
+      ) : error ? (
         <div className="status-message status-message--error">
           <AlertCircle aria-hidden="true" size={18} />
-          <span>{error}</span>
+          <span>{formatCommandErrorInfo(error)}</span>
         </div>
       ) : null}
 
@@ -1023,6 +1035,16 @@ function mergeSimilarResults(
     sessionId: next.sessionId ?? current.sessionId,
     books: mergeBooks(current.books, next.books) as Recommendation[]
   };
+}
+
+function messageError(message: string): CommandErrorInfo {
+  return { message };
+}
+
+function formatCommandErrorInfo(error: CommandErrorInfo): string {
+  return error.detail && error.detail !== error.message
+    ? `${error.message} 诊断：${error.detail}`
+    : error.message;
 }
 
 function mergeBooks<T extends SearchResult>(current: T[], next: T[]): T[] {

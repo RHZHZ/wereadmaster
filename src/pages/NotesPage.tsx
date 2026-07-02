@@ -24,17 +24,20 @@ import {
 import emptyNotes from "../assets/empty-notes.png";
 import { CredentialSetupCard } from "../components/CredentialSetupCard";
 import { ExportFailurePanel } from "../components/ExportFailurePanel";
+import { SkillUpgradeNotice } from "../components/SkillUpgradeNotice";
 import { calculateTotalNotes } from "../lib/business-rules";
 import { getExportAssetBoundary } from "../lib/export-asset-boundaries";
 import { formatProgress } from "../lib/formatters";
 import {
   cancelBulkExport,
   exportBulkNotes,
+  getCommandErrorInfo,
   getCommandErrorMessage,
   getNotebookOverview,
   listenBulkExportProgress,
   listBookNotesSummaries,
   preflightBulkExport,
+  type CommandErrorInfo,
   type NotebookOverviewResponse
 } from "../lib/reading-api";
 import type {
@@ -70,7 +73,7 @@ export function NotesPage({
   const [summaryItems, setSummaryItems] = useState<BookAiSummaryListItem[]>();
   const [isLoadingSummaries, setIsLoadingSummaries] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string>();
+  const [error, setError] = useState<CommandErrorInfo>();
   const [isBulkWizardOpen, setIsBulkWizardOpen] = useState(false);
   const [bulkPreflight, setBulkPreflight] = useState<BulkExportPreflight>();
   const [bulkResult, setBulkResult] = useState<BulkExportResponse>();
@@ -118,7 +121,7 @@ export function NotesPage({
         }
       } catch (summaryError) {
         if (isMounted) {
-          setError(getCommandErrorMessage(summaryError));
+          setError(getCommandErrorInfo(summaryError));
         }
       } finally {
         if (isMounted) {
@@ -176,7 +179,7 @@ export function NotesPage({
       const response = await getNotebookOverview();
       onOverviewChange(response);
     } catch (loadError) {
-      setError(getCommandErrorMessage(loadError));
+      setError(getCommandErrorInfo(loadError));
     } finally {
       setIsLoading(false);
     }
@@ -246,7 +249,7 @@ export function NotesPage({
             : exportableIds
       );
     } catch (preflightError) {
-      setError(getCommandErrorMessage(preflightError));
+      setError(getCommandErrorInfo(preflightError));
     } finally {
       setIsBulkPreflighting(false);
     }
@@ -407,10 +410,12 @@ export function NotesPage({
         />
       ) : null}
 
-      {error ? (
+      {error?.code === "upgrade_required" ? (
+        <SkillUpgradeNotice error={error} onRetry={() => void loadOverview()} />
+      ) : error ? (
         <div className="status-message status-message--error">
           <AlertCircle aria-hidden="true" size={18} />
-          <span>{error}</span>
+          <span>{getCommandErrorMessage(error)}</span>
         </div>
       ) : null}
 

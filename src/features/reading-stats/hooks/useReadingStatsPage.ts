@@ -1,8 +1,9 @@
 import { startTransition, useEffect, useState } from "react";
 import {
-  getCommandErrorMessage,
+  getCommandErrorInfo,
   getReadingStats,
   syncReadingStats,
+  type CommandErrorInfo,
   type ReadingStatsResponse
 } from "../../../lib/reading-api";
 import type { CredentialStatus, ReadingStatsMode } from "../../../lib/types";
@@ -38,7 +39,7 @@ export function useReadingStatsPage({
   const [period, setPeriod] = useState<ReadingStatsPeriod>(() => buildReadingStatsPeriod(defaultMode));
   const [isLoadingCache, setIsLoadingCache] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [error, setError] = useState<string>();
+  const [error, setError] = useState<CommandErrorInfo>();
   const hasCredential = credentialStatus?.hasCredential === true;
   const response = getReadingStatsResponse(cache, period);
   const stats = response?.stats;
@@ -68,7 +69,7 @@ export function useReadingStatsPage({
         }
       } catch (loadError) {
         if (isMounted) {
-          setError(getCommandErrorMessage(loadError));
+          setError(getCommandErrorInfo(loadError));
         }
       } finally {
         if (isMounted) {
@@ -86,7 +87,7 @@ export function useReadingStatsPage({
 
   async function handleSync() {
     if (!hasCredential) {
-      setError("请先在设置中保存微信读书 API Key，再同步阅读统计。");
+      setError({ message: "请先在设置中保存微信读书 API Key，再同步阅读统计。" });
       onOpenSettings();
       return;
     }
@@ -98,7 +99,7 @@ export function useReadingStatsPage({
       const synced = await syncReadingStats(period.mode, getReadingStatsRequestBaseTime(period));
       onCacheChange(period.mode, synced);
     } catch (syncError) {
-      setError(getCommandErrorMessage(syncError));
+      setError(getCommandErrorInfo(syncError));
     } finally {
       setIsSyncing(false);
     }

@@ -1063,6 +1063,72 @@ test.describe("本地阅读器想法详情", () => {
       suite: "local-reader-narrow"
     });
   });
+
+  test("窄屏阅读器隐藏全局底栏并保持正文优先布局", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openPreviewLocalReader(page);
+    await expect(page.getByRole("navigation", { name: "移动端主导航" })).toHaveCount(0);
+    await expect(page.locator(".topbar")).toHaveCount(0);
+    await expect(page.getByLabel("小王子 正文")).toContainText("本地 TXT 阅读器预览文本");
+
+    const mobileReaderLayout = await page.evaluate(() => {
+      const workspace = document.querySelector(".workspace--local-reader");
+      const layout = document.querySelector(".local-reader-layout");
+      const mainPane = document.querySelector(".local-reader-main-pane");
+      const header = document.querySelector(".local-reader-header");
+      const toolbar = document.querySelector(".local-reader-toolbar");
+      const documentPane = document.querySelector(".local-reader-document");
+      const inspector = document.querySelector(".local-reader-inspector");
+      const statusbar = document.querySelector(".local-reader-statusbar");
+
+      if (
+        !(workspace instanceof HTMLElement) ||
+        !(layout instanceof HTMLElement) ||
+        !(mainPane instanceof HTMLElement) ||
+        !(header instanceof HTMLElement) ||
+        !(toolbar instanceof HTMLElement) ||
+        !(documentPane instanceof HTMLElement) ||
+        !(inspector instanceof HTMLElement) ||
+        !(statusbar instanceof HTMLElement)
+      ) {
+        throw new Error("窄屏阅读器布局元素缺失");
+      }
+
+      const layoutStyle = window.getComputedStyle(layout);
+      const toolbarStyle = window.getComputedStyle(toolbar);
+      const documentRect = documentPane.getBoundingClientRect();
+      const inspectorRect = inspector.getBoundingClientRect();
+      const statusbarRect = statusbar.getBoundingClientRect();
+
+      return {
+        layoutColumnCount: layoutStyle.gridTemplateColumns
+          .split(/\s+/)
+          .filter(Boolean).length,
+        layoutRowCount: layoutStyle.gridTemplateRows
+          .split(/\s+/)
+          .filter(Boolean).length,
+        workspacePaddingBottom: Number.parseFloat(window.getComputedStyle(workspace).paddingBottom),
+        toolbarOverflowX: toolbarStyle.overflowX,
+        documentLeft: Math.round(documentRect.left),
+        documentRight: Math.round(documentRect.right),
+        documentHeight: Math.round(documentRect.height),
+        inspectorTop: Math.round(inspectorRect.top),
+        statusbarBottom: Math.round(statusbarRect.bottom),
+        viewportHeight: window.innerHeight,
+        viewportWidth: window.innerWidth,
+      };
+    });
+
+    expect(mobileReaderLayout.layoutColumnCount).toBe(1);
+    expect(mobileReaderLayout.layoutRowCount).toBe(2);
+    expect(mobileReaderLayout.workspacePaddingBottom).toBe(0);
+    expect(["auto", "scroll"]).toContain(mobileReaderLayout.toolbarOverflowX);
+    expect(mobileReaderLayout.documentLeft).toBeGreaterThanOrEqual(0);
+    expect(mobileReaderLayout.documentRight).toBeLessThanOrEqual(mobileReaderLayout.viewportWidth);
+    expect(mobileReaderLayout.documentHeight).toBeGreaterThan(360);
+    expect(mobileReaderLayout.inspectorTop).toBeGreaterThanOrEqual(mobileReaderLayout.statusbarBottom);
+    expect(mobileReaderLayout.statusbarBottom).toBeLessThan(mobileReaderLayout.viewportHeight);
+  });
 });
 
 async function seedLocalThought(page: Page, note: string) {
@@ -1456,18 +1522,14 @@ async function seedLocalHighlight(page: Page, text: string) {
 }
 
 async function openPreviewLocalReader(page: Page) {
-  await gotoLocalReaderPreview(page);
-  await page.locator(".sidebar").getByRole("button", { name: "书架", exact: true }).click();
-  await page.getByLabel("书架子菜单").getByRole("button", { name: "本地书库" }).click();
+  await openPreviewLocalLibrary(page);
   await page.getByRole("button", { name: /小王子 TXT/ }).click();
   await expect(page.getByLabel("本地阅读器")).toBeVisible();
   await expect(page.getByRole("heading", { name: "小王子" })).toBeVisible();
 }
 
 async function openPreviewMarkdownReader(page: Page) {
-  await gotoLocalReaderPreview(page);
-  await page.locator(".sidebar").getByRole("button", { name: "书架", exact: true }).click();
-  await page.getByLabel("书架子菜单").getByRole("button", { name: "本地书库" }).click();
+  await openPreviewLocalLibrary(page);
   await page.getByRole("button", { name: /阅读设计笔记 Markdown/ }).click();
   await expect(page.getByLabel("本地阅读器")).toBeVisible();
   await expect(page.getByRole("heading", { name: "阅读设计笔记" })).toBeVisible();

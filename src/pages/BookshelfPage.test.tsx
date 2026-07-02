@@ -122,6 +122,32 @@ describe("bookshelf page structure", () => {
     expect(markup).toContain("有声书");
   });
 
+  it("renders a dedicated upgrade notice for upgrade_required sync errors", () => {
+    const markup = renderToStaticMarkup(
+      <ToastProvider>
+        <BookshelfPage
+          credentialStatus={{ hasCredential: true }}
+          isLoading={false}
+          isSyncing={false}
+          error={{
+            code: "upgrade_required",
+            message: "微信读书 Skill 需要升级到 1.0.4。",
+            detail: "当前本地版本为 1.0.3。"
+          }}
+          onSync={() => undefined}
+          onOpenSettings={() => undefined}
+          onOpenDetail={() => undefined}
+          onSearchInDiscovery={() => undefined}
+        />
+      </ToastProvider>
+    );
+
+    expect(markup).toContain("微信读书 Skill 需要升级");
+    expect(markup).toContain("微信读书 Skill 需要升级到 1.0.4。");
+    expect(markup).toContain("当前本地版本为 1.0.3。");
+    expect(markup).toContain("升级后同步");
+  });
+
   it("keeps the category expansion control after the visible category chips", () => {
     const entries = Array.from({ length: 15 }, (_, index) =>
       makeEntry(`book-${index + 1}`, "book", `书籍${index + 1}`, "作者", `分类${index + 1}`)

@@ -2,11 +2,12 @@ import { startTransition, useEffect, useState } from "react";
 import {
   exportReadingStatsReviewMarkdown,
   getAiSettingsState,
-  getCommandErrorMessage,
+  getCommandErrorInfo,
   getLatestReadingStatsReview,
   getReadingStats,
   summarizeReadingStats,
   syncReadingStats,
+  type CommandErrorInfo,
   type ReadingStatsResponse
 } from "../../../lib/reading-api";
 import {
@@ -67,7 +68,7 @@ export function useReadingReviewPage({
   const [isSyncing, setIsSyncing] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [exportResult, setExportResult] = useState<ExportAiMarkdownResponse>();
-  const [error, setError] = useState<string>();
+  const [error, setError] = useState<CommandErrorInfo>();
   const hasCredential = credentialStatus?.hasCredential === true;
   const stats = getReadingStatsResponse(cache, period)?.stats;
   const activePeriod = stats ? buildReadingStatsPeriod(stats.mode, stats.baseTime) : period;
@@ -116,7 +117,7 @@ export function useReadingReviewPage({
       } catch (settingsError) {
         if (isMounted) {
           setStatus("error");
-          setError(getCommandErrorMessage(settingsError));
+          setError(getCommandErrorInfo(settingsError));
         }
       }
     }
@@ -148,7 +149,7 @@ export function useReadingReviewPage({
         }
       } catch (statsError) {
         if (isMounted) {
-          setError(getCommandErrorMessage(statsError));
+          setError(getCommandErrorInfo(statsError));
         }
       } finally {
         if (isMounted) {
@@ -196,7 +197,7 @@ export function useReadingReviewPage({
         if (cached) {
           setReviewResponse(cached);
           setStatus(statusFromSource(cached.source));
-          setError(cached.errorMessage);
+          setError(cached.errorMessage ? { message: cached.errorMessage } : undefined);
           return;
         }
 
@@ -205,7 +206,7 @@ export function useReadingReviewPage({
       } catch (cacheError) {
         if (isMounted) {
           setStatus("error");
-          setError(getCommandErrorMessage(cacheError));
+          setError(getCommandErrorInfo(cacheError));
         }
       } finally {
         if (isMounted) {
@@ -223,7 +224,7 @@ export function useReadingReviewPage({
 
   async function handleSyncStats() {
     if (!hasCredential) {
-      setError("请先在设置中保存微信读书 API Key，再同步阅读统计。");
+      setError({ message: "请先在设置中保存微信读书 API Key，再同步阅读统计。" });
       onOpenSettings();
       return;
     }
@@ -235,7 +236,7 @@ export function useReadingReviewPage({
       const synced = await syncReadingStats(period.mode, getReadingStatsRequestBaseTime(period));
       onCacheChange(period.mode, synced);
     } catch (syncError) {
-      setError(getCommandErrorMessage(syncError));
+      setError(getCommandErrorInfo(syncError));
     } finally {
       setIsSyncing(false);
     }
@@ -243,17 +244,17 @@ export function useReadingReviewPage({
 
   async function handleGenerate(regenerate: boolean) {
     if (!stats) {
-      setError("请先读取或同步当前周期统计，再生成阅读复盘。");
+      setError({ message: "请先读取或同步当前周期统计，再生成阅读复盘。" });
       return;
     }
 
     if (!hasStatsData) {
-      setError("当前周期还没有可复盘的统计数据。");
+      setError({ message: "当前周期还没有可复盘的统计数据。" });
       return;
     }
 
     if (isPreviewReadonly) {
-      setError("Web 预览只支持查看已缓存复盘，生成请在桌面应用中执行。");
+      setError({ message: "Web 预览只支持查看已缓存复盘，生成请在桌面应用中执行。" });
       return;
     }
 
@@ -275,11 +276,11 @@ export function useReadingReviewPage({
       setReviewResponse(response);
       setStatus(statusFromSource(response.source));
       if (response.errorMessage) {
-        setError(response.errorMessage);
+        setError({ message: response.errorMessage });
       }
     } catch (reviewError) {
       setStatus("error");
-      setError(getCommandErrorMessage(reviewError));
+      setError(getCommandErrorInfo(reviewError));
     }
   }
 
@@ -289,7 +290,7 @@ export function useReadingReviewPage({
     }
 
     if (isPreviewReadonly) {
-      setError("Web 预览只支持查看已缓存复盘，导出请在桌面应用中执行。");
+      setError({ message: "Web 预览只支持查看已缓存复盘，导出请在桌面应用中执行。" });
       return;
     }
 
@@ -304,7 +305,7 @@ export function useReadingReviewPage({
       });
       setExportResult(response);
     } catch (exportError) {
-      setError(getCommandErrorMessage(exportError));
+      setError(getCommandErrorInfo(exportError));
     } finally {
       setIsExporting(false);
     }
