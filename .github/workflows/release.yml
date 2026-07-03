@@ -44,6 +44,43 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Resolve release notes
+        id: release_notes
+        env:
+          RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
+        run: |
+          $notesPath = Join-Path $PWD "docs/release-notes-$env:RELEASE_TAG.json"
+          if (-not (Test-Path -Path $notesPath)) {
+            throw "Missing release notes JSON: $notesPath"
+          }
+
+          $releaseNotes = Get-Content -Path $notesPath -Raw | ConvertFrom-Json
+          if ([string] $releaseNotes.version -ne $env:RELEASE_TAG) {
+            throw "Release notes version '$($releaseNotes.version)' does not match tag '$env:RELEASE_TAG'."
+          }
+
+          $markdown = [string] $releaseNotes.releaseNotesMarkdown
+          if ([string]::IsNullOrWhiteSpace($markdown)) {
+            throw "releaseNotesMarkdown is required in $notesPath."
+          }
+
+          $body = @"
+          把微信读书里的阅读记录，沉淀成你的知识资产。
+
+          这是一个本地优先的阅读工作台，统一整理书架、笔记、阅读统计与 AI 复盘，帮助你更清楚地知道接下来读什么、复盘什么、输出什么。
+
+          $markdown
+
+          ## 回滚
+
+          - 如更新异常，请回退到上一版安装包
+          "@
+
+          $delimiter = "RELEASE_NOTES_$([guid]::NewGuid().ToString('N'))"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "body<<$delimiter"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value $body
+          Add-Content -Path $env:GITHUB_OUTPUT -Value $delimiter
+
       # 核心：Tauri 构建发布（自动打包+上传安装包）
       - name: Build and publish Tauri release
         id: publish
@@ -55,30 +92,7 @@ jobs:
         with:
           tagName: ${{ inputs.tag_name || github.ref_name }}
           releaseName: "微信读书个人阅读管理 ${{ inputs.tag_name || github.ref_name }}"
-          releaseBody: |
-            把微信读书里的阅读记录，沉淀成你的知识资产。
-
-            这是一个本地优先的阅读工作台，统一整理书架、笔记、阅读统计与 AI 复盘，帮助你更清楚地知道接下来读什么、复盘什么、输出什么。
-
-            ## 本次版本
-
-            - 适配微信读书 Skill 1.0.4，运行时版本和本地 Skill 文档保持一致。
-            - 微信读书接口返回 upgrade_required 时，书架、发现、详情、笔记、统计、复盘和单本 AI 复盘会展示专门升级提示。
-            - 书籍详情不再在缺少接口 deepLink 时拼接 weread:// 伪链接。
-            - 搜索、推荐和相似推荐会透传接口返回的 deepLink 字段。
-            - 相似推荐首次请求补齐 count 和 maxIdx，减少误降级为书名搜索。
-            - 设置页同步状态可以识别 Skill 需升级的错误码。
-            - 修复 Vite 多入口构建在 Windows 下偶发解析 website/index.html 输出路径失败的问题。
-
-            ## 更新说明
-
-            - 版本：${{ inputs.tag_name || github.ref_name }}
-            - 适用平台：Windows x64 / Android APK
-            - 更新方式：Windows 桌面端可在设置 > 应用更新中检查；Android 用户请从 GitHub Release 下载签名 APK。
-
-            ## 回滚
-
-            - 如更新异常，请回退到上一版安装包
+          releaseBody: ${{ steps.release_notes.outputs.body }}
           releaseDraft: false
           prerelease: false
           uploadUpdaterJson: false

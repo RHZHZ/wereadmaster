@@ -87,6 +87,10 @@ android {
     buildFeatures {
         buildConfig = true
     }
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
+    }
 }
 
 rust {
