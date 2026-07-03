@@ -319,6 +319,45 @@ pub fn initialize_schema(connection: &Connection) -> SqliteResult<()> {
         CREATE INDEX IF NOT EXISTS idx_ai_feedback_records_scope_updated
             ON ai_feedback_records(feature, scope_id, updated_at);
 
+        CREATE TABLE IF NOT EXISTS ai_assistant_threads (
+            id TEXT PRIMARY KEY NOT NULL,
+            scope TEXT NOT NULL,
+            entity_id TEXT,
+            title TEXT NOT NULL,
+            context_summary_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_ai_assistant_threads_updated
+            ON ai_assistant_threads(updated_at);
+
+        CREATE TABLE IF NOT EXISTS ai_assistant_messages (
+            id TEXT PRIMARY KEY NOT NULL,
+            thread_id TEXT NOT NULL,
+            role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+            content TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('pending', 'answered', 'failed')),
+            used_context_json TEXT NOT NULL,
+            output_json TEXT,
+            prompt_version TEXT,
+            input_hash TEXT,
+            provider_model TEXT,
+            error_code TEXT,
+            error_message TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(thread_id) REFERENCES ai_assistant_threads(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_ai_assistant_messages_thread_created
+            ON ai_assistant_messages(thread_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS ai_assistant_preferences (
+            key TEXT PRIMARY KEY NOT NULL,
+            value_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS local_books (
             id TEXT PRIMARY KEY NOT NULL,
             title TEXT NOT NULL,
@@ -376,6 +415,7 @@ pub fn initialize_schema(connection: &Connection) -> SqliteResult<()> {
     add_column_if_missing(connection, "thoughts", "chapter_uid", "INTEGER")?;
     add_column_if_missing(connection, "thoughts", "range_text", "TEXT")?;
     add_column_if_missing(connection, "thoughts", "deep_link", "TEXT")?;
+    add_column_if_missing(connection, "ai_assistant_messages", "output_json", "TEXT")?;
     ensure_local_books_support_markdown(connection)?;
     ensure_local_reading_progress_schema(connection)?;
 
@@ -679,7 +719,7 @@ mod tests {
     use rusqlite::Connection;
 
     use super::{
-        initialize_schema, read_custom_export_directory_config,
+        initialize_schema, read_custom_export_directory_config, table_columns,
         write_custom_export_directory_config, SQLITE_BUSY_TIMEOUT_MS,
     };
 
@@ -715,6 +755,48 @@ mod tests {
             .expect("table count should be readable");
 
         assert_eq!(table_count, 16);
+    }
+
+    #[test]
+    fn initialize_schema_migrates_ai_assistant_messages_output_json() {
+        let connection = Connection::open_in_memory().expect("in-memory database should open");
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE ai_assistant_threads (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    scope TEXT NOT NULL,
+                    entity_id TEXT,
+                    title TEXT NOT NULL,
+                    context_summary_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE ai_assistant_messages (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    thread_id TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+                    content TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('pending', 'answered', 'failed')),
+                    used_context_json TEXT NOT NULL,
+                    prompt_version TEXT,
+                    input_hash TEXT,
+                    provider_model TEXT,
+                    error_code TEXT,
+                    error_message TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(thread_id) REFERENCES ai_assistant_threads(id) ON DELETE CASCADE
+                );
+                ",
+            )
+            .expect("legacy assistant schema should be created");
+
+        initialize_schema(&connection).expect("schema should migrate");
+
+        let columns =
+            table_columns(&connection, "ai_assistant_messages").expect("columns should read");
+        assert!(columns.iter().any(|column| column == "output_json"));
     }
 
     #[test]

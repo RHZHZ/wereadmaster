@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-reading-assistant-preferences"
+description = "Enables the get_reading_assistant_preferences command without any pre-configured scope."
+commands.allow = ["get_reading_assistant_preferences"]
+
+[[permission]]
+identifier = "deny-get-reading-assistant-preferences"
+description = "Denies the get_reading_assistant_preferences command without any pre-configured scope."
+commands.deny = ["get_reading_assistant_preferences"]

@@ -4,7 +4,7 @@ import { ToastProvider } from "../components/ToastProvider";
 import type { LocalBook } from "../lib/local-reader-types";
 import type { BookDetailResponse } from "../lib/reading-api";
 import { createReadingAssetLinkPair } from "../lib/reading-asset-links";
-import type { ShelfEntry } from "../lib/types";
+import type { Chapter, ReadingProgress, ShelfEntry } from "../lib/types";
 import { BookDetailPage } from "./BookDetailPage";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -102,6 +102,28 @@ describe("book detail local version notice", () => {
     expect(markup).toContain("已关联本地版本");
     expect(markup).toContain("取消关联");
   });
+
+  it("展示当前阅读章节名", () => {
+    const markup = renderPage({
+      shelfEntry: makeShelfEntry("weread-1", "深度工作", "卡尔·纽波特"),
+      detailResponse: makeDetailResponse(
+        "weread-1",
+        "深度工作",
+        "卡尔·纽波特",
+        {
+          chapterUid: 12,
+          progressPercent: 42
+        },
+        [
+          makeChapter("weread-1", 11, 1, "第一章：专注"),
+          makeChapter("weread-1", 12, 2, "第二章：深度工作")
+        ]
+      ),
+      localBooks: []
+    });
+
+    expect(markup).toContain("当前章节：第二章：深度工作");
+  });
 });
 
 function renderPage(input: {
@@ -140,7 +162,13 @@ function makeShelfEntry(id: string, title: string, author?: string): ShelfEntry 
   };
 }
 
-function makeDetailResponse(bookId: string, title: string, author?: string): BookDetailResponse {
+function makeDetailResponse(
+  bookId: string,
+  title: string,
+  author?: string,
+  progressOverrides: Partial<ReadingProgress> = {},
+  chapters: Chapter[] = []
+): BookDetailResponse {
   return {
     detail: {
       bookId,
@@ -152,10 +180,21 @@ function makeDetailResponse(bookId: string, title: string, author?: string): Boo
       bookId,
       progressPercent: 12,
       isStarted: true,
-      isFinished: false
+      isFinished: false,
+      ...progressOverrides
     },
-    chapters: [],
+    chapters,
     deepLink: ""
+  };
+}
+
+function makeChapter(bookId: string, chapterUid: number, chapterIdx: number, title: string): Chapter {
+  return {
+    bookId,
+    chapterUid,
+    chapterIdx,
+    title,
+    level: 1
   };
 }
 

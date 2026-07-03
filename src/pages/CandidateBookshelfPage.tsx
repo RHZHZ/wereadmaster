@@ -2,6 +2,7 @@ import { startTransition, useDeferredValue, useEffect, useState } from "react";
 import {
   AlertCircle,
   BookOpen,
+  Check,
   Compass,
   Loader2,
   Search,
@@ -16,10 +17,13 @@ import {
   getLatestBookDecision,
   listReadingItemStates,
   removeReadingItemState,
+  searchBooks,
   summarizeBookDecision,
+  upsertReadingItemState,
   type BookshelfResponse,
   type ReadingStatsResponse
 } from "../lib/reading-api";
+import { dedupeRecommendedBookSearchResults } from "../lib/reading-assistant-recommendations";
 import type {
   BookDecisionGoal,
   CredentialStatus,
@@ -28,8 +32,18 @@ import type {
 } from "../lib/types";
 import {
   buildBookDecisionCandidates,
+  buildCandidateConfirmationSearchKeyword,
+  buildCandidateFilteredEmptyState,
   buildCandidateMap,
+  buildCandidateSourceStats,
+  canOpenCandidateDetail,
+  filterCandidatesBySource,
+  getCandidateSourceLabel,
+  getCandidateSourceTone,
+  isUnconfirmedAiCandidate,
   isSavedCandidateState,
+  resolveCandidateReplacement,
+  type CandidateSourceFilter,
   type LocalCandidateBook
 } from "./candidate-books";
 import {
@@ -54,16 +68,26 @@ type CandidateBookshelfPageProps = {
   credentialStatus?: CredentialStatus;
   bookshelf?: BookshelfResponse;
   readingStatsCache: ReadingStatsCache;
+  refreshKey?: number;
   onOpenSettings: () => void;
   onOpenDiscovery: () => void;
   onOpenBookDetail: (book: SearchResult) => void;
   onBookDecisionGenerated: (session: BookDecisionSession) => void;
 };
 
+type CandidateConfirmationSearchStatus = "idle" | "searching" | "found" | "notFound" | "failed";
+
+type CandidateConfirmationSearchState = {
+  status: CandidateConfirmationSearchStatus;
+  results: SearchResult[];
+  errorMessage?: string;
+};
+
 export function CandidateBookshelfPage({
   credentialStatus,
   bookshelf,
   readingStatsCache = {},
+  refreshKey = 0,
   onOpenSettings,
   onOpenDiscovery,
   onOpenBookDetail,
@@ -72,6 +96,10 @@ export function CandidateBookshelfPage({
   const [candidateMap, setCandidateMap] = useState<Map<string, LocalCandidateBook>>(() => new Map());
   const [isLoading, setIsLoading] = useState(true);
   const [removingIds, setRemovingIds] = useState<Set<string>>(() => new Set());
+  const [confirmingResultIds, setConfirmingResultIds] = useState<Set<string>>(() => new Set());
+  const [candidateConfirmationSearchStates, setCandidateConfirmationSearchStates] = useState<
+    Record<string, CandidateConfirmationSearchState>
+  >({});
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [selectedFactorIds, setSelectedFactorIds] = useState<Set<ReferenceFactor>>(() => new Set());
   const [candidateLimitMessage, setCandidateLimitMessage] = useState<string>();
@@ -81,11 +109,21 @@ export function CandidateBookshelfPage({
   const [isInputDialogOpen, setIsInputDialogOpen] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [query, setQuery] = useState("");
+  const [candidateSourceFilter, setCandidateSourceFilter] =
+    useState<CandidateSourceFilter>("all");
   const [error, setError] = useState<string>();
   const deferredQuery = useDeferredValue(query);
   const { showToast } = useToast();
   const candidateBooks = [...candidateMap.values()].sort((left, right) => left.title.localeCompare(right.title, "zh-Hans-CN"));
-  const visibleBooks = filterCandidateBooks(candidateBooks, deferredQuery);
+  const candidateSourceStats = buildCandidateSourceStats(candidateBooks);
+  const sourceFilteredBooks = filterCandidatesBySource(candidateBooks, candidateSourceFilter);
+  const visibleBooks = filterCandidateBooks(sourceFilteredBooks, deferredQuery);
+  const filteredEmptyState = buildCandidateFilteredEmptyState({
+    query: deferredQuery,
+    sourceFilter: candidateSourceFilter,
+    sourceFilteredCount: sourceFilteredBooks.length,
+    visibleCount: visibleBooks.length
+  });
   const hasWechatCredential = credentialStatus?.hasCredential === true;
   const selectedCandidateBooks = candidateBooks.filter((book) => selectedIds.has(book.bookId));
   const decisionCandidates = buildBookDecisionCandidates(selectedCandidateBooks);
@@ -147,7 +185,7 @@ export function CandidateBookshelfPage({
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [refreshKey]);
 
   useEffect(() => {
     if (!isInputDialogOpen) {
@@ -204,6 +242,127 @@ export function CandidateBookshelfPage({
       setRemovingIds((current) => {
         const next = new Set(current);
         next.delete(book.bookId);
+        return next;
+      });
+    }
+  }
+
+  async function handleSearchCandidateConfirmation(book: LocalCandidateBook) {
+    const keyword = buildCandidateConfirmationSearchKeyword(book);
+    if (!keyword) {
+      setCandidateConfirmationSearchStates((current) => ({
+        ...current,
+        [book.bookId]: {
+          status: "failed",
+          results: [],
+          errorMessage: "缺少可搜索的书名。"
+        }
+      }));
+      return;
+    }
+
+    setCandidateConfirmationSearchStates((current) => ({
+      ...current,
+      [book.bookId]: { status: "searching", results: [] }
+    }));
+    setError(undefined);
+
+    try {
+      const response = await searchBooks({ keyword, scope: 0, count: 5 });
+      const results = dedupeRecommendedBookSearchResults(response.result.results, 5);
+      setCandidateConfirmationSearchStates((current) => ({
+        ...current,
+        [book.bookId]: {
+          status: results.length > 0 ? "found" : "notFound",
+          results
+        }
+      }));
+    } catch (searchError) {
+      setCandidateConfirmationSearchStates((current) => ({
+        ...current,
+        [book.bookId]: {
+          status: "failed",
+          results: [],
+          errorMessage: getCommandErrorMessage(searchError)
+        }
+      }));
+    }
+  }
+
+  async function handleConfirmCandidateSearchResult(
+    book: LocalCandidateBook,
+    result: SearchResult
+  ) {
+    const resultKey = confirmationResultKey(book.bookId, result.bookId);
+    setConfirmingResultIds((current) => new Set(current).add(resultKey));
+    setError(undefined);
+
+    try {
+      const states = await listReadingItemStates();
+      const existingState = states.find((state) => state.itemId.trim() === result.bookId.trim());
+      const replacementResolution = resolveCandidateReplacement(book, result, existingState);
+      if (replacementResolution.status === "blocked") {
+        const message = `《${result.title}》已存在本地阅读状态，未替换候选。`;
+        setError(message);
+        showToast({ message, tone: "error" });
+        return;
+      }
+
+      const confirmed =
+        typeof window === "undefined" ||
+        window.confirm(
+          `替换未确认候选？\n\n将《${book.title}》替换为微信读书搜索结果《${result.title}》。\n这只更新本地候选，不会写入微信读书远端书架。`
+        );
+      if (!confirmed) {
+        return;
+      }
+
+      const replacement = replacementResolution.replacement;
+
+      if (replacementResolution.status === "create") {
+        await upsertReadingItemState({
+          itemId: result.bookId,
+          itemType: "candidate",
+          status: "toRead",
+          title: result.title,
+          author: result.author,
+          cover: result.cover,
+          category: result.category,
+          note: replacement.localNote
+        });
+      }
+
+      await removeReadingItemState(book.bookId);
+
+      startTransition(() => {
+        setCandidateMap((current) => {
+          const next = new Map(current);
+          next.delete(book.bookId);
+          next.set(replacement.bookId, replacement);
+          return next;
+        });
+        setSelectedIds((current) => {
+          const next = new Set(current);
+          if (next.delete(book.bookId)) {
+            next.add(replacement.bookId);
+          }
+          return next;
+        });
+        setCandidateConfirmationSearchStates((current) => {
+          const next = { ...current };
+          delete next[book.bookId];
+          return next;
+        });
+      });
+      showToast({ message: `已确认《${replacement.title}》为微信读书候选`, tone: "success" });
+    } catch (confirmError) {
+      const message = getCommandErrorMessage(confirmError);
+      setError(message);
+      showToast({ message, tone: "error" });
+    } finally {
+      setConfirmingResultIds((current) => {
+        const next = new Set(current);
+        next.delete(resultKey);
         return next;
       });
     }
@@ -291,6 +450,63 @@ export function CandidateBookshelfPage({
     }
   }
 
+  function renderCandidateConfirmationSearchResults(
+    book: LocalCandidateBook,
+    searchState: CandidateConfirmationSearchState
+  ) {
+    if (searchState.status === "idle" || searchState.status === "searching") {
+      return null;
+    }
+
+    if (searchState.status === "notFound") {
+      return <p className="candidate-confirmation-status">没有找到明确匹配项，可以保留为未确认候选。</p>;
+    }
+
+    if (searchState.status === "failed") {
+      return (
+        <p className="candidate-confirmation-status is-error">
+          {searchState.errorMessage || "搜索失败，可重试。"}
+        </p>
+      );
+    }
+
+    return (
+      <div className="candidate-confirmation-results">
+        <span className="candidate-confirmation-results-title">选择微信读书匹配项</span>
+        {searchState.results.map((result) => {
+          const resultKey = confirmationResultKey(book.bookId, result.bookId);
+          const isConfirming = confirmingResultIds.has(resultKey);
+          return (
+            <div className="candidate-confirmation-result" key={result.bookId}>
+              {result.cover ? (
+                <img src={result.cover} alt="" loading="lazy" />
+              ) : (
+                <span className="candidate-confirmation-cover" aria-hidden="true" />
+              )}
+              <span>
+                <strong>{result.title}</strong>
+                <small>{[result.author, result.category].filter(Boolean).join(" · ")}</small>
+              </span>
+              <button
+                className="text-button"
+                type="button"
+                disabled={isConfirming}
+                onClick={() => void handleConfirmCandidateSearchResult(book, result)}
+              >
+                {isConfirming ? (
+                  <Loader2 aria-hidden="true" size={14} className="spin" />
+                ) : (
+                  <Check aria-hidden="true" size={14} />
+                )}
+                {isConfirming ? "确认中" : "确认替换"}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
   return (
     <section className="candidate-bookshelf-page" aria-label="候选书架">
       <div className="bookshelf-toolbar candidate-bookshelf-hero">
@@ -307,7 +523,8 @@ export function CandidateBookshelfPage({
 
       <section className="shelf-summary-row" aria-label="候选书架统计">
         <SummaryPill label="候选书" value={candidateBooks.length} />
-        <SummaryPill label="参与决策" value={Math.min(candidateBooks.length, 8)} />
+        <SummaryPill label="已确认" value={candidateSourceStats.confirmed} />
+        <SummaryPill label="待确认" value={candidateSourceStats.unconfirmed} />
         <SummaryPill label="本地保存" value="不写回" />
       </section>
 
@@ -381,41 +598,121 @@ export function CandidateBookshelfPage({
               ) : null}
             </div>
 
+            <div className="candidate-source-filter" aria-label="候选来源筛选">
+              <CandidateSourceFilterButton
+                active={candidateSourceFilter === "all"}
+                count={candidateSourceStats.total}
+                label="全部"
+                onClick={() => setCandidateSourceFilter("all")}
+              />
+              <CandidateSourceFilterButton
+                active={candidateSourceFilter === "confirmed"}
+                count={candidateSourceStats.confirmed}
+                label="已确认"
+                onClick={() => setCandidateSourceFilter("confirmed")}
+              />
+              <CandidateSourceFilterButton
+                active={candidateSourceFilter === "unconfirmed"}
+                count={candidateSourceStats.unconfirmed}
+                label="待确认"
+                onClick={() => setCandidateSourceFilter("unconfirmed")}
+              />
+              <CandidateSourceFilterButton
+                active={candidateSourceFilter === "light"}
+                count={candidateSourceStats.light}
+                label="轻管理"
+                onClick={() => setCandidateSourceFilter("light")}
+              />
+            </div>
+
             {visibleBooks.length > 0 ? (
               <div className="candidate-bookshelf-grid">
-                {visibleBooks.map((book) => (
-                  <article key={book.bookId} className="shelf-card candidate-bookshelf-card">
-                    <button
-                      type="button"
-                      className="shelf-card-main shelf-card-main--button"
-                      onClick={() => handleOpenCandidateBook(book, onOpenBookDetail)}
-                    >
-                      <span className="cover-frame">
-                        {book.cover ? <img src={book.cover} alt="" /> : <BookOpen aria-hidden="true" size={32} />}
-                      </span>
-                      <span className="shelf-card-copy">
-                        <strong>{book.title}</strong>
-                        <small>{book.author || book.category || "本地候选"}</small>
-                        <span className="shelf-card-meta">{getCandidateSourceLabel(book)}</span>
-                      </span>
-                    </button>
-                    <button
-                      className="text-button candidate-remove-button"
-                      type="button"
-                      disabled={removingIds.has(book.bookId)}
-                      onClick={() => void handleRemoveCandidate(book)}
-                    >
-                      <Trash2 aria-hidden="true" size={15} />
-                      {removingIds.has(book.bookId) ? "移除中" : "移除"}
-                    </button>
-                  </article>
-                ))}
+                {visibleBooks.map((book) => {
+                  const canOpenDetail = canOpenCandidateDetail(book);
+                  const canConfirmSource = isUnconfirmedAiCandidate(book);
+                  const searchState = candidateConfirmationSearchStates[book.bookId] ?? {
+                    status: "idle",
+                    results: []
+                  };
+                  const isSearching = searchState.status === "searching";
+                  return (
+                    <article key={book.bookId} className="shelf-card candidate-bookshelf-card">
+                      <button
+                        type="button"
+                        className="shelf-card-main shelf-card-main--button"
+                        disabled={!canOpenDetail}
+                        title={canOpenDetail ? undefined : "AI 本地候选尚未确认微信读书书源"}
+                        onClick={() => handleOpenCandidateBook(book, onOpenBookDetail)}
+                      >
+                        <span className="cover-frame">
+                          {book.cover ? <img src={book.cover} alt="" /> : <BookOpen aria-hidden="true" size={32} />}
+                        </span>
+                        <span className="shelf-card-copy">
+                          <strong>{book.title}</strong>
+                          <small>{book.author || book.category || "本地候选"}</small>
+                          <span className="shelf-card-meta">
+                            <span className={`candidate-source-badge is-${getCandidateSourceTone(book)}`}>
+                              {getCandidateSourceLabel(book)}
+                            </span>
+                          </span>
+                        </span>
+                      </button>
+                      <div className="candidate-card-actions">
+                        {canConfirmSource ? (
+                          <button
+                            className="text-button"
+                            type="button"
+                            disabled={isSearching}
+                            onClick={() => void handleSearchCandidateConfirmation(book)}
+                          >
+                            {isSearching ? (
+                              <Loader2 aria-hidden="true" className="spin" size={15} />
+                            ) : (
+                              <Search aria-hidden="true" size={15} />
+                            )}
+                            {candidateConfirmationSearchActionLabel(searchState.status)}
+                          </button>
+                        ) : null}
+                        <button
+                          className="text-button candidate-remove-button"
+                          type="button"
+                          disabled={removingIds.has(book.bookId)}
+                          onClick={() => void handleRemoveCandidate(book)}
+                        >
+                          <Trash2 aria-hidden="true" size={15} />
+                          {removingIds.has(book.bookId) ? "移除中" : "移除"}
+                        </button>
+                      </div>
+                      {canConfirmSource ? renderCandidateConfirmationSearchResults(book, searchState) : null}
+                    </article>
+                  );
+                })}
               </div>
             ) : (
               <section className="empty-inline" aria-label="候选筛选无结果">
                 <Search aria-hidden="true" size={24} />
-                <h3>没有匹配的候选书</h3>
-                <p>换一个关键词，或清空搜索继续浏览。</p>
+                <h3>{filteredEmptyState?.title ?? "没有可展示的候选书"}</h3>
+                <p>{filteredEmptyState?.description ?? "候选数据暂时不可见，可以稍后重试。"}</p>
+                {filteredEmptyState?.canClearQuery || filteredEmptyState?.canShowAllSources ? (
+                  <div className="candidate-filter-empty-actions">
+                    {filteredEmptyState.canClearQuery ? (
+                      <button className="secondary-action" type="button" onClick={() => setQuery("")}>
+                        <X aria-hidden="true" size={16} />
+                        清空搜索
+                      </button>
+                    ) : null}
+                    {filteredEmptyState.canShowAllSources ? (
+                      <button
+                        className="secondary-action"
+                        type="button"
+                        onClick={() => setCandidateSourceFilter("all")}
+                      >
+                        <Compass aria-hidden="true" size={16} />
+                        显示全部
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
               </section>
             )}
           </section>
@@ -460,6 +757,30 @@ function SummaryPill({ label, value }: { label: string; value: number | string }
   );
 }
 
+function CandidateSourceFilterButton({
+  active,
+  count,
+  label,
+  onClick
+}: {
+  active: boolean;
+  count: number;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      className={`text-button candidate-source-filter-button ${active ? "is-active" : ""}`}
+      type="button"
+      aria-pressed={active}
+      onClick={onClick}
+    >
+      {label}
+      <span>{count}</span>
+    </button>
+  );
+}
+
 function filterCandidateBooks(books: LocalCandidateBook[], query: string): LocalCandidateBook[] {
   const keyword = query.trim().toLowerCase();
   if (!keyword) {
@@ -474,25 +795,33 @@ function filterCandidateBooks(books: LocalCandidateBook[], query: string): Local
   });
 }
 
-function getCandidateSourceLabel(book: LocalCandidateBook): string {
-  if (book.localType === "album") {
-    return "有声书 · 轻管理候选";
-  }
-
-  if (book.localType === "mp") {
-    return "文章收藏 · 轻管理候选";
-  }
-
-  return "发现页保存 · 本机候选";
-}
-
 function handleOpenCandidateBook(
   book: LocalCandidateBook,
   onOpenBookDetail: (book: SearchResult) => void
 ) {
-  if (book.localType !== "candidate") {
+  if (!canOpenCandidateDetail(book)) {
     return;
   }
 
   onOpenBookDetail(book);
+}
+
+function candidateConfirmationSearchActionLabel(status: CandidateConfirmationSearchStatus): string {
+  switch (status) {
+    case "searching":
+      return "搜索中";
+    case "found":
+      return "重新搜索";
+    case "notFound":
+      return "重试搜索";
+    case "failed":
+      return "重试搜索";
+    case "idle":
+    default:
+      return "搜索确认";
+  }
+}
+
+function confirmationResultKey(candidateId: string, resultId: string): string {
+  return `${candidateId}::${resultId}`;
 }

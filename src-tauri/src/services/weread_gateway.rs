@@ -25,6 +25,8 @@ pub enum WereadApi {
     Recommendations,
     SimilarBooks,
     PublicReviews,
+    BestBookmarks,
+    ReadReviews,
 }
 
 impl WereadApi {
@@ -42,6 +44,8 @@ impl WereadApi {
             Self::Recommendations => "/book/recommend",
             Self::SimilarBooks => "/book/similar",
             Self::PublicReviews => "/review/list",
+            Self::BestBookmarks => "/book/bestbookmarks",
+            Self::ReadReviews => "/book/readreviews",
         }
     }
 
@@ -59,6 +63,8 @@ impl WereadApi {
             Self::Recommendations,
             Self::SimilarBooks,
             Self::PublicReviews,
+            Self::BestBookmarks,
+            Self::ReadReviews,
         ]
         .into_iter()
         .map(Self::api_name)

@@ -351,10 +351,28 @@
           "markdownDescription": "Enables the ask_local_reader_selection_question command without any pre-configured scope."
         },
         {
+          "description": "Enables the ask_reading_assistant command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ask-reading-assistant",
+          "markdownDescription": "Enables the ask_reading_assistant command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the ask_reading_assistant_stream command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ask-reading-assistant-stream",
+          "markdownDescription": "Enables the ask_reading_assistant_stream command without any pre-configured scope."
+        },
+        {
           "description": "Enables the cancel_bulk_export command without any pre-configured scope.",
           "type": "string",
           "const": "allow-cancel-bulk-export",
           "markdownDescription": "Enables the cancel_bulk_export command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the cancel_reading_assistant_stream command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-cancel-reading-assistant-stream",
+          "markdownDescription": "Enables the cancel_reading_assistant_stream command without any pre-configured scope."
         },
         {
           "description": "Enables the choose_custom_data_directory command without any pre-configured scope.",
@@ -385,6 +403,18 @@
           "type": "string",
           "const": "allow-clear-local-cache",
           "markdownDescription": "Enables the clear_local_cache command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the clear_reading_assistant_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-clear-reading-assistant-history",
+          "markdownDescription": "Enables the clear_reading_assistant_history command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the delete_reading_assistant_thread command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-delete-reading-assistant-thread",
+          "markdownDescription": "Enables the delete_reading_assistant_thread command without any pre-configured scope."
         },
         {
           "description": "Enables the export_book_decision_markdown command without any pre-configured scope.",
@@ -483,6 +513,12 @@
           "markdownDescription": "Enables the get_ai_settings_state command without any pre-configured scope."
         },
         {
+          "description": "Enables the get_best_bookmarks command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-best-bookmarks",
+          "markdownDescription": "Enables the get_best_bookmarks command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_book_detail command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-book-detail",
@@ -561,6 +597,24 @@
           "markdownDescription": "Enables the get_public_reviews command without any pre-configured scope."
         },
         {
+          "description": "Enables the get_read_reviews command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-read-reviews",
+          "markdownDescription": "Enables the get_read_reviews command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_reading_assistant_preferences command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-reading-assistant-preferences",
+          "markdownDescription": "Enables the get_reading_assistant_preferences command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_reading_assistant_thread command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-reading-assistant-thread",
+          "markdownDescription": "Enables the get_reading_assistant_thread command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_reading_item_state command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-reading-item-state",
@@ -625,6 +679,12 @@
           "type": "string",
           "const": "allow-list-local-books",
           "markdownDescription": "Enables the list_local_books command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the list_reading_assistant_threads command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-list-reading-assistant-threads",
+          "markdownDescription": "Enables the list_reading_assistant_threads command without any pre-configured scope."
         },
         {
           "description": "Enables the list_reading_item_states command without any pre-configured scope.",
@@ -729,6 +789,12 @@
           "markdownDescription": "Enables the save_local_reading_progress command without any pre-configured scope."
         },
         {
+          "description": "Enables the save_reading_assistant_preferences command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-save-reading-assistant-preferences",
+          "markdownDescription": "Enables the save_reading_assistant_preferences command without any pre-configured scope."
+        },
+        {
           "description": "Enables the save_weread_proxy_url command without any pre-configured scope.",
           "type": "string",
           "const": "allow-save-weread-proxy-url",
@@ -807,10 +873,28 @@
           "markdownDescription": "Denies the ask_local_reader_selection_question command without any pre-configured scope."
         },
         {
+          "description": "Denies the ask_reading_assistant command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ask-reading-assistant",
+          "markdownDescription": "Denies the ask_reading_assistant command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ask_reading_assistant_stream command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ask-reading-assistant-stream",
+          "markdownDescription": "Denies the ask_reading_assistant_stream command without any pre-configured scope."
+        },
+        {
           "description": "Denies the cancel_bulk_export command without any pre-configured scope.",
           "type": "string",
           "const": "deny-cancel-bulk-export",
           "markdownDescription": "Denies the cancel_bulk_export command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the cancel_reading_assistant_stream command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-cancel-reading-assistant-stream",
+          "markdownDescription": "Denies the cancel_reading_assistant_stream command without any pre-configured scope."
         },
         {
           "description": "Denies the choose_custom_data_directory command without any pre-configured scope.",
@@ -841,6 +925,18 @@
           "type": "string",
           "const": "deny-clear-local-cache",
           "markdownDescription": "Denies the clear_local_cache command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the clear_reading_assistant_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-clear-reading-assistant-history",
+          "markdownDescription": "Denies the clear_reading_assistant_history command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the delete_reading_assistant_thread command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-delete-reading-assistant-thread",
+          "markdownDescription": "Denies the delete_reading_assistant_thread command without any pre-configured scope."
         },
         {
           "description": "Denies the export_book_decision_markdown command without any pre-configured scope.",
@@ -939,6 +1035,12 @@
           "markdownDescription": "Denies the get_ai_settings_state command without any pre-configured scope."
         },
         {
+          "description": "Denies the get_best_bookmarks command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-best-bookmarks",
+          "markdownDescription": "Denies the get_best_bookmarks command without any pre-configured scope."
+        },
+        {
           "description": "Denies the get_book_detail command without any pre-configured scope.",
           "type": "string",
           "const": "deny-get-book-detail",
@@ -1017,6 +1119,24 @@
           "markdownDescription": "Denies the get_public_reviews command without any pre-configured scope."
         },
         {
+          "description": "Denies the get_read_reviews command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-read-reviews",
+          "markdownDescription": "Denies the get_read_reviews command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_reading_assistant_preferences command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-reading-assistant-preferences",
+          "markdownDescription": "Denies the get_reading_assistant_preferences command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_reading_assistant_thread command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-reading-assistant-thread",
+          "markdownDescription": "Denies the get_reading_assistant_thread command without any pre-configured scope."
+        },
+        {
           "description": "Denies the get_reading_item_state command without any pre-configured scope.",
           "type": "string",
           "const": "deny-get-reading-item-state",
@@ -1081,6 +1201,12 @@
           "type": "string",
           "const": "deny-list-local-books",
           "markdownDescription": "Denies the list_local_books command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the list_reading_assistant_threads command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-list-reading-assistant-threads",
+          "markdownDescription": "Denies the list_reading_assistant_threads command without any pre-configured scope."
         },
         {
           "description": "Denies the list_reading_item_states command without any pre-configured scope.",
@@ -1183,6 +1309,12 @@
           "type": "string",
           "const": "deny-save-local-reading-progress",
           "markdownDescription": "Denies the save_local_reading_progress command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_reading_assistant_preferences command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-save-reading-assistant-preferences",
+          "markdownDescription": "Denies the save_reading_assistant_preferences command without any pre-configured scope."
         },
         {
           "description": "Denies the save_weread_proxy_url command without any pre-configured scope.",

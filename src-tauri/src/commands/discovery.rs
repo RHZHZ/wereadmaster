@@ -4,8 +4,8 @@ use tauri::AppHandle;
 use crate::{
     errors::AppError,
     services::discovery::{
-        DiscoveryService, PublicReviewsResponse, RecommendationsResponse, SearchBooksResponse,
-        SimilarBooksResponse,
+        BestBookmarksResponse, DiscoveryService, PublicReviewsResponse, ReadReviewsResponse,
+        RecommendationsResponse, SearchBooksResponse, SimilarBooksResponse,
     },
 };
 
@@ -78,6 +78,35 @@ pub async fn get_public_reviews(
 ) -> Result<PublicReviewsResponse, AppCommandError> {
     DiscoveryService::new(app)
         .get_public_reviews(book_id, review_list_type, count, max_idx, synckey)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn get_best_bookmarks(
+    app: AppHandle,
+    book_id: String,
+    chapter_uid: Option<i64>,
+    synckey: Option<i64>,
+) -> Result<BestBookmarksResponse, AppCommandError> {
+    DiscoveryService::new(app)
+        .get_best_bookmarks(book_id, chapter_uid, synckey)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn get_read_reviews(
+    app: AppHandle,
+    book_id: String,
+    chapter_uid: i64,
+    range: String,
+    count: Option<i64>,
+    max_idx: Option<i64>,
+    synckey: Option<i64>,
+) -> Result<ReadReviewsResponse, AppCommandError> {
+    DiscoveryService::new(app)
+        .get_read_reviews(book_id, chapter_uid, range, count, max_idx, synckey)
         .await
         .map_err(Into::into)
 }

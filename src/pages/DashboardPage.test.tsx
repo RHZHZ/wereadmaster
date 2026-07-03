@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { ReadingStatsResponse } from "../lib/reading-api";
+import type { BookshelfResponse, NotebookOverviewResponse, ReadingStatsResponse } from "../lib/reading-api";
 import type { ReadingStatsCache } from "./reading-stats-period";
 import { DashboardPage } from "./DashboardPage";
 
@@ -145,6 +145,45 @@ describe("dashboard page reading persona overview", () => {
     expect(markup).not.toContain("dashboard-profile-visual-card");
     expect(markup).not.toContain("persona-illustration");
   });
+
+  test("renders WeRead overview from recent five ebook entries only", () => {
+    const markup = renderToStaticMarkup(
+      <DashboardPage
+        credentialStatus={{ hasCredential: true }}
+        bookshelf={createBookshelfResponse()}
+        notesOverview={createNotebookOverview()}
+        isLoading={false}
+        isSyncing={false}
+        onSync={() => undefined}
+        onOpenBookshelf={() => undefined}
+        onOpenNotes={() => undefined}
+        onOpenStats={() => undefined}
+        onOpenReadingReview={() => undefined}
+        onOpenDiscovery={() => undefined}
+        onOpenShelfEntry={() => undefined}
+        onOpenBookNotes={() => undefined}
+        onOpenCandidateBook={() => undefined}
+        onOpenSettings={() => undefined}
+        onOpenReadingRoute={() => undefined}
+        onOpenBookDecision={() => undefined}
+        readingStatsCache={{}}
+        onReadingStatsCacheChange={() => undefined}
+      />
+    );
+
+    expect(markup).toContain("微信读书概况");
+    expect(markup).toContain("最近阅读");
+    expect(markup).toContain("最近 5 本电子书");
+    expect(markup).toContain("按最后阅读时间排序");
+    expect(markup).toContain("刷新进度");
+    expect(markup).toContain("Book 6");
+    expect(markup).toContain("Book 2");
+    expect(markup).not.toContain("Book 1");
+    expect(markup).not.toContain("Audio Entry");
+    expect(markup).toContain("12");
+    expect(markup).toContain("2 本有笔记");
+    expect(markup.indexOf("今日最值得做")).toBeLessThan(markup.indexOf("最近 5 本电子书"));
+  });
 });
 
 function createMonthlyStatsResponse(): ReadingStatsResponse {
@@ -187,6 +226,68 @@ function createMonthlyStatsResponse(): ReadingStatsResponse {
           readingCount: 2
         }
       ]
+    }
+  };
+}
+
+function createBookshelfResponse(): BookshelfResponse {
+  return {
+    snapshot: {
+      entries: [
+        bookEntry("book-1", "Book 1", 101),
+        bookEntry("book-2", "Book 2", 102),
+        bookEntry("book-3", "Book 3", 103),
+        bookEntry("book-4", "Book 4", 104),
+        bookEntry("book-5", "Book 5", 105),
+        bookEntry("book-6", "Book 6", 106),
+        {
+          id: "album-1",
+          type: "album",
+          title: "Audio Entry",
+          isTop: false,
+          isSecret: false,
+          lastReadAt: 999
+        },
+        {
+          id: "mp",
+          type: "mp",
+          title: "文章收藏",
+          isTop: false,
+          isSecret: true,
+          lastReadAt: 998
+        }
+      ],
+      archives: [],
+      summary: {
+        totalVisibleEntries: 8,
+        bookCount: 6,
+        albumCount: 1,
+        mpCount: 1,
+        publicCount: 7,
+        secretCount: 1
+      }
+    }
+  };
+}
+
+function bookEntry(id: string, title: string, lastReadAt: number): BookshelfResponse["snapshot"]["entries"][number] {
+  return {
+    id,
+    type: "book",
+    title,
+    author: "作者",
+    isTop: false,
+    isSecret: false,
+    lastReadAt
+  };
+}
+
+function createNotebookOverview(): NotebookOverviewResponse {
+  return {
+    books: [],
+    summary: {
+      totalBookCount: 2,
+      totalNoteCount: 12
     }
   };
 }

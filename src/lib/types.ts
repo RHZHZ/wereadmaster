@@ -87,6 +87,174 @@ export type AiCachedOutputRecord = {
   updatedAt: string;
 };
 
+export type AssistantContextScope =
+  | "global"
+  | "bookDetail"
+  | "bookNotes"
+  | "readingStats"
+  | "candidateShelf"
+  | "aiAsset"
+  | "localReaderSelection";
+
+export type ReadingAssistantContextOption =
+  | "currentBook"
+  | "bookNotesSummary"
+  | "rawBookNotes"
+  | "readingStats"
+  | "readingPersona"
+  | "candidateBooks"
+  | "bookExclusionList"
+  | "aiAssetSummary"
+  | "conversationHistory"
+  | "readingMemory";
+
+export type ReadingAssistantUsedContext = {
+  contextType: ReadingAssistantContextOption;
+  label: string;
+  sourceRefs: string[];
+  itemCount: number;
+};
+
+export type ReadingAssistantMessageStatus = "pending" | "answered" | "failed";
+
+export type ReadingAssistantMessageRole = "user" | "assistant";
+
+export type ReadingAssistantMessage = {
+  id: string;
+  role: ReadingAssistantMessageRole;
+  content: string;
+  status: ReadingAssistantMessageStatus;
+  usedContext: ReadingAssistantUsedContext[];
+  output?: ReadingAssistantMessageOutput;
+  promptVersion?: string;
+  inputHash?: string;
+  providerModel?: string;
+  errorCode?: string;
+  errorMessage?: string;
+  createdAt: string;
+};
+
+export type ReadingAssistantRecommendedBook = {
+  title: string;
+  author: string;
+  reason: string;
+  fit: string;
+  risk: string;
+};
+
+export type ReadingAssistantActionOutput =
+  | {
+      type: "wereadSearch";
+      payload: ReadingAssistantWereadSearchOutput;
+    }
+  | {
+      type: "statsAggregate";
+      payload: ReadingAssistantStatsAggregateOutput;
+    };
+
+export type ReadingAssistantWereadSearchOutput = {
+  keyword: string;
+  status: "found" | "notFound";
+  message: string;
+  results: ReadingAssistantWereadSearchResult[];
+};
+
+export type ReadingAssistantWereadSearchResult = {
+  bookId: string;
+  title: string;
+  author?: string;
+  cover?: string;
+  category?: string;
+  intro?: string;
+  searchIdx?: number;
+  localStatus: "available" | "inLibrary" | "inCandidate";
+  localLabel: string;
+  canAddToCandidate: boolean;
+};
+
+export type ReadingAssistantStatsAggregateOutput = {
+  rangeLabel: string;
+  dataStatus: "complete" | "partial" | "empty";
+  message: string;
+  totalReadingTimeText: string;
+  readDays?: number;
+  shelfBookCount: number;
+  finishedBookCount: number;
+  readingBookCount: number;
+  candidateBookCount: number;
+  updatedAt?: string;
+  topCategories: ReadingAssistantStatsCategory[];
+};
+
+export type ReadingAssistantStatsCategory = {
+  title: string;
+  readingTimeText: string;
+  readingCount?: number;
+};
+
+export type ReadingAssistantMessageOutput = {
+  suggestions: string[];
+  recommendedBooks: ReadingAssistantRecommendedBook[];
+  basisNotice: string;
+  action?: ReadingAssistantActionOutput;
+};
+
+export type ReadingAssistantThreadSummary = {
+  id: string;
+  scope: AssistantContextScope;
+  entityId?: string;
+  title: string;
+  updatedAt: string;
+  createdAt: string;
+  messageCount: number;
+};
+
+export type ReadingAssistantThreadDetail = {
+  id: string;
+  scope: AssistantContextScope;
+  entityId?: string;
+  title: string;
+  contextSummary: unknown;
+  createdAt: string;
+  updatedAt: string;
+  messages: ReadingAssistantMessage[];
+};
+
+export type ReadingAssistantPreferences = {
+  usePersonalizedContext: boolean;
+  useReadingMemory: boolean;
+  allowRawBookNotes: boolean;
+  saveConversationHistory: boolean;
+};
+
+export type ReadingAssistantRequest = {
+  threadId?: string;
+  scope: AssistantContextScope;
+  entityId?: string;
+  message: string;
+  enabledContext: ReadingAssistantContextOption[];
+};
+
+export type ReadingAssistantStreamEvent = {
+  streamId: string;
+  delta: string;
+  content: string;
+};
+
+export type ReadingAssistantAnswer = {
+  threadId: string;
+  messageId: string;
+  answer: string;
+  suggestions: string[];
+  recommendedBooks: ReadingAssistantRecommendedBook[];
+  action?: ReadingAssistantActionOutput;
+  usedContext: ReadingAssistantUsedContext[];
+  generatedAt: string;
+  promptVersion: string;
+  providerModel?: string;
+  basisNotice: string;
+};
+
 export type BookAiSummarySourceStats = {
   highlightCount: number;
   thoughtCount: number;
@@ -671,6 +839,85 @@ export type Thought = {
   range?: string;
   deepLink?: string;
   isFinish?: boolean;
+};
+
+export type PublicReviewAuthor = {
+  userVid?: string;
+  name?: string;
+  avatar?: string;
+};
+
+export type PublicReviewBook = {
+  bookId?: string;
+  title?: string;
+  author?: string;
+};
+
+export type PublicReview = {
+  idx?: number;
+  reviewId: string;
+  content: string;
+  star?: number;
+  starLevel?: number;
+  isFinish?: boolean;
+  createTime?: number;
+  chapterName?: string;
+  author?: PublicReviewAuthor;
+  book?: PublicReviewBook;
+};
+
+export type PublicReviewsResult = {
+  bookId: string;
+  reviewListType: number;
+  totalCount?: number;
+  recentTotalCount?: number;
+  hasMore: boolean;
+  has5Star: boolean;
+  has1Star: boolean;
+  hasRecent: boolean;
+  friendCommentCount?: number;
+  friendUniqueCount?: number;
+  synckey?: number;
+  nextMaxIdx?: number;
+  reviews: PublicReview[];
+};
+
+export type BestBookmark = {
+  bookmarkId: string;
+  bookId: string;
+  chapterUid?: number;
+  chapterTitle?: string;
+  range?: string;
+  markText: string;
+  totalCount?: number;
+};
+
+export type BestBookmarksResult = {
+  bookId: string;
+  chapterUid: number;
+  synckey?: number;
+  totalCount?: number;
+  items: BestBookmark[];
+};
+
+export type ReadReview = {
+  reviewId: string;
+  content: string;
+  abstractText?: string;
+  createTime?: number;
+  range?: string;
+  author?: PublicReviewAuthor;
+};
+
+export type ReadReviewsResult = {
+  bookId: string;
+  chapterUid: number;
+  range: string;
+  totalCount?: number;
+  hasMore: boolean;
+  maxIdx?: number;
+  synckey?: number;
+  reviews: ReadReview[];
 };
 
 export type ChapterNoteGroup = {

@@ -54,11 +54,29 @@ import type {
   LocalDataState,
   MigrateDataDirectoryResult,
   NotebookBook,
+  PublicReview,
+  PublicReviewAuthor,
+  PublicReviewBook,
+  PublicReviewsResult,
   ReadingItemState,
   ReadingItemStateInput,
   ReadingItemStateType,
   ReadingItemStatus,
   ReadingCategory,
+  ReadingAssistantActionOutput,
+  ReadingAssistantAnswer,
+  ReadingAssistantMessage,
+  ReadingAssistantMessageOutput,
+  ReadingAssistantPreferences,
+  ReadingAssistantRecommendedBook,
+  ReadingAssistantStatsCategory,
+  ReadingAssistantWereadSearchResult,
+  ReadingAssistantRequest,
+  ReadingAssistantStreamEvent,
+  ReadingAssistantThreadDetail,
+  ReadingAssistantThreadSummary,
+  ReadReview,
+  ReadReviewsResult,
   ReadingRouteRequest,
   ReadingRouteResponse,
   ReadingRouteUpdateContext,
@@ -89,6 +107,8 @@ import type {
   ResetWereadProxyResult,
   AppUpdateRuntime,
   AppUpdateStatus,
+  BestBookmark,
+  BestBookmarksResult,
   SaveWereadProxyResult,
   Thought
 } from "./types";
@@ -99,6 +119,13 @@ import type {
 } from "./local-reader-ai-requests";
 
 const SETTINGS_COMMAND_TIMEOUT_MS = 15_000;
+
+const DEFAULT_READING_ASSISTANT_PREFERENCES: ReadingAssistantPreferences = {
+  usePersonalizedContext: true,
+  useReadingMemory: true,
+  allowRawBookNotes: false,
+  saveConversationHistory: true
+};
 
 type ShelfEntryRecord = {
   id?: unknown;
@@ -431,6 +458,101 @@ type SimilarBooksResponseRecord = {
   syncState?: SyncState;
 };
 
+type PublicReviewAuthorRecord = {
+  userVid?: unknown;
+  name?: unknown;
+  avatar?: unknown;
+};
+
+type PublicReviewBookRecord = {
+  bookId?: unknown;
+  title?: unknown;
+  author?: unknown;
+};
+
+type PublicReviewRecord = {
+  idx?: unknown;
+  reviewId?: unknown;
+  content?: unknown;
+  star?: unknown;
+  starLevel?: unknown;
+  isFinish?: unknown;
+  createTime?: unknown;
+  chapterName?: unknown;
+  author?: PublicReviewAuthorRecord;
+  book?: PublicReviewBookRecord;
+};
+
+type PublicReviewsRecord = {
+  bookId?: unknown;
+  reviewListType?: unknown;
+  totalCount?: unknown;
+  recentTotalCount?: unknown;
+  hasMore?: unknown;
+  has5Star?: unknown;
+  has1Star?: unknown;
+  hasRecent?: unknown;
+  friendCommentCount?: unknown;
+  friendUniqueCount?: unknown;
+  synckey?: unknown;
+  nextMaxIdx?: unknown;
+  reviews?: PublicReviewRecord[];
+};
+
+type PublicReviewsResponseRecord = {
+  result?: PublicReviewsRecord;
+  syncState?: SyncState;
+};
+
+type BestBookmarkRecord = {
+  bookmarkId?: unknown;
+  bookId?: unknown;
+  chapterUid?: unknown;
+  chapterTitle?: unknown;
+  markText?: unknown;
+  totalCount?: unknown;
+  range?: unknown;
+  userVid?: unknown;
+};
+
+type BestBookmarksRecord = {
+  bookId?: unknown;
+  chapterUid?: unknown;
+  synckey?: unknown;
+  totalCount?: unknown;
+  items?: BestBookmarkRecord[];
+};
+
+type BestBookmarksResponseRecord = {
+  result?: BestBookmarksRecord;
+  syncState?: SyncState;
+};
+
+type ReadReviewRecord = {
+  reviewId?: unknown;
+  content?: unknown;
+  abstractText?: unknown;
+  createTime?: unknown;
+  range?: unknown;
+  author?: PublicReviewAuthorRecord;
+};
+
+type ReadReviewsRecord = {
+  bookId?: unknown;
+  chapterUid?: unknown;
+  range?: unknown;
+  totalCount?: unknown;
+  hasMore?: unknown;
+  maxIdx?: unknown;
+  synckey?: unknown;
+  reviews?: ReadReviewRecord[];
+};
+
+type ReadReviewsResponseRecord = {
+  result?: ReadReviewsRecord;
+  syncState?: SyncState;
+};
+
 type SettingsStateResponseRecord = {
   credential?: CredentialStatus;
   credentialError?: Partial<SettingsCredentialError>;
@@ -538,6 +660,61 @@ type ReadingItemStateRecord = {
   updatedAt?: unknown;
 };
 
+type ReadingAssistantRecommendedBookRecord = {
+  title?: unknown;
+  author?: unknown;
+  reason?: unknown;
+  fit?: unknown;
+  risk?: unknown;
+};
+
+type ReadingAssistantWereadSearchResultRecord = {
+  bookId?: unknown;
+  title?: unknown;
+  author?: unknown;
+  cover?: unknown;
+  category?: unknown;
+  intro?: unknown;
+  searchIdx?: unknown;
+  localStatus?: unknown;
+  localLabel?: unknown;
+  canAddToCandidate?: unknown;
+};
+
+type ReadingAssistantStatsCategoryRecord = {
+  title?: unknown;
+  readingTimeText?: unknown;
+  readingCount?: unknown;
+};
+
+type ReadingAssistantActionOutputRecord = {
+  type?: unknown;
+  payload?: unknown;
+};
+
+type ReadingAssistantAnswerRecord = Omit<ReadingAssistantAnswer, "recommendedBooks" | "action"> & {
+  recommendedBooks?: unknown;
+  action?: unknown;
+};
+
+type ReadingAssistantMessageOutputRecord = Omit<
+  ReadingAssistantMessageOutput,
+  "recommendedBooks" | "suggestions" | "basisNotice" | "action"
+> & {
+  suggestions?: unknown;
+  recommendedBooks?: unknown;
+  basisNotice?: unknown;
+  action?: unknown;
+};
+
+type ReadingAssistantMessageRecord = Omit<ReadingAssistantMessage, "output"> & {
+  output?: unknown;
+};
+
+type ReadingAssistantThreadDetailRecord = Omit<ReadingAssistantThreadDetail, "messages"> & {
+  messages?: unknown;
+};
+
 export type BookshelfSnapshot = {
   entries: ShelfEntry[];
   archives: ShelfArchive[];
@@ -605,6 +782,21 @@ export type RecommendationsResponse = {
 
 export type SimilarBooksResponse = {
   result: SimilarBooksResult;
+  syncState?: SyncState;
+};
+
+export type PublicReviewsResponse = {
+  result: PublicReviewsResult;
+  syncState?: SyncState;
+};
+
+export type BestBookmarksResponse = {
+  result: BestBookmarksResult;
+  syncState?: SyncState;
+};
+
+export type ReadReviewsResponse = {
+  result: ReadReviewsResult;
   syncState?: SyncState;
 };
 
@@ -796,6 +988,109 @@ export async function getAiCachedOutput({
   });
 
   return response ?? undefined;
+}
+
+export async function askReadingAssistant(
+  request: ReadingAssistantRequest
+): Promise<ReadingAssistantAnswer> {
+  if (!hasTauriRuntime()) {
+    throw new Error("AI 阅读助手需要在桌面应用中使用。");
+  }
+
+  const response = await invoke<ReadingAssistantAnswerRecord>("ask_reading_assistant", { request });
+  return mapReadingAssistantAnswer(response);
+}
+
+export async function askReadingAssistantStream(
+  streamId: string,
+  request: ReadingAssistantRequest
+): Promise<ReadingAssistantAnswer> {
+  if (!hasTauriRuntime()) {
+    throw new Error("AI 阅读助手需要在桌面应用中使用。");
+  }
+
+  const response = await invoke<ReadingAssistantAnswerRecord>("ask_reading_assistant_stream", {
+    request: {
+      streamId,
+      request
+    }
+  });
+  return mapReadingAssistantAnswer(response);
+}
+
+export async function listenReadingAssistantStream(
+  handler: (event: ReadingAssistantStreamEvent) => void
+): Promise<() => void> {
+  return listen<ReadingAssistantStreamEvent>("reading-assistant-stream", (event) => {
+    handler(event.payload);
+  });
+}
+
+export async function cancelReadingAssistantStream(streamId: string): Promise<void> {
+  if (!hasTauriRuntime()) {
+    return;
+  }
+
+  await invoke("cancel_reading_assistant_stream", { streamId });
+}
+
+export async function getReadingAssistantPreferences(): Promise<ReadingAssistantPreferences> {
+  if (!hasTauriRuntime()) {
+    return DEFAULT_READING_ASSISTANT_PREFERENCES;
+  }
+
+  return invoke<ReadingAssistantPreferences>("get_reading_assistant_preferences");
+}
+
+export async function saveReadingAssistantPreferences(
+  preferences: ReadingAssistantPreferences
+): Promise<ReadingAssistantPreferences> {
+  if (!hasTauriRuntime()) {
+    return preferences;
+  }
+
+  return invoke<ReadingAssistantPreferences>("save_reading_assistant_preferences", {
+    preferences
+  });
+}
+
+export async function listReadingAssistantThreads(): Promise<ReadingAssistantThreadSummary[]> {
+  if (!hasTauriRuntime()) {
+    return [];
+  }
+
+  return invoke<ReadingAssistantThreadSummary[]>("list_reading_assistant_threads");
+}
+
+export async function getReadingAssistantThread(
+  threadId: string
+): Promise<ReadingAssistantThreadDetail | undefined> {
+  if (!hasTauriRuntime()) {
+    return undefined;
+  }
+
+  const response = await invoke<ReadingAssistantThreadDetailRecord | null>(
+    "get_reading_assistant_thread",
+    { threadId }
+  );
+
+  return response ? mapReadingAssistantThreadDetail(response) : undefined;
+}
+
+export async function deleteReadingAssistantThread(threadId: string): Promise<void> {
+  if (!hasTauriRuntime()) {
+    return;
+  }
+
+  await invoke<void>("delete_reading_assistant_thread", { threadId });
+}
+
+export async function clearReadingAssistantHistory(): Promise<void> {
+  if (!hasTauriRuntime()) {
+    return;
+  }
+
+  await invoke<void>("clear_reading_assistant_history");
 }
 
 export async function summarizeBookNotes({
@@ -1315,6 +1610,84 @@ export async function getSimilarBooks({
     sessionId
   });
   return mapSimilarBooksResponse(response);
+}
+
+export async function getPublicReviews({
+  bookId,
+  reviewListType = 0,
+  count = 5,
+  maxIdx,
+  synckey
+}: {
+  bookId: string;
+  reviewListType?: number;
+  count?: number;
+  maxIdx?: number;
+  synckey?: number;
+}): Promise<PublicReviewsResponse> {
+  if (!hasTauriRuntime()) {
+    throw createMissingWebPreviewDataError("公开点评");
+  }
+
+  const response = await invoke<PublicReviewsResponseRecord>("get_public_reviews", {
+    bookId,
+    reviewListType,
+    count,
+    maxIdx,
+    synckey
+  });
+  return mapPublicReviewsResponse(bookId, reviewListType, response);
+}
+
+export async function getBestBookmarks({
+  bookId,
+  chapterUid = 0,
+  synckey
+}: {
+  bookId: string;
+  chapterUid?: number;
+  synckey?: number;
+}): Promise<BestBookmarksResponse> {
+  if (!hasTauriRuntime()) {
+    throw createMissingWebPreviewDataError("热门划线");
+  }
+
+  const response = await invoke<BestBookmarksResponseRecord>("get_best_bookmarks", {
+    bookId,
+    chapterUid,
+    synckey
+  });
+  return mapBestBookmarksResponse(bookId, chapterUid, response);
+}
+
+export async function getReadReviews({
+  bookId,
+  chapterUid,
+  range,
+  count = 5,
+  maxIdx,
+  synckey
+}: {
+  bookId: string;
+  chapterUid: number;
+  range: string;
+  count?: number;
+  maxIdx?: number;
+  synckey?: number;
+}): Promise<ReadReviewsResponse> {
+  if (!hasTauriRuntime()) {
+    throw createMissingWebPreviewDataError("共读想法");
+  }
+
+  const response = await invoke<ReadReviewsResponseRecord>("get_read_reviews", {
+    bookId,
+    chapterUid,
+    range,
+    count,
+    maxIdx,
+    synckey
+  });
+  return mapReadReviewsResponse(bookId, chapterUid, range, response);
 }
 
 export async function getSettingsState(): Promise<SettingsState> {
@@ -2386,6 +2759,244 @@ function mapReadingItemState(record: ReadingItemStateRecord): ReadingItemState |
   };
 }
 
+function mapReadingAssistantAnswer(record: ReadingAssistantAnswerRecord): ReadingAssistantAnswer {
+  return {
+    ...record,
+    recommendedBooks: Array.isArray(record.recommendedBooks)
+      ? record.recommendedBooks.map(mapReadingAssistantRecommendedBook).filter(isDefined)
+      : [],
+    action: mapReadingAssistantActionOutput(record.action)
+  };
+}
+
+function mapReadingAssistantThreadDetail(
+  record: ReadingAssistantThreadDetailRecord
+): ReadingAssistantThreadDetail {
+  return {
+    ...record,
+    messages: Array.isArray(record.messages)
+      ? record.messages.map(mapReadingAssistantMessage).filter(isDefined)
+      : []
+  };
+}
+
+function mapReadingAssistantMessage(record: unknown): ReadingAssistantMessage | undefined {
+  if (!isObject(record)) {
+    return undefined;
+  }
+
+  const candidate = record as ReadingAssistantMessageRecord;
+  return {
+    ...candidate,
+    output: mapReadingAssistantMessageOutput(candidate.output)
+  };
+}
+
+function mapReadingAssistantMessageOutput(
+  record: unknown
+): ReadingAssistantMessageOutput | undefined {
+  if (!isObject(record)) {
+    return undefined;
+  }
+
+  const candidate = record as ReadingAssistantMessageOutputRecord;
+  const suggestions = toStringArray(candidate.suggestions).slice(0, 3);
+  const recommendedBooks = Array.isArray(candidate.recommendedBooks)
+    ? candidate.recommendedBooks.map(mapReadingAssistantRecommendedBook).filter(isDefined)
+    : [];
+  const basisNotice = stringValue(candidate.basisNotice) ?? "";
+  const action = mapReadingAssistantActionOutput(candidate.action);
+
+  if (suggestions.length === 0 && recommendedBooks.length === 0 && !basisNotice && !action) {
+    return undefined;
+  }
+
+  return {
+    suggestions,
+    recommendedBooks,
+    basisNotice,
+    action
+  };
+}
+
+function mapReadingAssistantActionOutput(record: unknown): ReadingAssistantActionOutput | undefined {
+  if (!isObject(record)) {
+    return undefined;
+  }
+
+  const candidate = record as ReadingAssistantActionOutputRecord;
+  const type = stringValue(candidate.type);
+  if (!isObject(candidate.payload)) {
+    return undefined;
+  }
+
+  if (type === "wereadSearch") {
+    const payload = candidate.payload as {
+      keyword?: unknown;
+      status?: unknown;
+      message?: unknown;
+      results?: unknown;
+    };
+    const keyword = stringValue(payload.keyword);
+    if (!keyword) {
+      return undefined;
+    }
+
+    return {
+      type: "wereadSearch",
+      payload: {
+        keyword,
+        status: stringValue(payload.status) === "notFound" ? "notFound" : "found",
+        message: stringValue(payload.message) ?? "",
+        results: Array.isArray(payload.results)
+          ? payload.results.map(mapReadingAssistantWereadSearchResult).filter(isDefined)
+          : []
+      }
+    };
+  }
+
+  if (type === "statsAggregate") {
+    return mapReadingAssistantStatsAggregateAction(candidate.payload);
+  }
+
+  return undefined;
+}
+
+function mapReadingAssistantWereadSearchResult(
+  record: unknown
+): ReadingAssistantWereadSearchResult | undefined {
+  if (!isObject(record)) {
+    return undefined;
+  }
+
+  const candidate = record as ReadingAssistantWereadSearchResultRecord;
+  const bookId = stringValue(candidate.bookId);
+  const title = stringValue(candidate.title);
+  if (!bookId || !title) {
+    return undefined;
+  }
+
+  return {
+    bookId,
+    title,
+    author: stringValue(candidate.author),
+    cover: stringValue(candidate.cover),
+    category: stringValue(candidate.category),
+    intro: stringValue(candidate.intro),
+    searchIdx: numberValue(candidate.searchIdx),
+    localStatus: normalizeReadingAssistantSearchLocalStatus(candidate.localStatus),
+    localLabel: stringValue(candidate.localLabel) ?? "可加入候选",
+    canAddToCandidate: booleanValue(candidate.canAddToCandidate)
+  };
+}
+
+function normalizeReadingAssistantSearchLocalStatus(
+  value: unknown
+): ReadingAssistantWereadSearchResult["localStatus"] {
+  if (value === "inLibrary" || value === "inCandidate") {
+    return value;
+  }
+
+  return "available";
+}
+
+function mapReadingAssistantStatsAggregateAction(
+  record: unknown
+): ReadingAssistantActionOutput | undefined {
+  if (!isObject(record)) {
+    return undefined;
+  }
+
+  const payload = record as {
+    rangeLabel?: unknown;
+    dataStatus?: unknown;
+    message?: unknown;
+    totalReadingTimeText?: unknown;
+    readDays?: unknown;
+    shelfBookCount?: unknown;
+    finishedBookCount?: unknown;
+    readingBookCount?: unknown;
+    candidateBookCount?: unknown;
+    updatedAt?: unknown;
+    topCategories?: unknown;
+  };
+  const rangeLabel = stringValue(payload.rangeLabel);
+  if (!rangeLabel) {
+    return undefined;
+  }
+
+  return {
+    type: "statsAggregate",
+    payload: {
+      rangeLabel,
+      dataStatus: normalizeReadingAssistantStatsDataStatus(payload.dataStatus),
+      message: stringValue(payload.message) ?? "",
+      totalReadingTimeText: stringValue(payload.totalReadingTimeText) ?? "0分钟",
+      readDays: numberValue(payload.readDays),
+      shelfBookCount: nonNegativeNumberValue(payload.shelfBookCount) ?? 0,
+      finishedBookCount: nonNegativeNumberValue(payload.finishedBookCount) ?? 0,
+      readingBookCount: nonNegativeNumberValue(payload.readingBookCount) ?? 0,
+      candidateBookCount: nonNegativeNumberValue(payload.candidateBookCount) ?? 0,
+      updatedAt: stringValue(payload.updatedAt),
+      topCategories: Array.isArray(payload.topCategories)
+        ? payload.topCategories.map(mapReadingAssistantStatsCategory).filter(isDefined)
+        : []
+    }
+  };
+}
+
+function mapReadingAssistantStatsCategory(
+  record: unknown
+): ReadingAssistantStatsCategory | undefined {
+  if (!isObject(record)) {
+    return undefined;
+  }
+
+  const candidate = record as ReadingAssistantStatsCategoryRecord;
+  const title = stringValue(candidate.title);
+  if (!title) {
+    return undefined;
+  }
+
+  return {
+    title,
+    readingTimeText: stringValue(candidate.readingTimeText) ?? "0分钟",
+    readingCount: numberValue(candidate.readingCount)
+  };
+}
+
+function normalizeReadingAssistantStatsDataStatus(
+  value: unknown
+): "complete" | "partial" | "empty" {
+  if (value === "complete" || value === "partial" || value === "empty") {
+    return value;
+  }
+
+  return "partial";
+}
+
+function mapReadingAssistantRecommendedBook(
+  record: unknown
+): ReadingAssistantRecommendedBook | undefined {
+  if (!record || typeof record !== "object") {
+    return undefined;
+  }
+
+  const candidate = record as ReadingAssistantRecommendedBookRecord;
+  const title = stringValue(candidate.title);
+  if (!title) {
+    return undefined;
+  }
+
+  return {
+    title,
+    author: stringValue(candidate.author) ?? "",
+    reason: stringValue(candidate.reason) ?? "AI 未提供单独推荐理由。",
+    fit: stringValue(candidate.fit) ?? "与当前阅读画像存在一定相关性。",
+    risk: stringValue(candidate.risk) ?? "未确认微信读书可用，加入候选前仍需用户判断。"
+  };
+}
+
 function mapShelfEntry(record: ShelfEntryRecord): ShelfEntry {
   const type = normalizeEntryType(record.type);
 
@@ -2652,6 +3263,75 @@ function mapSimilarBooksResponse(response: SimilarBooksResponseRecord): SimilarB
   };
 }
 
+function mapPublicReviewsResponse(
+  fallbackBookId: string,
+  fallbackReviewListType: number,
+  response: PublicReviewsResponseRecord
+): PublicReviewsResponse {
+  const result = response.result ?? {};
+
+  return {
+    result: {
+      bookId: stringValue(result.bookId) || fallbackBookId,
+      reviewListType: numberValue(result.reviewListType) ?? fallbackReviewListType,
+      totalCount: numberValue(result.totalCount),
+      recentTotalCount: numberValue(result.recentTotalCount),
+      hasMore: booleanValue(result.hasMore),
+      has5Star: booleanValue(result.has5Star),
+      has1Star: booleanValue(result.has1Star),
+      hasRecent: booleanValue(result.hasRecent),
+      friendCommentCount: numberValue(result.friendCommentCount),
+      friendUniqueCount: numberValue(result.friendUniqueCount),
+      synckey: numberValue(result.synckey),
+      nextMaxIdx: numberValue(result.nextMaxIdx),
+      reviews: (result.reviews ?? []).map(mapPublicReview).filter(isDefined)
+    },
+    syncState: normalizeSyncState(response.syncState)
+  };
+}
+
+function mapBestBookmarksResponse(
+  fallbackBookId: string,
+  fallbackChapterUid: number,
+  response: BestBookmarksResponseRecord
+): BestBookmarksResponse {
+  const result = response.result ?? {};
+
+  return {
+    result: {
+      bookId: stringValue(result.bookId) || fallbackBookId,
+      chapterUid: numberValue(result.chapterUid) ?? fallbackChapterUid,
+      synckey: numberValue(result.synckey),
+      totalCount: numberValue(result.totalCount),
+      items: (result.items ?? []).map(mapBestBookmark).filter(isDefined)
+    },
+    syncState: normalizeSyncState(response.syncState)
+  };
+}
+
+function mapReadReviewsResponse(
+  fallbackBookId: string,
+  fallbackChapterUid: number,
+  fallbackRange: string,
+  response: ReadReviewsResponseRecord
+): ReadReviewsResponse {
+  const result = response.result ?? {};
+
+  return {
+    result: {
+      bookId: stringValue(result.bookId) || fallbackBookId,
+      chapterUid: numberValue(result.chapterUid) ?? fallbackChapterUid,
+      range: stringValue(result.range) || fallbackRange,
+      totalCount: numberValue(result.totalCount),
+      hasMore: booleanValue(result.hasMore),
+      maxIdx: numberValue(result.maxIdx),
+      synckey: numberValue(result.synckey),
+      reviews: (result.reviews ?? []).map(mapReadReview).filter(isDefined)
+    },
+    syncState: normalizeSyncState(response.syncState)
+  };
+}
+
 async function invokeSettingsCommand<T>(
   command: string,
   args?: Record<string, unknown>
@@ -2779,6 +3459,110 @@ function mapDiscoveryBook(record: DiscoveryBookRecord): Recommendation | undefin
     deepLink: stringValue(record.deepLink),
     reason: stringValue(record.reason)
   };
+}
+
+function mapPublicReview(record: PublicReviewRecord): PublicReview | undefined {
+  const reviewId = stringValue(record.reviewId);
+  const content = stringValue(record.content);
+
+  if (!reviewId || !content) {
+    return undefined;
+  }
+
+  return {
+    idx: numberValue(record.idx),
+    reviewId,
+    content,
+    star: numberValue(record.star),
+    starLevel: numberValue(record.starLevel),
+    isFinish:
+      record.isFinish === undefined || record.isFinish === null
+        ? undefined
+        : booleanValue(record.isFinish),
+    createTime: numberValue(record.createTime),
+    chapterName: stringValue(record.chapterName),
+    author: mapPublicReviewAuthor(record.author),
+    book: mapPublicReviewBook(record.book)
+  };
+}
+
+function mapBestBookmark(record: BestBookmarkRecord): BestBookmark | undefined {
+  const bookmarkId = stringValue(record.bookmarkId);
+  const bookId = stringValue(record.bookId);
+  const markText = stringValue(record.markText);
+
+  if (!bookmarkId || !bookId || !markText) {
+    return undefined;
+  }
+
+  return {
+    bookmarkId,
+    bookId,
+    chapterUid: numberValue(record.chapterUid),
+    chapterTitle: stringValue(record.chapterTitle),
+    range: stringValue(record.range),
+    markText,
+    totalCount: nonNegativeNumberValue(record.totalCount)
+  };
+}
+
+function mapReadReview(record: ReadReviewRecord): ReadReview | undefined {
+  const reviewId = stringValue(record.reviewId);
+  const content = stringValue(record.content);
+
+  if (!reviewId || !content) {
+    return undefined;
+  }
+
+  return {
+    reviewId,
+    content,
+    abstractText: stringValue(record.abstractText),
+    createTime: numberValue(record.createTime),
+    range: stringValue(record.range),
+    author: mapPublicDisplayAuthor(record.author)
+  };
+}
+
+function mapPublicDisplayAuthor(record?: PublicReviewAuthorRecord): PublicReviewAuthor | undefined {
+  if (!record) {
+    return undefined;
+  }
+
+  const author = {
+    name: stringValue(record.name),
+    avatar: stringValue(record.avatar)
+  };
+
+  return author.name || author.avatar ? author : undefined;
+}
+
+function mapPublicReviewAuthor(record?: PublicReviewAuthorRecord): PublicReviewAuthor | undefined {
+  if (!record) {
+    return undefined;
+  }
+
+  const author = {
+    userVid: stringValue(record.userVid),
+    name: stringValue(record.name),
+    avatar: stringValue(record.avatar)
+  };
+
+  return author.userVid || author.name || author.avatar ? author : undefined;
+}
+
+function mapPublicReviewBook(record?: PublicReviewBookRecord): PublicReviewBook | undefined {
+  if (!record) {
+    return undefined;
+  }
+
+  const book = {
+    bookId: stringValue(record.bookId),
+    title: stringValue(record.title),
+    author: stringValue(record.author)
+  };
+
+  return book.bookId || book.title || book.author ? book : undefined;
 }
 
 function mapReadingStats(fallbackMode: ReadingStatsMode, record: ReadingStatsRecord = {}): ReadingStats {

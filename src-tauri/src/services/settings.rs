@@ -32,6 +32,8 @@ const CACHE_TABLES: &[&str] = &[
     "reading_stats",
     "raw_cache",
     "ai_outputs",
+    "ai_assistant_messages",
+    "ai_assistant_threads",
     "sync_state",
 ];
 
@@ -49,6 +51,9 @@ const DIAGNOSTIC_TABLES: &[&str] = &[
     "sync_state",
     "ai_outputs",
     "ai_feedback_records",
+    "ai_assistant_threads",
+    "ai_assistant_messages",
+    "ai_assistant_preferences",
     "reading_item_states",
 ];
 

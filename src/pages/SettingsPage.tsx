@@ -15,6 +15,7 @@ import {
   Info,
   KeyRound,
   Loader2,
+  MessageSquare,
   RefreshCw,
   ShieldCheck,
   Sparkles,
@@ -49,10 +50,12 @@ import {
   chooseCustomDataDirectory,
   clearAiOutputCache,
   clearLocalCache,
+  clearReadingAssistantHistory,
   exportLocalDataBackup,
   exportDiagnostics,
   getCommandErrorMessage,
   getAiSettingsState,
+  getReadingAssistantPreferences,
   getSettingsState,
   listAiProviderModels,
   migrateLocalDataDirectory,
@@ -65,6 +68,7 @@ import {
   saveCustomExportDirectory,
   saveAiSettings,
   saveCredential,
+  saveReadingAssistantPreferences,
   saveWereadProxyUrl,
   testAiConnection,
   validateAiCredential,
@@ -82,6 +86,7 @@ import type {
   AppUpdateStatus,
   CredentialStatus,
   ExportBackupResult,
+  ReadingAssistantPreferences,
   SettingsState,
   SyncState,
 } from "../lib/types";
@@ -109,6 +114,7 @@ type PendingAction =
   | "removeCredential"
   | "removeAiCredential"
   | "clearAiOutputCache"
+  | "clearReadingAssistantHistory"
   | "clearCache"
   | "restoreBackup"
   | "migrateDataDirectory"
@@ -191,6 +197,13 @@ const sectionLabels: Record<string, string> = {
   dashboard: "总览",
 };
 
+const DEFAULT_READING_ASSISTANT_PREFERENCES: ReadingAssistantPreferences = {
+  usePersonalizedContext: true,
+  useReadingMemory: true,
+  allowRawBookNotes: false,
+  saveConversationHistory: true,
+};
+
 export function SettingsPage({
   open,
   credentialStatus,
@@ -234,6 +247,14 @@ export function SettingsPage({
     useState<string>();
   const [aiProviderModelMessage, setAiProviderModelMessage] =
     useState<string>();
+  const [readingAssistantPreferences, setReadingAssistantPreferences] =
+    useState<ReadingAssistantPreferences>(
+      DEFAULT_READING_ASSISTANT_PREFERENCES,
+    );
+  const [isSavingReadingAssistantPreferences, setIsSavingReadingAssistantPreferences] =
+    useState(false);
+  const [isClearingReadingAssistantHistory, setIsClearingReadingAssistantHistory] =
+    useState(false);
   const [isClearingAiOutputCache, setIsClearingAiOutputCache] = useState(false);
   const [isClearingCache, setIsClearingCache] = useState(false);
   const [isExportingBackup, setIsExportingBackup] = useState(false);
@@ -368,12 +389,14 @@ export function SettingsPage({
     setError(undefined);
 
     try {
-      const [nextState, nextAiState] = await Promise.all([
+      const [nextState, nextAiState, nextReadingAssistantPreferences] = await Promise.all([
         getSettingsState(),
         getAiSettingsState(),
+        getReadingAssistantPreferences(),
       ]);
       setState(nextState);
       setAiState(nextAiState);
+      setReadingAssistantPreferences(nextReadingAssistantPreferences);
       applyAiProviderSettings(nextAiState.provider);
       setExportDirectoryInput(nextState.exportData.exportDir);
       setWereadProxyInput(nextState.network.wereadProxyUrl ?? "");
@@ -590,6 +613,42 @@ export function SettingsPage({
       setError(getCommandErrorMessage(removeError));
     } finally {
       setIsSavingAiCredential(false);
+    }
+  }
+
+  async function handleSaveReadingAssistantPreferences(
+    nextPreferences: ReadingAssistantPreferences,
+  ) {
+    setReadingAssistantPreferences(nextPreferences);
+    setIsSavingReadingAssistantPreferences(true);
+    setError(undefined);
+
+    try {
+      const saved = await saveReadingAssistantPreferences(nextPreferences);
+      setReadingAssistantPreferences(saved);
+      showToast({ message: "AI 阅读助手偏好已保存。", tone: "success" });
+    } catch (saveError) {
+      setError(getCommandErrorMessage(saveError));
+    } finally {
+      setIsSavingReadingAssistantPreferences(false);
+    }
+  }
+
+  async function handleClearReadingAssistantHistory() {
+    setIsClearingReadingAssistantHistory(true);
+    setError(undefined);
+
+    try {
+      await clearReadingAssistantHistory();
+      showToast({
+        message: "AI 阅读助手本地对话历史已清空。",
+        tone: "success",
+      });
+      setPendingAction(undefined);
+    } catch (clearError) {
+      setError(getCommandErrorMessage(clearError));
+    } finally {
+      setIsClearingReadingAssistantHistory(false);
     }
   }
 
@@ -1446,6 +1505,91 @@ export function SettingsPage({
                     </button>
                   </div>
                 </section>
+                <section
+                  className="settings-card settings-panel settings-control-panel reading-assistant-settings-card"
+                  aria-label="AI 阅读助手"
+                >
+                  <div className="settings-card-heading">
+                    <span className="settings-icon">
+                      <MessageSquare aria-hidden="true" size={20} />
+                    </span>
+                    <div>
+                      <p className="section-kicker">对话助手</p>
+                      <h3>上下文与历史</h3>
+                    </div>
+                  </div>
+                  <div className="reading-assistant-settings-grid">
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={readingAssistantPreferences.usePersonalizedContext}
+                        onChange={(event) =>
+                          void handleSaveReadingAssistantPreferences({
+                            ...readingAssistantPreferences,
+                            usePersonalizedContext: event.currentTarget.checked,
+                          })
+                        }
+                        disabled={isSavingReadingAssistantPreferences}
+                      />
+                      <span>
+                        <strong>个性化上下文</strong>
+                        <small>当前书、统计、候选和 AI 资产摘要</small>
+                      </span>
+                    </label>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={readingAssistantPreferences.allowRawBookNotes}
+                        onChange={(event) =>
+                          void handleSaveReadingAssistantPreferences({
+                            ...readingAssistantPreferences,
+                            allowRawBookNotes: event.currentTarget.checked,
+                          })
+                        }
+                        disabled={
+                          isSavingReadingAssistantPreferences ||
+                          !readingAssistantPreferences.usePersonalizedContext
+                        }
+                      />
+                      <span>
+                        <strong>原始笔记片段</strong>
+                        <small>仅在手动打开后用于当前书提问</small>
+                      </span>
+                    </label>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={readingAssistantPreferences.saveConversationHistory}
+                        onChange={(event) =>
+                          void handleSaveReadingAssistantPreferences({
+                            ...readingAssistantPreferences,
+                            saveConversationHistory: event.currentTarget.checked,
+                          })
+                        }
+                        disabled={isSavingReadingAssistantPreferences}
+                      />
+                      <span>
+                        <strong>保存对话历史</strong>
+                        <small>只保存本地线程和消息</small>
+                      </span>
+                    </label>
+                  </div>
+                  <div className="settings-actions settings-card-actions">
+                    <button
+                      className="sync-button"
+                      type="button"
+                      onClick={() => setPendingAction("clearReadingAssistantHistory")}
+                      disabled={isClearingReadingAssistantHistory}
+                    >
+                      {isClearingReadingAssistantHistory ? (
+                        <Loader2 aria-hidden="true" size={18} className="spin" />
+                      ) : (
+                        <Trash2 aria-hidden="true" size={18} />
+                      )}
+                      {isClearingReadingAssistantHistory ? "清空中" : "清空对话历史"}
+                    </button>
+                  </div>
+                </section>
               </SettingsSection>
             ) : null}
 
@@ -2262,6 +2406,16 @@ export function SettingsPage({
             isBusy={isClearingAiOutputCache}
             onCancel={() => setPendingAction(undefined)}
             onConfirm={() => void handleClearAiOutputCache()}
+          />
+          <ConfirmDialog
+            open={pendingAction === "clearReadingAssistantHistory"}
+            title="确认清空 AI 阅读助手对话历史？"
+            description="这只会删除本机保存的助手线程和消息，不会删除书籍复盘、阅读报告、阅读指南、选书决策或 API Key。"
+            confirmLabel="确认清空"
+            isDanger
+            isBusy={isClearingReadingAssistantHistory}
+            onCancel={() => setPendingAction(undefined)}
+            onConfirm={() => void handleClearReadingAssistantHistory()}
           />
           <ConfirmDialog
             open={pendingAction === "restoreBackup"}

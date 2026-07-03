@@ -1564,6 +1564,58 @@ test.describe("个人阅读管理应用 smoke", () => {
     expect(layout.rightInset).toBeLessThanOrEqual(28);
   });
 
+  test("笔记页搜索支持中文输入法并筛选书籍", async ({ page }) => {
+    await installTauriMock(page);
+    await page.goto("/");
+
+    await openPrimaryNav(page, "笔记");
+    await expect(page.getByRole("heading", { name: "划线、想法和书签数量" })).toBeVisible();
+
+    const notesSearchInput = page.getByPlaceholder("按书名或作者筛选笔记");
+    await expect(page.getByLabel("有笔记的书").getByRole("button", { name: /深度工作/ })).toBeVisible();
+    await expect(page.getByLabel("有笔记的书").getByRole("button", { name: /三体/ })).toBeVisible();
+
+    await notesSearchInput.evaluate((input) => {
+      const nativeValueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      input.dispatchEvent(new CompositionEvent("compositionstart", { data: "" }));
+      input.dispatchEvent(new CompositionEvent("compositionupdate", { data: "shendu" }));
+      nativeValueSetter?.call(input, "shendu");
+      input.dispatchEvent(
+        new InputEvent("input", {
+          data: "shendu",
+          inputType: "insertCompositionText",
+          bubbles: true,
+          isComposing: true
+        })
+      );
+    });
+    await expect(notesSearchInput).toHaveValue("shendu");
+    await expect(page.getByLabel("有笔记的书").getByRole("button", { name: /深度工作/ })).toBeVisible();
+    await expect(page.getByLabel("有笔记的书").getByRole("button", { name: /三体/ })).toBeVisible();
+
+    await notesSearchInput.evaluate((input) => {
+      const nativeValueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      nativeValueSetter?.call(input, "深度");
+      input.dispatchEvent(new CompositionEvent("compositionend", { data: "深度" }));
+      input.dispatchEvent(
+        new InputEvent("input", {
+          data: "深度",
+          inputType: "insertText",
+          bubbles: true,
+          isComposing: false
+        })
+      );
+    });
+    await expect(notesSearchInput).toHaveValue("深度");
+    await expect(page.getByLabel("有笔记的书").getByRole("button", { name: /深度工作/ })).toBeVisible();
+    await expect(page.getByLabel("有笔记的书").getByRole("button", { name: /三体/ })).toHaveCount(0);
+
+    await notesSearchInput.fill("三");
+    await expect(notesSearchInput).toHaveValue("三");
+    await expect(page.getByLabel("有笔记的书").getByRole("button", { name: /三体/ })).toBeVisible();
+    await expect(page.getByLabel("有笔记的书").getByRole("button", { name: /深度工作/ })).toHaveCount(0);
+  });
+
   test("批量导出进行中在弹窗顶部显示明确状态", async ({ page }) => {
     await installTauriMock(page);
     await page.goto("/");

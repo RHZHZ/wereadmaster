@@ -1,10 +1,11 @@
 import { BookOpen, Clock3, ExternalLink, Loader2, Sparkles, Star } from "lucide-react";
 import { formatDuration, formatProgress, formatRating, formatUnixDate } from "../lib/formatters";
-import type { BookDetail, ReadingProgress, ShelfEntry } from "../lib/types";
+import type { BookDetail, Chapter, ReadingProgress, ShelfEntry } from "../lib/types";
 
 type BookHeaderProps = {
   detail: BookDetail;
   progress: ReadingProgress;
+  currentChapter?: Chapter;
   shelfEntry?: ShelfEntry;
   isOpening: boolean;
   onOpenInWeread: () => void;
@@ -14,6 +15,7 @@ type BookHeaderProps = {
 export function BookHeader({
   detail,
   progress,
+  currentChapter,
   shelfEntry,
   isOpening,
   onOpenInWeread,
@@ -60,6 +62,9 @@ export function BookHeader({
             <strong>{progressText}</strong>
             <span>{progress.isFinished ? "已完成" : progress.isStarted ? "阅读中" : "未开始"}</span>
           </div>
+          {currentChapter && !progress.isFinished ? (
+            <span className="current-chapter-label">当前章节：{currentChapter.title}</span>
+          ) : null}
           <meter min="0" max="100" value={progress.progressPercent}>
             {progressText}
           </meter>

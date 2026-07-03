@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-delete-reading-assistant-thread"
+description = "Enables the delete_reading_assistant_thread command without any pre-configured scope."
+commands.allow = ["delete_reading_assistant_thread"]
+
+[[permission]]
+identifier = "deny-delete-reading-assistant-thread"
+description = "Denies the delete_reading_assistant_thread command without any pre-configured scope."
+commands.deny = ["delete_reading_assistant_thread"]

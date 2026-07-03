@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-reading-assistant-threads"
+description = "Enables the list_reading_assistant_threads command without any pre-configured scope."
+commands.allow = ["list_reading_assistant_threads"]
+
+[[permission]]
+identifier = "deny-list-reading-assistant-threads"
+description = "Denies the list_reading_assistant_threads command without any pre-configured scope."
+commands.deny = ["list_reading_assistant_threads"]

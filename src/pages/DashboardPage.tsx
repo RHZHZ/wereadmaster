@@ -9,6 +9,7 @@ import {
   Database,
   KeyRound,
   Library,
+  Loader2,
   RefreshCw,
   Sparkles
 } from "lucide-react";
@@ -34,6 +35,7 @@ import {
   getCommandErrorInfo,
   getCommandErrorMessage,
   getAiSettingsState,
+  getBookDetail,
   getLatestReadingStatsReview,
   getRecommendations,
   getReadingStats,
@@ -48,6 +50,7 @@ import type {
   BookDecisionResponse,
   CredentialStatus,
   NotebookBook,
+  ReadingProgress,
   ReadingPersona,
   ReadingItemState,
   ReadingStats,
@@ -145,6 +148,9 @@ export function DashboardPage({
   const [reviewSuggestionError, setReviewSuggestionError] = useState<string>();
   const [recommendedBooks, setRecommendedBooks] = useState<SearchResult[]>([]);
   const [recommendationSource, setRecommendationSource] = useState<"remote" | "candidate">("candidate");
+  const [overviewProgressByBookId, setOverviewProgressByBookId] = useState<Record<string, ReadingProgress>>({});
+  const [isOverviewRefreshing, setIsOverviewRefreshing] = useState(false);
+  const [overviewError, setOverviewError] = useState<CommandErrorInfo>();
   const hasCredential = credentialStatus?.hasCredential === true;
   const summary = bookshelf?.snapshot.summary;
   const syncState = bookshelf?.syncState;
@@ -157,6 +163,7 @@ export function DashboardPage({
   const shelfEntryMap = useMemo(() => new Map(shelfEntries.map((entry) => [entry.id, entry])), [shelfEntries]);
   const notesBookMap = useMemo(() => new Map(notesBooks.map((book) => [book.bookId, book])), [notesBooks]);
   const recentEntries = useMemo(() => getRecentEntries(shelfEntries), [shelfEntries]);
+  const overviewRecentEntries = useMemo(() => getRecentOverviewEntries(shelfEntries), [shelfEntries]);
   const continueItems = useMemo(() => buildContinueItems(recentEntries, onOpenShelfEntry), [recentEntries, onOpenShelfEntry]);
   const reviewItems = useMemo(
     () =>
@@ -335,6 +342,50 @@ export function DashboardPage({
     }
 
     onOpenBookshelf();
+  }
+
+  async function handleRefreshOverviewProgress() {
+    if (!hasCredential || overviewRecentEntries.length === 0) {
+      return;
+    }
+
+    setIsOverviewRefreshing(true);
+    setOverviewError(undefined);
+
+    const results = await Promise.allSettled(
+      overviewRecentEntries.map(async (entry) => [entry.id, await getBookDetail(entry.id)] as const)
+    );
+    const nextProgressByBookId: Record<string, ReadingProgress> = {};
+    const errors: CommandErrorInfo[] = [];
+
+    for (const result of results) {
+      if (result.status === "fulfilled") {
+        const [bookId, response] = result.value;
+        nextProgressByBookId[bookId] = response.progress;
+      } else {
+        errors.push(getCommandErrorInfo(result.reason));
+      }
+    }
+
+    setOverviewProgressByBookId((current) => ({
+      ...current,
+      ...nextProgressByBookId
+    }));
+
+    const upgradeError = errors.find((item) => item.code === "upgrade_required");
+    if (upgradeError) {
+      setOverviewError(upgradeError);
+    } else if (errors.length > 0 && Object.keys(nextProgressByBookId).length === 0) {
+      setOverviewError(errors[0]);
+    } else if (errors.length > 0) {
+      setOverviewError({
+        code: errors[0].code,
+        message: "部分最近进度暂时不可用。",
+        detail: errors[0].message
+      });
+    }
+
+    setIsOverviewRefreshing(false);
   }
 
   useEffect(() => {
@@ -567,6 +618,21 @@ export function DashboardPage({
       <DailyWorkbenchPanel
         primaryAction={workbenchActions.primaryAction}
         secondaryActions={workbenchActions.secondaryActions}
+      />
+
+      <WereadOverviewCard
+        hasCredential={hasCredential}
+        summary={summary}
+        notesSummary={notesOverview?.summary}
+        recentBooks={overviewRecentEntries}
+        progressByBookId={overviewProgressByBookId}
+        isRefreshing={isOverviewRefreshing}
+        error={overviewError}
+        onRefreshProgress={() => void handleRefreshOverviewProgress()}
+        onOpenBookshelf={onOpenBookshelf}
+        onOpenNotes={onOpenNotes}
+        onOpenShelfEntry={onOpenShelfEntry}
+        onOpenSettings={onOpenSettings}
       />
 
       <article className="today-actions-panel" aria-label="今日可做">
@@ -1012,6 +1078,13 @@ function getRecentEntries(entries: ShelfEntry[]): RecentBookEntry[] {
     .slice(0, 3);
 }
 
+function getRecentOverviewEntries(entries: ShelfEntry[]): RecentBookEntry[] {
+  return entries
+    .filter(isBookEntry)
+    .sort((left, right) => (right.lastReadAt ?? 0) - (left.lastReadAt ?? 0))
+    .slice(0, 5);
+}
+
 function buildTodayActions({
   hasCredential,
   hasShelfData,
@@ -1331,6 +1404,117 @@ function DailyReadingCardPanel({ card, onClick }: { card: DailyReadingCard; onCl
   );
 }
 
+function WereadOverviewCard({
+  hasCredential,
+  summary,
+  notesSummary,
+  recentBooks,
+  progressByBookId,
+  isRefreshing,
+  error,
+  onRefreshProgress,
+  onOpenBookshelf,
+  onOpenNotes,
+  onOpenShelfEntry,
+  onOpenSettings
+}: {
+  hasCredential: boolean;
+  summary?: BookshelfResponse["snapshot"]["summary"];
+  notesSummary?: NotebookOverviewResponse["summary"];
+  recentBooks: RecentBookEntry[];
+  progressByBookId: Record<string, ReadingProgress>;
+  isRefreshing: boolean;
+  error?: CommandErrorInfo;
+  onRefreshProgress: () => void;
+  onOpenBookshelf: () => void;
+  onOpenNotes: () => void;
+  onOpenShelfEntry: (entry: ShelfEntry) => void;
+  onOpenSettings: () => void;
+}) {
+  return (
+    <article className="weread-overview-card" aria-label="微信读书概况">
+      <div className="dashboard-mini-heading">
+        <div>
+          <p className="section-kicker">微信读书概况</p>
+          <h3>最近阅读</h3>
+          <p className="weread-overview-description">最近 5 本电子书，按最后阅读时间排序</p>
+        </div>
+        <button
+          className="text-button"
+          type="button"
+          onClick={hasCredential ? onRefreshProgress : onOpenSettings}
+          disabled={hasCredential && (isRefreshing || recentBooks.length === 0)}
+        >
+          {isRefreshing ? <Loader2 aria-hidden="true" size={15} className="spin" /> : <RefreshCw aria-hidden="true" size={15} />}
+          {hasCredential ? (isRefreshing ? "刷新中" : "刷新进度") : "连接"}
+        </button>
+      </div>
+
+      <div className="weread-overview-metrics" aria-label="微信读书概况指标">
+        <div>
+          <span>书架条目</span>
+          <strong>{summary?.totalVisibleEntries ?? 0}</strong>
+          <small>
+            {summary?.bookCount ?? 0} 电子书 · {summary?.albumCount ?? 0} 有声书
+            {summary?.mpCount ? ` · ${summary.mpCount} 文章收藏` : ""}
+          </small>
+        </div>
+        <div>
+          <span>笔记概况</span>
+          <strong>{notesSummary?.totalNoteCount ?? 0}</strong>
+          <small>{notesSummary?.totalBookCount ?? 0} 本有笔记</small>
+        </div>
+      </div>
+
+      {error ? (
+        <StatusMessage
+          tone={error.code === "upgrade_required" ? "warning" : "error"}
+          icon={<AlertCircle aria-hidden="true" size={18} />}
+          text={formatDashboardErrorText(error)}
+        />
+      ) : null}
+
+      {recentBooks.length > 0 ? (
+        <div className="weread-overview-list" aria-label="最近电子书进度">
+          {recentBooks.map((entry) => {
+            const progress = progressByBookId[entry.id];
+
+            return (
+              <button key={entry.id} type="button" onClick={() => onOpenShelfEntry(entry)}>
+                {entry.cover ? <img src={entry.cover} alt="" /> : <BookOpen aria-hidden="true" size={18} />}
+                <span>
+                  <strong>{entry.title}</strong>
+                  <small>
+                    {progress
+                      ? `${progress.progressPercent}%${progress.recordReadingTimeSeconds ? ` · 累计 ${formatReadingDuration(progress.recordReadingTimeSeconds)}` : ""}`
+                      : `最近阅读 ${formatUnixDate(entry.lastReadAt)}`}
+                  </small>
+                </span>
+                <ArrowRight aria-hidden="true" size={15} />
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="weread-overview-empty">
+          {hasCredential ? "暂无最近阅读的电子书。" : "连接微信读书后，这里会展示最近电子书进度。"}
+        </p>
+      )}
+
+      <div className="weread-overview-actions">
+        <button className="text-button" type="button" onClick={onOpenBookshelf}>
+          查看书架
+          <ArrowRight aria-hidden="true" size={15} />
+        </button>
+        <button className="text-button" type="button" onClick={onOpenNotes}>
+          整理笔记
+          <ArrowRight aria-hidden="true" size={15} />
+        </button>
+      </div>
+    </article>
+  );
+}
+
 function DashboardLocalProgressPanel({ progress }: { progress: DashboardLocalProgress }) {
   return (
     <article className="dashboard-local-progress-card" aria-label="本地进展">
@@ -1362,6 +1546,21 @@ function DashboardLocalProgressPanel({ progress }: { progress: DashboardLocalPro
       </div>
     </article>
   );
+}
+
+function formatReadingDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return "0 分钟";
+  }
+
+  const minutes = Math.max(1, Math.round(seconds / 60));
+  if (minutes < 60) {
+    return `${minutes} 分钟`;
+  }
+
+  const hours = Math.floor(minutes / 60);
+  const restMinutes = minutes % 60;
+  return restMinutes > 0 ? `${hours} 小时 ${restMinutes} 分钟` : `${hours} 小时`;
 }
 
 function DailyWorkbenchPanel({

@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::Serialize;
 use serde_json::Value;
 
@@ -113,6 +115,69 @@ pub struct PublicReviewsRecord {
     pub reviews: Vec<PublicReviewRecord>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BestBookmarkChapterRecord {
+    pub book_id: Option<String>,
+    pub chapter_uid: i64,
+    pub chapter_idx: Option<i64>,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BestBookmarkRecord {
+    pub bookmark_id: String,
+    pub book_id: String,
+    pub user_vid: Option<String>,
+    pub chapter_uid: Option<i64>,
+    pub chapter_title: Option<String>,
+    pub range: Option<String>,
+    pub mark_text: String,
+    pub total_count: Option<i64>,
+    pub simplified_range: Option<String>,
+    pub traditional_range: Option<String>,
+    #[serde(skip_serializing)]
+    pub raw_json: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BestBookmarksRecord {
+    pub book_id: String,
+    pub chapter_uid: i64,
+    pub synckey: Option<i64>,
+    pub total_count: Option<i64>,
+    pub items: Vec<BestBookmarkRecord>,
+    pub chapters: Vec<BestBookmarkChapterRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadReviewRecord {
+    pub review_id: String,
+    pub content: String,
+    pub abstract_text: Option<String>,
+    pub create_time: Option<i64>,
+    pub range: Option<String>,
+    pub author: Option<ReviewAuthorRecord>,
+    #[serde(skip_serializing)]
+    pub raw_json: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadReviewsRecord {
+    pub book_id: String,
+    pub chapter_uid: i64,
+    pub range: String,
+    pub total_count: Option<i64>,
+    pub has_more: bool,
+    pub max_idx: Option<i64>,
+    pub synckey: Option<i64>,
+    pub reviews: Vec<ReadReviewRecord>,
+}
+
 pub fn map_search_books_response(scope: i64, value: &Value) -> SearchBooksRecord {
     let groups = value
         .get("results")
@@ -204,6 +269,87 @@ pub fn map_public_reviews_response(
         friend_unique_count: non_negative_integer_field(value, "friendUniqueCount"),
         synckey: non_negative_integer_field(value, "synckey"),
         next_max_idx,
+        reviews,
+    }
+}
+
+pub fn map_best_bookmarks_response(
+    book_id: &str,
+    chapter_uid: i64,
+    value: &Value,
+) -> BestBookmarksRecord {
+    let chapters = value
+        .get("chapters")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(map_best_bookmark_chapter)
+        .collect::<Vec<_>>();
+    let chapter_titles = chapters
+        .iter()
+        .map(|chapter| (chapter.chapter_uid, chapter.title.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let items = value
+        .get("items")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|item| map_best_bookmark(item, book_id, &chapter_titles))
+        .collect::<Vec<_>>();
+
+    BestBookmarksRecord {
+        book_id: book_id.to_string(),
+        chapter_uid,
+        synckey: non_negative_integer_field(value, "synckey"),
+        total_count: non_negative_integer_field(value, "totalCount"),
+        items,
+        chapters,
+    }
+}
+
+pub fn map_read_reviews_response(
+    book_id: &str,
+    chapter_uid: i64,
+    range: &str,
+    value: &Value,
+) -> ReadReviewsRecord {
+    let review_group = value
+        .get("reviews")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .find(|review| string_field(review, "range").as_deref() == Some(range))
+        .or_else(|| {
+            value
+                .get("reviews")
+                .and_then(Value::as_array)
+                .and_then(|reviews| reviews.first())
+        });
+
+    let reviews = review_group
+        .and_then(|group| group.get("pageReviews"))
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(map_read_review)
+        .collect::<Vec<_>>();
+
+    ReadReviewsRecord {
+        book_id: string_field(value, "bookId").unwrap_or_else(|| book_id.to_string()),
+        chapter_uid: non_negative_integer_field(value, "chapterUid").unwrap_or(chapter_uid),
+        range: review_group
+            .and_then(|group| string_field(group, "range"))
+            .unwrap_or_else(|| range.to_string()),
+        total_count: review_group.and_then(|group| non_negative_integer_field(group, "totalCount")),
+        has_more: review_group
+            .map(|group| boolish_field(group, "hasMore"))
+            .unwrap_or(false),
+        max_idx: review_group.and_then(|group| non_negative_integer_field(group, "maxIdx")),
+        synckey: review_group.and_then(|group| non_negative_integer_field(group, "synckey")),
         reviews,
     }
 }
@@ -307,6 +453,66 @@ fn map_public_review(value: &Value) -> Option<PublicReviewRecord> {
     })
 }
 
+fn map_best_bookmark_chapter(value: &Value) -> Option<BestBookmarkChapterRecord> {
+    let chapter_uid = non_negative_integer_field(value, "chapterUid")?;
+
+    Some(BestBookmarkChapterRecord {
+        book_id: string_field(value, "bookId"),
+        chapter_uid,
+        chapter_idx: non_negative_integer_field(value, "chapterIdx"),
+        title: string_field(value, "title").unwrap_or_else(|| "未命名章节".to_string()),
+    })
+}
+
+fn map_best_bookmark(
+    value: &Value,
+    fallback_book_id: &str,
+    chapter_titles: &BTreeMap<i64, String>,
+) -> Option<BestBookmarkRecord> {
+    let book_id = string_field(value, "bookId").unwrap_or_else(|| fallback_book_id.to_string());
+    let chapter_uid = non_negative_integer_field(value, "chapterUid");
+    let range = string_field(value, "range");
+    let bookmark_id = string_field(value, "bookmarkId").or_else(|| {
+        range
+            .as_ref()
+            .map(|range| format!("{book_id}:{}:{range}", chapter_uid.unwrap_or(0)))
+    })?;
+    let mark_text = string_field(value, "markText")?;
+
+    Some(BestBookmarkRecord {
+        bookmark_id,
+        book_id,
+        user_vid: string_field(value, "userVid"),
+        chapter_uid,
+        chapter_title: chapter_uid.and_then(|uid| chapter_titles.get(&uid).cloned()),
+        range,
+        mark_text,
+        total_count: non_negative_integer_field(value, "totalCount")
+            .or_else(|| non_negative_integer_field(value, "count")),
+        simplified_range: string_field(value, "simplifiedRange"),
+        traditional_range: string_field(value, "traditionalRange"),
+        raw_json: value.to_string(),
+    })
+}
+
+fn map_read_review(value: &Value) -> Option<ReadReviewRecord> {
+    let source = value.get("review").unwrap_or(value);
+    let review_id = string_field(value, "reviewId")
+        .or_else(|| string_field(source, "reviewId"))
+        .or_else(|| string_field(source, "id"))?;
+    let content = string_field(source, "content")?;
+
+    Some(ReadReviewRecord {
+        review_id,
+        content,
+        abstract_text: string_field(source, "abstract"),
+        create_time: non_negative_integer_field(source, "createTime"),
+        range: string_field(source, "range"),
+        author: source.get("author").map(map_review_author),
+        raw_json: value.to_string(),
+    })
+}
+
 fn map_review_author(value: &Value) -> ReviewAuthorRecord {
     ReviewAuthorRecord {
         user_vid: string_field(value, "userVid"),
@@ -379,8 +585,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        map_public_reviews_response, map_recommendations_response, map_search_books_response,
-        map_similar_books_response,
+        map_best_bookmarks_response, map_public_reviews_response, map_read_reviews_response,
+        map_recommendations_response, map_search_books_response, map_similar_books_response,
     };
 
     #[test]
@@ -559,6 +765,90 @@ mod tests {
                 .as_ref()
                 .and_then(|author| author.name.clone()),
             Some("读者".to_string())
+        );
+    }
+
+    #[test]
+    fn best_bookmarks_mapper_attaches_chapter_titles_and_counts() {
+        let record = map_best_bookmarks_response(
+            "b1",
+            0,
+            &json!({
+                "synckey": 11,
+                "totalCount": 20,
+                "chapters": [{
+                    "bookId": "b1",
+                    "chapterUid": 101,
+                    "chapterIdx": 1,
+                    "title": "第一章"
+                }],
+                "items": [{
+                    "bookId": "b1",
+                    "bookmarkId": "bookmark-1",
+                    "userVid": "u1",
+                    "chapterUid": 101,
+                    "range": "393-401",
+                    "markText": "值得反复划线的句子",
+                    "totalCount": 88,
+                    "simplifiedRange": "393-401"
+                }]
+            }),
+        );
+
+        assert_eq!(record.synckey, Some(11));
+        assert_eq!(record.total_count, Some(20));
+        assert_eq!(record.items.len(), 1);
+        assert_eq!(record.items[0].chapter_title, Some("第一章".to_string()));
+        assert_eq!(record.items[0].mark_text, "值得反复划线的句子");
+        assert_eq!(record.items[0].total_count, Some(88));
+        assert_eq!(record.chapters[0].chapter_idx, Some(1));
+    }
+
+    #[test]
+    fn read_reviews_mapper_flattens_single_range_reviews() {
+        let record = map_read_reviews_response(
+            "b1",
+            101,
+            "393-401",
+            &json!({
+                "bookId": "b1",
+                "chapterUid": 101,
+                "reviews": [{
+                    "range": "393-401",
+                    "totalCount": 8,
+                    "hasMore": 1,
+                    "maxIdx": 5,
+                    "synckey": 12,
+                    "pageReviews": [{
+                        "reviewId": "rr1",
+                        "review": {
+                            "content": "这段确实是全书关键。",
+                            "abstract": "值得反复划线的句子",
+                            "range": "393-401",
+                            "createTime": 1770000000,
+                            "author": { "userVid": "u1", "name": "读者乙" }
+                        }
+                    }]
+                }]
+            }),
+        );
+
+        assert!(record.has_more);
+        assert_eq!(record.total_count, Some(8));
+        assert_eq!(record.max_idx, Some(5));
+        assert_eq!(record.synckey, Some(12));
+        assert_eq!(record.reviews[0].review_id, "rr1");
+        assert_eq!(record.reviews[0].content, "这段确实是全书关键。");
+        assert_eq!(
+            record.reviews[0].abstract_text,
+            Some("值得反复划线的句子".to_string())
+        );
+        assert_eq!(
+            record.reviews[0]
+                .author
+                .as_ref()
+                .and_then(|author| author.name.clone()),
+            Some("读者乙".to_string())
         );
     }
 }

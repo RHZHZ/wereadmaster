@@ -15,13 +15,20 @@ import {
 } from "lucide-react";
 import { BookHeader } from "../components/BookHeader";
 import { ChapterList } from "../components/ChapterList";
+import { BestBookmarksPanel } from "../components/BestBookmarksPanel";
+import { PublicReviewsPanel } from "../components/PublicReviewsPanel";
 import { SkillUpgradeNotice } from "../components/SkillUpgradeNotice";
+import { findCurrentChapter } from "../lib/book-progress";
 import { useToast } from "../components/ToastProvider";
 import { formatUnixDate } from "../lib/formatters";
 import { listLocalBooks } from "../lib/local-reader-api";
 import type { LocalBook } from "../lib/local-reader-types";
 import {
+  getCommandErrorInfo,
   getCommandErrorMessage,
+  getBestBookmarks,
+  getPublicReviews,
+  getReadReviews,
   getReadingItemState,
   removeReadingItemState,
   upsertReadingItemState,
@@ -41,7 +48,14 @@ import {
   findLikelyLocalBookMatch,
   type SourceVersionPair
 } from "../lib/source-version-matches";
-import type { ReadingItemState, ReadingItemStatus, ShelfEntry } from "../lib/types";
+import type {
+  BestBookmarksResult,
+  PublicReviewsResult,
+  ReadReviewsResult,
+  ReadingItemState,
+  ReadingItemStatus,
+  ShelfEntry
+} from "../lib/types";
 import {
   buildBookAssetStatus,
   type BookAssetStatus
@@ -96,6 +110,20 @@ export function BookDetailPage({
   );
   const [isStateLoading, setIsStateLoading] = useState(false);
   const [stateError, setStateError] = useState<string>();
+  const [publicReviews, setPublicReviews] = useState<PublicReviewsResult>();
+  const [isPublicReviewsLoading, setIsPublicReviewsLoading] = useState(false);
+  const [publicReviewsError, setPublicReviewsError] = useState<CommandErrorInfo>();
+  const [bestBookmarks, setBestBookmarks] = useState<BestBookmarksResult>();
+  const [isBestBookmarksLoading, setIsBestBookmarksLoading] = useState(false);
+  const [bestBookmarksError, setBestBookmarksError] = useState<CommandErrorInfo>();
+  const [hasRequestedBestBookmarks, setHasRequestedBestBookmarks] = useState(false);
+  const [readReviewsByBookmarkId, setReadReviewsByBookmarkId] = useState<
+    Record<string, ReadReviewsResult | undefined>
+  >({});
+  const [readReviewErrorsByBookmarkId, setReadReviewErrorsByBookmarkId] = useState<
+    Record<string, CommandErrorInfo | undefined>
+  >({});
+  const [readReviewsLoadingBookmarkId, setReadReviewsLoadingBookmarkId] = useState<string>();
   const { showToast } = useToast();
   const effectiveLocalBooks = localBooks ?? loadedLocalBooks;
 
@@ -161,6 +189,57 @@ export function BookDetailPage({
     };
   }, [localBooks, shelfEntry?.id, shelfEntry?.type]);
 
+  const publicReviewsBookId =
+    shelfEntry?.type === "book" ? detailResponse?.detail.bookId || shelfEntry.id : undefined;
+
+  useEffect(() => {
+    setBestBookmarks(undefined);
+    setBestBookmarksError(undefined);
+    setIsBestBookmarksLoading(false);
+    setHasRequestedBestBookmarks(false);
+    setReadReviewsByBookmarkId({});
+    setReadReviewErrorsByBookmarkId({});
+    setReadReviewsLoadingBookmarkId(undefined);
+  }, [publicReviewsBookId]);
+
+  useEffect(() => {
+    if (!publicReviewsBookId) {
+      setPublicReviews(undefined);
+      setPublicReviewsError(undefined);
+      setIsPublicReviewsLoading(false);
+      return;
+    }
+
+    const bookId = publicReviewsBookId;
+    let isMounted = true;
+    setPublicReviews(undefined);
+    setPublicReviewsError(undefined);
+    setIsPublicReviewsLoading(true);
+
+    async function loadPublicReviews() {
+      try {
+        const response = await getPublicReviews({ bookId, count: 5 });
+        if (isMounted) {
+          setPublicReviews(response.result);
+        }
+      } catch (loadError) {
+        if (isMounted) {
+          setPublicReviewsError(getCommandErrorInfo(loadError));
+        }
+      } finally {
+        if (isMounted) {
+          setIsPublicReviewsLoading(false);
+        }
+      }
+    }
+
+    void loadPublicReviews();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [publicReviewsBookId]);
+
   const localBookMatch =
     shelfEntry && detailResponse
       ? findLikelyLocalBookMatch(
@@ -182,6 +261,9 @@ export function BookDetailPage({
         })
       : undefined;
   const isSourceVersionLinked = Boolean(findReadingAssetLinkPair(assetLinks, sourceVersionPair));
+  const currentChapter = detailResponse
+    ? findCurrentChapter(detailResponse.chapters, detailResponse.progress)
+    : undefined;
 
   async function handleStatusChange(status: ReadingItemStatus) {
     if (!shelfEntry || !detailResponse) {
@@ -285,6 +367,76 @@ export function BookDetailPage({
     });
   }
 
+  async function handleRefreshPublicReviews() {
+    if (!publicReviewsBookId) {
+      return;
+    }
+
+    setIsPublicReviewsLoading(true);
+    setPublicReviewsError(undefined);
+
+    try {
+      const response = await getPublicReviews({ bookId: publicReviewsBookId, count: 5 });
+      setPublicReviews(response.result);
+    } catch (refreshError) {
+      setPublicReviewsError(getCommandErrorInfo(refreshError));
+    } finally {
+      setIsPublicReviewsLoading(false);
+    }
+  }
+
+  async function handleLoadBestBookmarks() {
+    if (!publicReviewsBookId) {
+      return;
+    }
+
+    const bookId = publicReviewsBookId;
+    setHasRequestedBestBookmarks(true);
+    setIsBestBookmarksLoading(true);
+    setBestBookmarksError(undefined);
+
+    try {
+      const response = await getBestBookmarks({ bookId, chapterUid: 0 });
+      setBestBookmarks(response.result);
+    } catch (loadError) {
+      setBestBookmarksError(getCommandErrorInfo(loadError));
+    } finally {
+      setIsBestBookmarksLoading(false);
+    }
+  }
+
+  async function handleLoadReadReviews(bookmark: BestBookmarksResult["items"][number]) {
+    if (!bookmark.range || bookmark.chapterUid === undefined) {
+      return;
+    }
+
+    setReadReviewsLoadingBookmarkId(bookmark.bookmarkId);
+    setReadReviewErrorsByBookmarkId((current) => ({
+      ...current,
+      [bookmark.bookmarkId]: undefined
+    }));
+
+    try {
+      const response = await getReadReviews({
+        bookId: bookmark.bookId,
+        chapterUid: bookmark.chapterUid,
+        range: bookmark.range,
+        count: 5
+      });
+      setReadReviewsByBookmarkId((current) => ({
+        ...current,
+        [bookmark.bookmarkId]: response.result
+      }));
+    } catch (loadError) {
+      setReadReviewErrorsByBookmarkId((current) => ({
+        ...current,
+        [bookmark.bookmarkId]: getCommandErrorInfo(loadError)
+      }));
+    } finally {
+      setReadReviewsLoadingBookmarkId(undefined);
+    }
+  }
+
   if (!shelfEntry) {
     return (
       <section className="tool-panel" aria-label="未选择书籍">
@@ -342,6 +494,7 @@ export function BookDetailPage({
           <BookHeader
             detail={detailResponse.detail}
             progress={detailResponse.progress}
+            currentChapter={currentChapter}
             shelfEntry={shelfEntry}
             isOpening={isOpening}
             onOpenInWeread={onOpenBook}
@@ -408,6 +561,29 @@ export function BookDetailPage({
               onOpenChapter={onOpenChapter}
             />
           </div>
+
+          {publicReviewsBookId ? (
+            <BestBookmarksPanel
+              result={bestBookmarks}
+              isLoading={isBestBookmarksLoading}
+              error={bestBookmarksError}
+              hasRequested={hasRequestedBestBookmarks}
+              readReviewsByBookmarkId={readReviewsByBookmarkId}
+              readReviewErrorsByBookmarkId={readReviewErrorsByBookmarkId}
+              readReviewsLoadingBookmarkId={readReviewsLoadingBookmarkId}
+              onLoad={() => void handleLoadBestBookmarks()}
+              onLoadReadReviews={(bookmark) => void handleLoadReadReviews(bookmark)}
+            />
+          ) : null}
+
+          {publicReviewsBookId ? (
+            <PublicReviewsPanel
+              result={publicReviews}
+              isLoading={isPublicReviewsLoading}
+              error={publicReviewsError}
+              onRefresh={() => void handleRefreshPublicReviews()}
+            />
+          ) : null}
         </>
       ) : null}
     </section>
@@ -490,8 +666,8 @@ function BookActionPanel({
   const isFinished = detailResponse.progress.isFinished === true || shelfEntry.isFinished === true;
   const candidateCardTitle = isFinished ? "已读完" : isCandidate ? "已在候选" : "加入候选";
   const candidateCardDescription = isFinished
-    ? "这本书已经读完，建议进入复盘或阅读指南，不再加入待读候选。"
-    : "保存到候选书架，供跨书路线和选书决策使用";
+    ? "建议进入复盘或阅读指南"
+    : "用于路线和选书决策";
   const assetStatus = buildBookAssetStatus({
     shelfEntry,
     progress: detailResponse.progress,
@@ -551,25 +727,25 @@ function BookActionPanel({
         <ActionButton
           icon={<NotebookPen aria-hidden="true" size={18} />}
           title="查看笔记"
-          description="进入划线、想法和章节视图，确认复盘输入范围"
+          description="确认复盘输入范围"
           onClick={onOpenNotes}
         />
         <ActionButton
           icon={<Sparkles aria-hidden="true" size={18} />}
           title="AI 复盘"
-          description="把本书划线和想法整理成结构化复盘；生成仍需手动点击"
+          description="整理划线和想法"
           onClick={onOpenAiSummary}
         />
         <ActionButton
           icon={<Layers3 aria-hidden="true" size={18} />}
           title="找相似"
-          description="进入发现页的独立相似探索"
+          description="探索同主题书"
           onClick={onFindSimilar}
         />
         <ActionButton
           icon={<BookMarked aria-hidden="true" size={18} />}
           title="本书阅读指南"
-          description="先规划这本书下一步；可加入候选书扩展路线"
+          description="规划下一步阅读"
           onClick={onOpenReadingRoute}
         />
       </div>

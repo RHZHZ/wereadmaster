@@ -9,7 +9,9 @@ use crate::services::ai::{
     BookAiSummaryResponse, BookAiSummaryUpdateContext, BookDecisionCandidateInput,
     BookDecisionResponse, BookNotesSummariesExportOptions, ExportAiBulkMarkdownResponse,
     ExportAiMarkdownResponse, LocalReaderSelectionQuestionInput,
-    LocalReaderSelectionQuestionResponse, ReadingRouteRequest, ReadingRouteResponse,
+    LocalReaderSelectionQuestionResponse, ReadingAssistantAnswer, ReadingAssistantPreferences,
+    ReadingAssistantRequest, ReadingAssistantStreamRequest, ReadingAssistantThreadDetail,
+    ReadingAssistantThreadSummary, ReadingRouteRequest, ReadingRouteResponse,
     ReadingRouteUpdateContext, ReadingStatsAiReviewResponse,
 };
 
@@ -165,6 +167,93 @@ pub fn get_ai_cached_output(
 ) -> Result<Option<AiCachedOutputRecord>, AiCommandError> {
     AiService::new(app)
         .get_cached_output(feature, scope_id, prompt_version, input_hash)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn get_reading_assistant_preferences(
+    app: AppHandle,
+) -> Result<ReadingAssistantPreferences, AiCommandError> {
+    AiService::new(app)
+        .get_reading_assistant_preferences()
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn save_reading_assistant_preferences(
+    app: AppHandle,
+    preferences: ReadingAssistantPreferences,
+) -> Result<ReadingAssistantPreferences, AiCommandError> {
+    AiService::new(app)
+        .save_reading_assistant_preferences(preferences)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn list_reading_assistant_threads(
+    app: AppHandle,
+) -> Result<Vec<ReadingAssistantThreadSummary>, AiCommandError> {
+    AiService::new(app)
+        .list_reading_assistant_threads()
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn get_reading_assistant_thread(
+    app: AppHandle,
+    thread_id: String,
+) -> Result<Option<ReadingAssistantThreadDetail>, AiCommandError> {
+    AiService::new(app)
+        .get_reading_assistant_thread(thread_id)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn delete_reading_assistant_thread(
+    app: AppHandle,
+    thread_id: String,
+) -> Result<(), AiCommandError> {
+    AiService::new(app)
+        .delete_reading_assistant_thread(thread_id)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn clear_reading_assistant_history(app: AppHandle) -> Result<(), AiCommandError> {
+    AiService::new(app)
+        .clear_reading_assistant_history()
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn ask_reading_assistant(
+    app: AppHandle,
+    request: ReadingAssistantRequest,
+) -> Result<ReadingAssistantAnswer, AiCommandError> {
+    AiService::new(app)
+        .ask_reading_assistant(request)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn ask_reading_assistant_stream(
+    app: AppHandle,
+    request: ReadingAssistantStreamRequest,
+) -> Result<ReadingAssistantAnswer, AiCommandError> {
+    AiService::new(app)
+        .ask_reading_assistant_stream(request)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn cancel_reading_assistant_stream(
+    app: AppHandle,
+    stream_id: String,
+) -> Result<(), AiCommandError> {
+    AiService::new(app)
+        .cancel_reading_assistant_stream(stream_id)
         .map_err(Into::into)
 }
 
@@ -430,15 +519,29 @@ mod tests {
         "list_ai_provider_models",
         "remove_ai_credential",
     ];
+    const READING_ASSISTANT_COMMANDS: &[&str] = &[
+        "ask_reading_assistant",
+        "ask_reading_assistant_stream",
+        "cancel_reading_assistant_stream",
+        "get_reading_assistant_preferences",
+        "save_reading_assistant_preferences",
+        "list_reading_assistant_threads",
+        "get_reading_assistant_thread",
+        "delete_reading_assistant_thread",
+        "clear_reading_assistant_history",
+    ];
 
     #[test]
-    fn ai_settings_commands_are_registered_and_permitted() {
+    fn ai_commands_are_registered_and_permitted() {
         let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let lib_rs = read_manifest_file(manifest_dir, "src/lib.rs");
         let build_rs = read_manifest_file(manifest_dir, "build.rs");
         let capability = read_manifest_file(manifest_dir, "capabilities/default.json");
 
-        for command in AI_SETTINGS_COMMANDS {
+        for command in AI_SETTINGS_COMMANDS
+            .iter()
+            .chain(READING_ASSISTANT_COMMANDS.iter())
+        {
             assert!(
                 lib_rs.contains(&format!("commands::ai::{command}")),
                 "{command} should be registered in tauri invoke_handler"

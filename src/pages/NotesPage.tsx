@@ -1,5 +1,4 @@
 import {
-  startTransition,
   useDeferredValue,
   useEffect,
   useRef,
@@ -68,7 +67,8 @@ export function NotesPage({
   onOpenBookNotes
 }: NotesPageProps) {
   const [query, setQuery] = useState("");
-  const deferredQuery = useDeferredValue(query);
+  const [committedQuery, setCommittedQuery] = useState("");
+  const deferredQuery = useDeferredValue(committedQuery);
   const isQueryComposingRef = useRef(false);
   const [summaryItems, setSummaryItems] = useState<BookAiSummaryListItem[]>();
   const [isLoadingSummaries, setIsLoadingSummaries] = useState(false);
@@ -185,18 +185,13 @@ export function NotesPage({
     }
   }
 
-  function handleQueryChange(value: string) {
-    startTransition(() => {
-      setQuery(value);
-    });
-  }
-
   function handleQueryInputChange(event: ChangeEvent<HTMLInputElement>) {
-    if (isQueryComposingRef.current || isNativeInputComposing(event.nativeEvent)) {
-      return;
-    }
+    const value = event.target.value;
+    setQuery(value);
 
-    handleQueryChange(event.target.value);
+    if (!isQueryComposingRef.current && !isNativeInputComposing(event.nativeEvent)) {
+      setCommittedQuery(value);
+    }
   }
 
   function handleQueryCompositionStart() {
@@ -204,15 +199,16 @@ export function NotesPage({
   }
 
   function handleQueryCompositionEnd(event: ReactCompositionEvent<HTMLInputElement>) {
+    const value = event.currentTarget.value;
     isQueryComposingRef.current = false;
-    handleQueryChange(event.currentTarget.value);
+    setQuery(value);
+    setCommittedQuery(value);
   }
 
   function handleClearQuery() {
     isQueryComposingRef.current = false;
-    startTransition(() => {
-      setQuery("");
-    });
+    setQuery("");
+    setCommittedQuery("");
   }
 
   async function handleOpenBulkWizard() {
@@ -562,6 +558,7 @@ function BulkExportWizard({
   onClose: () => void;
 }) {
   const isSearchComposingRef = useRef(false);
+  const [searchDraft, setSearchDraft] = useState(searchQuery);
   const exportBoundary = getExportAssetBoundary("bulkNotes");
   const selectedCount = selectedBookIds.length;
   const exportDisabled =
@@ -580,12 +577,19 @@ function BulkExportWizard({
     ? filterBulkPreflightItems(preflight.items, strategy === "selectedBooksOnly" ? searchQuery : "")
     : [];
 
-  function handleSearchQueryInputChange(event: ChangeEvent<HTMLInputElement>) {
-    if (isSearchComposingRef.current || isNativeInputComposing(event.nativeEvent)) {
-      return;
+  useEffect(() => {
+    if (!isSearchComposingRef.current) {
+      setSearchDraft(searchQuery);
     }
+  }, [searchQuery]);
 
-    onSearchQueryChange(event.target.value);
+  function handleSearchQueryInputChange(event: ChangeEvent<HTMLInputElement>) {
+    const value = event.target.value;
+    setSearchDraft(value);
+
+    if (!isSearchComposingRef.current && !isNativeInputComposing(event.nativeEvent)) {
+      onSearchQueryChange(value);
+    }
   }
 
   function handleSearchQueryCompositionStart() {
@@ -593,8 +597,10 @@ function BulkExportWizard({
   }
 
   function handleSearchQueryCompositionEnd(event: ReactCompositionEvent<HTMLInputElement>) {
+    const value = event.currentTarget.value;
     isSearchComposingRef.current = false;
-    onSearchQueryChange(event.currentTarget.value);
+    setSearchDraft(value);
+    onSearchQueryChange(value);
   }
 
   return (
@@ -723,7 +729,7 @@ function BulkExportWizard({
                   <label className="search-field">
                     <Search aria-hidden="true" size={18} />
                     <input
-                      value={searchQuery}
+                      value={searchDraft}
                       onChange={handleSearchQueryInputChange}
                       onCompositionStart={handleSearchQueryCompositionStart}
                       onCompositionEnd={handleSearchQueryCompositionEnd}

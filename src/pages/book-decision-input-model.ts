@@ -1,15 +1,15 @@
 import type {
   BookDecisionGoal,
-  BookDecisionResponse,
-  SearchResult
+  BookDecisionResponse
 } from "../lib/types";
 import type { RecentReadingWindowMode } from "./book-decision-context";
+import type { LocalCandidateBook } from "./candidate-books";
 
 export type ReferenceFactor = "recent" | "finished" | "habits";
 
 export type BookDecisionSession = {
   response: BookDecisionResponse;
-  candidateBooks: SearchResult[];
+  candidateBooks: LocalCandidateBook[];
   selectedIds: string[];
   selectedFactorIds: ReferenceFactor[];
   decisionGoal: BookDecisionGoal;

@@ -13,6 +13,7 @@ vi.mock("@tauri-apps/plugin-updater", () => ({
 }));
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { check } from "@tauri-apps/plugin-updater";
 import {
   clearAiOutputCache,
@@ -23,14 +24,24 @@ import {
   getAiReviewFeedback,
   getAIAssetVersionDetail,
   getAIAssetVersionHistory,
+  askReadingAssistant,
+  getBestBookmarks,
   getBookDetail,
   getBookshelf,
   getCommandErrorInfo,
   getCredentialStatus,
   getLatestReadingStatsReview,
   getNotebookOverview,
+  getPublicReviews,
+  getReadReviews,
+  getReadingAssistantThread,
+  getReadingAssistantPreferences,
+  askReadingAssistantStream,
+  cancelReadingAssistantStream,
+  listenReadingAssistantStream,
   getReadingStats,
   getSettingsState,
+  listReadingAssistantThreads,
   listAiProviderModels,
   listReadingItemStates,
   probeAiProviderCapabilities,
@@ -50,11 +61,13 @@ import {
 } from "./reading-api";
 
 const invokeMock = vi.mocked(invoke);
+const listenMock = vi.mocked(listen);
 const checkMock = vi.mocked(check);
 
 describe("settings export directory API", () => {
   beforeEach(() => {
     invokeMock.mockReset();
+    listenMock.mockReset();
     checkMock.mockReset();
     vi.unstubAllGlobals();
   });
@@ -141,6 +154,353 @@ describe("settings export directory API", () => {
     });
   });
 
+  test("reading assistant asks through Tauri with the request payload", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    const request = {
+      scope: "bookDetail" as const,
+      entityId: "book_1",
+      message: "这本书我现在该怎么读？",
+      enabledContext: ["currentBook" as const, "bookNotesSummary" as const]
+    };
+    invokeMock.mockResolvedValue({
+      threadId: "thread_1",
+      messageId: "msg_1",
+      answer: "先围绕当前进度读 30 分钟。",
+      suggestions: ["帮我制定 30 分钟阅读计划"],
+      usedContext: [],
+      generatedAt: "100",
+      promptVersion: "reading-assistant-chat-v1",
+      providerModel: "gpt-4o-mini",
+      basisNotice: "基于当前书籍上下文回答。"
+    });
+
+    await expect(askReadingAssistant(request)).resolves.toMatchObject({
+      threadId: "thread_1",
+      answer: "先围绕当前进度读 30 分钟。",
+      recommendedBooks: []
+    });
+    expect(invokeMock).toHaveBeenCalledWith("ask_reading_assistant", { request });
+  });
+
+  test("reading assistant maps structured recommended books", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    const request = {
+      scope: "global" as const,
+      message: "推荐 3 本可加入候选书架的新书",
+      enabledContext: ["readingStats" as const, "readingPersona" as const]
+    };
+    invokeMock.mockResolvedValue({
+      threadId: "thread_1",
+      messageId: "msg_1",
+      answer: "基于你的阅读画像，建议先看这几本。",
+      suggestions: [],
+      recommendedBooks: [
+        {
+          title: "可能性的艺术",
+          author: "作者甲",
+          reason: "延续你关注的成长主题。",
+          fit: "适合继续追问选择和行动。",
+          risk: "理论密度可能偏高。"
+        },
+        {
+          author: "作者乙",
+          reason: "缺少标题的项应被过滤。",
+          fit: "无",
+          risk: "无"
+        }
+      ],
+      usedContext: [],
+      generatedAt: "100",
+      promptVersion: "reading-assistant-chat-v1.3",
+      providerModel: "gpt-4o-mini",
+      basisNotice: "基于当前阅读画像回答。"
+    });
+
+    await expect(askReadingAssistant(request)).resolves.toMatchObject({
+      recommendedBooks: [
+        {
+          title: "可能性的艺术",
+          author: "作者甲",
+          reason: "延续你关注的成长主题。",
+          fit: "适合继续追问选择和行动。",
+          risk: "理论密度可能偏高。"
+        }
+      ]
+    });
+  });
+
+  test("reading assistant maps weread search action output", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    const request = {
+      scope: "global" as const,
+      message: "帮我确认《显微镜下的大明》在微信读书是否可以找到",
+      enabledContext: []
+    };
+    invokeMock.mockResolvedValue({
+      threadId: "thread_1",
+      messageId: "msg_1",
+      answer: "我在微信读书搜索到 1 个《显微镜下的大明》相关结果。",
+      suggestions: [],
+      recommendedBooks: [],
+      action: {
+        type: "wereadSearch",
+        payload: {
+          keyword: "显微镜下的大明",
+          status: "found",
+          message: "搜索到 1 个可能匹配项。",
+          results: [
+            {
+              bookId: "book_1",
+              title: "显微镜下的大明",
+              author: "马伯庸",
+              category: "历史",
+              localStatus: "inLibrary",
+              localLabel: "已读完",
+              canAddToCandidate: false
+            },
+            {
+              bookId: "",
+              title: "缺少 ID 的结果"
+            }
+          ]
+        }
+      },
+      usedContext: [],
+      generatedAt: "100",
+      promptVersion: "reading-assistant-chat-v1.3",
+      providerModel: null,
+      basisNotice: "基于微信读书搜索结果返回。"
+    });
+
+    await expect(askReadingAssistant(request)).resolves.toMatchObject({
+      action: {
+        type: "wereadSearch",
+        payload: {
+          keyword: "显微镜下的大明",
+          results: [
+            {
+              bookId: "book_1",
+              title: "显微镜下的大明",
+              localStatus: "inLibrary",
+              localLabel: "已读完",
+              canAddToCandidate: false
+            }
+          ]
+        }
+      }
+    });
+  });
+
+  test("reading assistant maps stats aggregate action output", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    const request = {
+      scope: "readingStats" as const,
+      message: "总计历史记录呢",
+      enabledContext: []
+    };
+    invokeMock.mockResolvedValue({
+      threadId: "thread_1",
+      messageId: "msg_1",
+      answer: "当前可验证口径为全部本地缓存。",
+      suggestions: [],
+      recommendedBooks: [],
+      action: {
+        type: "statsAggregate",
+        payload: {
+          rangeLabel: "全部本地缓存",
+          dataStatus: "complete",
+          message: "累计阅读 70小时50分钟。",
+          totalReadingTimeText: "70小时50分钟",
+          readDays: 71,
+          shelfBookCount: 498,
+          finishedBookCount: 3,
+          readingBookCount: 495,
+          candidateBookCount: 3,
+          updatedAt: "200",
+          topCategories: [
+            {
+              title: "经济理财",
+              readingTimeText: "3小时28分钟",
+              readingCount: 4
+            },
+            {
+              readingTimeText: "缺少标题的分类应被过滤"
+            }
+          ]
+        }
+      },
+      usedContext: [],
+      generatedAt: "100",
+      promptVersion: "reading-assistant-chat-v1.3",
+      providerModel: null,
+      basisNotice: "基于本地统计。"
+    });
+
+    await expect(askReadingAssistant(request)).resolves.toMatchObject({
+      action: {
+        type: "statsAggregate",
+        payload: {
+          rangeLabel: "全部本地缓存",
+          totalReadingTimeText: "70小时50分钟",
+          readDays: 71,
+          topCategories: [
+            {
+              title: "经济理财",
+              readingTimeText: "3小时28分钟",
+              readingCount: 4
+            }
+          ]
+        }
+      }
+    });
+  });
+
+  test("reading assistant stream invokes Tauri with stream id", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    const request = {
+      scope: "global" as const,
+      message: "我最近适合读什么主题？",
+      enabledContext: ["readingStats" as const]
+    };
+    invokeMock.mockResolvedValue({
+      threadId: "thread_1",
+      messageId: "msg_1",
+      answer: "可以先围绕注意力和长期主义读。",
+      suggestions: ["帮我列一个两周计划"],
+      recommendedBooks: [],
+      usedContext: [],
+      generatedAt: "100",
+      promptVersion: "reading-assistant-chat-v1.3",
+      providerModel: "gpt-4o-mini",
+      basisNotice: "基于当前阅读统计回答。"
+    });
+
+    await expect(askReadingAssistantStream("stream_1", request)).resolves.toMatchObject({
+      threadId: "thread_1",
+      answer: "可以先围绕注意力和长期主义读。"
+    });
+    expect(invokeMock).toHaveBeenCalledWith("ask_reading_assistant_stream", {
+      request: {
+        streamId: "stream_1",
+        request
+      }
+    });
+  });
+
+  test("reading assistant stream listener maps event payload", async () => {
+    const unlisten = vi.fn();
+    const handler = vi.fn();
+    listenMock.mockImplementation(async (_event, callback) => {
+      callback({
+        payload: {
+          streamId: "stream_1",
+          delta: "可以",
+          content: "可以"
+        }
+      } as Parameters<typeof callback>[0]);
+      return unlisten;
+    });
+
+    await expect(listenReadingAssistantStream(handler)).resolves.toBe(unlisten);
+    expect(listenMock).toHaveBeenCalledWith(
+      "reading-assistant-stream",
+      expect.any(Function)
+    );
+    expect(handler).toHaveBeenCalledWith({
+      streamId: "stream_1",
+      delta: "可以",
+      content: "可以"
+    });
+  });
+
+  test("reading assistant stream cancel invokes Tauri with stream id", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    invokeMock.mockResolvedValue(undefined);
+
+    await expect(cancelReadingAssistantStream("stream_1")).resolves.toBeUndefined();
+    expect(invokeMock).toHaveBeenCalledWith("cancel_reading_assistant_stream", {
+      streamId: "stream_1"
+    });
+  });
+
+  test("reading assistant thread restores structured message output", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    invokeMock.mockResolvedValue({
+      id: "thread_1",
+      scope: "global",
+      title: "推荐下一本书",
+      contextSummary: {},
+      createdAt: "100",
+      updatedAt: "101",
+      messages: [
+        {
+          id: "msg_1",
+          role: "assistant",
+          content: "基于你的阅读画像，建议先看这本。",
+          status: "answered",
+          usedContext: [],
+          output: {
+            suggestions: ["帮我比较前两本"],
+            recommendedBooks: [
+              {
+                title: "可能性的艺术",
+                author: "作者甲",
+                reason: "延续成长主题。",
+                fit: "适合继续追问选择和行动。",
+                risk: "理论密度可能偏高。"
+              },
+              {
+                author: "作者乙",
+                reason: "缺少标题的项应被过滤。"
+              }
+            ],
+            basisNotice: "基于当前阅读画像回答。"
+          },
+          createdAt: "101"
+        }
+      ]
+    });
+
+    await expect(getReadingAssistantThread("thread_1")).resolves.toMatchObject({
+      id: "thread_1",
+      messages: [
+        {
+          output: {
+            suggestions: ["帮我比较前两本"],
+            recommendedBooks: [
+              {
+                title: "可能性的艺术",
+                author: "作者甲"
+              }
+            ],
+            basisNotice: "基于当前阅读画像回答。"
+          }
+        }
+      ]
+    });
+    expect(invokeMock).toHaveBeenCalledWith("get_reading_assistant_thread", {
+      threadId: "thread_1"
+    });
+  });
+
+  test("reading assistant web preview does not fabricate answers", async () => {
+    await expect(
+      askReadingAssistant({
+        scope: "global",
+        message: "推荐下一本书",
+        enabledContext: []
+      })
+    ).rejects.toThrow("AI 阅读助手需要在桌面应用中使用。");
+    await expect(getReadingAssistantPreferences()).resolves.toEqual({
+      usePersonalizedContext: true,
+      useReadingMemory: true,
+      allowRawBookNotes: false,
+      saveConversationHistory: true
+    });
+    await expect(listReadingAssistantThreads()).resolves.toEqual([]);
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
   test("book detail keeps returned deep link but does not fabricate fallback", async () => {
     invokeMock
       .mockResolvedValueOnce({
@@ -186,6 +546,172 @@ describe("settings export directory API", () => {
 
     expect(response.result.results[0]?.deepLink).toBe("weread://book/search-result");
     expect(response.result.groups[0]?.books[0]?.deepLink).toBe("weread://book/search-result");
+  });
+
+  test("maps public reviews without exposing html content", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    invokeMock.mockResolvedValue({
+      result: {
+        bookId: "b1",
+        reviewListType: 0,
+        totalCount: 20,
+        hasMore: true,
+        has5Star: true,
+        has1Star: false,
+        hasRecent: true,
+        nextMaxIdx: 12,
+        synckey: 99,
+        reviews: [
+          {
+            idx: 12,
+            reviewId: "r1",
+            content: "值得继续读的一本书。",
+            htmlContent: "<p>不应直接渲染</p>",
+            star: 100,
+            starLevel: 5,
+            createTime: 1770000000,
+            chapterName: "第一章",
+            author: {
+              userVid: "u1",
+              name: "读者甲",
+              avatar: "avatar"
+            }
+          }
+        ]
+      }
+    });
+
+    const response = await getPublicReviews({ bookId: "b1", count: 5 });
+
+    expect(invokeMock).toHaveBeenCalledWith("get_public_reviews", {
+      bookId: "b1",
+      reviewListType: 0,
+      count: 5,
+      maxIdx: undefined,
+      synckey: undefined
+    });
+    expect(response.result.reviews[0]).toMatchObject({
+      reviewId: "r1",
+      content: "值得继续读的一本书。",
+      starLevel: 5,
+      chapterName: "第一章",
+      author: {
+        name: "读者甲"
+      }
+    });
+    expect("htmlContent" in (response.result.reviews[0] ?? {})).toBe(false);
+  });
+
+  test("maps best bookmarks with range for on-demand read reviews only", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    invokeMock.mockResolvedValue({
+      result: {
+        bookId: "b1",
+        chapterUid: 0,
+        totalCount: 20,
+        synckey: 12,
+        items: [
+          {
+            bookmarkId: "bookmark-1",
+            bookId: "b1",
+            userVid: "u1",
+            chapterUid: 101,
+            chapterTitle: "第一章",
+            range: "393-401",
+            markText: "值得反复划线的句子",
+            totalCount: 88
+          }
+        ]
+      }
+    });
+
+    const response = await getBestBookmarks({ bookId: "b1" });
+
+    expect(invokeMock).toHaveBeenCalledWith("get_best_bookmarks", {
+      bookId: "b1",
+      chapterUid: 0,
+      synckey: undefined
+    });
+    expect(response.result).toMatchObject({
+      bookId: "b1",
+      chapterUid: 0,
+      synckey: 12,
+      totalCount: 20,
+      items: [
+        {
+          bookmarkId: "bookmark-1",
+          bookId: "b1",
+          chapterUid: 101,
+          chapterTitle: "第一章",
+          range: "393-401",
+          markText: "值得反复划线的句子",
+          totalCount: 88
+        }
+      ]
+    });
+    expect("userVid" in (response.result.items[0] ?? {})).toBe(false);
+  });
+
+  test("maps read reviews for a selected best bookmark range", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    invokeMock.mockResolvedValue({
+      result: {
+        bookId: "b1",
+        chapterUid: 101,
+        range: "393-401",
+        totalCount: 8,
+        hasMore: true,
+        maxIdx: 5,
+        synckey: 12,
+        reviews: [
+          {
+            reviewId: "rr1",
+            content: "这段确实是全书关键。",
+            abstractText: "值得反复划线的句子",
+            createTime: 1770000000,
+            range: "393-401",
+            author: {
+              userVid: "u1",
+              name: "读者乙"
+            }
+          }
+        ]
+      }
+    });
+
+    const response = await getReadReviews({
+      bookId: "b1",
+      chapterUid: 101,
+      range: "393-401"
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith("get_read_reviews", {
+      bookId: "b1",
+      chapterUid: 101,
+      range: "393-401",
+      count: 5,
+      maxIdx: undefined,
+      synckey: undefined
+    });
+    expect(response.result).toMatchObject({
+      bookId: "b1",
+      chapterUid: 101,
+      range: "393-401",
+      hasMore: true,
+      maxIdx: 5,
+      synckey: 12,
+      reviews: [
+        {
+          reviewId: "rr1",
+          content: "这段确实是全书关键。",
+          abstractText: "值得反复划线的句子",
+          author: {
+            name: "读者乙"
+          }
+        }
+      ]
+    });
+    expect("userVid" in (response.result.reviews[0]?.author ?? {})).toBe(false);
   });
 
   test("choose, save and reset export directory commands keep selection separate from persistence", async () => {

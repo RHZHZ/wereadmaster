@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-ask-reading-assistant-stream"
+description = "Enables the ask_reading_assistant_stream command without any pre-configured scope."
+commands.allow = ["ask_reading_assistant_stream"]
+
+[[permission]]
+identifier = "deny-ask-reading-assistant-stream"
+description = "Denies the ask_reading_assistant_stream command without any pre-configured scope."
+commands.deny = ["ask_reading_assistant_stream"]

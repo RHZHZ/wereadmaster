@@ -24,6 +24,10 @@ import {
   BottomNavigation,
   type BottomNavigationId,
 } from "./components/BottomNavigation";
+import {
+  ReadingAssistantLauncher,
+  ReadingAssistantPanel,
+} from "./components/ReadingAssistantPanel";
 import { useToast } from "./components/ToastProvider";
 import { DashboardPage } from "./pages/DashboardPage";
 import { BookshelfPage } from "./pages/BookshelfPage";
@@ -74,6 +78,7 @@ import type {
   AppUpdateNoticeState,
   AppUpdateRuntime,
   AppUpdateStatus,
+  AssistantContextScope,
   BookNotes,
   CredentialStatus,
   NotebookBook,
@@ -294,6 +299,46 @@ export function toggleSidebarMenuState(
   return openSidebarMenuState(menu);
 }
 
+function resolveReadingAssistantContext({
+  activeView,
+  detailEntry,
+  selectedNotebookBook,
+  readingHubTab,
+}: {
+  activeView: ViewId;
+  detailEntry?: ShelfEntry;
+  selectedNotebookBook?: NotebookBook;
+  readingHubTab: ReadingHubTab;
+}): { scope: AssistantContextScope; entityId?: string } {
+  if (activeView === "bookDetail" || activeView === "readingRoute") {
+    return {
+      scope: "bookDetail",
+      entityId: detailEntry?.id,
+    };
+  }
+
+  if (activeView === "bookNotes" || activeView === "bookAiSummary") {
+    return {
+      scope: "bookNotes",
+      entityId: selectedNotebookBook?.bookId,
+    };
+  }
+
+  if (activeView === "stats") {
+    return { scope: "readingStats" };
+  }
+
+  if (activeView === "candidateShelf" || activeView === "bookDecision") {
+    return { scope: "candidateShelf" };
+  }
+
+  if (activeView === "readingReview" && readingHubTab === "report") {
+    return { scope: "readingStats" };
+  }
+
+  return { scope: "global" };
+}
+
 export function resolveBottomNavigationId(
   activeView: ViewId,
   context: BottomNavigationContext = {},
@@ -409,6 +454,8 @@ export function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsPreferredCategory, setSettingsPreferredCategory] =
     useState<SettingsCategoryId>();
+  const [isReadingAssistantOpen, setIsReadingAssistantOpen] = useState(false);
+  const [candidateShelfRefreshKey, setCandidateShelfRefreshKey] = useState(0);
   const [appUpdateRuntime, setAppUpdateRuntime] = useState<AppUpdateRuntime>();
   const [appUpdateStatus, setAppUpdateStatus] = useState<AppUpdateStatus>();
   const [isCheckingForAppUpdate, setIsCheckingForAppUpdate] = useState(false);
@@ -424,6 +471,12 @@ export function App() {
   >(null);
   const { showToast } = useToast();
   const activeDetailEntry = detailEntry;
+  const readingAssistantContext = resolveReadingAssistantContext({
+    activeView,
+    detailEntry: activeDetailEntry,
+    selectedNotebookBook,
+    readingHubTab,
+  });
   const effectiveTheme =
     preferences.themeMode === "system"
       ? systemPrefersDark
@@ -1535,6 +1588,7 @@ export function App() {
             credentialStatus={credentialStatus}
             bookshelf={bookshelf}
             readingStatsCache={readingStatsCache}
+            refreshKey={candidateShelfRefreshKey}
             onOpenSettings={handleOpenSettings}
             onOpenDiscovery={() => handleNavigate("discovery")}
             onOpenBookDetail={handleOpenCandidateShelfBook}
@@ -1721,6 +1775,20 @@ export function App() {
           onNavigate={handleBottomNavigation}
         />
       ) : null}
+      <ReadingAssistantLauncher
+        onOpen={() => setIsReadingAssistantOpen(true)}
+      />
+      <ReadingAssistantPanel
+        open={isReadingAssistantOpen}
+        scope={readingAssistantContext.scope}
+        entityId={readingAssistantContext.entityId}
+        onCandidateAdded={() => setCandidateShelfRefreshKey((current) => current + 1)}
+        onOpenCandidateShelf={() => {
+          setIsReadingAssistantOpen(false);
+          handleNavigate("candidateShelf");
+        }}
+        onClose={() => setIsReadingAssistantOpen(false)}
+      />
       <SettingsPage
         open={isSettingsOpen}
         credentialStatus={credentialStatus}

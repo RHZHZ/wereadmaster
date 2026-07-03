@@ -3,7 +3,7 @@ use std::{
     collections::{HashMap, HashSet},
     fmt::{self, Write as _},
     fs,
-    sync::OnceLock,
+    sync::{Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -12,7 +12,7 @@ use reqwest::{Client as HttpClient, StatusCode};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{
     db,
@@ -23,11 +23,12 @@ use crate::{
         serialize_reading_stats_review_markdown, BookAiSummaryMarkdownOptions,
     },
     mappers::{
+        discovery::DiscoveryBookRecord,
         notes::BookNotesRecord,
         stats::{ReadingCategoryRecord, ReadingStatsRecord},
     },
     platform::stronghold::{kdf::KeyDerivation, stronghold::Stronghold, Client},
-    services::{notes::NotesService, stats::StatsService},
+    services::{discovery::DiscoveryService, notes::NotesService, stats::StatsService},
 };
 
 pub const BOOK_NOTES_SUMMARY_PROMPT_VERSION: &str = "book-notes-summary-v3";
@@ -35,12 +36,14 @@ pub const READING_STATS_REVIEW_PROMPT_VERSION: &str = "reading-stats-review-v2";
 pub const READING_ROUTE_PROMPT_VERSION: &str = "reading-route-v2.1";
 pub const BOOK_DECISION_PROMPT_VERSION: &str = "book-decision-v1";
 pub const LOCAL_READER_SELECTION_QA_PROMPT_VERSION: &str = "local-reader-selection-qa-v2";
+pub const READING_ASSISTANT_PROMPT_VERSION: &str = "reading-assistant-chat-v1.3";
 
 pub const BOOK_NOTES_SUMMARY_FEATURE: &str = "book-notes-summary";
 const READING_STATS_REVIEW_FEATURE: &str = "reading-stats-review";
 const READING_ROUTE_FEATURE: &str = "reading-route";
 const BOOK_DECISION_FEATURE: &str = "book-decision";
 const LOCAL_READER_SELECTION_QA_FEATURE: &str = "local-reader-selection-qa";
+const READING_ASSISTANT_FEATURE: &str = "reading-assistant-chat";
 const AI_JSON_MAX_TOKENS: u16 = 4096;
 const CLIENT_PATH: &[u8] = b"ai-credentials";
 const API_KEY_RECORD: &[u8] = b"ai-api-key";
@@ -66,7 +69,25 @@ const MAX_LOCAL_READER_QUESTION_CHARS: usize = 600;
 const MAX_LOCAL_READER_ANSWER_CHARS: usize = 8_000;
 const MAX_LOCAL_READER_LIST_ITEM_CHARS: usize = 500;
 const MAX_LOCAL_READER_FOLLOW_UP_QUESTIONS: usize = 3;
+const MAX_READING_ASSISTANT_MESSAGE_CHARS: usize = 1_200;
+const MAX_READING_ASSISTANT_ANSWER_CHARS: usize = 8_000;
+const MAX_READING_ASSISTANT_LIST_ITEM_CHARS: usize = 500;
+const MAX_READING_ASSISTANT_SUGGESTIONS: usize = 3;
+const MAX_READING_ASSISTANT_HISTORY_MESSAGES: usize = 8;
+const MAX_READING_ASSISTANT_CANDIDATES: usize = 8;
+const MAX_READING_ASSISTANT_RECENT_BOOKS: usize = 5;
+const MAX_READING_ASSISTANT_EXCLUSION_BOOKS: usize = 12;
+const MAX_READING_ASSISTANT_RECOMMENDED_BOOKS: usize = 5;
+const MAX_READING_ASSISTANT_RECOMMENDED_FIELD_CHARS: usize = 300;
+const MAX_READING_ASSISTANT_RAW_NOTES: usize = 20;
+const MAX_READING_ASSISTANT_RAW_NOTE_CHARS: usize = 300;
+const MAX_READING_ASSISTANT_MEMORY_ITEMS: usize = 6;
+const MAX_READING_ASSISTANT_MEMORY_ASSETS: usize = 3;
+const MAX_READING_ASSISTANT_MEMORY_CANDIDATES: usize = 3;
+const READING_ASSISTANT_PREFERENCES_KEY: &str = "default";
+const READING_ASSISTANT_STREAM_EVENT: &str = "reading-assistant-stream";
 const AI_REQUEST_TIMEOUT_SECONDS: u64 = 60;
+static READING_ASSISTANT_STREAM_CANCEL_REQUESTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static READING_PERSONA_CONFIG: OnceLock<ReadingPersonaConfig> = OnceLock::new();
 
 fn default_true() -> bool {
@@ -770,6 +791,243 @@ pub struct LocalReaderSelectionQuestionResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub enum AssistantContextScope {
+    Global,
+    BookDetail,
+    BookNotes,
+    ReadingStats,
+    CandidateShelf,
+    AiAsset,
+    LocalReaderSelection,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub enum ReadingAssistantContextOption {
+    CurrentBook,
+    BookNotesSummary,
+    RawBookNotes,
+    ReadingStats,
+    ReadingPersona,
+    CandidateBooks,
+    BookExclusionList,
+    AiAssetSummary,
+    ConversationHistory,
+    ReadingMemory,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadingAssistantIntent {
+    General,
+    NewBookRecommendation,
+    CandidateShelfDecision,
+    WereadAvailabilitySearch,
+    ReadingStatsAggregate,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingAssistantUsedContext {
+    pub context_type: ReadingAssistantContextOption,
+    pub label: String,
+    #[serde(default)]
+    pub source_refs: Vec<String>,
+    pub item_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingAssistantRecommendedBook {
+    pub title: String,
+    pub author: String,
+    pub reason: String,
+    pub fit: String,
+    pub risk: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", content = "payload", rename_all = "camelCase")]
+pub enum ReadingAssistantActionOutput {
+    WereadSearch(ReadingAssistantWereadSearchOutput),
+    StatsAggregate(ReadingAssistantStatsAggregateOutput),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingAssistantWereadSearchOutput {
+    pub keyword: String,
+    pub status: String,
+    pub message: String,
+    #[serde(default)]
+    pub results: Vec<ReadingAssistantWereadSearchResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingAssistantWereadSearchResult {
+    pub book_id: String,
+    pub title: String,
+    pub author: Option<String>,
+    pub cover: Option<String>,
+    pub category: Option<String>,
+    pub intro: Option<String>,
+    pub search_idx: Option<i64>,
+    pub local_status: String,
+    pub local_label: String,
+    pub can_add_to_candidate: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingAssistantStatsAggregateOutput {
+    pub range_label: String,
+    pub data_status: String,
+    pub message: String,
+    pub total_reading_time_text: String,
+    pub read_days: Option<i64>,
+    pub shelf_book_count: i64,
+    pub finished_book_count: i64,
+    pub reading_book_count: i64,
+    pub candidate_book_count: i64,
+    pub updated_at: Option<String>,
+    #[serde(default)]
+    pub top_categories: Vec<ReadingAssistantStatsCategory>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingAssistantStatsCategory {
+    pub title: String,
+    pub reading_time_text: String,
+    pub reading_count: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingAssistantMessageOutput {
+    #[serde(default)]
+    pub suggestions: Vec<String>,
+    #[serde(default)]
+    pub recommended_books: Vec<ReadingAssistantRecommendedBook>,
+    #[serde(default)]
+    pub basis_notice: String,
+    #[serde(default)]
+    pub action: Option<ReadingAssistantActionOutput>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingAssistantMessage {
+    pub id: String,
+    pub role: String,
+    pub content: String,
+    pub status: String,
+    pub used_context: Vec<ReadingAssistantUsedContext>,
+    #[serde(default)]
+    pub output: Option<ReadingAssistantMessageOutput>,
+    pub prompt_version: Option<String>,
+    pub input_hash: Option<String>,
+    pub provider_model: Option<String>,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingAssistantThreadSummary {
+    pub id: String,
+    pub scope: AssistantContextScope,
+    pub entity_id: Option<String>,
+    pub title: String,
+    pub updated_at: String,
+    pub created_at: String,
+    pub message_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingAssistantThreadDetail {
+    pub id: String,
+    pub scope: AssistantContextScope,
+    pub entity_id: Option<String>,
+    pub title: String,
+    pub context_summary: Value,
+    pub created_at: String,
+    pub updated_at: String,
+    pub messages: Vec<ReadingAssistantMessage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingAssistantPreferences {
+    #[serde(default = "default_true")]
+    pub use_personalized_context: bool,
+    #[serde(default = "default_true")]
+    pub use_reading_memory: bool,
+    #[serde(default)]
+    pub allow_raw_book_notes: bool,
+    #[serde(default = "default_true")]
+    pub save_conversation_history: bool,
+}
+
+impl Default for ReadingAssistantPreferences {
+    fn default() -> Self {
+        Self {
+            use_personalized_context: true,
+            use_reading_memory: true,
+            allow_raw_book_notes: false,
+            save_conversation_history: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingAssistantRequest {
+    pub thread_id: Option<String>,
+    pub scope: AssistantContextScope,
+    pub entity_id: Option<String>,
+    pub message: String,
+    #[serde(default)]
+    pub enabled_context: Vec<ReadingAssistantContextOption>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingAssistantStreamRequest {
+    pub stream_id: String,
+    pub request: ReadingAssistantRequest,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct ReadingAssistantStreamPayload {
+    stream_id: String,
+    delta: String,
+    content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingAssistantAnswer {
+    pub thread_id: String,
+    pub message_id: String,
+    pub answer: String,
+    pub suggestions: Vec<String>,
+    #[serde(default)]
+    pub recommended_books: Vec<ReadingAssistantRecommendedBook>,
+    #[serde(default)]
+    pub action: Option<ReadingAssistantActionOutput>,
+    pub used_context: Vec<ReadingAssistantUsedContext>,
+    pub generated_at: String,
+    pub prompt_version: String,
+    pub provider_model: Option<String>,
+    pub basis_notice: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct BookAiSummaryListItem {
     pub book_id: String,
     pub title: String,
@@ -1224,6 +1482,676 @@ impl AiService {
             &key.prompt_version,
             &key.input_hash,
         )
+    }
+
+    pub fn get_reading_assistant_preferences(
+        &self,
+    ) -> Result<ReadingAssistantPreferences, AiServiceError> {
+        let connection = self.open_connection()?;
+        read_reading_assistant_preferences(&connection)
+    }
+
+    pub fn save_reading_assistant_preferences(
+        &self,
+        preferences: ReadingAssistantPreferences,
+    ) -> Result<ReadingAssistantPreferences, AiServiceError> {
+        let connection = self.open_connection()?;
+        let updated_at = current_unix_seconds();
+        let value_json = serde_json::to_string(&preferences).map_err(AiServiceError::storage)?;
+        connection
+            .execute(
+                "
+                INSERT INTO ai_assistant_preferences (key, value_json, updated_at)
+                VALUES (?1, ?2, ?3)
+                ON CONFLICT(key) DO UPDATE SET
+                    value_json = excluded.value_json,
+                    updated_at = excluded.updated_at
+                ",
+                params![READING_ASSISTANT_PREFERENCES_KEY, value_json, updated_at],
+            )
+            .map_err(AiServiceError::storage)?;
+
+        Ok(preferences)
+    }
+
+    pub fn list_reading_assistant_threads(
+        &self,
+    ) -> Result<Vec<ReadingAssistantThreadSummary>, AiServiceError> {
+        let connection = self.open_connection()?;
+        read_reading_assistant_thread_summaries(&connection)
+    }
+
+    pub fn get_reading_assistant_thread(
+        &self,
+        thread_id: String,
+    ) -> Result<Option<ReadingAssistantThreadDetail>, AiServiceError> {
+        let normalized_thread_id = normalize_reading_assistant_id("对话 ID", &thread_id)?;
+        let connection = self.open_connection()?;
+        read_reading_assistant_thread_detail(&connection, &normalized_thread_id)
+    }
+
+    pub fn delete_reading_assistant_thread(&self, thread_id: String) -> Result<(), AiServiceError> {
+        let normalized_thread_id = normalize_reading_assistant_id("对话 ID", &thread_id)?;
+        let mut connection = self.open_connection()?;
+        let transaction = connection.transaction().map_err(AiServiceError::storage)?;
+        transaction
+            .execute(
+                "DELETE FROM ai_assistant_messages WHERE thread_id = ?1",
+                [&normalized_thread_id],
+            )
+            .map_err(AiServiceError::storage)?;
+        transaction
+            .execute(
+                "DELETE FROM ai_assistant_threads WHERE id = ?1",
+                [&normalized_thread_id],
+            )
+            .map_err(AiServiceError::storage)?;
+        transaction.commit().map_err(AiServiceError::storage)?;
+
+        Ok(())
+    }
+
+    pub fn clear_reading_assistant_history(&self) -> Result<(), AiServiceError> {
+        let mut connection = self.open_connection()?;
+        let transaction = connection.transaction().map_err(AiServiceError::storage)?;
+        transaction
+            .execute("DELETE FROM ai_assistant_messages", [])
+            .map_err(AiServiceError::storage)?;
+        transaction
+            .execute("DELETE FROM ai_assistant_threads", [])
+            .map_err(AiServiceError::storage)?;
+        transaction.commit().map_err(AiServiceError::storage)?;
+
+        Ok(())
+    }
+
+    pub async fn ask_reading_assistant(
+        &self,
+        request: ReadingAssistantRequest,
+    ) -> Result<ReadingAssistantAnswer, AiServiceError> {
+        self.ask_reading_assistant_inner(request, None).await
+    }
+
+    pub async fn ask_reading_assistant_stream(
+        &self,
+        request: ReadingAssistantStreamRequest,
+    ) -> Result<ReadingAssistantAnswer, AiServiceError> {
+        let stream_id = normalize_reading_assistant_id("流式请求 ID", &request.stream_id)?;
+        self.ask_reading_assistant_inner(request.request, Some(stream_id))
+            .await
+    }
+
+    pub fn cancel_reading_assistant_stream(&self, stream_id: String) -> Result<(), AiServiceError> {
+        let stream_id = normalize_reading_assistant_id("流式请求 ID", &stream_id)?;
+        reading_assistant_stream_cancel_requests()
+            .lock()
+            .map_err(AiServiceError::storage)?
+            .insert(stream_id);
+        Ok(())
+    }
+
+    async fn ask_reading_assistant_inner(
+        &self,
+        request: ReadingAssistantRequest,
+        stream_id: Option<String>,
+    ) -> Result<ReadingAssistantAnswer, AiServiceError> {
+        let message = normalize_reading_assistant_message(&request.message)?;
+        let thread_id = request
+            .thread_id
+            .as_deref()
+            .map(|value| normalize_reading_assistant_id("对话 ID", value))
+            .transpose()?
+            .unwrap_or_else(|| generate_reading_assistant_id("thread", &json!(&message)));
+        let entity_id = request
+            .entity_id
+            .as_deref()
+            .map(|value| normalize_reading_assistant_id("上下文实体 ID", value))
+            .transpose()?;
+        let preferences = self.get_reading_assistant_preferences()?;
+        let intent = infer_reading_assistant_intent(&request.scope, &message);
+        if intent == ReadingAssistantIntent::WereadAvailabilitySearch {
+            return self
+                .answer_reading_assistant_weread_search(
+                    &request.scope,
+                    entity_id.as_deref(),
+                    &thread_id,
+                    &message,
+                    &preferences,
+                )
+                .await;
+        }
+        if intent == ReadingAssistantIntent::ReadingStatsAggregate {
+            return self.answer_reading_assistant_stats_aggregate(
+                &request.scope,
+                entity_id.as_deref(),
+                &thread_id,
+                &message,
+                &preferences,
+            );
+        }
+
+        let provider = self.settings_state()?.provider;
+        let api_key = self.read_api_key()?;
+        let build_request = ReadingAssistantContextBuildRequest {
+            scope: request.scope.clone(),
+            entity_id: entity_id.clone(),
+            enabled_context: request.enabled_context,
+            thread_id: Some(thread_id.clone()),
+            preferences: preferences.clone(),
+            intent,
+        };
+        let context_bundle = {
+            let connection = self.open_connection()?;
+            build_reading_assistant_context(&connection, &build_request)?
+        };
+        let payload = build_reading_assistant_payload(
+            &request.scope,
+            entity_id.as_deref(),
+            &message,
+            &context_bundle,
+            intent,
+        )?;
+        let input_hash = stable_hash_json(&payload)?;
+        let now = current_unix_seconds();
+        let user_message_id = generate_reading_assistant_id(
+            "msg",
+            &json!({
+                "threadId": thread_id,
+                "role": "user",
+                "message": message,
+                "inputHash": input_hash,
+                "createdAt": now
+            }),
+        );
+
+        if preferences.save_conversation_history {
+            let connection = self.open_connection()?;
+            upsert_reading_assistant_thread(
+                &connection,
+                &thread_id,
+                &request.scope,
+                entity_id.as_deref(),
+                &reading_assistant_thread_title(&message),
+                &reading_assistant_context_summary(&context_bundle),
+                &now,
+            )?;
+            insert_reading_assistant_message(
+                &connection,
+                &ReadingAssistantMessageDraft {
+                    id: user_message_id,
+                    thread_id: thread_id.clone(),
+                    role: "user".to_string(),
+                    content: message.clone(),
+                    status: "answered".to_string(),
+                    used_context: Vec::new(),
+                    output: None,
+                    prompt_version: None,
+                    input_hash: None,
+                    provider_model: None,
+                    error_code: None,
+                    error_message: None,
+                    created_at: now.clone(),
+                },
+            )?;
+        }
+
+        let result = if let Some(stream_id) = stream_id
+            .as_deref()
+            .filter(|_| reading_assistant_intent_supports_streaming(&intent))
+        {
+            let app = self.app.clone();
+            let event_stream_id = stream_id.to_string();
+            let stream_result = request_ai_json_stream_with_schema(
+                &api_key,
+                &provider,
+                reading_assistant_system_prompt(),
+                &payload,
+                "reading_assistant_response",
+                reading_assistant_json_schema(),
+                {
+                    let cancel_stream_id = stream_id.to_string();
+                    move || take_reading_assistant_stream_cancel_request(&cancel_stream_id)
+                },
+                move |delta, content| {
+                    let _ = app.emit(
+                        READING_ASSISTANT_STREAM_EVENT,
+                        ReadingAssistantStreamPayload {
+                            stream_id: event_stream_id.clone(),
+                            delta,
+                            content,
+                        },
+                    );
+                },
+            )
+            .await;
+
+            match stream_result {
+                Ok(result) => Ok(result),
+                Err(AiServiceError::ProviderResponse(message))
+                    if is_unsupported_json_schema_response(&message)
+                        || is_unsupported_response_format_response(&message) =>
+                {
+                    request_ai_json_with_schema_fallback(
+                        &api_key,
+                        &provider,
+                        reading_assistant_system_prompt(),
+                        &payload,
+                        "reading_assistant_response",
+                        reading_assistant_json_schema(),
+                    )
+                    .await
+                }
+                Err(error) => Err(error),
+            }
+        } else {
+            request_ai_json_with_schema_fallback(
+                &api_key,
+                &provider,
+                reading_assistant_system_prompt(),
+                &payload,
+                "reading_assistant_response",
+                reading_assistant_json_schema(),
+            )
+            .await
+        };
+        let mut generated = match result {
+            Ok(result) => normalize_reading_assistant_output(result.value)?,
+            Err(error) => {
+                if preferences.save_conversation_history {
+                    let failed_at = current_unix_seconds();
+                    let connection = self.open_connection()?;
+                    insert_reading_assistant_message(
+                        &connection,
+                        &ReadingAssistantMessageDraft {
+                            id: generate_reading_assistant_id(
+                                "msg",
+                                &json!({
+                                    "threadId": thread_id,
+                                    "role": "assistant",
+                                    "status": "failed",
+                                    "inputHash": input_hash,
+                                    "createdAt": failed_at
+                                }),
+                            ),
+                            thread_id: thread_id.clone(),
+                            role: "assistant".to_string(),
+                            content: error.user_message(),
+                            status: "failed".to_string(),
+                            used_context: context_bundle.used_context.clone(),
+                            output: None,
+                            prompt_version: Some(READING_ASSISTANT_PROMPT_VERSION.to_string()),
+                            input_hash: Some(input_hash.clone()),
+                            provider_model: Some(provider.model.clone()),
+                            error_code: Some(error.code().to_string()),
+                            error_message: Some(error.user_message()),
+                            created_at: failed_at.clone(),
+                        },
+                    )?;
+                    touch_reading_assistant_thread(&connection, &thread_id, &failed_at)?;
+                }
+
+                return Err(error);
+            }
+        };
+        if !generated.recommended_books.is_empty() {
+            let connection = self.open_connection()?;
+            generated.recommended_books = filter_existing_reading_assistant_recommended_books(
+                &connection,
+                generated.recommended_books,
+            )?;
+        }
+
+        let generated_at = current_unix_seconds();
+        let assistant_message_id = generate_reading_assistant_id(
+            "msg",
+            &json!({
+                "threadId": thread_id,
+                "role": "assistant",
+                "inputHash": input_hash,
+                "createdAt": generated_at
+            }),
+        );
+        if preferences.save_conversation_history {
+            let connection = self.open_connection()?;
+            insert_reading_assistant_message(
+                &connection,
+                &ReadingAssistantMessageDraft {
+                    id: assistant_message_id.clone(),
+                    thread_id: thread_id.clone(),
+                    role: "assistant".to_string(),
+                    content: generated.answer.clone(),
+                    status: "answered".to_string(),
+                    used_context: context_bundle.used_context.clone(),
+                    output: Some(reading_assistant_message_output(&generated)),
+                    prompt_version: Some(READING_ASSISTANT_PROMPT_VERSION.to_string()),
+                    input_hash: Some(input_hash.clone()),
+                    provider_model: Some(provider.model.clone()),
+                    error_code: None,
+                    error_message: None,
+                    created_at: generated_at.clone(),
+                },
+            )?;
+            touch_reading_assistant_thread(&connection, &thread_id, &generated_at)?;
+        }
+
+        Ok(ReadingAssistantAnswer {
+            thread_id,
+            message_id: assistant_message_id,
+            answer: generated.answer,
+            suggestions: generated.suggestions,
+            recommended_books: generated.recommended_books,
+            action: generated.action,
+            used_context: context_bundle.used_context,
+            generated_at,
+            prompt_version: READING_ASSISTANT_PROMPT_VERSION.to_string(),
+            provider_model: Some(provider.model),
+            basis_notice: generated.basis_notice,
+        })
+    }
+
+    async fn answer_reading_assistant_weread_search(
+        &self,
+        scope: &AssistantContextScope,
+        entity_id: Option<&str>,
+        thread_id: &str,
+        message: &str,
+        preferences: &ReadingAssistantPreferences,
+    ) -> Result<ReadingAssistantAnswer, AiServiceError> {
+        let keyword_resolution = {
+            let connection = self.open_connection()?;
+            resolve_reading_assistant_search_keyword(&connection, scope, entity_id, message)?
+        };
+        let input_hash = stable_hash_json(&json!({
+            "intent": "wereadAvailabilitySearch",
+            "message": message,
+            "keyword": &keyword_resolution.keyword,
+            "needsClarification": keyword_resolution.needs_clarification
+        }))?;
+        let now = current_unix_seconds();
+        let user_message_id = generate_reading_assistant_id(
+            "msg",
+            &json!({
+                "threadId": thread_id,
+                "role": "user",
+                "message": message,
+                "inputHash": input_hash,
+                "createdAt": now
+            }),
+        );
+
+        if preferences.save_conversation_history {
+            let connection = self.open_connection()?;
+            upsert_reading_assistant_thread(
+                &connection,
+                thread_id,
+                scope,
+                entity_id,
+                &reading_assistant_thread_title(message),
+                &json!({
+                    "sourceCount": 0,
+                    "usedContext": [],
+                    "actionIntent": "wereadAvailabilitySearch"
+                }),
+                &now,
+            )?;
+            insert_reading_assistant_message(
+                &connection,
+                &ReadingAssistantMessageDraft {
+                    id: user_message_id,
+                    thread_id: thread_id.to_string(),
+                    role: "user".to_string(),
+                    content: message.to_string(),
+                    status: "answered".to_string(),
+                    used_context: Vec::new(),
+                    output: None,
+                    prompt_version: None,
+                    input_hash: None,
+                    provider_model: None,
+                    error_code: None,
+                    error_message: None,
+                    created_at: now.clone(),
+                },
+            )?;
+        }
+
+        let generated = if keyword_resolution.needs_clarification {
+            ReadingAssistantGeneratedOutput {
+                answer: keyword_resolution.clarification_message,
+                suggestions: Vec::new(),
+                basis_notice: "未识别到明确书名，因此没有调用微信读书搜索。".to_string(),
+                recommended_books: Vec::new(),
+                action: None,
+            }
+        } else {
+            let keyword = keyword_resolution.keyword;
+            let search_response = DiscoveryService::new(self.app.clone())
+                .search_books(keyword.clone(), Some(0), None, Some(5))
+                .await
+                .map_err(AiServiceError::from_source_discovery)?;
+            let results = {
+                let connection = self.open_connection()?;
+                let local_index = read_assistant_local_book_index(&connection)?;
+                search_response
+                    .result
+                    .results
+                    .iter()
+                    .take(5)
+                    .map(|book| reading_assistant_weread_search_result(book, &local_index))
+                    .collect::<Vec<_>>()
+            };
+            let result_count = results.len();
+            let (status, answer, action_message, suggestions) = if result_count == 0 {
+                (
+                    "notFound".to_string(),
+                    format!(
+                        "没有在微信读书搜索到《{}》的明确匹配项。可以换一个关键词再试，或先保留为未确认候选。",
+                        keyword
+                    ),
+                    format!("未找到《{}》的明确匹配项。", keyword),
+                    vec![format!("帮我换关键词继续搜索《{}》", keyword)],
+                )
+            } else {
+                (
+                    "found".to_string(),
+                    format!(
+                        "我在微信读书搜索到 {} 个《{}》相关结果。请从结果中确认版本后，再加入本地候选。",
+                        result_count, keyword
+                    ),
+                    format!("搜索到 {} 个可能匹配项。", result_count),
+                    vec![
+                        format!("帮我推荐与《{}》同主题但未读过的书", keyword),
+                        "帮我对比搜索结果里的作者和版本差异".to_string(),
+                    ],
+                )
+            };
+
+            ReadingAssistantGeneratedOutput {
+                answer,
+                suggestions,
+                basis_notice: "基于微信读书搜索结果返回，不调用 AI Provider，不写回微信读书。"
+                    .to_string(),
+                recommended_books: Vec::new(),
+                action: Some(ReadingAssistantActionOutput::WereadSearch(
+                    ReadingAssistantWereadSearchOutput {
+                        keyword,
+                        status,
+                        message: action_message,
+                        results,
+                    },
+                )),
+            }
+        };
+
+        let generated_at = current_unix_seconds();
+        let assistant_message_id = generate_reading_assistant_id(
+            "msg",
+            &json!({
+                "threadId": thread_id,
+                "role": "assistant",
+                "inputHash": input_hash,
+                "createdAt": generated_at
+            }),
+        );
+        if preferences.save_conversation_history {
+            let connection = self.open_connection()?;
+            insert_reading_assistant_message(
+                &connection,
+                &ReadingAssistantMessageDraft {
+                    id: assistant_message_id.clone(),
+                    thread_id: thread_id.to_string(),
+                    role: "assistant".to_string(),
+                    content: generated.answer.clone(),
+                    status: "answered".to_string(),
+                    used_context: Vec::new(),
+                    output: Some(reading_assistant_message_output(&generated)),
+                    prompt_version: Some(READING_ASSISTANT_PROMPT_VERSION.to_string()),
+                    input_hash: Some(input_hash),
+                    provider_model: None,
+                    error_code: None,
+                    error_message: None,
+                    created_at: generated_at.clone(),
+                },
+            )?;
+            touch_reading_assistant_thread(&connection, thread_id, &generated_at)?;
+        }
+
+        Ok(ReadingAssistantAnswer {
+            thread_id: thread_id.to_string(),
+            message_id: assistant_message_id,
+            answer: generated.answer,
+            suggestions: generated.suggestions,
+            recommended_books: generated.recommended_books,
+            action: generated.action,
+            used_context: Vec::new(),
+            generated_at,
+            prompt_version: READING_ASSISTANT_PROMPT_VERSION.to_string(),
+            provider_model: None,
+            basis_notice: generated.basis_notice,
+        })
+    }
+
+    fn answer_reading_assistant_stats_aggregate(
+        &self,
+        scope: &AssistantContextScope,
+        entity_id: Option<&str>,
+        thread_id: &str,
+        message: &str,
+        preferences: &ReadingAssistantPreferences,
+    ) -> Result<ReadingAssistantAnswer, AiServiceError> {
+        let input_hash = stable_hash_json(&json!({
+            "intent": "readingStatsAggregate",
+            "message": message
+        }))?;
+        let now = current_unix_seconds();
+        let user_message_id = generate_reading_assistant_id(
+            "msg",
+            &json!({
+                "threadId": thread_id,
+                "role": "user",
+                "message": message,
+                "inputHash": input_hash,
+                "createdAt": now
+            }),
+        );
+
+        if preferences.save_conversation_history {
+            let connection = self.open_connection()?;
+            upsert_reading_assistant_thread(
+                &connection,
+                thread_id,
+                scope,
+                entity_id,
+                &reading_assistant_thread_title(message),
+                &json!({
+                    "sourceCount": 0,
+                    "usedContext": [],
+                    "actionIntent": "readingStatsAggregate"
+                }),
+                &now,
+            )?;
+            insert_reading_assistant_message(
+                &connection,
+                &ReadingAssistantMessageDraft {
+                    id: user_message_id,
+                    thread_id: thread_id.to_string(),
+                    role: "user".to_string(),
+                    content: message.to_string(),
+                    status: "answered".to_string(),
+                    used_context: Vec::new(),
+                    output: None,
+                    prompt_version: None,
+                    input_hash: None,
+                    provider_model: None,
+                    error_code: None,
+                    error_message: None,
+                    created_at: now.clone(),
+                },
+            )?;
+        }
+
+        let action = {
+            let connection = self.open_connection()?;
+            build_reading_assistant_stats_aggregate_output(&connection)?
+        };
+        let answer = action.message.clone();
+        let generated = ReadingAssistantGeneratedOutput {
+            answer,
+            suggestions: vec![
+                "帮我按分类解释累计阅读偏好".to_string(),
+                "帮我找出下一步最值得复盘的书".to_string(),
+            ],
+            basis_notice: "基于本机缓存的阅读统计、书架和本地候选状态聚合，不调用 AI Provider。"
+                .to_string(),
+            recommended_books: Vec::new(),
+            action: Some(ReadingAssistantActionOutput::StatsAggregate(action)),
+        };
+
+        let generated_at = current_unix_seconds();
+        let assistant_message_id = generate_reading_assistant_id(
+            "msg",
+            &json!({
+                "threadId": thread_id,
+                "role": "assistant",
+                "inputHash": input_hash,
+                "createdAt": generated_at
+            }),
+        );
+        if preferences.save_conversation_history {
+            let connection = self.open_connection()?;
+            insert_reading_assistant_message(
+                &connection,
+                &ReadingAssistantMessageDraft {
+                    id: assistant_message_id.clone(),
+                    thread_id: thread_id.to_string(),
+                    role: "assistant".to_string(),
+                    content: generated.answer.clone(),
+                    status: "answered".to_string(),
+                    used_context: Vec::new(),
+                    output: Some(reading_assistant_message_output(&generated)),
+                    prompt_version: Some(READING_ASSISTANT_PROMPT_VERSION.to_string()),
+                    input_hash: Some(input_hash),
+                    provider_model: None,
+                    error_code: None,
+                    error_message: None,
+                    created_at: generated_at.clone(),
+                },
+            )?;
+            touch_reading_assistant_thread(&connection, thread_id, &generated_at)?;
+        }
+
+        Ok(ReadingAssistantAnswer {
+            thread_id: thread_id.to_string(),
+            message_id: assistant_message_id,
+            answer: generated.answer,
+            suggestions: generated.suggestions,
+            recommended_books: generated.recommended_books,
+            action: generated.action,
+            used_context: Vec::new(),
+            generated_at,
+            prompt_version: READING_ASSISTANT_PROMPT_VERSION.to_string(),
+            provider_model: None,
+            basis_notice: generated.basis_notice,
+        })
     }
 
     pub async fn summarize_book_notes(
@@ -2451,6 +3379,10 @@ impl AiServiceError {
     fn from_source_stats(error: AppError) -> Self {
         Self::SourceNotes(error.user_message())
     }
+
+    fn from_source_discovery(error: AppError) -> Self {
+        Self::SourceNotes(error.user_message())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -2573,6 +3505,66 @@ struct LocalReaderSelectionQuestionBuildInput {
     payload: Value,
 }
 
+#[derive(Debug, Clone)]
+struct ReadingAssistantContextBuildRequest {
+    scope: AssistantContextScope,
+    entity_id: Option<String>,
+    enabled_context: Vec<ReadingAssistantContextOption>,
+    thread_id: Option<String>,
+    preferences: ReadingAssistantPreferences,
+    intent: ReadingAssistantIntent,
+}
+
+#[derive(Debug, Clone)]
+struct ReadingAssistantContextBundle {
+    payload: Value,
+    used_context: Vec<ReadingAssistantUsedContext>,
+    source_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ReadingAssistantGeneratedOutput {
+    answer: String,
+    suggestions: Vec<String>,
+    basis_notice: String,
+    recommended_books: Vec<ReadingAssistantRecommendedBook>,
+    action: Option<ReadingAssistantActionOutput>,
+}
+
+#[derive(Debug, Clone)]
+struct ReadingAssistantSearchKeywordResolution {
+    keyword: String,
+    needs_clarification: bool,
+    clarification_message: String,
+}
+
+#[derive(Debug, Default)]
+struct ReadingAssistantLocalBookIndex {
+    shelf_ids: HashMap<String, bool>,
+    shelf_titles: HashMap<String, bool>,
+    candidate_ids: HashSet<String>,
+    candidate_titles: HashSet<String>,
+    local_state_ids: HashSet<String>,
+    local_state_titles: HashSet<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ReadingAssistantMessageDraft {
+    id: String,
+    thread_id: String,
+    role: String,
+    content: String,
+    status: String,
+    used_context: Vec<ReadingAssistantUsedContext>,
+    output: Option<ReadingAssistantMessageOutput>,
+    prompt_version: Option<String>,
+    input_hash: Option<String>,
+    provider_model: Option<String>,
+    error_code: Option<String>,
+    error_message: Option<String>,
+    created_at: String,
+}
+
 async fn request_book_notes_summary(
     api_key: &str,
     provider: &AiProviderSettings,
@@ -2666,6 +3658,137 @@ async fn request_ai_json_with_schema_fallback(
         }
         Err(error) => Err(error),
     }
+}
+
+async fn request_ai_json_stream_with_schema(
+    api_key: &str,
+    provider: &AiProviderSettings,
+    system_prompt: &str,
+    input: &Value,
+    schema_name: &str,
+    schema: Value,
+    mut is_cancelled: impl FnMut() -> bool,
+    mut on_answer_delta: impl FnMut(String, String),
+) -> Result<ProviderJsonResult, AiServiceError> {
+    let stream_response_format = match provider.response_format_policy {
+        AiResponseFormatPolicy::JsonObjectFirst => Some((
+            default_json_object_response_format(),
+            AiResponseFormatKind::JsonObject,
+        )),
+        AiResponseFormatPolicy::NoResponseFormatFirst => None,
+        AiResponseFormatPolicy::Auto | AiResponseFormatPolicy::JsonSchemaFirst => Some((
+            json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "name": schema_name,
+                    "strict": true,
+                    "schema": schema
+                }
+            }),
+            AiResponseFormatKind::JsonSchema,
+        )),
+    };
+    let response_format_kind = stream_response_format.as_ref().map(|(_, kind)| *kind);
+    let payload = if let Some((response_format, _)) = stream_response_format {
+        build_chat_completion_stream_payload(&provider.model, system_prompt, input, response_format)
+    } else {
+        build_chat_completion_stream_payload_without_response_format(
+            &provider.model,
+            system_prompt,
+            input,
+        )
+    };
+    let client = HttpClient::builder()
+        .timeout(std::time::Duration::from_secs(AI_REQUEST_TIMEOUT_SECONDS))
+        .build()
+        .map_err(AiServiceError::storage)?;
+    let mut response = client
+        .post(chat_completions_url(&provider.base_url))
+        .bearer_auth(api_key)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|error| AiServiceError::ProviderNetwork(error.to_string()))?;
+    let status = response.status();
+
+    if !status.is_success() {
+        let value = response.json::<Value>().await.map_err(|error| {
+            AiServiceError::ProviderNetwork(format!(
+                "HTTP {}：{}",
+                status.as_u16(),
+                safe_provider_decode_message(error)
+            ))
+        })?;
+        return extract_chat_completion_json(status, value).map(|value| ProviderJsonResult {
+            value,
+            response_format: response_format_kind,
+        });
+    }
+
+    let mut sse_buffer = String::new();
+    let mut json_content = String::new();
+    let mut emitted_answer = String::new();
+
+    if is_cancelled() {
+        return Err(AiServiceError::ProviderResponse(
+            "已取消本次 AI 回答生成。".to_string(),
+        ));
+    }
+
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| AiServiceError::ProviderNetwork(error.to_string()))?
+    {
+        if is_cancelled() {
+            return Err(AiServiceError::ProviderResponse(
+                "已取消本次 AI 回答生成。".to_string(),
+            ));
+        }
+
+        sse_buffer.push_str(&String::from_utf8_lossy(&chunk).replace("\r\n", "\n"));
+        while let Some(frame_end) = sse_buffer.find("\n\n") {
+            let frame = sse_buffer[..frame_end].to_string();
+            sse_buffer.drain(..frame_end + 2);
+            if let Some(delta) = chat_completion_stream_delta_from_frame(&frame)? {
+                json_content.push_str(&delta);
+                if let Some(answer_prefix) =
+                    streamed_json_string_field_prefix(&json_content, "answer")
+                {
+                    if answer_prefix.len() > emitted_answer.len()
+                        && answer_prefix.starts_with(&emitted_answer)
+                    {
+                        let delta = answer_prefix[emitted_answer.len()..].to_string();
+                        emitted_answer = answer_prefix.clone();
+                        if !delta.is_empty() {
+                            on_answer_delta(delta, answer_prefix);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if !sse_buffer.trim().is_empty() {
+        if let Some(delta) = chat_completion_stream_delta_from_frame(&sse_buffer)? {
+            json_content.push_str(&delta);
+        }
+    }
+
+    if json_content.trim().is_empty() {
+        return Err(AiServiceError::InvalidProviderOutput(
+            "AI 流式返回内容为空，请重新提问。".to_string(),
+        ));
+    }
+
+    let value = parse_provider_json_content(&json_content).map_err(|_| {
+        AiServiceError::InvalidProviderOutput("AI 流式返回内容不是有效 JSON。".to_string())
+    })?;
+
+    Ok(ProviderJsonResult {
+        value,
+        response_format: response_format_kind,
+    })
 }
 
 async fn request_ai_json_without_response_format(
@@ -3072,6 +4195,28 @@ fn build_chat_completion_payload(
     })
 }
 
+fn build_chat_completion_stream_payload(
+    model: &str,
+    system_prompt: &str,
+    input: &Value,
+    response_format: Value,
+) -> Value {
+    let mut payload = build_chat_completion_payload(model, system_prompt, input, response_format);
+    payload["stream"] = Value::Bool(true);
+    payload
+}
+
+fn build_chat_completion_stream_payload_without_response_format(
+    model: &str,
+    system_prompt: &str,
+    input: &Value,
+) -> Value {
+    let mut payload =
+        build_chat_completion_payload_without_response_format(model, system_prompt, input);
+    payload["stream"] = Value::Bool(true);
+    payload
+}
+
 fn build_chat_completion_payload_without_response_format(
     model: &str,
     system_prompt: &str,
@@ -3138,6 +4283,10 @@ fn book_decision_system_prompt() -> &'static str {
 
 fn local_reader_selection_question_system_prompt() -> &'static str {
     "你是本地阅读器里的选区问答助手。只基于用户提供的 book、selection.text、selection.context.beforeText、selection.context.afterText 和 question 回答，不假装读过整本书，不补写未提供的上下文，不读取或输出本地路径、文件 hash、数据库路径、API Key、微信凭据或微信读书数据。必须使用简体中文，只输出一个顶层 JSON 对象，不要 Markdown。字段必须使用英文 camelCase，且必须包含 answer、keyPoints、followUpQuestions。answer 写 2-5 句，先直接回答用户问题，再说明依据来自选区或前后文；如果选区很短，例如人名、术语或半句话，必须优先结合前后文解释它在当前段落中的作用，不要只回复“无法判断”。只有当前选区和前后文都确实无法支持答案时，才说明“当前选区和前后文仍不足以判断”，并给出最小必要的不确定点。keyPoints 为 1-5 条要点，每条必须落到文本里的对象、动作、关系、转折或情绪，不写“信息不足”这类空要点。followUpQuestions 为 0-3 个可点击追问，必须是用户可以直接提交给 AI 的具体问题，避免“请选择更多文本”“请提供上下文”“包含某某的句子”这类操作说明；优先围绕当前段落继续追问人物关系、指代对象、作者态度、前后因果或概念含义。"
+}
+
+fn reading_assistant_system_prompt() -> &'static str {
+    "你是 wxreadmaster 的 AI 阅读对话助手。默认只能基于输入中提供的本地阅读上下文回答，不得编造用户没有读过、没有保存、没有生成过的阅读记录，不得声称读取了整本书或原始笔记，除非输入明确包含这些内容。唯一受控例外：当 payload.intent 为 newBookRecommendation，或用户明确要求推荐新书/推荐可加入候选书架的书时，可以结合输入中的阅读画像、阅读统计、AI 资产摘要和通用书目知识提出 3-5 本新书候选；每本必须包含书名、作者、推荐理由、适合用户的原因和可能风险/取舍，并避开 payload 或上下文里的 bookExclusionList；必须说明这些书不是本地候选书架已有项、未确认微信读书可用、需要用户确认后再加入候选书架。必须使用简体中文，只输出一个顶层 JSON 对象，不要 Markdown。字段必须使用英文 camelCase，且必须包含 answer、suggestions、basisNotice、recommendedBooks；为了支持流式展示，输出字段顺序必须先 answer，再 suggestions、basisNotice、recommendedBooks。新书推荐场景必须把具体书籍放入 recommendedBooks，每项包含 title、author、reason、fit、risk；非新书推荐场景 recommendedBooks 必须返回空数组。answer 写 2-8 句，先直接回应用户，再说明依据和不确定性；当用户要求整理、生成或列出 N 个问题/复盘问题/追问时，answer 必须直接列出对应数量的编号问题，不得只说明已整理；上下文不足时也要给出可执行的下一步，不把缺数据作为错误。推荐书籍、阅读计划或复盘动作时，必须说明来自哪些本地信号，并给出下一步动作。用户要求生成正式复盘、阅读指南或候选书架内选书决策时，引导用户使用对应功能，不要声称已经保存或覆盖正式 AI 资产。用户要求基于笔记、划线、想法总结重点、提炼观点或归纳复盘时，对应功能是「生成 AI 复盘」或「书籍复盘」，不是「生成阅读指南」；阅读指南只用于规划后续阅读路线和复盘点。不得输出 API Key、数据库路径、本地文件路径、原始 WeRead 响应或内部实现细节。suggestions 为 0-3 个可点击追问，每个都必须像用户本人准备提交给 AI 的下一条问题，优先以“帮我/请/为我”开头；不得用“你是否/你想不想/是否想/需要……吗”反问用户，也不得给是/否式选项。basisNotice 用 1 句说明本次依据范围。"
 }
 
 fn extract_chat_completion_json(status: StatusCode, value: Value) -> Result<Value, AiServiceError> {
@@ -3442,6 +4591,38 @@ fn local_reader_selection_question_json_schema() -> Value {
     })
 }
 
+fn reading_assistant_json_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["answer", "suggestions", "basisNotice", "recommendedBooks"],
+        "properties": {
+            "answer": { "type": "string" },
+            "suggestions": {
+                "type": "array",
+                "items": { "type": "string" }
+            },
+            "basisNotice": { "type": "string" },
+            "recommendedBooks": {
+                "type": "array",
+                "maxItems": MAX_READING_ASSISTANT_RECOMMENDED_BOOKS,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["title", "author", "reason", "fit", "risk"],
+                    "properties": {
+                        "title": { "type": "string" },
+                        "author": { "type": "string" },
+                        "reason": { "type": "string" },
+                        "fit": { "type": "string" },
+                        "risk": { "type": "string" }
+                    }
+                }
+            }
+        }
+    })
+}
+
 fn is_unsupported_json_schema_response(message: &str) -> bool {
     is_unsupported_response_format_response(message)
 }
@@ -3478,6 +4659,101 @@ fn parse_provider_json_content(content: &str) -> Result<Value, serde_json::Error
             serde_json::from_str::<Value>(json_text)
         }
     }
+}
+
+fn chat_completion_stream_delta_from_frame(frame: &str) -> Result<Option<String>, AiServiceError> {
+    for line in frame.lines() {
+        let line = line.trim();
+        let Some(data) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let data = data.trim();
+        if data.is_empty() || data == "[DONE]" {
+            continue;
+        }
+
+        let value = serde_json::from_str::<Value>(data).map_err(|_| {
+            AiServiceError::InvalidProviderOutput("AI 流式返回包含无法解析的事件。".to_string())
+        })?;
+
+        if let Some(error_message) = value
+            .get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)
+        {
+            return Err(AiServiceError::ProviderResponse(error_message.to_string()));
+        }
+
+        if value
+            .get("choices")
+            .and_then(Value::as_array)
+            .and_then(|choices| choices.first())
+            .and_then(|choice| choice.get("finish_reason"))
+            .and_then(Value::as_str)
+            == Some("length")
+        {
+            return Err(AiServiceError::InvalidProviderOutput(
+                "AI 返回内容被模型截断，请重新生成或减少候选书数量。".to_string(),
+            ));
+        }
+
+        if let Some(delta) = value
+            .get("choices")
+            .and_then(Value::as_array)
+            .and_then(|choices| choices.first())
+            .and_then(|choice| choice.get("delta"))
+            .and_then(|delta| delta.get("content"))
+            .and_then(Value::as_str)
+        {
+            return Ok(Some(delta.to_string()));
+        }
+    }
+
+    Ok(None)
+}
+
+fn streamed_json_string_field_prefix(content: &str, field_name: &str) -> Option<String> {
+    let field_marker = format!("\"{field_name}\"");
+    let field_start = content.find(&field_marker)?;
+    let after_field = &content[field_start + field_marker.len()..];
+    let colon_index = after_field.find(':')?;
+    let value_start = after_field[colon_index + 1..].trim_start();
+    if !value_start.starts_with('"') {
+        return None;
+    }
+
+    json_string_prefix(value_start)
+}
+
+fn json_string_prefix(value: &str) -> Option<String> {
+    let mut is_escaped = false;
+    let mut closing_quote_end = None;
+
+    for (offset, character) in value[1..].char_indices() {
+        let absolute_offset = offset + 1;
+        if is_escaped {
+            is_escaped = false;
+            continue;
+        }
+
+        if character == '\\' {
+            is_escaped = true;
+        } else if character == '"' {
+            closing_quote_end = Some(absolute_offset + character.len_utf8());
+            break;
+        }
+    }
+
+    if let Some(end) = closing_quote_end {
+        return serde_json::from_str::<String>(&value[..end]).ok();
+    }
+
+    let mut partial = value.to_string();
+    if partial.ends_with('\\') {
+        partial.pop();
+    }
+    partial.push('"');
+    serde_json::from_str::<String>(&partial).ok()
 }
 
 fn extract_first_json_value(content: &str) -> Option<&str> {
@@ -5022,6 +6298,2319 @@ fn build_local_reader_selection_question_input(
         scope_id,
         payload,
     })
+}
+
+fn build_reading_assistant_context(
+    connection: &rusqlite::Connection,
+    request: &ReadingAssistantContextBuildRequest,
+) -> Result<ReadingAssistantContextBundle, AiServiceError> {
+    if !request.preferences.use_personalized_context {
+        return Ok(ReadingAssistantContextBundle {
+            payload: json!({
+                "basis": "用户已关闭个性化阅读上下文，本次不读取本地阅读记录。",
+                "scope": assistant_scope_as_str(&request.scope)
+            }),
+            used_context: Vec::new(),
+            source_count: 0,
+        });
+    }
+
+    let enabled_context = normalize_reading_assistant_context_options(
+        &request.scope,
+        &request.enabled_context,
+        &request.preferences,
+    );
+    let mut context = Map::new();
+    let mut used_context = Vec::new();
+    let mut source_count = 0;
+
+    match request.scope {
+        AssistantContextScope::BookDetail | AssistantContextScope::BookNotes => {
+            if let Some(book_id) = request.entity_id.as_deref() {
+                add_book_detail_context(
+                    connection,
+                    book_id,
+                    &enabled_context,
+                    &request.preferences,
+                    &mut context,
+                    &mut used_context,
+                    &mut source_count,
+                )?;
+            }
+        }
+        AssistantContextScope::ReadingStats => {
+            add_reading_stats_context(
+                connection,
+                &enabled_context,
+                &mut context,
+                &mut used_context,
+                &mut source_count,
+            )?;
+        }
+        AssistantContextScope::CandidateShelf => {
+            add_candidate_shelf_context(
+                connection,
+                &enabled_context,
+                &mut context,
+                &mut used_context,
+                &mut source_count,
+            )?;
+        }
+        AssistantContextScope::AiAsset => {
+            if let Some(entity_id) = request.entity_id.as_deref() {
+                add_ai_asset_context(
+                    connection,
+                    entity_id,
+                    &enabled_context,
+                    &mut context,
+                    &mut used_context,
+                    &mut source_count,
+                )?;
+            }
+        }
+        AssistantContextScope::Global => {
+            add_global_reading_assistant_context(
+                connection,
+                &enabled_context,
+                &mut context,
+                &mut used_context,
+                &mut source_count,
+            )?;
+        }
+        AssistantContextScope::LocalReaderSelection => {}
+    }
+
+    if request.intent == ReadingAssistantIntent::NewBookRecommendation {
+        add_book_exclusion_context(
+            connection,
+            &mut context,
+            &mut used_context,
+            &mut source_count,
+        )?;
+    }
+
+    add_reading_memory_context(
+        connection,
+        &enabled_context,
+        &mut context,
+        &mut used_context,
+        &mut source_count,
+    )?;
+
+    if context_option_enabled(
+        &enabled_context,
+        &ReadingAssistantContextOption::ConversationHistory,
+    ) && request.preferences.save_conversation_history
+    {
+        if let Some(thread_id) = request.thread_id.as_deref() {
+            if let Some(history) = read_reading_assistant_history_context(connection, thread_id)? {
+                let item_count = history
+                    .get("messages")
+                    .and_then(Value::as_array)
+                    .map(Vec::len)
+                    .unwrap_or(0);
+                if item_count > 0 {
+                    context.insert("conversationHistory".to_string(), history);
+                    used_context.push(ReadingAssistantUsedContext {
+                        context_type: ReadingAssistantContextOption::ConversationHistory,
+                        label: "最近对话".to_string(),
+                        source_refs: vec![format!("thread:{thread_id}")],
+                        item_count,
+                    });
+                    source_count += item_count;
+                }
+            }
+        }
+    }
+
+    Ok(ReadingAssistantContextBundle {
+        payload: json!({
+            "basis": "基于本机已缓存的结构化阅读上下文生成，不包含全书全文、原始 WeRead 响应、API Key、数据库路径或本地文件路径。",
+            "scope": assistant_scope_as_str(&request.scope),
+            "context": Value::Object(context)
+        }),
+        used_context,
+        source_count,
+    })
+}
+
+fn normalize_reading_assistant_context_options(
+    scope: &AssistantContextScope,
+    enabled_context: &[ReadingAssistantContextOption],
+    preferences: &ReadingAssistantPreferences,
+) -> HashSet<ReadingAssistantContextOption> {
+    let mut options = if enabled_context.is_empty() {
+        default_reading_assistant_context_options(scope)
+    } else {
+        enabled_context.iter().cloned().collect::<HashSet<_>>()
+    };
+
+    if !preferences.allow_raw_book_notes {
+        options.remove(&ReadingAssistantContextOption::RawBookNotes);
+    }
+    if !preferences.use_reading_memory {
+        options.remove(&ReadingAssistantContextOption::ReadingMemory);
+    }
+
+    options
+}
+
+fn default_reading_assistant_context_options(
+    scope: &AssistantContextScope,
+) -> HashSet<ReadingAssistantContextOption> {
+    match scope {
+        AssistantContextScope::BookDetail => HashSet::from([
+            ReadingAssistantContextOption::CurrentBook,
+            ReadingAssistantContextOption::BookNotesSummary,
+            ReadingAssistantContextOption::RawBookNotes,
+            ReadingAssistantContextOption::AiAssetSummary,
+            ReadingAssistantContextOption::ReadingMemory,
+            ReadingAssistantContextOption::ConversationHistory,
+        ]),
+        AssistantContextScope::BookNotes => HashSet::from([
+            ReadingAssistantContextOption::CurrentBook,
+            ReadingAssistantContextOption::BookNotesSummary,
+            ReadingAssistantContextOption::RawBookNotes,
+            ReadingAssistantContextOption::ReadingMemory,
+            ReadingAssistantContextOption::ConversationHistory,
+        ]),
+        AssistantContextScope::ReadingStats => HashSet::from([
+            ReadingAssistantContextOption::ReadingStats,
+            ReadingAssistantContextOption::ReadingPersona,
+            ReadingAssistantContextOption::ReadingMemory,
+            ReadingAssistantContextOption::ConversationHistory,
+        ]),
+        AssistantContextScope::CandidateShelf => HashSet::from([
+            ReadingAssistantContextOption::CandidateBooks,
+            ReadingAssistantContextOption::ReadingStats,
+            ReadingAssistantContextOption::ReadingPersona,
+            ReadingAssistantContextOption::ReadingMemory,
+            ReadingAssistantContextOption::ConversationHistory,
+        ]),
+        AssistantContextScope::AiAsset => HashSet::from([
+            ReadingAssistantContextOption::AiAssetSummary,
+            ReadingAssistantContextOption::CurrentBook,
+            ReadingAssistantContextOption::ReadingMemory,
+            ReadingAssistantContextOption::ConversationHistory,
+        ]),
+        AssistantContextScope::Global => HashSet::from([
+            ReadingAssistantContextOption::ReadingStats,
+            ReadingAssistantContextOption::ReadingPersona,
+            ReadingAssistantContextOption::ReadingMemory,
+            ReadingAssistantContextOption::ConversationHistory,
+        ]),
+        AssistantContextScope::LocalReaderSelection => {
+            HashSet::from([ReadingAssistantContextOption::ConversationHistory])
+        }
+    }
+}
+
+fn context_option_enabled(
+    options: &HashSet<ReadingAssistantContextOption>,
+    option: &ReadingAssistantContextOption,
+) -> bool {
+    options.contains(option)
+}
+
+fn add_used_context(
+    used_context: &mut Vec<ReadingAssistantUsedContext>,
+    context_type: ReadingAssistantContextOption,
+    label: &str,
+    source_refs: Vec<String>,
+    item_count: usize,
+    source_count: &mut usize,
+) {
+    if item_count == 0 {
+        return;
+    }
+
+    used_context.push(ReadingAssistantUsedContext {
+        context_type,
+        label: label.to_string(),
+        source_refs,
+        item_count,
+    });
+    *source_count += item_count;
+}
+
+fn add_book_detail_context(
+    connection: &rusqlite::Connection,
+    book_id: &str,
+    enabled_context: &HashSet<ReadingAssistantContextOption>,
+    preferences: &ReadingAssistantPreferences,
+    context: &mut Map<String, Value>,
+    used_context: &mut Vec<ReadingAssistantUsedContext>,
+    source_count: &mut usize,
+) -> Result<(), AiServiceError> {
+    let normalized_book_id = normalize_route_text("bookId", book_id, 128)?;
+
+    if context_option_enabled(enabled_context, &ReadingAssistantContextOption::CurrentBook) {
+        if let Some(book) = read_assistant_current_book(connection, &normalized_book_id)? {
+            context.insert("currentBook".to_string(), book);
+            add_used_context(
+                used_context,
+                ReadingAssistantContextOption::CurrentBook,
+                "当前书籍",
+                vec![format!("book:{normalized_book_id}")],
+                1,
+                source_count,
+            );
+        }
+    }
+
+    if context_option_enabled(
+        enabled_context,
+        &ReadingAssistantContextOption::BookNotesSummary,
+    ) {
+        let summaries = read_route_book_summaries(connection, &[normalized_book_id.clone()])?;
+        if let Some(summary) = summaries.get(&normalized_book_id) {
+            context.insert("latestBookSummary".to_string(), summary.clone());
+            add_used_context(
+                used_context,
+                ReadingAssistantContextOption::BookNotesSummary,
+                "单本复盘摘要",
+                vec![format!("book-review:{normalized_book_id}")],
+                1,
+                source_count,
+            );
+        }
+    }
+
+    if context_option_enabled(
+        enabled_context,
+        &ReadingAssistantContextOption::AiAssetSummary,
+    ) {
+        if let Some(asset) = read_assistant_book_ai_asset_context(connection, &normalized_book_id)?
+        {
+            context.insert("bookAiAssets".to_string(), asset);
+            add_used_context(
+                used_context,
+                ReadingAssistantContextOption::AiAssetSummary,
+                "当前书 AI 资产",
+                vec![format!("asset:{normalized_book_id}")],
+                1,
+                source_count,
+            );
+        }
+    }
+
+    if preferences.allow_raw_book_notes
+        && context_option_enabled(
+            enabled_context,
+            &ReadingAssistantContextOption::RawBookNotes,
+        )
+    {
+        if let Some(notes) = read_assistant_raw_book_notes_context(connection, &normalized_book_id)?
+        {
+            let item_count = notes
+                .get("items")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0);
+            context.insert("rawBookNotes".to_string(), notes);
+            add_used_context(
+                used_context,
+                ReadingAssistantContextOption::RawBookNotes,
+                "原始笔记片段",
+                vec![format!("notes:{normalized_book_id}")],
+                item_count,
+                source_count,
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn add_reading_stats_context(
+    connection: &rusqlite::Connection,
+    enabled_context: &HashSet<ReadingAssistantContextOption>,
+    context: &mut Map<String, Value>,
+    used_context: &mut Vec<ReadingAssistantUsedContext>,
+    source_count: &mut usize,
+) -> Result<(), AiServiceError> {
+    let latest_stats = read_route_latest_stats(connection)?;
+
+    if context_option_enabled(
+        enabled_context,
+        &ReadingAssistantContextOption::ReadingStats,
+    ) {
+        if let Some(stats) = latest_stats.clone() {
+            context.insert(
+                "latestStatsSignals".to_string(),
+                route_stats_signal_payload(stats),
+            );
+            add_used_context(
+                used_context,
+                ReadingAssistantContextOption::ReadingStats,
+                "阅读统计",
+                vec!["reading-stats:latest".to_string()],
+                1,
+                source_count,
+            );
+        }
+
+        if let Some(review) = read_route_latest_stats_review(connection)? {
+            context.insert("latestStatsReview".to_string(), review);
+            add_used_context(
+                used_context,
+                ReadingAssistantContextOption::ReadingStats,
+                "统计复盘摘要",
+                vec!["reading-stats-review:latest".to_string()],
+                1,
+                source_count,
+            );
+        }
+    }
+
+    if context_option_enabled(
+        enabled_context,
+        &ReadingAssistantContextOption::ReadingPersona,
+    ) {
+        if let Some(stats) = latest_stats {
+            let persona = build_reading_persona_input(&stats);
+            context.insert(
+                "readingPersona".to_string(),
+                serde_json::to_value(persona).map_err(AiServiceError::storage)?,
+            );
+            add_used_context(
+                used_context,
+                ReadingAssistantContextOption::ReadingPersona,
+                "阅读画像",
+                vec!["reading-persona:local".to_string()],
+                1,
+                source_count,
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn add_candidate_shelf_context(
+    connection: &rusqlite::Connection,
+    enabled_context: &HashSet<ReadingAssistantContextOption>,
+    context: &mut Map<String, Value>,
+    used_context: &mut Vec<ReadingAssistantUsedContext>,
+    source_count: &mut usize,
+) -> Result<(), AiServiceError> {
+    if context_option_enabled(
+        enabled_context,
+        &ReadingAssistantContextOption::CandidateBooks,
+    ) {
+        let candidates = read_assistant_candidate_books(connection)?;
+        let item_count = candidates.len();
+        if item_count > 0 {
+            context.insert("candidateBooks".to_string(), Value::Array(candidates));
+            add_used_context(
+                used_context,
+                ReadingAssistantContextOption::CandidateBooks,
+                "候选书",
+                vec!["candidate-shelf:local".to_string()],
+                item_count,
+                source_count,
+            );
+        }
+
+        if let Some(decision) = read_assistant_latest_book_decision(connection)? {
+            context.insert("latestBookDecision".to_string(), decision);
+            add_used_context(
+                used_context,
+                ReadingAssistantContextOption::CandidateBooks,
+                "选书决策摘要",
+                vec!["book-decision:latest".to_string()],
+                1,
+                source_count,
+            );
+        }
+    }
+
+    add_reading_stats_context(
+        connection,
+        enabled_context,
+        context,
+        used_context,
+        source_count,
+    )
+}
+
+fn add_ai_asset_context(
+    connection: &rusqlite::Connection,
+    entity_id: &str,
+    enabled_context: &HashSet<ReadingAssistantContextOption>,
+    context: &mut Map<String, Value>,
+    used_context: &mut Vec<ReadingAssistantUsedContext>,
+    source_count: &mut usize,
+) -> Result<(), AiServiceError> {
+    if !context_option_enabled(
+        enabled_context,
+        &ReadingAssistantContextOption::AiAssetSummary,
+    ) {
+        return Ok(());
+    }
+
+    if let Some((feature, scope_id, input_hash)) =
+        parse_reading_assistant_asset_entity_id(entity_id)
+    {
+        if let Some(asset) =
+            read_ai_asset_version_detail(connection, &feature, &scope_id, &input_hash)?
+        {
+            context.insert(
+                "aiAsset".to_string(),
+                reading_assistant_asset_version_payload(asset),
+            );
+            add_used_context(
+                used_context,
+                ReadingAssistantContextOption::AiAssetSummary,
+                "AI 资产详情",
+                vec![format!("{feature}:{scope_id}:{input_hash}")],
+                1,
+                source_count,
+            );
+        }
+        return Ok(());
+    }
+
+    let normalized_book_id = normalize_route_text("bookId", entity_id, 128)?;
+    if let Some(asset) = read_assistant_book_ai_asset_context(connection, &normalized_book_id)? {
+        context.insert("aiAsset".to_string(), asset);
+        add_used_context(
+            used_context,
+            ReadingAssistantContextOption::AiAssetSummary,
+            "当前书 AI 资产",
+            vec![format!("asset:{normalized_book_id}")],
+            1,
+            source_count,
+        );
+    }
+
+    Ok(())
+}
+
+fn add_global_reading_assistant_context(
+    connection: &rusqlite::Connection,
+    enabled_context: &HashSet<ReadingAssistantContextOption>,
+    context: &mut Map<String, Value>,
+    used_context: &mut Vec<ReadingAssistantUsedContext>,
+    source_count: &mut usize,
+) -> Result<(), AiServiceError> {
+    if context_option_enabled(enabled_context, &ReadingAssistantContextOption::CurrentBook) {
+        let recent_books = read_assistant_recent_books(connection)?;
+        let item_count = recent_books.len();
+        if item_count > 0 {
+            context.insert("recentBooks".to_string(), Value::Array(recent_books));
+            add_used_context(
+                used_context,
+                ReadingAssistantContextOption::CurrentBook,
+                "最近阅读",
+                vec!["books:recent".to_string()],
+                item_count,
+                source_count,
+            );
+        }
+    }
+
+    add_candidate_shelf_context(
+        connection,
+        enabled_context,
+        context,
+        used_context,
+        source_count,
+    )?;
+
+    if context_option_enabled(
+        enabled_context,
+        &ReadingAssistantContextOption::AiAssetSummary,
+    ) {
+        let assets = read_assistant_recent_ai_assets(connection)?;
+        let item_count = assets.len();
+        if item_count > 0 {
+            context.insert("recentAiAssets".to_string(), Value::Array(assets));
+            add_used_context(
+                used_context,
+                ReadingAssistantContextOption::AiAssetSummary,
+                "最近 AI 资产",
+                vec!["ai-assets:recent".to_string()],
+                item_count,
+                source_count,
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn add_reading_memory_context(
+    connection: &rusqlite::Connection,
+    enabled_context: &HashSet<ReadingAssistantContextOption>,
+    context: &mut Map<String, Value>,
+    used_context: &mut Vec<ReadingAssistantUsedContext>,
+    source_count: &mut usize,
+) -> Result<(), AiServiceError> {
+    if !context_option_enabled(
+        enabled_context,
+        &ReadingAssistantContextOption::ReadingMemory,
+    ) {
+        return Ok(());
+    }
+
+    let Some((memory, source_refs, item_count)) = read_assistant_reading_memory(connection)? else {
+        return Ok(());
+    };
+
+    context.insert("readingMemory".to_string(), memory);
+    add_used_context(
+        used_context,
+        ReadingAssistantContextOption::ReadingMemory,
+        "阅读记忆",
+        source_refs,
+        item_count,
+        source_count,
+    );
+
+    Ok(())
+}
+
+fn read_assistant_reading_memory(
+    connection: &rusqlite::Connection,
+) -> Result<Option<(Value, Vec<String>, usize)>, AiServiceError> {
+    let mut items = Vec::new();
+    let mut source_refs = Vec::new();
+
+    for asset in read_assistant_recent_ai_assets(connection)?
+        .into_iter()
+        .take(MAX_READING_ASSISTANT_MEMORY_ASSETS)
+    {
+        if items.len() >= MAX_READING_ASSISTANT_MEMORY_ITEMS {
+            break;
+        }
+
+        let book_id = string_value(asset.get("bookId")).unwrap_or_else(|| "unknown".to_string());
+        let source_ref = format!("ai-asset:{book_id}");
+        source_refs.push(source_ref.clone());
+        items.push(json!({
+            "type": "aiAssetSummary",
+            "sourceRef": source_ref,
+            "title": asset.get("title").cloned().unwrap_or(Value::Null),
+            "summary": asset
+        }));
+    }
+
+    if items.len() < MAX_READING_ASSISTANT_MEMORY_ITEMS {
+        if let Some(review) = read_route_latest_stats_review(connection)? {
+            let source_ref = "reading-stats-review:latest".to_string();
+            source_refs.push(source_ref.clone());
+            items.push(json!({
+                "type": "readingStatsReview",
+                "sourceRef": source_ref,
+                "summary": review
+            }));
+        }
+    }
+
+    if items.len() < MAX_READING_ASSISTANT_MEMORY_ITEMS {
+        if let Some(decision) = read_assistant_latest_book_decision(connection)? {
+            let source_ref = "book-decision:latest".to_string();
+            source_refs.push(source_ref.clone());
+            items.push(json!({
+                "type": "bookDecision",
+                "sourceRef": source_ref,
+                "summary": decision
+            }));
+        }
+    }
+
+    if items.len() < MAX_READING_ASSISTANT_MEMORY_ITEMS {
+        let candidates = read_assistant_candidate_memory(connection)?;
+        if !candidates.is_empty() {
+            let source_ref = "candidate-memory:recent".to_string();
+            source_refs.push(source_ref.clone());
+            items.push(json!({
+                "type": "candidateState",
+                "sourceRef": source_ref,
+                "items": candidates
+            }));
+        }
+    }
+
+    if items.is_empty() {
+        return Ok(None);
+    }
+
+    let item_count = items.len();
+    Ok(Some((
+        json!({
+            "basis": "只来自本机可追溯的结构化阅读资产和状态，不包含全文、原始笔记、原始 WeRead 响应或本地文件路径。",
+            "items": items
+        }),
+        source_refs,
+        item_count,
+    )))
+}
+
+fn read_assistant_candidate_memory(
+    connection: &rusqlite::Connection,
+) -> Result<Vec<Value>, AiServiceError> {
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT item_id, status, title, author, category, note, updated_at
+            FROM reading_item_states
+            WHERE item_type = 'candidate'
+            ORDER BY CAST(updated_at AS INTEGER) DESC, item_id ASC
+            LIMIT ?1
+            ",
+        )
+        .map_err(AiServiceError::storage)?;
+    let rows = statement
+        .query_map([MAX_READING_ASSISTANT_MEMORY_CANDIDATES as i64], |row| {
+            Ok(json!({
+                "itemId": row.get::<_, String>(0)?,
+                "status": row.get::<_, String>(1)?,
+                "title": row.get::<_, Option<String>>(2)?,
+                "author": row.get::<_, Option<String>>(3)?,
+                "category": row.get::<_, Option<String>>(4)?,
+                "note": row.get::<_, Option<String>>(5)?.map(|value| truncate_text(&value, 180)),
+                "updatedAt": row.get::<_, String>(6)?
+            }))
+        })
+        .map_err(AiServiceError::storage)?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(AiServiceError::storage)
+}
+
+fn read_assistant_current_book(
+    connection: &rusqlite::Connection,
+    book_id: &str,
+) -> Result<Option<Value>, AiServiceError> {
+    let detail = connection
+        .query_row(
+            "
+            SELECT book_id, title, author, category, intro, updated_at
+            FROM book_details
+            WHERE book_id = ?1
+            ",
+            [book_id],
+            |row| {
+                Ok(json!({
+                    "bookId": row.get::<_, String>(0)?,
+                    "title": row.get::<_, String>(1)?,
+                    "author": row.get::<_, Option<String>>(2)?,
+                    "category": row.get::<_, Option<String>>(3)?,
+                    "intro": row.get::<_, Option<String>>(4)?.map(|value| truncate_text(&value, 600)),
+                    "updatedAt": row.get::<_, String>(5)?
+                }))
+            },
+        )
+        .optional()
+        .map_err(AiServiceError::storage)?;
+    let notebook = connection
+        .query_row(
+            "
+            SELECT book_id, title, author, review_count, note_count, bookmark_count, total_note_count, updated_at
+            FROM notebook_books
+            WHERE book_id = ?1
+            ",
+            [book_id],
+            |row| {
+                Ok(json!({
+                    "bookId": row.get::<_, String>(0)?,
+                    "title": row.get::<_, String>(1)?,
+                    "author": row.get::<_, Option<String>>(2)?,
+                    "reviewCount": row.get::<_, i64>(3)?,
+                    "noteCount": row.get::<_, i64>(4)?,
+                    "bookmarkCount": row.get::<_, i64>(5)?,
+                    "totalNoteCount": row.get::<_, i64>(6)?,
+                    "updatedAt": row.get::<_, String>(7)?
+                }))
+            },
+        )
+        .optional()
+        .map_err(AiServiceError::storage)?;
+    let shelf = connection
+        .query_row(
+            "
+            SELECT id, title, author, category, is_finished, last_read_at, updated_at
+            FROM shelf_entries
+            WHERE id = ?1
+            ",
+            [book_id],
+            |row| {
+                Ok(json!({
+                    "bookId": row.get::<_, String>(0)?,
+                    "title": row.get::<_, String>(1)?,
+                    "author": row.get::<_, Option<String>>(2)?,
+                    "category": row.get::<_, Option<String>>(3)?,
+                    "isFinished": row.get::<_, Option<i64>>(4)?.map(|value| value != 0),
+                    "lastReadAt": row.get::<_, Option<i64>>(5)?,
+                    "updatedAt": row.get::<_, String>(6)?
+                }))
+            },
+        )
+        .optional()
+        .map_err(AiServiceError::storage)?;
+    let progress = connection
+        .query_row(
+            "
+            SELECT progress_percent, chapter_uid, record_reading_time_seconds, finish_time, updated_at
+            FROM book_progress
+            WHERE book_id = ?1
+            ",
+            [book_id],
+            |row| {
+                let progress_percent = row.get::<_, i64>(0)?.clamp(0, 100);
+                let finish_time = row.get::<_, Option<i64>>(3)?;
+                Ok(json!({
+                    "progressPercent": progress_percent,
+                    "chapterUid": row.get::<_, Option<i64>>(1)?,
+                    "recordReadingTime": row.get::<_, Option<i64>>(2)?.map(format_duration_readable),
+                    "finishTime": finish_time,
+                    "readingStage": reading_stage_signal(progress_percent, finish_time.unwrap_or(0) > 0),
+                    "updatedAt": row.get::<_, String>(4)?
+                }))
+            },
+        )
+        .optional()
+        .map_err(AiServiceError::storage)?;
+    let state = connection
+        .query_row(
+            "
+            SELECT status, title, author, category, note, updated_at
+            FROM reading_item_states
+            WHERE item_id = ?1
+            ",
+            [book_id],
+            |row| {
+                Ok(json!({
+                    "status": row.get::<_, String>(0)?,
+                    "title": row.get::<_, Option<String>>(1)?,
+                    "author": row.get::<_, Option<String>>(2)?,
+                    "category": row.get::<_, Option<String>>(3)?,
+                    "note": row.get::<_, Option<String>>(4)?.map(|value| truncate_text(&value, 240)),
+                    "updatedAt": row.get::<_, String>(5)?
+                }))
+            },
+        )
+        .optional()
+        .map_err(AiServiceError::storage)?;
+
+    if detail.is_none()
+        && notebook.is_none()
+        && shelf.is_none()
+        && progress.is_none()
+        && state.is_none()
+    {
+        return Ok(None);
+    }
+
+    Ok(Some(json!({
+        "bookId": book_id,
+        "detail": detail,
+        "notebook": notebook,
+        "shelf": shelf,
+        "progress": progress,
+        "localState": state
+    })))
+}
+
+fn read_assistant_book_ai_asset_context(
+    connection: &rusqlite::Connection,
+    book_id: &str,
+) -> Result<Option<Value>, AiServiceError> {
+    let asset = read_ai_asset_detail(connection, book_id)?;
+    Ok(asset.map(|asset| {
+        json!({
+            "bookId": asset.book_id,
+            "title": asset.title,
+            "author": asset.author,
+            "progress": asset.progress,
+            "readingStage": asset.reading_stage,
+            "readingStageLabel": asset.reading_stage_label,
+            "localStatus": asset.local_status,
+            "refreshState": asset.refresh_state,
+            "refreshReason": asset.refresh_reason,
+            "currentGuide": asset.current_guide,
+            "mainCrossRoutes": asset.main_cross_routes,
+            "participantCrossRoutes": asset.participant_cross_routes,
+            "currentBookReview": asset.current_book_review
+        })
+    }))
+}
+
+fn read_assistant_raw_book_notes_context(
+    connection: &rusqlite::Connection,
+    book_id: &str,
+) -> Result<Option<Value>, AiServiceError> {
+    let notes = read_local_book_notes(connection, book_id)?;
+    let highlights = notes.highlights.into_iter().map(|highlight| {
+        json!({
+            "type": "highlight",
+            "chapterTitle": highlight.chapter_title,
+            "text": truncate_text(&highlight.mark_text, MAX_READING_ASSISTANT_RAW_NOTE_CHARS),
+            "createdAt": highlight.create_time
+        })
+    });
+    let thoughts = notes.thoughts.into_iter().map(|thought| {
+        json!({
+            "type": "thought",
+            "chapterTitle": thought.chapter_name,
+            "text": truncate_text(&thought.content, MAX_READING_ASSISTANT_RAW_NOTE_CHARS),
+            "createdAt": thought.create_time
+        })
+    });
+    let items = highlights
+        .chain(thoughts)
+        .take(MAX_READING_ASSISTANT_RAW_NOTES)
+        .collect::<Vec<_>>();
+
+    if items.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(json!({
+        "basis": "用户已允许将当前书有限数量的原始笔记片段用于本次助手回答。",
+        "items": items
+    })))
+}
+
+fn read_assistant_candidate_books(
+    connection: &rusqlite::Connection,
+) -> Result<Vec<Value>, AiServiceError> {
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT item_id, status, title, author, category, note, updated_at
+            FROM reading_item_states
+            WHERE item_type = 'candidate'
+            ORDER BY CAST(updated_at AS INTEGER) DESC, item_id ASC
+            LIMIT ?1
+            ",
+        )
+        .map_err(AiServiceError::storage)?;
+    let rows = statement
+        .query_map([MAX_READING_ASSISTANT_CANDIDATES as i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        })
+        .map_err(AiServiceError::storage)?;
+    let rows = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(AiServiceError::storage)?;
+    let book_ids = rows.iter().map(|row| row.0.clone()).collect::<Vec<_>>();
+    let summaries = read_route_book_summaries(connection, &book_ids)?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(book_id, status, title, author, category, note, updated_at)| {
+                json!({
+                    "bookId": book_id,
+                    "status": status,
+                    "title": title,
+                    "author": author,
+                    "category": category,
+                    "note": note.map(|value| truncate_text(&value, 240)),
+                    "summary": summaries.get(&book_id),
+                    "updatedAt": updated_at
+                })
+            },
+        )
+        .collect())
+}
+
+fn add_book_exclusion_context(
+    connection: &rusqlite::Connection,
+    context: &mut Map<String, Value>,
+    used_context: &mut Vec<ReadingAssistantUsedContext>,
+    source_count: &mut usize,
+) -> Result<(), AiServiceError> {
+    let exclusions = read_assistant_book_exclusion_list(connection)?;
+    let item_count = exclusions.len();
+    if item_count == 0 {
+        return Ok(());
+    }
+
+    context.insert("bookExclusionList".to_string(), Value::Array(exclusions));
+    add_used_context(
+        used_context,
+        ReadingAssistantContextOption::BookExclusionList,
+        "排除书目",
+        vec!["book-exclusion-list:local".to_string()],
+        item_count,
+        source_count,
+    );
+
+    Ok(())
+}
+
+fn read_assistant_book_exclusion_list(
+    connection: &rusqlite::Connection,
+) -> Result<Vec<Value>, AiServiceError> {
+    let mut items = Vec::new();
+    let mut seen = HashSet::new();
+
+    let mut state_statement = connection
+        .prepare(
+            "
+            SELECT item_type, status, title, author, updated_at
+            FROM reading_item_states
+            WHERE title IS NOT NULL AND TRIM(title) != ''
+            ORDER BY CAST(updated_at AS INTEGER) DESC, item_id ASC
+            LIMIT ?1
+            ",
+        )
+        .map_err(AiServiceError::storage)?;
+    let state_rows = state_statement
+        .query_map(
+            [(MAX_READING_ASSISTANT_EXCLUSION_BOOKS * 2) as i64],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .map_err(AiServiceError::storage)?;
+    for row in state_rows {
+        let (item_type, status, title, author, updated_at) =
+            row.map_err(AiServiceError::storage)?;
+        if push_assistant_book_exclusion(
+            &mut items,
+            &mut seen,
+            title,
+            author,
+            "readingItemState",
+            Some(item_type),
+            Some(status),
+            Some(updated_at),
+        ) {
+            if items.len() >= MAX_READING_ASSISTANT_EXCLUSION_BOOKS {
+                return Ok(items);
+            }
+        }
+    }
+
+    let mut shelf_statement = connection
+        .prepare(
+            "
+            SELECT title, author, is_finished, last_read_at, updated_at
+            FROM shelf_entries
+            WHERE type = 'book'
+            ORDER BY COALESCE(last_read_at, 0) DESC, CAST(updated_at AS INTEGER) DESC
+            LIMIT ?1
+            ",
+        )
+        .map_err(AiServiceError::storage)?;
+    let shelf_rows = shelf_statement
+        .query_map(
+            [(MAX_READING_ASSISTANT_EXCLUSION_BOOKS * 2) as i64],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<i64>>(2)?.map(|value| value != 0),
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .map_err(AiServiceError::storage)?;
+    for row in shelf_rows {
+        let (title, author, is_finished, last_read_at, updated_at) =
+            row.map_err(AiServiceError::storage)?;
+        let status = is_finished.map(|value| {
+            if value {
+                "finished".to_string()
+            } else {
+                "shelf".to_string()
+            }
+        });
+        let timestamp = last_read_at
+            .map(|value| value.to_string())
+            .or(Some(updated_at));
+        if push_assistant_book_exclusion(
+            &mut items, &mut seen, title, author, "shelf", None, status, timestamp,
+        ) {
+            if items.len() >= MAX_READING_ASSISTANT_EXCLUSION_BOOKS {
+                break;
+            }
+        }
+    }
+
+    Ok(items)
+}
+
+fn push_assistant_book_exclusion(
+    items: &mut Vec<Value>,
+    seen: &mut HashSet<String>,
+    title: String,
+    author: Option<String>,
+    source: &str,
+    item_type: Option<String>,
+    status: Option<String>,
+    updated_at: Option<String>,
+) -> bool {
+    let title = title.trim();
+    if title.is_empty() {
+        return false;
+    }
+    let author = author.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
+    let key = assistant_book_exclusion_key(title, author.as_deref());
+    if !seen.insert(key) {
+        return false;
+    }
+
+    items.push(json!({
+        "title": title,
+        "author": author,
+        "source": source,
+        "itemType": item_type,
+        "status": status,
+        "updatedAt": updated_at
+    }));
+    true
+}
+
+fn assistant_book_exclusion_key(title: &str, author: Option<&str>) -> String {
+    format!(
+        "{}::{}",
+        title.trim().to_lowercase(),
+        author.unwrap_or("").trim().to_lowercase()
+    )
+}
+
+fn read_assistant_latest_book_decision(
+    connection: &rusqlite::Connection,
+) -> Result<Option<Value>, AiServiceError> {
+    let Some(cached) = read_latest_feature_output(
+        connection,
+        BOOK_DECISION_FEATURE,
+        BOOK_DECISION_PROMPT_VERSION,
+    )?
+    else {
+        return Ok(None);
+    };
+    let decision = serde_json::from_value::<BookDecision>(cached.output).map_err(|_| {
+        AiServiceError::InvalidProviderOutput("本地 AI 选书决策缓存无法解析。".to_string())
+    })?;
+
+    Ok(Some(json!({
+        "decisionOverview": decision.decision_overview,
+        "topCandidates": decision.top_candidates,
+        "deferredCandidates": decision.deferred_candidates,
+        "nextActions": decision.next_actions,
+        "sourceStats": decision.source_stats,
+        "promptVersion": decision.prompt_version,
+        "cachedUpdatedAt": cached.updated_at
+    })))
+}
+
+fn read_assistant_recent_books(
+    connection: &rusqlite::Connection,
+) -> Result<Vec<Value>, AiServiceError> {
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT id, title, author, category, is_finished, last_read_at, updated_at
+            FROM shelf_entries
+            WHERE type = 'book'
+            ORDER BY COALESCE(last_read_at, 0) DESC, CAST(updated_at AS INTEGER) DESC
+            LIMIT ?1
+            ",
+        )
+        .map_err(AiServiceError::storage)?;
+    let rows = statement
+        .query_map([MAX_READING_ASSISTANT_RECENT_BOOKS as i64], |row| {
+            Ok(json!({
+                "bookId": row.get::<_, String>(0)?,
+                "title": row.get::<_, String>(1)?,
+                "author": row.get::<_, Option<String>>(2)?,
+                "category": row.get::<_, Option<String>>(3)?,
+                "isFinished": row.get::<_, Option<i64>>(4)?.map(|value| value != 0),
+                "lastReadAt": row.get::<_, Option<i64>>(5)?,
+                "updatedAt": row.get::<_, String>(6)?
+            }))
+        })
+        .map_err(AiServiceError::storage)?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(AiServiceError::storage)
+}
+
+fn read_assistant_recent_ai_assets(
+    connection: &rusqlite::Connection,
+) -> Result<Vec<Value>, AiServiceError> {
+    Ok(read_ai_asset_summaries(connection)?
+        .into_iter()
+        .take(MAX_READING_ASSISTANT_RECENT_BOOKS)
+        .map(|asset| {
+            json!({
+                "bookId": asset.book_id,
+                "title": asset.title,
+                "author": asset.author,
+                "progress": asset.progress,
+                "readingStage": asset.reading_stage,
+                "readingStageLabel": asset.reading_stage_label,
+                "localStatus": asset.local_status,
+                "hasSingleGuide": asset.has_single_guide,
+                "crossRouteCount": asset.cross_route_count,
+                "hasBookReview": asset.has_book_review,
+                "refreshState": asset.refresh_state,
+                "refreshReason": asset.refresh_reason,
+                "updatedAt": asset.updated_at
+            })
+        })
+        .collect())
+}
+
+fn reading_assistant_asset_version_payload(asset: AiAssetVersionDetail) -> Value {
+    let route = asset.reading_route.map(|route| {
+        json!({
+            "routeOverview": route.route_overview,
+            "books": route.books,
+            "dependencies": route.dependencies,
+            "reviewCheckpoints": route.review_checkpoints,
+            "nextActions": route.next_actions,
+            "readingStage": route.reading_stage,
+            "sourceStats": route.source_stats,
+            "basisNotice": route.basis_notice
+        })
+    });
+    let summary = asset.book_summary.map(|summary| {
+        json!({
+            "overview": summary.overview,
+            "keyIdeas": summary.key_ideas,
+            "myFocus": summary.my_focus,
+            "actionItems": summary.action_items,
+            "themeTags": summary.theme_tags,
+            "reflectionQuestions": summary.reflection_questions,
+            "readingStage": summary.reading_stage,
+            "sourceStats": summary.source_stats,
+            "basisNotice": summary.basis_notice
+        })
+    });
+
+    json!({
+        "feature": asset.feature,
+        "scopeId": asset.scope_id,
+        "inputHash": asset.input_hash,
+        "title": asset.title,
+        "generatedAt": asset.generated_at,
+        "updatedAt": asset.updated_at,
+        "providerModel": asset.provider_model,
+        "readingStage": asset.reading_stage,
+        "readingStageLabel": asset.reading_stage_label,
+        "progress": asset.progress,
+        "refreshReason": asset.refresh_reason,
+        "basisNotice": asset.basis_notice,
+        "sourceStats": asset.source_stats,
+        "readingRoute": route,
+        "bookSummary": summary,
+        "previousVersion": asset.previous_version
+    })
+}
+
+fn parse_reading_assistant_asset_entity_id(value: &str) -> Option<(String, String, String)> {
+    let (feature, rest) = value.split_once(':')?;
+    if feature != "reading-route" && feature != "book-review" {
+        return None;
+    }
+    let (scope_id, input_hash) = rest.rsplit_once(':')?;
+    if scope_id.trim().is_empty() || input_hash.trim().is_empty() {
+        return None;
+    }
+
+    Some((
+        feature.to_string(),
+        scope_id.to_string(),
+        input_hash.to_string(),
+    ))
+}
+
+fn read_reading_assistant_history_context(
+    connection: &rusqlite::Connection,
+    thread_id: &str,
+) -> Result<Option<Value>, AiServiceError> {
+    let mut messages = read_reading_assistant_messages(connection, thread_id)?
+        .into_iter()
+        .filter(|message| message.status == "answered")
+        .rev()
+        .take(MAX_READING_ASSISTANT_HISTORY_MESSAGES)
+        .map(|message| {
+            json!({
+                "role": message.role,
+                "content": truncate_text(&message.content, 600),
+                "createdAt": message.created_at
+            })
+        })
+        .collect::<Vec<_>>();
+    messages.reverse();
+
+    if messages.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(json!({ "messages": messages })))
+}
+
+fn build_reading_assistant_payload(
+    scope: &AssistantContextScope,
+    entity_id: Option<&str>,
+    message: &str,
+    context_bundle: &ReadingAssistantContextBundle,
+    intent: ReadingAssistantIntent,
+) -> Result<Value, AiServiceError> {
+    let question_list_count = infer_reading_assistant_question_list_count(message);
+    let mut payload = json!({
+        "promptVersion": READING_ASSISTANT_PROMPT_VERSION,
+        "feature": READING_ASSISTANT_FEATURE,
+        "scope": assistant_scope_as_str(scope),
+        "intent": reading_assistant_intent_as_str(intent),
+        "entityId": entity_id,
+        "userMessage": message,
+        "context": context_bundle.payload,
+        "usedContext": context_bundle.used_context,
+        "sourceCount": context_bundle.source_count,
+        "taskRoutingPolicy": {
+            "noteSummaryRequests": "用户要求基于笔记、划线或想法总结重点时，可以先基于当前上下文给临时总结；如果需要正式完整结果，必须引导到生成 AI 复盘或书籍复盘，不引导到生成阅读指南。",
+            "readingGuideRequests": "阅读指南用于规划后续怎么读、读完交付什么和复盘点，不用于替代既有笔记重点总结。"
+        },
+        "outputContract": {
+            "answer": "2-6 句中文回答，直接回应用户问题。",
+            "suggestions": "0-3 个可直接点击追问的问题。",
+            "basisNotice": "1 句说明本次依据范围。",
+            "recommendedBooks": "新书推荐场景返回 3-5 本结构化书籍；非新书推荐场景返回空数组。",
+            "fieldOrder": ["answer", "suggestions", "basisNotice", "recommendedBooks"]
+        }
+    });
+
+    if intent == ReadingAssistantIntent::NewBookRecommendation {
+        payload["outputContract"]["answer"] = json!(
+            "用 1-3 句说明推荐依据；具体书籍必须放入 recommendedBooks；最后说明需要用户确认后再加入候选书架。"
+        );
+        payload["outputContract"]["recommendedBooks"] = json!(
+            "返回 3-5 本具体新书；每本包含 title、author、reason、fit、risk；避开 bookExclusionList。"
+        );
+        payload["recommendationPolicy"] = json!({
+            "allowGeneralBookKnowledge": true,
+            "candidateBooksAsExclusionOnly": true,
+            "mustNotPersistCandidates": true,
+            "recommendedItemCount": "3-5",
+            "requiredFieldsPerBook": ["title", "author", "reason", "fit", "risk"],
+            "mustState": [
+                "推荐书不是本地候选书架已有项",
+                "未确认微信读书可用",
+                "需要用户确认后再加入候选书架"
+            ]
+        });
+    } else if let Some(question_count) = question_list_count {
+        payload["outputContract"]["answer"] = json!(format!(
+            "直接列出 {question_count} 个编号问题；每个问题必须完整可读，并贴合本次本地阅读上下文；不得只说明已经整理。"
+        ));
+        payload["questionListPolicy"] = json!({
+            "mustListQuestions": true,
+            "requestedQuestionCount": question_count,
+            "numberingRequired": true,
+            "mustUseLocalReadingSignals": true,
+            "mustNotOnlyAcknowledge": true
+        });
+    }
+
+    Ok(payload)
+}
+
+fn normalize_reading_assistant_output(
+    value: Value,
+) -> Result<ReadingAssistantGeneratedOutput, AiServiceError> {
+    if !value.is_object() {
+        return Err(AiServiceError::InvalidProviderOutput(
+            "AI 阅读助手返回必须是 JSON 对象。".to_string(),
+        ));
+    }
+
+    let output = summary_output_root(&value);
+    let answer = string_value_any(output, &["answer", "response", "summary", "回答"])
+        .or_else(|| string_value_any(&value, &["answer", "response", "summary", "回答"]))
+        .ok_or_else(|| {
+            AiServiceError::InvalidProviderOutput(
+                "AI 阅读助手返回缺少 answer 字段，请重新提问。".to_string(),
+            )
+        })?;
+    let suggestions = string_list_any(
+        output,
+        &[
+            "suggestions",
+            "followUpQuestions",
+            "follow_up_questions",
+            "questions",
+            "追问",
+        ],
+    )
+    .into_iter()
+    .filter_map(|item| normalize_reading_assistant_suggestion(&item))
+    .take(MAX_READING_ASSISTANT_SUGGESTIONS)
+    .collect::<Vec<_>>();
+    let basis_notice = string_value_any(
+        output,
+        &[
+            "basisNotice",
+            "basis_notice",
+            "sourceNotice",
+            "依据说明",
+            "basis",
+        ],
+    )
+    .unwrap_or_else(|| {
+        "基于本机可用的结构化阅读上下文回答，未读取整本书全文或原始 WeRead 响应。".to_string()
+    });
+    let recommended_books = reading_assistant_recommended_books(output);
+
+    Ok(ReadingAssistantGeneratedOutput {
+        answer: truncate_text(
+            &humanize_route_text(&answer),
+            MAX_READING_ASSISTANT_ANSWER_CHARS,
+        ),
+        suggestions,
+        basis_notice: truncate_text(&humanize_route_text(&basis_notice), 500),
+        recommended_books,
+        action: None,
+    })
+}
+
+fn normalize_reading_assistant_suggestion(value: &str) -> Option<String> {
+    let suggestion = truncate_text(
+        &humanize_route_text(value),
+        MAX_READING_ASSISTANT_LIST_ITEM_CHARS,
+    );
+    let suggestion = rewrite_reading_assistant_suggestion_perspective(&suggestion);
+    let suggestion = truncate_text(&suggestion, MAX_READING_ASSISTANT_LIST_ITEM_CHARS);
+    if suggestion.trim().is_empty() {
+        None
+    } else {
+        Some(suggestion)
+    }
+}
+
+fn rewrite_reading_assistant_suggestion_perspective(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let question_stem = trim_suggestion_question_suffix(trimmed);
+    if let Some(topic) = question_stem
+        .strip_prefix("你对")
+        .and_then(|value| value.strip_suffix("感兴趣吗"))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return format!("帮我判断{}是否值得继续了解。", topic);
+    }
+
+    for suffix in ["，需要先看对比吗", ",需要先看对比吗", "需要先看对比吗"] {
+        if let Some(subject) = question_stem
+            .strip_suffix(suffix)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return format!("帮我对比{}。", normalize_comparison_subject(subject));
+        }
+    }
+
+    for prefix in ["你是否想", "是否想", "你想不想", "你想", "要不要"] {
+        if let Some(action) = question_stem
+            .strip_prefix(prefix)
+            .map(trim_suggestion_modal_suffix)
+            .filter(|value| !value.is_empty())
+        {
+            return format!("帮我判断是否应该{}。", action);
+        }
+    }
+
+    for prefix in ["你是否需要", "是否需要", "需要"] {
+        if let Some(action) = question_stem
+            .strip_prefix(prefix)
+            .map(trim_suggestion_modal_suffix)
+            .filter(|value| !value.is_empty())
+        {
+            return format!("帮我判断是否需要{}。", action);
+        }
+    }
+
+    trimmed.to_string()
+}
+
+fn normalize_comparison_subject(value: &str) -> String {
+    let subject = value.trim();
+    if let Some(pair) = subject.strip_suffix("主题类似").map(str::trim) {
+        if !pair.is_empty() {
+            return format!("{}的主题差异", pair);
+        }
+    }
+
+    subject.to_string()
+}
+
+fn trim_suggestion_question_suffix(value: &str) -> &str {
+    value.trim().trim_end_matches(['?', '？']).trim()
+}
+
+fn trim_suggestion_modal_suffix(value: &str) -> &str {
+    value
+        .trim()
+        .trim_end_matches('吗')
+        .trim_end_matches('呢')
+        .trim_end_matches(['?', '？', '.', '。'])
+        .trim()
+}
+
+fn reading_assistant_message_output(
+    generated: &ReadingAssistantGeneratedOutput,
+) -> ReadingAssistantMessageOutput {
+    ReadingAssistantMessageOutput {
+        suggestions: generated.suggestions.clone(),
+        recommended_books: generated.recommended_books.clone(),
+        basis_notice: generated.basis_notice.clone(),
+        action: generated.action.clone(),
+    }
+}
+
+fn reading_assistant_recommended_books(output: &Value) -> Vec<ReadingAssistantRecommendedBook> {
+    [
+        "recommendedBooks",
+        "recommended_books",
+        "books",
+        "recommendations",
+        "推荐书籍",
+    ]
+    .iter()
+    .find_map(|key| output.get(*key).and_then(Value::as_array))
+    .map(|items| {
+        items
+            .iter()
+            .filter_map(reading_assistant_recommended_book)
+            .take(MAX_READING_ASSISTANT_RECOMMENDED_BOOKS)
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+fn filter_existing_reading_assistant_recommended_books(
+    connection: &rusqlite::Connection,
+    books: Vec<ReadingAssistantRecommendedBook>,
+) -> Result<Vec<ReadingAssistantRecommendedBook>, AiServiceError> {
+    if books.is_empty() {
+        return Ok(books);
+    }
+
+    let existing_title_keys = read_existing_local_book_title_keys(connection)?;
+    if existing_title_keys.is_empty() {
+        return Ok(books);
+    }
+
+    Ok(books
+        .into_iter()
+        .filter(|book| {
+            let key = normalize_local_book_title_key(&book.title);
+            key.is_empty() || !existing_title_keys.contains(&key)
+        })
+        .take(MAX_READING_ASSISTANT_RECOMMENDED_BOOKS)
+        .collect())
+}
+
+fn read_existing_local_book_title_keys(
+    connection: &rusqlite::Connection,
+) -> Result<HashSet<String>, AiServiceError> {
+    let mut title_keys = HashSet::new();
+
+    let mut state_statement = connection
+        .prepare(
+            "
+            SELECT title
+            FROM reading_item_states
+            WHERE title IS NOT NULL AND TRIM(title) != ''
+            ",
+        )
+        .map_err(AiServiceError::storage)?;
+    let state_rows = state_statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(AiServiceError::storage)?;
+    for row in state_rows {
+        push_existing_local_book_title_key(&mut title_keys, &row.map_err(AiServiceError::storage)?);
+    }
+
+    let mut shelf_statement = connection
+        .prepare(
+            "
+            SELECT title
+            FROM shelf_entries
+            WHERE title IS NOT NULL AND TRIM(title) != ''
+            ",
+        )
+        .map_err(AiServiceError::storage)?;
+    let shelf_rows = shelf_statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(AiServiceError::storage)?;
+    for row in shelf_rows {
+        push_existing_local_book_title_key(&mut title_keys, &row.map_err(AiServiceError::storage)?);
+    }
+
+    Ok(title_keys)
+}
+
+fn push_existing_local_book_title_key(title_keys: &mut HashSet<String>, title: &str) {
+    let key = normalize_local_book_title_key(title);
+    if !key.is_empty() {
+        title_keys.insert(key);
+    }
+}
+
+fn normalize_local_book_title_key(value: &str) -> String {
+    value
+        .trim()
+        .chars()
+        .flat_map(char::to_lowercase)
+        .filter(|character| !is_local_book_title_separator(*character))
+        .collect()
+}
+
+fn is_local_book_title_separator(character: char) -> bool {
+    character.is_whitespace()
+        || matches!(
+            character,
+            '-' | '_'
+                | '/'
+                | '\\'
+                | ':'
+                | '：'
+                | ','
+                | '，'
+                | '.'
+                | '。'
+                | '、'
+                | '·'
+                | '•'
+                | '('
+                | ')'
+                | '（'
+                | '）'
+                | '['
+                | ']'
+                | '【'
+                | '】'
+                | '《'
+                | '》'
+                | '"'
+                | '\''
+                | '“'
+                | '”'
+                | '‘'
+                | '’'
+        )
+}
+
+fn read_assistant_local_book_index(
+    connection: &rusqlite::Connection,
+) -> Result<ReadingAssistantLocalBookIndex, AiServiceError> {
+    let mut index = ReadingAssistantLocalBookIndex::default();
+
+    let mut shelf_statement = connection
+        .prepare(
+            "
+            SELECT id, title, is_finished
+            FROM shelf_entries
+            WHERE title IS NOT NULL AND TRIM(title) != ''
+            ",
+        )
+        .map_err(AiServiceError::storage)?;
+    let shelf_rows = shelf_statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<i64>>(2)?
+                    .map(|value| value != 0)
+                    .unwrap_or(false),
+            ))
+        })
+        .map_err(AiServiceError::storage)?;
+    for row in shelf_rows {
+        let (id, title, is_finished) = row.map_err(AiServiceError::storage)?;
+        index.shelf_ids.insert(id, is_finished);
+        let title_key = normalize_local_book_title_key(&title);
+        if !title_key.is_empty() {
+            index.shelf_titles.insert(title_key, is_finished);
+        }
+    }
+
+    let mut state_statement = connection
+        .prepare(
+            "
+            SELECT item_id, item_type, status, title
+            FROM reading_item_states
+            WHERE title IS NOT NULL AND TRIM(title) != ''
+            ",
+        )
+        .map_err(AiServiceError::storage)?;
+    let state_rows = state_statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(AiServiceError::storage)?;
+    for row in state_rows {
+        let (id, item_type, status, title) = row.map_err(AiServiceError::storage)?;
+        let title_key = normalize_local_book_title_key(&title);
+        if item_type == "candidate" && status == "toRead" {
+            index.candidate_ids.insert(id);
+            if !title_key.is_empty() {
+                index.candidate_titles.insert(title_key);
+            }
+        } else {
+            index.local_state_ids.insert(id);
+            if !title_key.is_empty() {
+                index.local_state_titles.insert(title_key);
+            }
+        }
+    }
+
+    Ok(index)
+}
+
+fn reading_assistant_weread_search_result(
+    book: &DiscoveryBookRecord,
+    local_index: &ReadingAssistantLocalBookIndex,
+) -> ReadingAssistantWereadSearchResult {
+    let title_key = normalize_local_book_title_key(&book.title);
+    let shelf_match = local_index
+        .shelf_ids
+        .get(&book.book_id)
+        .copied()
+        .or_else(|| local_index.shelf_titles.get(&title_key).copied());
+    let is_candidate = local_index.candidate_ids.contains(&book.book_id)
+        || (!title_key.is_empty() && local_index.candidate_titles.contains(&title_key));
+    let has_local_state = local_index.local_state_ids.contains(&book.book_id)
+        || (!title_key.is_empty() && local_index.local_state_titles.contains(&title_key));
+
+    let (local_status, local_label, can_add_to_candidate) = if let Some(is_finished) = shelf_match {
+        (
+            "inLibrary".to_string(),
+            if is_finished {
+                "已读完"
+            } else {
+                "已在书架"
+            }
+            .to_string(),
+            false,
+        )
+    } else if has_local_state {
+        ("inLibrary".to_string(), "已有本地状态".to_string(), false)
+    } else if is_candidate {
+        ("inCandidate".to_string(), "已在候选".to_string(), false)
+    } else {
+        ("available".to_string(), "可加入候选".to_string(), true)
+    };
+
+    ReadingAssistantWereadSearchResult {
+        book_id: book.book_id.clone(),
+        title: book.title.clone(),
+        author: book.author.clone(),
+        cover: book.cover.clone(),
+        category: book.category.clone(),
+        intro: book.intro.clone(),
+        search_idx: book.search_idx,
+        local_status,
+        local_label,
+        can_add_to_candidate,
+    }
+}
+
+fn build_reading_assistant_stats_aggregate_output(
+    connection: &rusqlite::Connection,
+) -> Result<ReadingAssistantStatsAggregateOutput, AiServiceError> {
+    let stats = read_preferred_reading_stats_aggregate_source(connection)?;
+    let (shelf_book_count, finished_book_count, reading_book_count) =
+        read_assistant_shelf_book_counts(connection)?;
+    let candidate_book_count = read_assistant_candidate_book_count(connection)?;
+
+    let Some((stats, updated_at)) = stats else {
+        return Ok(ReadingAssistantStatsAggregateOutput {
+            range_label: "本地缓存".to_string(),
+            data_status: "empty".to_string(),
+            message: "当前本机还没有可验证的阅读统计缓存；可以先同步阅读统计后再查看总计历史。"
+                .to_string(),
+            total_reading_time_text: "0分钟".to_string(),
+            read_days: None,
+            shelf_book_count,
+            finished_book_count,
+            reading_book_count,
+            candidate_book_count,
+            updated_at: None,
+            top_categories: Vec::new(),
+        });
+    };
+
+    let range_label = format_stats_period(&stats.mode, stats.base_time).unwrap_or_else(|| {
+        if stats.mode == "overall" {
+            "全部本地缓存".to_string()
+        } else {
+            "本地统计缓存".to_string()
+        }
+    });
+    let total_reading_time_text = stats
+        .total_read_time_seconds
+        .map(format_duration_readable)
+        .unwrap_or_else(|| "0分钟".to_string());
+    let top_categories = reading_assistant_stats_top_categories(&stats);
+    let data_status = if is_empty_reading_stats(&stats) {
+        "empty"
+    } else if stats.mode == "overall" {
+        "complete"
+    } else {
+        "partial"
+    }
+    .to_string();
+    let message = if data_status == "complete" {
+        format!(
+            "当前可验证口径为{}：累计阅读{}，活跃{}天，书架电子书{}本，其中已读完{}本。",
+            range_label,
+            total_reading_time_text,
+            stats.read_days.unwrap_or(0),
+            shelf_book_count,
+            finished_book_count
+        )
+    } else if data_status == "partial" {
+        format!(
+            "当前没有全部历史缓存，先按{}展示：累计阅读{}，活跃{}天；更早或更细的历史明细需要先同步统计。",
+            range_label,
+            total_reading_time_text,
+            stats.read_days.unwrap_or(0)
+        )
+    } else {
+        "当前统计缓存没有有效阅读时长或活跃天数；可以先同步阅读统计。".to_string()
+    };
+
+    Ok(ReadingAssistantStatsAggregateOutput {
+        range_label,
+        data_status,
+        message,
+        total_reading_time_text,
+        read_days: stats.read_days,
+        shelf_book_count,
+        finished_book_count,
+        reading_book_count,
+        candidate_book_count,
+        updated_at: Some(updated_at),
+        top_categories,
+    })
+}
+
+fn read_preferred_reading_stats_aggregate_source(
+    connection: &rusqlite::Connection,
+) -> Result<Option<(ReadingStatsRecord, String)>, AiServiceError> {
+    let mut fallback = None;
+    for mode in ["overall", "annually", "monthly"] {
+        if let Some((stats, updated_at)) = read_latest_reading_stats_by_mode(connection, mode)? {
+            if !is_empty_reading_stats(&stats) {
+                return Ok(Some((stats, updated_at)));
+            }
+            if fallback.is_none() {
+                fallback = Some((stats, updated_at));
+            }
+        }
+    }
+
+    Ok(fallback)
+}
+
+fn read_latest_reading_stats_by_mode(
+    connection: &rusqlite::Connection,
+    mode: &str,
+) -> Result<Option<(ReadingStatsRecord, String)>, AiServiceError> {
+    connection
+        .query_row(
+            "
+            SELECT mode, base_time, raw_json, updated_at
+            FROM reading_stats
+            WHERE mode = ?1
+            ORDER BY CAST(updated_at AS INTEGER) DESC, base_time DESC
+            LIMIT 1
+            ",
+            [mode],
+            |row| {
+                let mode: String = row.get(0)?;
+                let base_time: i64 = row.get(1)?;
+                let raw_json: String = row.get(2)?;
+                let updated_at: String = row.get(3)?;
+                let raw = serde_json::from_str::<Value>(&raw_json).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        2,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })?;
+                Ok((
+                    crate::mappers::stats::map_reading_stats_response(&mode, &raw, Some(base_time)),
+                    updated_at,
+                ))
+            },
+        )
+        .optional()
+        .map_err(AiServiceError::storage)
+}
+
+fn read_assistant_shelf_book_counts(
+    connection: &rusqlite::Connection,
+) -> Result<(i64, i64, i64), AiServiceError> {
+    connection
+        .query_row(
+            "
+            SELECT
+                COUNT(*),
+                COALESCE(SUM(CASE WHEN COALESCE(is_finished, 0) != 0 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN COALESCE(is_finished, 0) = 0 THEN 1 ELSE 0 END), 0)
+            FROM shelf_entries
+            WHERE type = 'book'
+            ",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(AiServiceError::storage)
+}
+
+fn read_assistant_candidate_book_count(
+    connection: &rusqlite::Connection,
+) -> Result<i64, AiServiceError> {
+    connection
+        .query_row(
+            "
+            SELECT COUNT(*)
+            FROM reading_item_states
+            WHERE item_type = 'candidate' AND status = 'toRead'
+            ",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(AiServiceError::storage)
+}
+
+fn reading_assistant_stats_top_categories(
+    stats: &ReadingStatsRecord,
+) -> Vec<ReadingAssistantStatsCategory> {
+    let mut categories = stats
+        .categories
+        .iter()
+        .filter(|category| {
+            category.reading_time_seconds.unwrap_or(0) > 0
+                || category.reading_count.unwrap_or(0) > 0
+        })
+        .collect::<Vec<_>>();
+    categories.sort_by(|left, right| {
+        right
+            .reading_time_seconds
+            .unwrap_or(0)
+            .cmp(&left.reading_time_seconds.unwrap_or(0))
+    });
+
+    categories
+        .into_iter()
+        .take(3)
+        .map(|category| ReadingAssistantStatsCategory {
+            title: category.title.clone(),
+            reading_time_text: category
+                .reading_time_seconds
+                .map(format_duration_readable)
+                .unwrap_or_else(|| "0分钟".to_string()),
+            reading_count: category.reading_count,
+        })
+        .collect()
+}
+
+fn reading_assistant_recommended_book(value: &Value) -> Option<ReadingAssistantRecommendedBook> {
+    let title = string_value_any(value, &["title", "bookTitle", "name", "书名"])?;
+    let title = truncate_text(
+        &humanize_route_text(&title),
+        MAX_READING_ASSISTANT_RECOMMENDED_FIELD_CHARS,
+    );
+    if title.trim().is_empty() {
+        return None;
+    }
+
+    let author = string_value_any(value, &["author", "writer", "作者"])
+        .map(|text| {
+            truncate_text(
+                &humanize_route_text(&text),
+                MAX_READING_ASSISTANT_RECOMMENDED_FIELD_CHARS,
+            )
+        })
+        .unwrap_or_default();
+    let reason = string_value_any(value, &["reason", "recommendReason", "why", "推荐理由"])
+        .map(|text| {
+            truncate_text(
+                &humanize_route_text(&text),
+                MAX_READING_ASSISTANT_RECOMMENDED_FIELD_CHARS,
+            )
+        })
+        .unwrap_or_else(|| "AI 未提供单独推荐理由。".to_string());
+    let fit = string_value_any(value, &["fit", "userFit", "suitableReason", "适合点"])
+        .map(|text| {
+            truncate_text(
+                &humanize_route_text(&text),
+                MAX_READING_ASSISTANT_RECOMMENDED_FIELD_CHARS,
+            )
+        })
+        .unwrap_or_else(|| "与当前阅读画像存在一定相关性。".to_string());
+    let risk = string_value_any(value, &["risk", "tradeoff", "caveat", "风险"])
+        .map(|text| {
+            truncate_text(
+                &humanize_route_text(&text),
+                MAX_READING_ASSISTANT_RECOMMENDED_FIELD_CHARS,
+            )
+        })
+        .unwrap_or_else(|| "未确认微信读书可用，加入候选前仍需用户判断。".to_string());
+
+    Some(ReadingAssistantRecommendedBook {
+        title,
+        author,
+        reason,
+        fit,
+        risk,
+    })
+}
+
+fn normalize_reading_assistant_message(message: &str) -> Result<String, AiServiceError> {
+    let trimmed = message.trim();
+    if trimmed.is_empty() {
+        return Err(AiServiceError::InvalidProviderOutput(
+            "AI 阅读助手问题不能为空。".to_string(),
+        ));
+    }
+
+    Ok(trimmed
+        .chars()
+        .take(MAX_READING_ASSISTANT_MESSAGE_CHARS)
+        .collect())
+}
+
+fn reading_assistant_thread_title(message: &str) -> String {
+    let title = truncate_text(message, 32);
+    if title.is_empty() {
+        "新的阅读对话".to_string()
+    } else {
+        title
+    }
+}
+
+fn reading_assistant_context_summary(bundle: &ReadingAssistantContextBundle) -> Value {
+    json!({
+        "sourceCount": bundle.source_count,
+        "usedContext": bundle.used_context,
+        "hasContext": bundle.source_count > 0
+    })
+}
+
+fn assistant_scope_as_str(scope: &AssistantContextScope) -> &'static str {
+    match scope {
+        AssistantContextScope::Global => "global",
+        AssistantContextScope::BookDetail => "bookDetail",
+        AssistantContextScope::BookNotes => "bookNotes",
+        AssistantContextScope::ReadingStats => "readingStats",
+        AssistantContextScope::CandidateShelf => "candidateShelf",
+        AssistantContextScope::AiAsset => "aiAsset",
+        AssistantContextScope::LocalReaderSelection => "localReaderSelection",
+    }
+}
+
+fn reading_assistant_intent_as_str(intent: ReadingAssistantIntent) -> &'static str {
+    match intent {
+        ReadingAssistantIntent::General => "general",
+        ReadingAssistantIntent::NewBookRecommendation => "newBookRecommendation",
+        ReadingAssistantIntent::CandidateShelfDecision => "candidateShelfDecision",
+        ReadingAssistantIntent::WereadAvailabilitySearch => "wereadAvailabilitySearch",
+        ReadingAssistantIntent::ReadingStatsAggregate => "readingStatsAggregate",
+    }
+}
+
+fn reading_assistant_intent_supports_streaming(intent: &ReadingAssistantIntent) -> bool {
+    matches!(intent, ReadingAssistantIntent::General)
+}
+
+fn infer_reading_assistant_intent(
+    scope: &AssistantContextScope,
+    message: &str,
+) -> ReadingAssistantIntent {
+    let normalized = message.trim().to_ascii_lowercase();
+    let explicit_new_book_intent = message.contains("推荐新书")
+        || message.contains("新书")
+        || message.contains("加入候选")
+        || message.contains("可加入候选");
+    let candidate_intent = matches!(scope, AssistantContextScope::CandidateShelf)
+        || message.contains("从候选")
+        || message.contains("这些候选")
+        || message.contains("候选书里")
+        || message.contains("候选书中")
+        || message.contains("候选书架里")
+        || message.contains("候选书怎么");
+    if candidate_intent {
+        return ReadingAssistantIntent::CandidateShelfDecision;
+    }
+
+    if is_weread_availability_search_intent(scope, message) {
+        return ReadingAssistantIntent::WereadAvailabilitySearch;
+    }
+    if is_reading_stats_aggregate_intent(scope, message) {
+        return ReadingAssistantIntent::ReadingStatsAggregate;
+    }
+
+    let asks_new_books = explicit_new_book_intent
+        || (message.contains("推荐") && message.contains("书") && !message.contains("这本书"))
+        || message.contains("下一本")
+        || normalized.contains("recommend book")
+        || normalized.contains("new book");
+    if asks_new_books {
+        ReadingAssistantIntent::NewBookRecommendation
+    } else {
+        ReadingAssistantIntent::General
+    }
+}
+
+fn is_weread_availability_search_intent(scope: &AssistantContextScope, message: &str) -> bool {
+    let mentions_weread = message.contains("微信读书");
+    let asks_search = message.contains("搜索")
+        || message.contains("搜一下")
+        || message.contains("查一下")
+        || message.contains("确认")
+        || message.contains("找到")
+        || message.contains("有没有")
+        || message.contains("是否有")
+        || message.contains("有吗");
+    let has_book_reference = extract_quoted_book_title(message).is_some()
+        || (matches!(scope, AssistantContextScope::BookDetail)
+            && (message.contains("这本书")
+                || message.contains("当前书")
+                || message.contains("它")));
+
+    asks_search && (mentions_weread || has_book_reference)
+}
+
+fn is_reading_stats_aggregate_intent(scope: &AssistantContextScope, message: &str) -> bool {
+    if message.contains("AI 对话")
+        || message.contains("AI历史")
+        || message.contains("聊天历史")
+        || message.contains("最近对话")
+    {
+        return false;
+    }
+
+    matches!(scope, AssistantContextScope::ReadingStats)
+        || message.contains("总计")
+        || message.contains("累计")
+        || message.contains("全部历史")
+        || message.contains("历史记录")
+        || message.contains("总阅读")
+        || message.contains("读了多少")
+}
+
+fn resolve_reading_assistant_search_keyword(
+    connection: &rusqlite::Connection,
+    scope: &AssistantContextScope,
+    entity_id: Option<&str>,
+    message: &str,
+) -> Result<ReadingAssistantSearchKeywordResolution, AiServiceError> {
+    if let Some(title) = extract_quoted_book_title(message) {
+        return Ok(ReadingAssistantSearchKeywordResolution {
+            keyword: title,
+            needs_clarification: false,
+            clarification_message: String::new(),
+        });
+    }
+
+    if matches!(scope, AssistantContextScope::BookDetail)
+        && contains_deictic_book_reference(message)
+    {
+        if let Some(book_id) = entity_id {
+            if let Some(book) = read_assistant_current_book(connection, book_id)? {
+                if let Some(title) = reading_assistant_current_book_title(&book) {
+                    return Ok(ReadingAssistantSearchKeywordResolution {
+                        keyword: title,
+                        needs_clarification: false,
+                        clarification_message: String::new(),
+                    });
+                }
+            }
+        }
+    }
+
+    if contains_deictic_book_reference(message) {
+        return Ok(ReadingAssistantSearchKeywordResolution {
+            keyword: String::new(),
+            needs_clarification: true,
+            clarification_message:
+                "我还不能确定“这本书”指哪一本。请用《书名》的形式告诉我，我再帮你搜索微信读书。"
+                    .to_string(),
+        });
+    }
+
+    if let Some(keyword) = extract_plain_search_keyword(message) {
+        return Ok(ReadingAssistantSearchKeywordResolution {
+            keyword,
+            needs_clarification: false,
+            clarification_message: String::new(),
+        });
+    }
+
+    Ok(ReadingAssistantSearchKeywordResolution {
+        keyword: String::new(),
+        needs_clarification: true,
+        clarification_message: "你想确认哪本书？请用《书名》的形式告诉我，我再帮你搜索微信读书。"
+            .to_string(),
+    })
+}
+
+fn extract_quoted_book_title(message: &str) -> Option<String> {
+    let start = message.find('《')?;
+    let rest = &message[start + '《'.len_utf8()..];
+    let end = rest.find('》')?;
+    normalize_search_keyword(&rest[..end])
+}
+
+fn reading_assistant_current_book_title(book: &Value) -> Option<String> {
+    ["detail", "shelf", "notebook", "localState"]
+        .iter()
+        .filter_map(|key| {
+            book.get(*key)
+                .and_then(|value| value.get("title"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+        })
+        .next()
+}
+
+fn contains_deictic_book_reference(message: &str) -> bool {
+    message.contains("这本书") || message.contains("当前书") || message.trim() == "它"
+}
+
+fn extract_plain_search_keyword(message: &str) -> Option<String> {
+    let mut keyword = message.trim().to_string();
+    for token in [
+        "帮我",
+        "请",
+        "在微信读书",
+        "微信读书",
+        "是否可以找到",
+        "是否能找到",
+        "能不能找到",
+        "可以找到吗",
+        "有没有",
+        "是否有",
+        "有吗",
+        "确认一下",
+        "确认",
+        "搜索一下",
+        "搜一下",
+        "搜索",
+        "查一下",
+        "找到",
+    ] {
+        keyword = keyword.replace(token, " ");
+    }
+
+    normalize_search_keyword(&keyword)
+}
+
+fn normalize_search_keyword(value: &str) -> Option<String> {
+    let keyword = value
+        .trim()
+        .trim_matches(['?', '？', '.', '。', ',', '，', ':', '：'])
+        .trim();
+    if keyword.chars().count() < 2 {
+        None
+    } else {
+        Some(keyword.chars().take(80).collect())
+    }
+}
+
+fn infer_reading_assistant_question_list_count(message: &str) -> Option<usize> {
+    let normalized = message.trim().to_ascii_lowercase();
+    let asks_question_list = message.contains("问题")
+        && (message.contains("整理")
+            || message.contains("生成")
+            || message.contains("列出")
+            || message.contains("提炼")
+            || message.contains("设计")
+            || message.contains("复盘")
+            || message.contains("追问")
+            || normalized.contains("question"));
+
+    if !asks_question_list {
+        return None;
+    }
+
+    Some(
+        requested_count_from_message(message)
+            .unwrap_or(3)
+            .clamp(1, 6),
+    )
+}
+
+fn requested_count_from_message(message: &str) -> Option<usize> {
+    let mut digits = String::new();
+    for character in message.chars() {
+        if character.is_ascii_digit() {
+            digits.push(character);
+        } else if !digits.is_empty() {
+            break;
+        }
+    }
+
+    if !digits.is_empty() {
+        return digits.parse::<usize>().ok();
+    }
+
+    let chinese_counts = [
+        ("一", 1),
+        ("两", 2),
+        ("二", 2),
+        ("三", 3),
+        ("四", 4),
+        ("五", 5),
+        ("六", 6),
+    ];
+    let question_units = ["个问题", "条问题", "个追问", "条追问"];
+
+    for (prefix, count) in chinese_counts {
+        for unit in question_units {
+            if message.contains(&format!("{prefix}{unit}")) {
+                return Some(count);
+            }
+        }
+    }
+
+    None
 }
 
 fn normalize_local_reader_source_item(
@@ -9258,6 +12847,376 @@ fn upsert_ai_output(
     Ok(())
 }
 
+fn read_reading_assistant_preferences(
+    connection: &rusqlite::Connection,
+) -> Result<ReadingAssistantPreferences, AiServiceError> {
+    let value_json = connection
+        .query_row(
+            "SELECT value_json FROM ai_assistant_preferences WHERE key = ?1",
+            [READING_ASSISTANT_PREFERENCES_KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(AiServiceError::storage)?;
+
+    match value_json {
+        Some(value) => serde_json::from_str::<ReadingAssistantPreferences>(&value)
+            .map_err(AiServiceError::storage),
+        None => Ok(ReadingAssistantPreferences::default()),
+    }
+}
+
+fn read_reading_assistant_thread_summaries(
+    connection: &rusqlite::Connection,
+) -> Result<Vec<ReadingAssistantThreadSummary>, AiServiceError> {
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT
+                threads.id,
+                threads.scope,
+                threads.entity_id,
+                threads.title,
+                threads.updated_at,
+                threads.created_at,
+                COUNT(messages.id) AS message_count
+            FROM ai_assistant_threads AS threads
+            LEFT JOIN ai_assistant_messages AS messages
+                ON messages.thread_id = threads.id
+            GROUP BY
+                threads.id,
+                threads.scope,
+                threads.entity_id,
+                threads.title,
+                threads.updated_at,
+                threads.created_at
+            ORDER BY CAST(threads.updated_at AS INTEGER) DESC, threads.id DESC
+            LIMIT 50
+            ",
+        )
+        .map_err(AiServiceError::storage)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, i64>(6)?,
+            ))
+        })
+        .map_err(AiServiceError::storage)?;
+
+    rows.map(|row| {
+        let (id, scope_text, entity_id, title, updated_at, created_at, message_count) =
+            row.map_err(AiServiceError::storage)?;
+        Ok(ReadingAssistantThreadSummary {
+            id,
+            scope: assistant_scope_from_str(&scope_text)?,
+            entity_id,
+            title,
+            updated_at,
+            created_at,
+            message_count: message_count.max(0) as usize,
+        })
+    })
+    .collect()
+}
+
+fn read_reading_assistant_thread_detail(
+    connection: &rusqlite::Connection,
+    thread_id: &str,
+) -> Result<Option<ReadingAssistantThreadDetail>, AiServiceError> {
+    let thread = connection
+        .query_row(
+            "
+            SELECT id, scope, entity_id, title, context_summary_json, created_at, updated_at
+            FROM ai_assistant_threads
+            WHERE id = ?1
+            ",
+            [thread_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(AiServiceError::storage)?;
+
+    let Some((id, scope_text, entity_id, title, context_json, created_at, updated_at)) = thread
+    else {
+        return Ok(None);
+    };
+
+    let messages = read_reading_assistant_messages(connection, &id)?;
+    Ok(Some(ReadingAssistantThreadDetail {
+        id,
+        scope: assistant_scope_from_str(&scope_text)?,
+        entity_id,
+        title,
+        context_summary: parse_json_value_or_empty_object(&context_json),
+        created_at,
+        updated_at,
+        messages,
+    }))
+}
+
+fn read_reading_assistant_messages(
+    connection: &rusqlite::Connection,
+    thread_id: &str,
+) -> Result<Vec<ReadingAssistantMessage>, AiServiceError> {
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT
+                id,
+                role,
+                content,
+                status,
+                used_context_json,
+                output_json,
+                prompt_version,
+                input_hash,
+                provider_model,
+                error_code,
+                error_message,
+                created_at
+            FROM ai_assistant_messages
+            WHERE thread_id = ?1
+            ORDER BY CAST(created_at AS INTEGER) ASC, id ASC
+            ",
+        )
+        .map_err(AiServiceError::storage)?;
+    let rows = statement
+        .query_map([thread_id], |row| {
+            let used_context_json: String = row.get(4)?;
+            let output_json: Option<String> = row.get(5)?;
+            Ok(ReadingAssistantMessage {
+                id: row.get(0)?,
+                role: row.get(1)?,
+                content: row.get(2)?,
+                status: row.get(3)?,
+                used_context: parse_used_context_list(&used_context_json),
+                output: parse_reading_assistant_message_output(output_json.as_deref()),
+                prompt_version: row.get(6)?,
+                input_hash: row.get(7)?,
+                provider_model: row.get(8)?,
+                error_code: row.get(9)?,
+                error_message: row.get(10)?,
+                created_at: row.get(11)?,
+            })
+        })
+        .map_err(AiServiceError::storage)?;
+
+    let mut messages = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(AiServiceError::storage)?;
+    for message in &mut messages {
+        if let Some(output) = &mut message.output {
+            if !output.recommended_books.is_empty() {
+                output.recommended_books = filter_existing_reading_assistant_recommended_books(
+                    connection,
+                    std::mem::take(&mut output.recommended_books),
+                )?;
+            }
+        }
+    }
+
+    Ok(messages)
+}
+
+fn upsert_reading_assistant_thread(
+    connection: &rusqlite::Connection,
+    thread_id: &str,
+    scope: &AssistantContextScope,
+    entity_id: Option<&str>,
+    title: &str,
+    context_summary: &Value,
+    updated_at: &str,
+) -> Result<(), AiServiceError> {
+    let context_summary_json =
+        serde_json::to_string(context_summary).map_err(AiServiceError::storage)?;
+    connection
+        .execute(
+            "
+            INSERT INTO ai_assistant_threads (
+                id, scope, entity_id, title, context_summary_json, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+            ON CONFLICT(id) DO UPDATE SET
+                context_summary_json = excluded.context_summary_json,
+                updated_at = excluded.updated_at
+            ",
+            params![
+                thread_id,
+                assistant_scope_as_str(scope),
+                entity_id,
+                title,
+                context_summary_json,
+                updated_at
+            ],
+        )
+        .map_err(AiServiceError::storage)?;
+
+    Ok(())
+}
+
+fn touch_reading_assistant_thread(
+    connection: &rusqlite::Connection,
+    thread_id: &str,
+    updated_at: &str,
+) -> Result<(), AiServiceError> {
+    connection
+        .execute(
+            "UPDATE ai_assistant_threads SET updated_at = ?2 WHERE id = ?1",
+            params![thread_id, updated_at],
+        )
+        .map_err(AiServiceError::storage)?;
+
+    Ok(())
+}
+
+fn insert_reading_assistant_message(
+    connection: &rusqlite::Connection,
+    draft: &ReadingAssistantMessageDraft,
+) -> Result<(), AiServiceError> {
+    let used_context_json =
+        serde_json::to_string(&draft.used_context).map_err(AiServiceError::storage)?;
+    let output_json = draft
+        .output
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(AiServiceError::storage)?;
+    connection
+        .execute(
+            "
+            INSERT INTO ai_assistant_messages (
+                id,
+                thread_id,
+                role,
+                content,
+                status,
+                used_context_json,
+                output_json,
+                prompt_version,
+                input_hash,
+                provider_model,
+                error_code,
+                error_message,
+                created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            ",
+            params![
+                &draft.id,
+                &draft.thread_id,
+                &draft.role,
+                &draft.content,
+                &draft.status,
+                used_context_json,
+                output_json,
+                &draft.prompt_version,
+                &draft.input_hash,
+                &draft.provider_model,
+                &draft.error_code,
+                &draft.error_message,
+                &draft.created_at
+            ],
+        )
+        .map_err(AiServiceError::storage)?;
+
+    Ok(())
+}
+
+fn assistant_scope_from_str(value: &str) -> Result<AssistantContextScope, AiServiceError> {
+    match value {
+        "global" => Ok(AssistantContextScope::Global),
+        "bookDetail" => Ok(AssistantContextScope::BookDetail),
+        "bookNotes" => Ok(AssistantContextScope::BookNotes),
+        "readingStats" => Ok(AssistantContextScope::ReadingStats),
+        "candidateShelf" => Ok(AssistantContextScope::CandidateShelf),
+        "aiAsset" => Ok(AssistantContextScope::AiAsset),
+        "localReaderSelection" => Ok(AssistantContextScope::LocalReaderSelection),
+        _ => Err(AiServiceError::InvalidProviderOutput(
+            "本地 AI 阅读助手对话来源无法识别。".to_string(),
+        )),
+    }
+}
+
+fn parse_used_context_list(value: &str) -> Vec<ReadingAssistantUsedContext> {
+    serde_json::from_str::<Vec<ReadingAssistantUsedContext>>(value).unwrap_or_default()
+}
+
+fn parse_reading_assistant_message_output(
+    value: Option<&str>,
+) -> Option<ReadingAssistantMessageOutput> {
+    let value = value?.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    serde_json::from_str::<ReadingAssistantMessageOutput>(value)
+        .ok()
+        .map(|mut output| {
+            output.suggestions = output
+                .suggestions
+                .into_iter()
+                .filter_map(|item| normalize_reading_assistant_suggestion(&item))
+                .take(MAX_READING_ASSISTANT_SUGGESTIONS)
+                .collect();
+            output
+        })
+}
+
+fn parse_json_value_or_empty_object(value: &str) -> Value {
+    serde_json::from_str::<Value>(value).unwrap_or_else(|_| json!({}))
+}
+
+fn reading_assistant_stream_cancel_requests() -> &'static Mutex<HashSet<String>> {
+    READING_ASSISTANT_STREAM_CANCEL_REQUESTS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn take_reading_assistant_stream_cancel_request(stream_id: &str) -> bool {
+    reading_assistant_stream_cancel_requests()
+        .lock()
+        .map(|mut requests| requests.remove(stream_id))
+        .unwrap_or(false)
+}
+
+fn normalize_reading_assistant_id(field_name: &str, value: &str) -> Result<String, AiServiceError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(AiServiceError::InvalidProviderOutput(format!(
+            "{field_name}不能为空。"
+        )));
+    }
+
+    Ok(trimmed.chars().take(120).collect())
+}
+
+fn generate_reading_assistant_id(prefix: &str, seed: &Value) -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos().to_string())
+        .unwrap_or_else(|_| current_unix_seconds());
+    let hash = stable_hash_json(&json!({
+        "prefix": prefix,
+        "seed": seed,
+        "nanos": nanos
+    }))
+    .unwrap_or_else(|_| nanos);
+
+    format!("{prefix}_{hash}")
+}
+
 fn current_unix_seconds() -> String {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -9275,6 +13234,7 @@ mod tests {
 
     use crate::{
         db::initialize_schema,
+        mappers::discovery::DiscoveryBookRecord,
         mappers::stats::{
             map_reading_stats_response, ReadingCategoryRecord, ReadingRankItemRecord,
             ReadingStatsRecord, ReadingTimeBucketRecord,
@@ -9284,31 +13244,46 @@ mod tests {
     use super::{
         book_decision_json_schema, book_notes_summary_json_schema, build_book_decision_input,
         build_chat_completion_payload, build_chat_completion_payload_without_response_format,
-        build_chat_completion_probe_payload, build_local_reader_selection_question_input,
+        build_chat_completion_probe_payload, build_chat_completion_stream_payload,
+        build_chat_completion_stream_payload_without_response_format,
+        build_local_reader_selection_question_input, build_reading_assistant_context,
+        build_reading_assistant_payload, build_reading_assistant_stats_aggregate_output,
         build_reading_route_input, build_reading_stats_review_input, build_summary_input,
-        cached_reading_route_response, cached_reading_stats_review_response, chat_completions_url,
+        cached_reading_route_response, cached_reading_stats_review_response,
+        chat_completion_stream_delta_from_frame, chat_completions_url,
         default_json_object_response_format, default_provider_settings,
-        extract_chat_completion_json, humanize_review_text, is_empty_reading_stats,
-        is_unsupported_json_schema_response, local_reader_selection_question_json_schema,
-        local_reader_selection_question_system_prompt, models_url, normalize_book_decision_output,
-        normalize_local_reader_selection_answer_output, normalize_provider_settings,
+        extract_chat_completion_json, filter_existing_reading_assistant_recommended_books,
+        humanize_review_text, infer_reading_assistant_intent, insert_reading_assistant_message,
+        is_empty_reading_stats, is_unsupported_json_schema_response,
+        local_reader_selection_question_json_schema, local_reader_selection_question_system_prompt,
+        models_url, normalize_book_decision_output, normalize_local_reader_selection_answer_output,
+        normalize_provider_settings, normalize_reading_assistant_output,
         normalize_reading_route_output, normalize_reading_stats_review_output,
         normalize_summary_output, parse_provider_model_list, provider_capability_probe_json_schema,
         provider_network_user_message, read_ai_asset_detail, read_ai_asset_summaries,
         read_ai_asset_version_detail, read_ai_asset_version_history, read_ai_output,
-        read_ai_review_feedback, read_book_summary_export_items, read_book_summary_list,
-        read_latest_ai_output, read_local_book_notes, read_provider_settings,
-        reading_route_json_schema, reading_route_update_context, reading_stats_review_json_schema,
+        read_ai_review_feedback, read_assistant_local_book_index, read_book_summary_export_items,
+        read_book_summary_list, read_latest_ai_output, read_local_book_notes,
+        read_provider_settings, read_reading_assistant_messages,
+        read_reading_assistant_preferences, reading_assistant_intent_supports_streaming,
+        reading_assistant_json_schema, reading_assistant_system_prompt,
+        reading_assistant_weread_search_result, reading_route_json_schema,
+        reading_route_update_context, reading_stats_review_json_schema,
         recommend_response_format_policy, require_ai_credential_for_uncached_summary,
-        resolve_book_summary_update_context, resolve_reading_persona, save_ai_review_feedback,
-        serialize_book_summary_export_index, stable_hash_json, upsert_ai_output,
-        AiCachedOutputRecord, AiFeedbackExportRecord, AiOutputUpsert, AiProviderCapabilityStatus,
-        AiResponseFormatKind, AiResponseFormatPolicy, AiReviewFeedbackExport,
-        AiReviewFeedbackState, AiService, AiServiceError, BookAiSummarySource,
-        BookAiSummarySourceStats, BookAiSummaryUpdateContext, BookDecisionCandidateInput,
-        BookDecisionSourceStats, BookSummaryExportItem, BookSummaryUpdateContext,
-        LocalReaderSelectionBookInput, LocalReaderSelectionContextInput, LocalReaderSelectionInput,
-        LocalReaderSelectionQuestionInput, ReadingPersonaPatch, ReadingRouteBookInput,
+        resolve_book_summary_update_context, resolve_reading_assistant_search_keyword,
+        resolve_reading_persona, save_ai_review_feedback, serialize_book_summary_export_index,
+        stable_hash_json, streamed_json_string_field_prefix, upsert_ai_output,
+        upsert_reading_assistant_thread, AiCachedOutputRecord, AiFeedbackExportRecord,
+        AiOutputUpsert, AiProviderCapabilityStatus, AiResponseFormatKind, AiResponseFormatPolicy,
+        AiReviewFeedbackExport, AiReviewFeedbackState, AiService, AiServiceError,
+        AssistantContextScope, BookAiSummarySource, BookAiSummarySourceStats,
+        BookAiSummaryUpdateContext, BookDecisionCandidateInput, BookDecisionSourceStats,
+        BookSummaryExportItem, BookSummaryUpdateContext, LocalReaderSelectionBookInput,
+        LocalReaderSelectionContextInput, LocalReaderSelectionInput,
+        LocalReaderSelectionQuestionInput, ReadingAssistantContextBuildRequest,
+        ReadingAssistantContextBundle, ReadingAssistantContextOption, ReadingAssistantIntent,
+        ReadingAssistantMessageDraft, ReadingAssistantMessageOutput, ReadingAssistantPreferences,
+        ReadingAssistantRecommendedBook, ReadingPersonaPatch, ReadingRouteBookInput,
         ReadingRouteRequest, ReadingRouteSourceStats, ReadingRouteUpdateContext,
         ReadingRouteUpdateContextData, ReadingStageSignal, ReadingStatsAiReviewSourceStats,
         SourceItemInput, BOOK_DECISION_PROMPT_VERSION, BOOK_NOTES_SUMMARY_FEATURE,
@@ -10134,6 +14109,963 @@ mod tests {
             schema["required"],
             json!(["answer", "keyPoints", "followUpQuestions"])
         );
+    }
+
+    #[test]
+    fn reading_assistant_book_detail_context_excludes_sensitive_raw_fields() {
+        let connection = Connection::open_in_memory().expect("in-memory db should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        connection
+            .execute(
+                "
+                INSERT INTO book_details (
+                    book_id, title, author, cover, category, intro, raw_json, updated_at
+                ) VALUES (
+                    'book_1', '深度工作', '卡尔', NULL, '效率', '专注工作的介绍',
+                    '{\"apiKey\":\"sk-should-not-appear\",\"databasePath\":\"C:/tmp/secret.db\"}',
+                    '100'
+                )
+                ",
+                [],
+            )
+            .expect("book detail should insert");
+        connection
+            .execute(
+                "
+                INSERT INTO highlights (
+                    bookmark_id, book_id, chapter_uid, chapter_title, mark_text,
+                    create_time, range_text, raw_json, updated_at
+                ) VALUES (
+                    'h1', 'book_1', 1, '第一章', '原始划线正文不应默认进入助手上下文',
+                    100, NULL, '{}', '100'
+                )
+                ",
+                [],
+            )
+            .expect("highlight should insert");
+        upsert_ai_output(
+            &connection,
+            &AiOutputUpsert {
+                feature: BOOK_NOTES_SUMMARY_FEATURE.to_string(),
+                scope_id: "book_1".to_string(),
+                prompt_version: BOOK_NOTES_SUMMARY_PROMPT_VERSION.to_string(),
+                input_hash: "summary_hash".to_string(),
+                output: json!({
+                    "overview": "这本书的本地复盘围绕专注和时间块。",
+                    "keyIdeas": ["深度工作需要无干扰时段"],
+                    "myFocus": ["安排阅读时段"],
+                    "actionItems": ["今天读 30 分钟"],
+                    "themeTags": ["专注"],
+                    "representativeQuotes": [],
+                    "reflectionQuestions": [],
+                    "sourceStats": {
+                        "highlightCount": 1,
+                        "thoughtCount": 0,
+                        "bookmarkCount": 0,
+                        "chapterCount": 0,
+                        "includedHighlightCount": 1,
+                        "includedThoughtCount": 0
+                    },
+                    "generatedAt": "100",
+                    "promptVersion": BOOK_NOTES_SUMMARY_PROMPT_VERSION,
+                    "basisNotice": "基于本地笔记生成，不代表整本书全文内容。"
+                }),
+                source_count: Some(1),
+                provider_model: Some("gpt-4o-mini".to_string()),
+            },
+            "120",
+        )
+        .expect("summary output should insert");
+
+        let bundle = build_reading_assistant_context(
+            &connection,
+            &ReadingAssistantContextBuildRequest {
+                scope: AssistantContextScope::BookDetail,
+                entity_id: Some("book_1".to_string()),
+                enabled_context: Vec::new(),
+                thread_id: None,
+                preferences: ReadingAssistantPreferences::default(),
+                intent: ReadingAssistantIntent::General,
+            },
+        )
+        .expect("assistant context should build");
+        let serialized = bundle.payload.to_string();
+        let serialized_used_context =
+            serde_json::to_string(&bundle.used_context).expect("used context should serialize");
+
+        assert!(serialized.contains("深度工作"));
+        assert!(serialized.contains("这本书的本地复盘"));
+        assert!(!serialized.contains("apiKey"));
+        assert!(!serialized.contains("databasePath"));
+        assert!(!serialized.contains("sk-should-not-appear"));
+        assert!(!serialized.contains("原始划线正文不应默认进入助手上下文"));
+        assert!(!serialized_used_context.contains("apiKey"));
+        assert!(!serialized_used_context.contains("databasePath"));
+        assert!(!serialized_used_context.contains("sk-should-not-appear"));
+        assert!(!serialized_used_context.contains("C:/tmp/secret.db"));
+        assert!(bundle
+            .used_context
+            .iter()
+            .any(|item| { item.context_type == ReadingAssistantContextOption::CurrentBook }));
+        assert!(bundle
+            .used_context
+            .iter()
+            .any(|item| { item.context_type == ReadingAssistantContextOption::BookNotesSummary }));
+
+        let raw_bundle = build_reading_assistant_context(
+            &connection,
+            &ReadingAssistantContextBuildRequest {
+                scope: AssistantContextScope::BookDetail,
+                entity_id: Some("book_1".to_string()),
+                enabled_context: Vec::new(),
+                thread_id: None,
+                preferences: ReadingAssistantPreferences {
+                    allow_raw_book_notes: true,
+                    ..ReadingAssistantPreferences::default()
+                },
+                intent: ReadingAssistantIntent::General,
+            },
+        )
+        .expect("assistant context should include raw notes when allowed");
+        let raw_serialized = raw_bundle.payload.to_string();
+
+        assert!(raw_serialized.contains("rawBookNotes"));
+        assert!(raw_serialized.contains("原始划线正文不应默认进入助手上下文"));
+        assert!(!raw_serialized.contains("apiKey"));
+        assert!(!raw_serialized.contains("databasePath"));
+        assert!(raw_bundle
+            .used_context
+            .iter()
+            .any(|item| { item.context_type == ReadingAssistantContextOption::RawBookNotes }));
+    }
+
+    #[test]
+    fn reading_assistant_candidate_context_limits_candidates() {
+        let connection = Connection::open_in_memory().expect("in-memory db should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        for index in 0..10 {
+            connection
+                .execute(
+                    "
+                    INSERT INTO reading_item_states (
+                        item_id, item_type, status, title, author, cover, category, note, created_at, updated_at
+                    ) VALUES (?1, 'candidate', 'toRead', ?2, '作者', NULL, '分类', NULL, '100', ?3)
+                    ",
+                    rusqlite::params![
+                        format!("candidate_{index}"),
+                        format!("候选书 {index}"),
+                        format!("{}", 100 + index)
+                    ],
+                )
+                .expect("candidate should insert");
+        }
+
+        let bundle = build_reading_assistant_context(
+            &connection,
+            &ReadingAssistantContextBuildRequest {
+                scope: AssistantContextScope::CandidateShelf,
+                entity_id: None,
+                enabled_context: vec![ReadingAssistantContextOption::CandidateBooks],
+                thread_id: None,
+                preferences: ReadingAssistantPreferences::default(),
+                intent: ReadingAssistantIntent::CandidateShelfDecision,
+            },
+        )
+        .expect("assistant context should build");
+        let candidates = bundle.payload["context"]["candidateBooks"]
+            .as_array()
+            .expect("candidateBooks should be an array");
+
+        assert_eq!(candidates.len(), 8);
+        assert_eq!(
+            bundle
+                .used_context
+                .iter()
+                .find(|item| item.context_type == ReadingAssistantContextOption::CandidateBooks)
+                .expect("candidate context should be tracked")
+                .item_count,
+            8
+        );
+    }
+
+    #[test]
+    fn reading_assistant_new_book_recommendation_uses_exclusion_list_without_candidate_pool() {
+        let connection = Connection::open_in_memory().expect("in-memory db should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        connection
+            .execute(
+                "
+                INSERT INTO reading_item_states (
+                    item_id, item_type, status, title, author, cover, category, note, created_at, updated_at
+                ) VALUES ('candidate_1', 'candidate', 'toRead', '已候选的书', '作者 A', NULL, '文学', NULL, '100', '120')
+                ",
+                [],
+            )
+            .expect("candidate should insert");
+        connection
+            .execute(
+                "
+                INSERT INTO shelf_entries (
+                    id, type, title, author, cover, category, is_top, is_secret, is_finished,
+                    last_read_at, raw_json, updated_at
+                ) VALUES ('book_1', 'book', '已读过的书', '作者 B', NULL, '社科', 0, 0, 1, 110, '{}', '130')
+                ",
+                [],
+            )
+            .expect("shelf entry should insert");
+
+        let bundle = build_reading_assistant_context(
+            &connection,
+            &ReadingAssistantContextBuildRequest {
+                scope: AssistantContextScope::Global,
+                entity_id: None,
+                enabled_context: Vec::new(),
+                thread_id: None,
+                preferences: ReadingAssistantPreferences::default(),
+                intent: ReadingAssistantIntent::NewBookRecommendation,
+            },
+        )
+        .expect("assistant context should build");
+        let context = &bundle.payload["context"];
+
+        assert!(context.get("candidateBooks").is_none());
+        let exclusions = context["bookExclusionList"]
+            .as_array()
+            .expect("bookExclusionList should be an array");
+        assert!(exclusions
+            .iter()
+            .any(|item| item["title"].as_str() == Some("已候选的书")));
+        assert!(exclusions
+            .iter()
+            .any(|item| item["title"].as_str() == Some("已读过的书")));
+        assert!(bundle
+            .used_context
+            .iter()
+            .any(|item| { item.context_type == ReadingAssistantContextOption::BookExclusionList }));
+    }
+
+    #[test]
+    fn reading_assistant_payload_marks_new_book_recommendation_policy() {
+        let bundle = ReadingAssistantContextBundle {
+            payload: json!({
+                "basis": "test",
+                "scope": "global",
+                "context": {}
+            }),
+            used_context: Vec::new(),
+            source_count: 0,
+        };
+
+        let payload = build_reading_assistant_payload(
+            &AssistantContextScope::Global,
+            None,
+            "推荐 3 本可加入候选书架的新书",
+            &bundle,
+            ReadingAssistantIntent::NewBookRecommendation,
+        )
+        .expect("payload should build");
+
+        assert_eq!(payload["intent"], "newBookRecommendation");
+        assert_eq!(
+            payload["recommendationPolicy"]["candidateBooksAsExclusionOnly"],
+            true
+        );
+        assert_eq!(
+            payload["recommendationPolicy"]["mustNotPersistCandidates"],
+            true
+        );
+        assert!(payload["outputContract"]["recommendedBooks"]
+            .as_str()
+            .expect("recommendedBooks contract should be a string")
+            .contains("3-5 本具体新书"));
+        assert!(payload["outputContract"]["answer"]
+            .as_str()
+            .expect("answer contract should be a string")
+            .contains("具体书籍必须放入 recommendedBooks"));
+    }
+
+    #[test]
+    fn reading_assistant_json_schema_requires_recommended_books() {
+        let schema = reading_assistant_json_schema();
+        let required = schema["required"]
+            .as_array()
+            .expect("required should be an array");
+
+        assert!(required
+            .iter()
+            .any(|item| item.as_str() == Some("recommendedBooks")));
+        assert_eq!(
+            schema["properties"]["recommendedBooks"]["items"]["required"],
+            json!(["title", "author", "reason", "fit", "risk"])
+        );
+    }
+
+    #[test]
+    fn reading_assistant_streaming_only_supports_general_intent() {
+        assert!(reading_assistant_intent_supports_streaming(
+            &ReadingAssistantIntent::General
+        ));
+        assert!(!reading_assistant_intent_supports_streaming(
+            &ReadingAssistantIntent::NewBookRecommendation
+        ));
+        assert!(!reading_assistant_intent_supports_streaming(
+            &ReadingAssistantIntent::CandidateShelfDecision
+        ));
+    }
+
+    #[test]
+    fn build_chat_completion_stream_payload_sets_stream_flag() {
+        let payload = build_chat_completion_stream_payload(
+            "gpt-test",
+            "system",
+            &json!({ "userMessage": "解释一下" }),
+            default_json_object_response_format(),
+        );
+
+        assert_eq!(payload["stream"], true);
+        assert_eq!(payload["model"], "gpt-test");
+        assert_eq!(payload["response_format"]["type"], "json_object");
+    }
+
+    #[test]
+    fn build_chat_completion_stream_payload_can_omit_response_format() {
+        let payload = build_chat_completion_stream_payload_without_response_format(
+            "deepseek-v4-flash",
+            "system",
+            &json!({ "userMessage": "解释一下" }),
+        );
+
+        assert_eq!(payload["stream"], true);
+        assert_eq!(payload["model"], "deepseek-v4-flash");
+        assert!(payload.get("response_format").is_none());
+    }
+
+    #[test]
+    fn chat_completion_stream_delta_reads_openai_compatible_frame() {
+        let frame =
+            "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"answer\\\":\\\"你好\"}}]}\n\n";
+
+        let delta = chat_completion_stream_delta_from_frame(frame)
+            .expect("frame should parse")
+            .expect("delta should exist");
+
+        assert_eq!(delta, "{\"answer\":\"你好");
+    }
+
+    #[test]
+    fn streamed_json_string_field_prefix_reads_partial_answer() {
+        assert_eq!(
+            streamed_json_string_field_prefix("{\"answer\":\"你好，先读", "answer"),
+            Some("你好，先读".to_string())
+        );
+        assert_eq!(
+            streamed_json_string_field_prefix(
+                "{\"answer\":\"你好，先读第一章。\",\"suggestions\":[]}",
+                "answer"
+            ),
+            Some("你好，先读第一章。".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_reading_assistant_output_reads_recommended_books() {
+        let output = normalize_reading_assistant_output(json!({
+            "answer": "基于你的阅读画像，建议先看这几本。",
+            "suggestions": [],
+            "basisNotice": "基于本地阅读画像生成。",
+            "recommendedBooks": [
+                {
+                    "title": "可能性的艺术",
+                    "author": "作者甲",
+                    "reason": "延续你关注的成长主题。",
+                    "fit": "适合继续追问选择和行动。",
+                    "risk": "理论密度可能偏高。"
+                },
+                {
+                    "title": "",
+                    "author": "作者乙",
+                    "reason": "空标题应被过滤。",
+                    "fit": "",
+                    "risk": ""
+                }
+            ]
+        }))
+        .expect("assistant output should normalize");
+
+        assert_eq!(output.recommended_books.len(), 1);
+        assert_eq!(output.recommended_books[0].title, "可能性的艺术");
+        assert_eq!(output.recommended_books[0].author, "作者甲");
+    }
+
+    #[test]
+    fn normalize_reading_assistant_output_defaults_empty_recommended_books() {
+        let output = normalize_reading_assistant_output(json!({
+            "answer": "可以先围绕当前书继续提问。",
+            "suggestions": ["帮我整理 3 个问题"],
+            "basisNotice": "基于本地上下文生成。"
+        }))
+        .expect("assistant output should normalize");
+
+        assert!(output.recommended_books.is_empty());
+    }
+
+    #[test]
+    fn normalize_reading_assistant_output_rewrites_suggestions_to_user_perspective() {
+        let output = normalize_reading_assistant_output(json!({
+            "answer": "可以从三本候选里继续做取舍。",
+            "suggestions": [
+                "你对《黑客与画家》中关于编程与创业的观点感兴趣吗？",
+                "是否想先试读《雪国》的开头章节，看看是否延续《伊豆的舞女》的阅读体验？",
+                "《被讨厌的勇气》与《世界尽头的咖啡馆》主题类似，需要先看对比吗？"
+            ],
+            "basisNotice": "基于本地阅读画像生成。",
+            "recommendedBooks": []
+        }))
+        .expect("assistant output should normalize");
+
+        assert_eq!(
+            output.suggestions,
+            vec![
+                "帮我判断《黑客与画家》中关于编程与创业的观点是否值得继续了解。",
+                "帮我判断是否应该先试读《雪国》的开头章节，看看是否延续《伊豆的舞女》的阅读体验。",
+                "帮我对比《被讨厌的勇气》与《世界尽头的咖啡馆》的主题差异。"
+            ]
+        );
+        assert!(reading_assistant_system_prompt().contains("不得给是/否式选项"));
+    }
+
+    #[test]
+    fn reading_assistant_filters_recommended_books_already_in_local_library() {
+        let connection = Connection::open_in_memory().expect("in-memory db should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        connection
+            .execute(
+                "
+                INSERT INTO shelf_entries (
+                    id, type, title, author, cover, category, is_top, is_secret, is_finished,
+                    last_read_at, raw_json, updated_at
+                ) VALUES (
+                    'book_courage', 'book', '被讨厌的勇气', '[日]岸见一郎、古贺史健',
+                    NULL, '心理', 0, 0, 1, 100, '{}', '100'
+                )
+                ",
+                [],
+            )
+            .expect("finished shelf book should insert");
+        connection
+            .execute(
+                "
+                INSERT INTO reading_item_states (
+                    item_id, item_type, status, title, author, cover, category, note,
+                    created_at, updated_at
+                ) VALUES (
+                    'candidate_existing', 'candidate', 'toRead', '已候选的书', '作者甲',
+                    NULL, '文学', NULL, '100', '100'
+                )
+                ",
+                [],
+            )
+            .expect("candidate state should insert");
+
+        let books = vec![
+            ReadingAssistantRecommendedBook {
+                title: "被讨厌的勇气".to_string(),
+                author: "岸见一郎 / 古贺史健".to_string(),
+                reason: "不应继续推荐已读书。".to_string(),
+                fit: "已读完。".to_string(),
+                risk: "会重复候选。".to_string(),
+            },
+            ReadingAssistantRecommendedBook {
+                title: "已候选的书".to_string(),
+                author: "作者甲".to_string(),
+                reason: "不应重复候选。".to_string(),
+                fit: "已在候选池。".to_string(),
+                risk: "会重复候选。".to_string(),
+            },
+            ReadingAssistantRecommendedBook {
+                title: "全新的书".to_string(),
+                author: "作者乙".to_string(),
+                reason: "可以作为新候选。".to_string(),
+                fit: "匹配当前兴趣。".to_string(),
+                risk: "需要搜索确认。".to_string(),
+            },
+        ];
+
+        let filtered = filter_existing_reading_assistant_recommended_books(&connection, books)
+            .expect("recommended books should filter");
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].title, "全新的书");
+    }
+
+    #[test]
+    fn reading_assistant_payload_requires_direct_question_list() {
+        let bundle = ReadingAssistantContextBundle {
+            payload: json!({
+                "basis": "test",
+                "scope": "bookNotes",
+                "context": {}
+            }),
+            used_context: Vec::new(),
+            source_count: 0,
+        };
+
+        let payload = build_reading_assistant_payload(
+            &AssistantContextScope::BookNotes,
+            Some("book_1"),
+            "帮我整理 3 个问题",
+            &bundle,
+            ReadingAssistantIntent::General,
+        )
+        .expect("payload should build");
+
+        assert_eq!(payload["questionListPolicy"]["mustListQuestions"], true);
+        assert_eq!(payload["questionListPolicy"]["requestedQuestionCount"], 3);
+        assert!(payload["outputContract"]["answer"]
+            .as_str()
+            .expect("answer contract should be a string")
+            .contains("直接列出 3 个编号问题"));
+        assert_eq!(
+            payload["outputContract"]["fieldOrder"],
+            json!(["answer", "suggestions", "basisNotice", "recommendedBooks"])
+        );
+        assert!(payload["taskRoutingPolicy"]["noteSummaryRequests"]
+            .as_str()
+            .expect("note summary policy should be a string")
+            .contains("生成 AI 复盘"));
+        assert!(payload["taskRoutingPolicy"]["noteSummaryRequests"]
+            .as_str()
+            .expect("note summary policy should be a string")
+            .contains("不引导到生成阅读指南"));
+        assert!(reading_assistant_system_prompt().contains("输出字段顺序必须先 answer"));
+        assert!(reading_assistant_system_prompt().contains("不是「生成阅读指南」"));
+        assert!(reading_assistant_system_prompt().contains("不得只说明已整理"));
+    }
+
+    #[test]
+    fn reading_assistant_intent_distinguishes_new_books_from_candidate_decision() {
+        assert_eq!(
+            infer_reading_assistant_intent(
+                &AssistantContextScope::Global,
+                "帮我确认《显微镜下的大明》在微信读书是否可以找到"
+            ),
+            ReadingAssistantIntent::WereadAvailabilitySearch
+        );
+        assert_eq!(
+            infer_reading_assistant_intent(&AssistantContextScope::Global, "总计历史记录呢"),
+            ReadingAssistantIntent::ReadingStatsAggregate
+        );
+        assert_eq!(
+            infer_reading_assistant_intent(
+                &AssistantContextScope::Global,
+                "推荐 3 本可加入候选书架的新书"
+            ),
+            ReadingAssistantIntent::NewBookRecommendation
+        );
+        assert_eq!(
+            infer_reading_assistant_intent(
+                &AssistantContextScope::Global,
+                "从候选书架里先读哪本？"
+            ),
+            ReadingAssistantIntent::CandidateShelfDecision
+        );
+        assert_eq!(
+            infer_reading_assistant_intent(
+                &AssistantContextScope::BookDetail,
+                "为什么推荐这本书？"
+            ),
+            ReadingAssistantIntent::General
+        );
+    }
+
+    #[test]
+    fn reading_assistant_search_keyword_respects_explicit_and_current_book() {
+        let connection = Connection::open_in_memory().expect("in-memory db should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        connection
+            .execute(
+                "
+                INSERT INTO book_details (
+                    book_id, title, author, cover, category, intro, raw_json, updated_at
+                ) VALUES ('book_1', '显微镜下的大明', '马伯庸', NULL, '历史', NULL, '{}', '100')
+                ",
+                [],
+            )
+            .expect("book detail should insert");
+
+        let explicit = resolve_reading_assistant_search_keyword(
+            &connection,
+            &AssistantContextScope::Global,
+            None,
+            "帮我确认《黑客与画家》在微信读书是否可以找到",
+        )
+        .expect("keyword should resolve");
+        assert_eq!(explicit.keyword, "黑客与画家");
+        assert!(!explicit.needs_clarification);
+
+        let current_book = resolve_reading_assistant_search_keyword(
+            &connection,
+            &AssistantContextScope::BookDetail,
+            Some("book_1"),
+            "这本书微信读书有吗",
+        )
+        .expect("current book keyword should resolve");
+        assert_eq!(current_book.keyword, "显微镜下的大明");
+        assert!(!current_book.needs_clarification);
+
+        let unclear = resolve_reading_assistant_search_keyword(
+            &connection,
+            &AssistantContextScope::Global,
+            None,
+            "这本书微信读书有吗",
+        )
+        .expect("unclear keyword should not fail");
+        assert!(unclear.needs_clarification);
+    }
+
+    #[test]
+    fn reading_assistant_weread_search_result_marks_local_matches() {
+        let connection = Connection::open_in_memory().expect("in-memory db should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        connection
+            .execute(
+                "
+                INSERT INTO shelf_entries (
+                    id, type, title, author, cover, category, is_top, is_secret, is_finished,
+                    last_read_at, raw_json, updated_at
+                ) VALUES (
+                    'book_finished', 'book', '显微镜下的大明', '马伯庸',
+                    NULL, '历史', 0, 0, 1, 100, '{}', '100'
+                )
+                ",
+                [],
+            )
+            .expect("shelf entry should insert");
+        connection
+            .execute(
+                "
+                INSERT INTO reading_item_states (
+                    item_id, item_type, status, title, author, cover, category, note,
+                    created_at, updated_at
+                ) VALUES (
+                    'candidate_1', 'candidate', 'toRead', '黑客与画家', '保罗',
+                    NULL, '计算机', NULL, '100', '100'
+                )
+                ",
+                [],
+            )
+            .expect("candidate should insert");
+        let index = read_assistant_local_book_index(&connection).expect("index should read");
+
+        let finished = reading_assistant_weread_search_result(
+            &DiscoveryBookRecord {
+                book_id: "other_id".to_string(),
+                title: "显微镜下的大明".to_string(),
+                author: Some("马伯庸".to_string()),
+                cover: None,
+                intro: None,
+                category: Some("历史".to_string()),
+                publisher: None,
+                rating_percent: None,
+                rating_count: None,
+                rating_title: None,
+                reading_count: None,
+                soldout: None,
+                search_idx: Some(1),
+                deep_link: None,
+                reason: None,
+                raw_json: "{}".to_string(),
+            },
+            &index,
+        );
+        assert_eq!(finished.local_status, "inLibrary");
+        assert_eq!(finished.local_label, "已读完");
+        assert!(!finished.can_add_to_candidate);
+
+        let candidate = reading_assistant_weread_search_result(
+            &DiscoveryBookRecord {
+                book_id: "candidate_1".to_string(),
+                title: "黑客与画家".to_string(),
+                author: Some("保罗".to_string()),
+                cover: None,
+                intro: None,
+                category: Some("计算机".to_string()),
+                publisher: None,
+                rating_percent: None,
+                rating_count: None,
+                rating_title: None,
+                reading_count: None,
+                soldout: None,
+                search_idx: Some(2),
+                deep_link: None,
+                reason: None,
+                raw_json: "{}".to_string(),
+            },
+            &index,
+        );
+        assert_eq!(candidate.local_status, "inCandidate");
+        assert!(!candidate.can_add_to_candidate);
+    }
+
+    #[test]
+    fn reading_assistant_stats_aggregate_uses_cached_overall_stats() {
+        let connection = Connection::open_in_memory().expect("in-memory db should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        connection
+            .execute(
+                "
+                INSERT INTO reading_stats (
+                    mode, base_time, total_read_time_seconds, read_days, raw_json, updated_at
+                ) VALUES (
+                    'overall', 0, 255000, 71,
+                    '{\"baseTime\":0,\"totalReadTime\":255000,\"readDays\":71,\"preferCategory\":[{\"categoryTitle\":\"经济理财\",\"readingTime\":12480,\"readingCount\":4}]}',
+                    '200'
+                )
+                ",
+                [],
+            )
+            .expect("overall stats should insert");
+        connection
+            .execute(
+                "
+                INSERT INTO shelf_entries (
+                    id, type, title, author, cover, category, is_top, is_secret, is_finished,
+                    last_read_at, raw_json, updated_at
+                ) VALUES
+                    ('book_done', 'book', '读完的书', '作者', NULL, '历史', 0, 0, 1, 100, '{}', '100'),
+                    ('book_reading', 'book', '在读的书', '作者', NULL, '历史', 0, 0, 0, 120, '{}', '120')
+                ",
+                [],
+            )
+            .expect("shelf entries should insert");
+        connection
+            .execute(
+                "
+                INSERT INTO reading_item_states (
+                    item_id, item_type, status, title, author, cover, category, note,
+                    created_at, updated_at
+                ) VALUES (
+                    'candidate_1', 'candidate', 'toRead', '候选书', '作者',
+                    NULL, '文学', NULL, '100', '100'
+                )
+                ",
+                [],
+            )
+            .expect("candidate should insert");
+
+        let output = build_reading_assistant_stats_aggregate_output(&connection)
+            .expect("stats aggregate should build");
+
+        assert_eq!(output.data_status, "complete");
+        assert_eq!(output.total_reading_time_text, "70小时50分钟");
+        assert_eq!(output.read_days, Some(71));
+        assert_eq!(output.shelf_book_count, 2);
+        assert_eq!(output.finished_book_count, 1);
+        assert_eq!(output.candidate_book_count, 1);
+        assert_eq!(output.top_categories[0].title, "经济理财");
+    }
+
+    #[test]
+    fn reading_assistant_context_respects_personalized_context_toggle() {
+        let connection = Connection::open_in_memory().expect("in-memory db should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        connection
+            .execute(
+                "
+                INSERT INTO book_details (
+                    book_id, title, author, cover, category, intro, raw_json, updated_at
+                ) VALUES ('book_1', '不应出现的书', '作者', NULL, '分类', NULL, '{}', '100')
+                ",
+                [],
+            )
+            .expect("book detail should insert");
+
+        let bundle = build_reading_assistant_context(
+            &connection,
+            &ReadingAssistantContextBuildRequest {
+                scope: AssistantContextScope::BookDetail,
+                entity_id: Some("book_1".to_string()),
+                enabled_context: vec![
+                    ReadingAssistantContextOption::CurrentBook,
+                    ReadingAssistantContextOption::BookNotesSummary,
+                ],
+                thread_id: None,
+                preferences: ReadingAssistantPreferences {
+                    use_personalized_context: false,
+                    ..ReadingAssistantPreferences::default()
+                },
+                intent: ReadingAssistantIntent::General,
+            },
+        )
+        .expect("assistant context should build");
+
+        assert_eq!(bundle.source_count, 0);
+        assert!(bundle.used_context.is_empty());
+        assert!(!bundle.payload.to_string().contains("不应出现的书"));
+    }
+
+    #[test]
+    fn reading_assistant_context_includes_reading_memory_lite_when_enabled() {
+        let connection = Connection::open_in_memory().expect("in-memory db should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        connection
+            .execute(
+                "
+                INSERT INTO reading_item_states (
+                    item_id, item_type, status, title, author, category, note, created_at, updated_at
+                ) VALUES (
+                    'candidate_1',
+                    'candidate',
+                    'toRead',
+                    '可能性的艺术',
+                    '作者甲',
+                    '社科',
+                    '适合作为下一阶段候选。',
+                    '100',
+                    '100'
+                )
+                ",
+                [],
+            )
+            .expect("candidate state should insert");
+
+        let bundle = build_reading_assistant_context(
+            &connection,
+            &ReadingAssistantContextBuildRequest {
+                scope: AssistantContextScope::Global,
+                entity_id: None,
+                enabled_context: Vec::new(),
+                thread_id: None,
+                preferences: ReadingAssistantPreferences::default(),
+                intent: ReadingAssistantIntent::General,
+            },
+        )
+        .expect("assistant context should build");
+
+        let memory = &bundle.payload["context"]["readingMemory"];
+        assert_eq!(
+            memory["items"][0]["sourceRef"].as_str(),
+            Some("candidate-memory:recent")
+        );
+        assert!(memory["basis"]
+            .as_str()
+            .expect("basis should be a string")
+            .contains("可追溯"));
+        assert!(bundle.used_context.iter().any(|context| {
+            context.context_type == ReadingAssistantContextOption::ReadingMemory
+                && context.source_refs == vec!["candidate-memory:recent".to_string()]
+        }));
+        assert!(!bundle.payload.to_string().contains("rawBookNotes"));
+    }
+
+    #[test]
+    fn reading_assistant_context_omits_reading_memory_when_disabled() {
+        let connection = Connection::open_in_memory().expect("in-memory db should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        connection
+            .execute(
+                "
+                INSERT INTO reading_item_states (
+                    item_id, item_type, status, title, created_at, updated_at
+                ) VALUES ('candidate_1', 'candidate', 'toRead', '可能性的艺术', '100', '100')
+                ",
+                [],
+            )
+            .expect("candidate state should insert");
+
+        let bundle = build_reading_assistant_context(
+            &connection,
+            &ReadingAssistantContextBuildRequest {
+                scope: AssistantContextScope::Global,
+                entity_id: None,
+                enabled_context: Vec::new(),
+                thread_id: None,
+                preferences: ReadingAssistantPreferences {
+                    use_reading_memory: false,
+                    ..ReadingAssistantPreferences::default()
+                },
+                intent: ReadingAssistantIntent::General,
+            },
+        )
+        .expect("assistant context should build");
+
+        assert!(bundle.payload["context"].get("readingMemory").is_none());
+        assert!(!bundle
+            .used_context
+            .iter()
+            .any(|context| context.context_type == ReadingAssistantContextOption::ReadingMemory));
+    }
+
+    #[test]
+    fn reading_assistant_history_restores_structured_output() {
+        let connection = Connection::open_in_memory().expect("in-memory db should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        upsert_reading_assistant_thread(
+            &connection,
+            "thread_1",
+            &AssistantContextScope::Global,
+            None,
+            "推荐下一本书",
+            &json!({}),
+            "100",
+        )
+        .expect("thread should insert");
+
+        insert_reading_assistant_message(
+            &connection,
+            &ReadingAssistantMessageDraft {
+                id: "msg_1".to_string(),
+                thread_id: "thread_1".to_string(),
+                role: "assistant".to_string(),
+                content: "这几本更适合继续加入候选。".to_string(),
+                status: "answered".to_string(),
+                used_context: Vec::new(),
+                output: Some(ReadingAssistantMessageOutput {
+                    suggestions: vec!["是否想比较前两本候选书的取舍？".to_string()],
+                    recommended_books: vec![ReadingAssistantRecommendedBook {
+                        title: "可能性的艺术".to_string(),
+                        author: "作者甲".to_string(),
+                        reason: "延续成长主题。".to_string(),
+                        fit: "适合继续追问选择和行动。".to_string(),
+                        risk: "理论密度可能偏高。".to_string(),
+                    }],
+                    basis_notice: "基于本地阅读画像和统计生成。".to_string(),
+                    action: None,
+                }),
+                prompt_version: Some("reading-assistant-chat-v1.3".to_string()),
+                input_hash: Some("hash_1".to_string()),
+                provider_model: Some("gpt-4o-mini".to_string()),
+                error_code: None,
+                error_message: None,
+                created_at: "101".to_string(),
+            },
+        )
+        .expect("message should insert");
+
+        let messages =
+            read_reading_assistant_messages(&connection, "thread_1").expect("messages should read");
+
+        let output = messages[0].output.as_ref().expect("output should restore");
+        assert_eq!(
+            output.suggestions,
+            vec!["帮我判断是否应该比较前两本候选书的取舍。"]
+        );
+        assert_eq!(output.recommended_books[0].title, "可能性的艺术");
+        assert_eq!(output.basis_notice, "基于本地阅读画像和统计生成。");
+    }
+
+    #[test]
+    fn reading_assistant_preferences_default_to_private_boundaries() {
+        let connection = Connection::open_in_memory().expect("in-memory db should open");
+        initialize_schema(&connection).expect("schema should initialize");
+
+        let preferences =
+            read_reading_assistant_preferences(&connection).expect("preferences should read");
+
+        assert!(preferences.use_personalized_context);
+        assert!(preferences.use_reading_memory);
+        assert!(!preferences.allow_raw_book_notes);
+        assert!(preferences.save_conversation_history);
     }
 
     #[test]

@@ -1,10 +1,15 @@
 import { useState } from "react";
 import { BookOpen, Loader2, Search, Sparkles, X } from "lucide-react";
-import type { BookDecisionGoal, SearchResult } from "../lib/types";
+import type { BookDecisionGoal } from "../lib/types";
 import {
   recentReadingWindowOptions,
   type RecentReadingWindowMode
 } from "./book-decision-context";
+import {
+  getCandidateSourceLabel,
+  getCandidateSourceTone,
+  type LocalCandidateBook
+} from "./candidate-books";
 import {
   decisionGoals,
   maxDecisionCandidates,
@@ -13,7 +18,7 @@ import {
 } from "./book-decision-input-model";
 
 type BookDecisionInputDialogProps = {
-  candidateBooks: SearchResult[];
+  candidateBooks: LocalCandidateBook[];
   selectedIds: Set<string>;
   selectedFactorIds: Set<ReferenceFactor>;
   candidateLimitMessage?: string;
@@ -189,6 +194,9 @@ export function BookDecisionInputDialog({
                             <span>
                               <strong>{book.title}</strong>
                               <small>{book.author || book.category || "本地候选"}</small>
+                              <span className={`candidate-source-badge is-${getCandidateSourceTone(book)}`}>
+                                {getCandidateSourceLabel(book)}
+                              </span>
                             </span>
                           </label>
                         </article>

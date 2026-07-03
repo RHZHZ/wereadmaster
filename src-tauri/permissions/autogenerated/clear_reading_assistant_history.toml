@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-clear-reading-assistant-history"
+description = "Enables the clear_reading_assistant_history command without any pre-configured scope."
+commands.allow = ["clear_reading_assistant_history"]
+
+[[permission]]
+identifier = "deny-clear-reading-assistant-history"
+description = "Denies the clear_reading_assistant_history command without any pre-configured scope."
+commands.deny = ["clear_reading_assistant_history"]

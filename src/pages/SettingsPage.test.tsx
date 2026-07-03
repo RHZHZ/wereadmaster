@@ -102,4 +102,26 @@ describe("settings page onboarding artwork", () => {
     expect(markup).toContain("输入模型名，或刷新后从候选中选择");
     expect(markup).toContain("刷新可用模型");
   });
+
+  it("shows reading assistant privacy controls in AI settings", () => {
+    const markup = renderToStaticMarkup(
+      <ToastProvider>
+        <SettingsPage
+          open
+          credentialStatus={{ hasCredential: true }}
+          onCredentialChange={() => undefined}
+          preferences={DEFAULT_USER_PREFERENCES}
+          onPreferencesChange={() => undefined}
+          onClose={() => undefined}
+          preferredCategory="ai"
+        />
+      </ToastProvider>
+    );
+
+    expect(markup).toContain("对话助手");
+    expect(markup).toContain("个性化上下文");
+    expect(markup).toContain("原始笔记片段");
+    expect(markup).toContain("保存对话历史");
+    expect(markup).toContain("清空对话历史");
+  });
 });
