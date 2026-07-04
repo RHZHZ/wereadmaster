@@ -727,10 +727,10 @@ export function SettingsPage({
     }
 
     setError(undefined);
+    setPendingAction(undefined);
 
     try {
       await onInstallAppUpdate?.();
-      setPendingAction(undefined);
     } catch (installError) {
       setError(getCommandErrorMessage(installError));
     }

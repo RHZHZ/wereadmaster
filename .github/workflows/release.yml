@@ -97,6 +97,38 @@ jobs:
           prerelease: false
           uploadUpdaterJson: false
 
+      - name: Upload normalized Windows installer asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
+        run: |
+          $version = [string] $env:RELEASE_TAG
+          if ($version.StartsWith("v")) {
+            $version = $version.Substring(1)
+          }
+
+          $bundleDir = Join-Path $PWD "src-tauri/target/release/bundle/nsis"
+          $exeFile = Get-ChildItem -Path $bundleDir -Filter "*.exe" |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          $sigFile = Get-ChildItem -Path $bundleDir -Filter "*.exe.sig" |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+
+          if (-not $exeFile) {
+            throw "Could not find Windows installer asset (*.exe)."
+          }
+          if (-not $sigFile) {
+            throw "Could not find Windows updater signature (*.exe.sig)."
+          }
+
+          $normalizedExePath = Join-Path $bundleDir "wereadmaster_${version}_x64-setup.exe"
+          $normalizedSigPath = "$normalizedExePath.sig"
+          Copy-Item -Path $exeFile.FullName -Destination $normalizedExePath -Force
+          Copy-Item -Path $sigFile.FullName -Destination $normalizedSigPath -Force
+
+          gh release upload "$env:RELEASE_TAG" "$normalizedExePath" "$normalizedSigPath" --clobber
+
       - name: Generate latest.json
         env:
           GH_TOKEN: ${{ github.token }}
@@ -111,20 +143,20 @@ jobs:
           }
 
           $release = gh api "repos/${{ github.repository }}/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
+          $version = [string] $release.tag_name
+          if ($version.StartsWith("v")) {
+            $version = $version.Substring(1)
+          }
+
+          $expectedInstallerName = "wereadmaster_${version}_x64-setup.exe"
           $exeAsset = $release.assets |
-            Where-Object { $_.name -match '\.exe$' } |
-            Sort-Object name |
+            Where-Object { $_.name -eq $expectedInstallerName } |
             Select-Object -First 1
 
           if (-not $exeAsset) {
             Write-Host "Release assets returned by GitHub API:"
             $release.assets | Select-Object name, browser_download_url | Format-Table -AutoSize
-            throw "Could not find uploaded Windows installer asset (*.exe) in the GitHub release."
-          }
-
-          $version = [string] $release.tag_name
-          if ($version.StartsWith("v")) {
-            $version = $version.Substring(1)
+            throw "Could not find uploaded Windows installer asset '$expectedInstallerName' in the GitHub release."
           }
 
           $notes = [string] $release.body

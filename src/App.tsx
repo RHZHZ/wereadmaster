@@ -782,6 +782,7 @@ export function App() {
         message: `正在下载并安装 ${appUpdateStatus?.latestVersion || "新版本"}。`,
         tone: "warning",
       });
+      setIsAppUpdateDialogOpen(false);
 
       await downloadPreparedAppUpdate(preparedUpdate, (event) => {
         if (event.event === "Started") {
