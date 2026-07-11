@@ -39,6 +39,7 @@ import {
   getLatestReadingStatsReview,
   getRecommendations,
   getReadingStats,
+  listBookNotesSummaries,
   listReadingItemStates,
   type BookshelfResponse,
   type CommandErrorInfo,
@@ -47,6 +48,7 @@ import {
 } from "../lib/reading-api";
 import type {
   AiSettingsState,
+  BookAiSummaryListItem,
   BookDecisionResponse,
   CredentialStatus,
   NotebookBook,
@@ -76,6 +78,7 @@ type DashboardPageProps = {
   onOpenNotes: () => void;
   onOpenStats: () => void;
   onOpenReadingReview: () => void;
+  onOpenBookSummary?: (book: NotebookBook) => void;
   onOpenDiscovery: () => void;
   onOpenShelfEntry: (entry: ShelfEntry) => void;
   onOpenBookNotes: (book: NotebookBook) => void;
@@ -127,6 +130,7 @@ export function DashboardPage({
   onOpenNotes,
   onOpenStats,
   onOpenReadingReview,
+  onOpenBookSummary,
   onOpenDiscovery,
   onOpenShelfEntry,
   onOpenBookNotes,
@@ -146,6 +150,7 @@ export function DashboardPage({
   const [aiSettingsState, setAiSettingsState] = useState<AiSettingsState>();
   const [reviewSuggestion, setReviewSuggestion] = useState<ReadingStatsAiReviewResponse>();
   const [reviewSuggestionError, setReviewSuggestionError] = useState<string>();
+  const [bookReviewSummaries, setBookReviewSummaries] = useState<BookAiSummaryListItem[]>([]);
   const [recommendedBooks, setRecommendedBooks] = useState<SearchResult[]>([]);
   const [recommendationSource, setRecommendationSource] = useState<"remote" | "candidate">("candidate");
   const [overviewProgressByBookId, setOverviewProgressByBookId] = useState<Record<string, ReadingProgress>>({});
@@ -179,6 +184,15 @@ export function DashboardPage({
     [readingStates, notesBooks, shelfEntryMap, notesBookMap, onOpenShelfEntry, onOpenBookNotes, onOpenReadingReview]
   );
   const candidateItems = useMemo(() => buildCandidateItems(readingStates, onOpenCandidateBook), [readingStates, onOpenCandidateBook]);
+  const insightItem = useMemo(
+    () =>
+      buildUnprocessedInsightItem({
+        summaries: bookReviewSummaries,
+        onOpenBookSummary,
+        onOpenReadingReview
+      }),
+    [bookReviewSummaries, onOpenBookSummary, onOpenReadingReview]
+  );
   const reviewActions = useMemo(() => reviewSuggestion?.review.nextActions.filter(Boolean).slice(0, 3) ?? [], [reviewSuggestion]);
   const hasMonthlyStatsData = hasReadingStatsData(monthlyStats);
   const localPersona = useMemo(() => buildReadingPersona(monthlyStats), [monthlyStats]);
@@ -209,6 +223,7 @@ export function DashboardPage({
         recentEntries,
         reviewItem: reviewItems[0],
         reviewItems,
+        insightItem,
         candidateItem: candidateItems[0],
         candidateItems,
         bookDecisionResponse: bookDecisionSession?.response,
@@ -230,6 +245,7 @@ export function DashboardPage({
       aiSettingsState?.credential.hasCredential,
       recentEntries,
       reviewItems,
+      insightItem,
       candidateItems,
       bookDecisionSession?.response,
       reviewActions,
@@ -451,6 +467,34 @@ export function DashboardPage({
       isMounted = false;
     };
   }, [hasCredential, monthlyStats?.baseTime, monthlyStats?.totalReadTimeSeconds]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadBookReviewSummaries() {
+      if (!hasCredential) {
+        setBookReviewSummaries([]);
+        return;
+      }
+
+      try {
+        const summaries = await listBookNotesSummaries();
+        if (isMounted) {
+          setBookReviewSummaries(summaries);
+        }
+      } catch {
+        if (isMounted) {
+          setBookReviewSummaries([]);
+        }
+      }
+    }
+
+    void loadBookReviewSummaries();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [hasCredential]);
 
   useEffect(() => {
     let isMounted = true;
@@ -1061,6 +1105,51 @@ function buildCandidateRecommendations(items: DashboardQueueItem[]): SearchResul
   }));
 }
 
+export function buildUnprocessedInsightItem({
+  summaries,
+  onOpenBookSummary,
+  onOpenReadingReview
+}: {
+  summaries: BookAiSummaryListItem[];
+  onOpenBookSummary?: (book: NotebookBook) => void;
+  onOpenReadingReview: () => void;
+}): DashboardQueueItem | undefined {
+  const latest = summaries
+    .filter((item) => item.feedbackCount === 0)
+    .sort((left, right) => parseDashboardTimestamp(right.cachedUpdatedAt) - parseDashboardTimestamp(left.cachedUpdatedAt))[0];
+
+  if (!latest) {
+    return undefined;
+  }
+
+  return {
+    id: `insight-${latest.bookId}`,
+    subjectKey: subjectKey("book", latest.bookId),
+    title: latest.title || "未命名书籍",
+    meta: [latest.author, "已生成复盘 · 尚无反馈"].filter(Boolean).join(" · "),
+    cover: latest.cover,
+    icon: <Sparkles aria-hidden="true" size={18} />,
+    actionLabel: "处理洞察",
+    onClick: () => {
+      if (onOpenBookSummary) {
+        onOpenBookSummary({
+          bookId: latest.bookId,
+          title: latest.title || "未命名书籍",
+          author: latest.author,
+          cover: latest.cover,
+          reviewCount: 0,
+          noteCount: 1,
+          bookmarkCount: 0,
+          totalNoteCount: 1
+        });
+        return;
+      }
+
+      onOpenReadingReview();
+    }
+  };
+}
+
 function mapCandidateStateToSearchResult(state: ReadingItemState): SearchResult {
   return {
     bookId: state.itemId,
@@ -1092,6 +1181,7 @@ function buildTodayActions({
   recentEntries,
   reviewItem,
   reviewItems = reviewItem ? [reviewItem] : [],
+  insightItem,
   candidateItem,
   candidateItems = candidateItem ? [candidateItem] : [],
   bookDecisionResponse,
@@ -1113,6 +1203,7 @@ function buildTodayActions({
   recentEntries: RecentBookEntry[];
   reviewItem?: DashboardQueueItem;
   reviewItems?: DashboardQueueItem[];
+  insightItem?: DashboardQueueItem;
   candidateItem?: DashboardQueueItem;
   candidateItems?: DashboardQueueItem[];
   bookDecisionResponse?: BookDecisionResponse;
@@ -1202,6 +1293,19 @@ function buildTodayActions({
       weight: 90,
       subjectKey: item.subjectKey,
       actionKey: `review-${item.id}`
+    });
+  }
+
+  if (insightItem) {
+    weightedActions.push({
+      title: `继续处理《${insightItem.title}》洞察`,
+      description: `${insightItem.meta} · 回看来源摘录、行动项和复盘问题`,
+      tone: "gold",
+      icon: <Sparkles aria-hidden="true" size={18} />,
+      onClick: insightItem.onClick,
+      weight: 92,
+      subjectKey: insightItem.subjectKey,
+      actionKey: `insight-${insightItem.id}`
     });
   }
 
@@ -1324,6 +1428,20 @@ function selectTodayActions(actions: WeightedTodayAction[]): TodayAction[] {
 
 function subjectKey(type: ReadingItemState["itemType"] | ShelfEntry["type"], id: string): string {
   return type === "book" ? `book:${id}` : `${type}:${id}`;
+}
+
+function parseDashboardTimestamp(value?: string): number {
+  if (!value) {
+    return 0;
+  }
+
+  const numericValue = Number(value);
+  if (Number.isFinite(numericValue)) {
+    return numericValue;
+  }
+
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function isBookEntry(entry: ShelfEntry): entry is RecentBookEntry {

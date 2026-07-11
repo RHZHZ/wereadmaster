@@ -4,16 +4,19 @@ import {
   BookOpen,
   Bot,
   Check,
+  ChevronDown,
   Database,
   History,
   Loader2,
   MessageSquare,
+  Pencil,
   Plus,
   Search,
   Send,
   Settings,
   ShieldCheck,
   Sparkles,
+  RefreshCw,
   Trash2,
   X
 } from "lucide-react";
@@ -21,6 +24,7 @@ import {
   askReadingAssistantStream,
   cancelReadingAssistantStream,
   clearReadingAssistantHistory,
+  getAiSettingsState,
   getCommandErrorMessage,
   getReadingAssistantPreferences,
   getReadingAssistantThread,
@@ -46,6 +50,8 @@ import {
   type ReadingAssistantMarkdownInline
 } from "../lib/reading-assistant-markdown-lite";
 import type {
+  AiResponseFormatPolicy,
+  AiSettingsState,
   AssistantContextScope,
   ReadingAssistantActionOutput,
   ReadingAssistantAnswer,
@@ -63,8 +69,14 @@ type ReadingAssistantPanelProps = {
   open: boolean;
   scope: AssistantContextScope;
   entityId?: string;
+  initialDraft?: string;
+  initialDraftNonce?: number;
   onCandidateAdded?: () => void;
   onOpenCandidateShelf?: () => void;
+  onOpenBookReview?: (bookId: string, title?: string, author?: string) => void;
+  onOpenBookDetail?: (bookId: string) => void;
+  canOpenBookDetail?: (bookId: string) => boolean;
+  onOpenAiSettings?: () => void;
   onClose: () => void;
 };
 
@@ -73,6 +85,12 @@ type ReadingAssistantLauncherProps = {
 };
 
 type ReadingAssistantPanelView = "chat" | "history" | "settings";
+type ReadingAssistantHistoryScopeFilter = "all" | AssistantContextScope;
+
+type ReadingAssistantCurrentEntityFilter = {
+  scope: AssistantContextScope;
+  entityId: string;
+};
 
 type LocalAssistantMessage = {
   id: string;
@@ -83,6 +101,33 @@ type LocalAssistantMessage = {
   usedContext: ReadingAssistantUsedContext[];
   recommendedBooks: ReadingAssistantRecommendedBook[];
   action?: ReadingAssistantActionOutput;
+};
+
+type ReadingAssistantBookReviewActionPayload = Extract<
+  ReadingAssistantActionOutput,
+  { type: "bookReview" }
+>["payload"];
+
+type ReadingAssistantBookReviewActionProps = {
+  action: ReadingAssistantBookReviewActionPayload;
+  onOpenBookReview?: (bookId: string, title?: string, author?: string) => void;
+};
+
+type ReadingAssistantCategoryBooksActionPayload = Extract<
+  ReadingAssistantActionOutput,
+  { type: "categoryBooks" }
+>["payload"];
+
+type ReadingAssistantCategoryBooksActionProps = {
+  action: ReadingAssistantCategoryBooksActionPayload;
+  onOpenBookDetail?: (bookId: string) => void;
+  canOpenBookDetail?: (bookId: string) => boolean;
+};
+
+type EditingUserMessageState = {
+  messageId: string;
+  originalContent: string;
+  draftContent: string;
 };
 
 type RecommendedBookCandidateState =
@@ -130,6 +175,42 @@ const SCOPE_TITLES: Record<AssistantContextScope, string> = {
   localReaderSelection: "选区问答"
 };
 
+const HISTORY_SCOPE_FILTERS: Array<{
+  value: ReadingAssistantHistoryScopeFilter;
+  label: string;
+}> = [
+  { value: "all", label: "全部" },
+  { value: "global", label: "全局" },
+  { value: "bookDetail", label: "书籍" },
+  { value: "bookNotes", label: "笔记" },
+  { value: "readingStats", label: "统计" },
+  { value: "candidateShelf", label: "候选" },
+  { value: "aiAsset", label: "AI 资产" },
+  { value: "localReaderSelection", label: "本地选区" }
+];
+
+const PROVIDER_PRESET_LABELS: Record<string, string> = {
+  openai: "OpenAI",
+  deepseek: "DeepSeek",
+  dashscope: "DashScope",
+  moonshot: "Moonshot",
+  custom: "自定义"
+};
+
+const RESPONSE_FORMAT_POLICY_LABELS: Record<AiResponseFormatPolicy, string> = {
+  auto: "自动",
+  jsonSchemaFirst: "严格结构化",
+  jsonObjectFirst: "JSON 模式",
+  noResponseFormatFirst: "宽松模式"
+};
+
+const COMPACT_RESPONSE_FORMAT_POLICY_LABELS: Record<AiResponseFormatPolicy, string> = {
+  auto: "自动",
+  jsonSchemaFirst: "Schema",
+  jsonObjectFirst: "JSON",
+  noResponseFormatFirst: "宽松"
+};
+
 export function ReadingAssistantLauncher({ onOpen }: ReadingAssistantLauncherProps) {
   return (
     <button
@@ -144,12 +225,126 @@ export function ReadingAssistantLauncher({ onOpen }: ReadingAssistantLauncherPro
   );
 }
 
+export function ReadingAssistantBookReviewAction({
+  action,
+  onOpenBookReview
+}: ReadingAssistantBookReviewActionProps) {
+  return (
+    <div className="reading-assistant-book-review-action">
+      <span className="reading-assistant-search-results-title">{action.message}</span>
+      <div className="reading-assistant-book-review-target">
+        <strong>{action.title}</strong>
+        {action.author ? <small>{action.author}</small> : null}
+      </div>
+      {onOpenBookReview ? (
+        <button
+          className="text-button reading-assistant-book-review-button"
+          type="button"
+          onClick={() => onOpenBookReview(action.bookId, action.title, action.author)}
+        >
+          <Sparkles aria-hidden="true" size={14} />
+          {action.ctaLabel || "生成 AI 复盘"}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+export function ReadingAssistantCategoryBooksAction({
+  action,
+  onOpenBookDetail,
+  canOpenBookDetail
+}: ReadingAssistantCategoryBooksActionProps) {
+  return (
+    <div className="reading-assistant-category-books-action">
+      <span className="reading-assistant-search-results-title">
+        {action.categoryLabel} · 本地可列 {action.listedCount} 本
+        {action.totalStatCount !== undefined ? ` / 统计 ${action.totalStatCount} 本` : ""}
+      </span>
+      {action.matchedCategoryTitles.length > 0 ? (
+        <div className="reading-assistant-category-books-tags">
+          {action.matchedCategoryTitles.map((title) => (
+            <small key={title}>{title}</small>
+          ))}
+        </div>
+      ) : null}
+      {action.books.length > 0 ? (
+        <div className="reading-assistant-category-books-list">
+          {action.books.map((book) => {
+            const bookId = book.bookId;
+            const bookKey = bookId ?? `${book.title}-${book.author ?? ""}-${book.category ?? ""}`;
+            const canOpen = Boolean(
+              onOpenBookDetail &&
+                bookId &&
+                (canOpenBookDetail ? canOpenBookDetail(bookId) : true)
+            );
+            const content = (
+              <>
+                <BookOpen aria-hidden="true" size={16} />
+                <span>
+                  <strong>{book.title}</strong>
+                  <small>
+                    {[
+                      book.author,
+                      book.category,
+                      book.isFinished ? "已读完" : undefined,
+                      book.progressPercent !== undefined ? `${book.progressPercent}%` : undefined,
+                      book.readingTimeText,
+                      book.source
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </small>
+                </span>
+              </>
+            );
+
+            return canOpen ? (
+              <button
+                className="reading-assistant-category-book is-clickable"
+                key={bookKey}
+                type="button"
+                onClick={() => {
+                  if (bookId) {
+                    onOpenBookDetail?.(bookId);
+                  }
+                }}
+              >
+                {content}
+              </button>
+            ) : (
+              <div className="reading-assistant-category-book" key={bookKey}>
+                {content}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="reading-assistant-search-status">
+          当前没有可列出的本地明细，统计总数不会被展开成伪书名。
+        </p>
+      )}
+      {action.totalStatReadingTimeText ? (
+        <small className="reading-assistant-stats-footnote">
+          统计阅读时长 {action.totalStatReadingTimeText}
+        </small>
+      ) : null}
+    </div>
+  );
+}
+
 export function ReadingAssistantPanel({
   open,
   scope,
   entityId,
+  initialDraft,
+  initialDraftNonce,
   onCandidateAdded,
   onOpenCandidateShelf,
+  onOpenBookReview,
+  onOpenBookDetail,
+  canOpenBookDetail,
+  onOpenAiSettings,
   onClose
 }: ReadingAssistantPanelProps) {
   const [threadId, setThreadId] = useState<string>();
@@ -160,10 +355,18 @@ export function ReadingAssistantPanel({
   const [isLoadingPreferences, setIsLoadingPreferences] = useState(false);
   const [threads, setThreads] = useState<ReadingAssistantThreadSummary[]>([]);
   const [isLoadingThreads, setIsLoadingThreads] = useState(false);
+  const [aiSettings, setAiSettings] = useState<AiSettingsState>();
+  const [isLoadingAiSettings, setIsLoadingAiSettings] = useState(false);
+  const [historySearchQuery, setHistorySearchQuery] = useState("");
+  const [historyScopeFilter, setHistoryScopeFilter] =
+    useState<ReadingAssistantHistoryScopeFilter>("all");
+  const [historyCurrentOnly, setHistoryCurrentOnly] = useState(false);
   const [panelView, setPanelView] = useState<ReadingAssistantPanelView>("chat");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [streamingMessageId, setStreamingMessageId] = useState<string>();
   const [activeStreamId, setActiveStreamId] = useState<string>();
+  const [editingUserMessage, setEditingUserMessage] = useState<EditingUserMessageState>();
+  const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string>();
   const [candidateBookStates, setCandidateBookStates] = useState<
     Record<string, RecommendedBookCandidateState>
@@ -176,6 +379,7 @@ export function ReadingAssistantPanel({
   >({});
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLSpanElement>(null);
+  const composerModelRef = useRef<HTMLDivElement>(null);
   const canceledStreamIdsRef = useRef<Set<string>>(new Set());
 
   const enabledContext = useMemo(
@@ -183,6 +387,46 @@ export function ReadingAssistantPanel({
     [preferences, scope]
   );
   const promptSuggestions = useMemo(() => suggestionsForScope(scope), [scope]);
+  const hasCurrentEntityHistoryFilter = Boolean(entityId && scope !== "global");
+  const isCurrentEntityHistoryFilterActive =
+    historyCurrentOnly && hasCurrentEntityHistoryFilter;
+  const filteredThreads = useMemo(
+    () =>
+      filterReadingAssistantThreads(
+        threads,
+        historySearchQuery,
+        historyScopeFilter,
+        isCurrentEntityHistoryFilterActive && entityId ? { scope, entityId } : undefined
+      ),
+    [
+      entityId,
+      historyScopeFilter,
+      historySearchQuery,
+      isCurrentEntityHistoryFilterActive,
+      scope,
+      threads
+    ]
+  );
+  const editableUserMessageId = useMemo(
+    () => findEditableUserMessageId(messages, isSubmitting),
+    [isSubmitting, messages]
+  );
+
+  useEffect(() => {
+    const draft = initialDraft?.trim();
+    if (!open || !draft) {
+      return;
+    }
+
+    setPanelView("chat");
+    setEditingUserMessage(undefined);
+    setIsModelMenuOpen(false);
+    setInput(draft);
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(draft.length, draft.length);
+    });
+  }, [initialDraft, initialDraftNonce, open]);
 
   useEffect(() => {
     if (!open) {
@@ -192,6 +436,7 @@ export function ReadingAssistantPanel({
     let isCurrent = true;
     setIsLoadingPreferences(true);
     setIsLoadingThreads(true);
+    setIsLoadingAiSettings(true);
     getReadingAssistantPreferences()
       .then((nextPreferences) => {
         if (isCurrent) {
@@ -224,6 +469,22 @@ export function ReadingAssistantPanel({
           setIsLoadingThreads(false);
         }
       });
+    getAiSettingsState()
+      .then((nextSettings) => {
+        if (isCurrent) {
+          setAiSettings(nextSettings);
+        }
+      })
+      .catch((error) => {
+        if (isCurrent) {
+          setErrorMessage(getCommandErrorMessage(error));
+        }
+      })
+      .finally(() => {
+        if (isCurrent) {
+          setIsLoadingAiSettings(false);
+        }
+      });
 
     return () => {
       isCurrent = false;
@@ -236,11 +497,18 @@ export function ReadingAssistantPanel({
     setCandidateBookStates({});
     setRecommendedBookSearchStates({});
     setErrorMessage(undefined);
+    setHistorySearchQuery("");
+    setHistoryScopeFilter("all");
+    setHistoryCurrentOnly(false);
+    setEditingUserMessage(undefined);
+    setIsModelMenuOpen(false);
     setPanelView("chat");
   }, [entityId, scope]);
 
   useEffect(() => {
     if (!open) {
+      setEditingUserMessage(undefined);
+      setIsModelMenuOpen(false);
       setPanelView("chat");
     }
   }, [open]);
@@ -255,12 +523,41 @@ export function ReadingAssistantPanel({
         return;
       }
 
+      if (isModelMenuOpen) {
+        setIsModelMenuOpen(false);
+        return;
+      }
+
       onClose();
     }
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [onClose, open]);
+  }, [isModelMenuOpen, onClose, open]);
+
+  useEffect(() => {
+    if (!open || !isModelMenuOpen) {
+      return;
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target;
+      if (target && composerModelRef.current?.contains(target as Node)) {
+        return;
+      }
+
+      setIsModelMenuOpen(false);
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    return () => document.removeEventListener("pointerdown", handlePointerDown, true);
+  }, [isModelMenuOpen, open]);
+
+  useEffect(() => {
+    if (panelView !== "chat") {
+      setIsModelMenuOpen(false);
+    }
+  }, [panelView]);
 
   useEffect(() => {
     if (!open || panelView !== "chat") {
@@ -294,6 +591,29 @@ export function ReadingAssistantPanel({
     }
   }
 
+  async function refreshAiSettings() {
+    setIsLoadingAiSettings(true);
+    try {
+      const nextSettings = await getAiSettingsState();
+      setAiSettings(nextSettings);
+    } catch (error) {
+      setErrorMessage(getCommandErrorMessage(error));
+    } finally {
+      setIsLoadingAiSettings(false);
+    }
+  }
+
+  function handleOpenModelSettings() {
+    setIsModelMenuOpen(false);
+    if (onOpenAiSettings) {
+      onOpenAiSettings();
+      return;
+    }
+
+    setPanelView("settings");
+    void refreshAiSettings();
+  }
+
   async function handleLoadThread(nextThreadId: string) {
     setIsLoadingThreads(true);
     setErrorMessage(undefined);
@@ -306,6 +626,8 @@ export function ReadingAssistantPanel({
 
       setThreadId(detail.id);
       setMessages(detail.messages.map(localMessageFromThreadMessage));
+      setEditingUserMessage(undefined);
+      setIsModelMenuOpen(false);
       setPanelView("chat");
     } catch (error) {
       setErrorMessage(getCommandErrorMessage(error));
@@ -329,6 +651,8 @@ export function ReadingAssistantPanel({
       setThreadId(undefined);
       setMessages([]);
       setThreads([]);
+      setEditingUserMessage(undefined);
+      setIsModelMenuOpen(false);
       setPanelView("chat");
     } catch (error) {
       setErrorMessage(getCommandErrorMessage(error));
@@ -337,16 +661,19 @@ export function ReadingAssistantPanel({
     }
   }
 
-  async function handleSubmit() {
-    const message = input.trim();
-    if (!message || isSubmitting) {
+  async function submitReadingAssistantMessage(
+    message: string,
+    options: { replaceFromMessageId?: string } = {}
+  ) {
+    const normalizedMessage = message.trim();
+    if (!normalizedMessage || isSubmitting) {
       return;
     }
 
     const userMessage: LocalAssistantMessage = {
       id: `local-user-${Date.now()}`,
       role: "user",
-      content: message,
+      content: normalizedMessage,
       status: "answered",
       suggestions: [],
       usedContext: [],
@@ -363,14 +690,28 @@ export function ReadingAssistantPanel({
       usedContext: [],
       recommendedBooks: []
     };
-    setMessages((current) => [...current, userMessage, assistantPendingMessage]);
-    setInput("");
+    setMessages((current) => {
+      if (!options.replaceFromMessageId) {
+        return [...current, userMessage, assistantPendingMessage];
+      }
+
+      const targetIndex = current.findIndex((item) => item.id === options.replaceFromMessageId);
+      if (targetIndex < 0) {
+        return [...current, userMessage, assistantPendingMessage];
+      }
+
+      return [...current.slice(0, targetIndex), userMessage, assistantPendingMessage];
+    });
     setErrorMessage(undefined);
     setIsSubmitting(true);
     setStreamingMessageId(assistantMessageId);
     setActiveStreamId(streamId);
 
     let unlisten: (() => void) | undefined;
+    const requestThreadId = threadId;
+    const replaceFromMessageId = preferences.saveConversationHistory
+      ? options.replaceFromMessageId
+      : undefined;
     try {
       unlisten = await listenReadingAssistantStream((event) => {
         if (event.streamId !== streamId) {
@@ -390,11 +731,12 @@ export function ReadingAssistantPanel({
       });
 
       const answer = await askReadingAssistantStream(streamId, {
-        threadId,
+        threadId: requestThreadId,
         scope,
         entityId,
-        message,
-        enabledContext
+        message: normalizedMessage,
+        enabledContext,
+        replaceFromMessageId
       });
       if (canceledStreamIdsRef.current.has(streamId)) {
         canceledStreamIdsRef.current.delete(streamId);
@@ -403,9 +745,17 @@ export function ReadingAssistantPanel({
 
       setThreadId(answer.threadId);
       setMessages((current) =>
-        current.map((item) =>
-          item.id === assistantMessageId ? assistantMessageFromAnswer(answer) : item
-        )
+        current.map((item) => {
+          if (item.id === userMessage.id) {
+            return { ...item, id: answer.userMessageId };
+          }
+
+          if (item.id === assistantMessageId) {
+            return assistantMessageFromAnswer(answer);
+          }
+
+          return item;
+        })
       );
       if (preferences.saveConversationHistory) {
         void refreshThreads();
@@ -417,7 +767,6 @@ export function ReadingAssistantPanel({
       }
 
       const messageText = getCommandErrorMessage(error);
-      setErrorMessage(messageText);
       setMessages((current) =>
         current.map((item) =>
           item.id === assistantMessageId
@@ -438,6 +787,47 @@ export function ReadingAssistantPanel({
       setStreamingMessageId(undefined);
       setActiveStreamId(undefined);
     }
+  }
+
+  async function handleSubmit() {
+    const message = input.trim();
+    if (!message || isSubmitting) {
+      return;
+    }
+
+    setInput("");
+    setEditingUserMessage(undefined);
+    setIsModelMenuOpen(false);
+    await submitReadingAssistantMessage(message);
+  }
+
+  function handleStartEditingUserMessage(message: LocalAssistantMessage) {
+    if (message.id !== editableUserMessageId || isSubmitting) {
+      return;
+    }
+
+    setEditingUserMessage({
+      messageId: message.id,
+      originalContent: message.content,
+      draftContent: message.content
+    });
+  }
+
+  function handleCancelEditingUserMessage() {
+    setEditingUserMessage(undefined);
+  }
+
+  async function handleSaveEditedUserMessage() {
+    const editing = editingUserMessage;
+    const draftContent = editing?.draftContent.trim() ?? "";
+    if (!editing || !draftContent || isSubmitting) {
+      return;
+    }
+
+    setEditingUserMessage(undefined);
+    await submitReadingAssistantMessage(draftContent, {
+      replaceFromMessageId: editing.messageId
+    });
   }
 
   async function handleCancelSubmit() {
@@ -739,6 +1129,83 @@ export function ReadingAssistantPanel({
     return errorMessage ? <p className="reading-assistant-error">{errorMessage}</p> : null;
   }
 
+  function renderComposerModelControl() {
+    const providerLabel = aiSettings
+      ? aiProviderDisplayLabel(aiSettings)
+      : isLoadingAiSettings
+        ? "模型"
+        : "模型";
+    const modelLabel = aiSettings?.provider.model?.trim() || "未设置模型";
+    const policy = aiSettings?.provider.responseFormatPolicy ?? "auto";
+    const policyLabel = RESPONSE_FORMAT_POLICY_LABELS[policy] ?? RESPONSE_FORMAT_POLICY_LABELS.auto;
+    const compactPolicyLabel =
+      COMPACT_RESPONSE_FORMAT_POLICY_LABELS[policy] ?? COMPACT_RESPONSE_FORMAT_POLICY_LABELS.auto;
+    const hasCredential = aiSettings?.credential.hasCredential ?? false;
+    const credentialLabel = aiSettings && !hasCredential ? " · 未配置密钥" : "";
+    const metaLabel = aiSettings
+      ? `${modelLabel} · ${hasCredential ? compactPolicyLabel : "未配置密钥"}`
+      : isLoadingAiSettings
+        ? "正在读取模型"
+        : "状态暂不可用";
+    const title = `${providerLabel} · ${modelLabel} · ${policyLabel}${credentialLabel}`;
+
+    return (
+      <div className="reading-assistant-composer-model" ref={composerModelRef}>
+        <button
+          className="reading-assistant-model-chip"
+          type="button"
+          onClick={() => setIsModelMenuOpen((current) => !current)}
+          aria-haspopup="menu"
+          aria-expanded={isModelMenuOpen}
+          title={title}
+        >
+          <span>{providerLabel}</span>
+          <ChevronDown aria-hidden="true" size={13} />
+        </button>
+        <span className="reading-assistant-model-meta" title={title}>
+          {metaLabel}
+        </span>
+        {isModelMenuOpen ? (
+          <div className="reading-assistant-model-menu" role="menu" aria-label="当前模型">
+            <div className="reading-assistant-model-menu-status">
+              <span>当前模型</span>
+              <strong>{providerLabel}</strong>
+              <small>{modelLabel}</small>
+              <small>
+                {policyLabel}
+                {credentialLabel}
+              </small>
+            </div>
+            <div className="reading-assistant-model-menu-actions">
+              <button
+                type="button"
+                role="menuitem"
+                onClick={handleOpenModelSettings}
+                disabled={isSubmitting}
+              >
+                <Settings aria-hidden="true" size={14} />
+                模型设置
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => void refreshAiSettings()}
+                disabled={isSubmitting || isLoadingAiSettings}
+              >
+                <RefreshCw
+                  aria-hidden="true"
+                  className={isLoadingAiSettings ? "spin" : ""}
+                  size={14}
+                />
+                刷新状态
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
   function renderRecommendedBooks(message: LocalAssistantMessage) {
     if (message.role !== "assistant" || message.recommendedBooks.length === 0) {
       return null;
@@ -885,6 +1352,15 @@ export function ReadingAssistantPanel({
       return null;
     }
 
+    if (message.action.type === "bookReview") {
+      return (
+        <ReadingAssistantBookReviewAction
+          action={message.action.payload}
+          onOpenBookReview={onOpenBookReview}
+        />
+      );
+    }
+
     if (message.action.type === "statsAggregate") {
       const action = message.action.payload;
       return (
@@ -923,6 +1399,16 @@ export function ReadingAssistantPanel({
             <small className="reading-assistant-stats-footnote">更新时间 {action.updatedAt}</small>
           ) : null}
         </div>
+      );
+    }
+
+    if (message.action.type === "categoryBooks") {
+      return (
+        <ReadingAssistantCategoryBooksAction
+          action={message.action.payload}
+          onOpenBookDetail={onOpenBookDetail}
+          canOpenBookDetail={canOpenBookDetail}
+        />
       );
     }
 
@@ -1017,6 +1503,72 @@ export function ReadingAssistantPanel({
     );
   }
 
+  function renderUserMessage(message: LocalAssistantMessage) {
+    const editing =
+      editingUserMessage?.messageId === message.id ? editingUserMessage : undefined;
+
+    if (editing) {
+      return (
+        <div className="reading-assistant-message-edit">
+          <textarea
+            autoFocus
+            value={editing.draftContent}
+            onChange={(event) => {
+              const draftContent = event.currentTarget.value;
+              setEditingUserMessage((current) =>
+                current?.messageId === message.id
+                  ? { ...current, draftContent }
+                  : current
+              );
+            }}
+            rows={3}
+          />
+          <div className="reading-assistant-message-edit-actions">
+            <button
+              className="text-button"
+              type="button"
+              onClick={handleCancelEditingUserMessage}
+              disabled={isSubmitting}
+            >
+              <X aria-hidden="true" size={14} />
+              取消
+            </button>
+            <button
+              className="text-button reading-assistant-message-edit-save"
+              type="button"
+              onClick={() => void handleSaveEditedUserMessage()}
+              disabled={!editing.draftContent.trim() || isSubmitting}
+            >
+              <Check aria-hidden="true" size={14} />
+              保存并重新生成
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <>
+        <p>{message.content}</p>
+        {message.id === editableUserMessageId ? (
+          <div className="reading-assistant-message-actions">
+            <button
+              className="text-button"
+              type="button"
+              onClick={() => handleStartEditingUserMessage(message)}
+              disabled={isSubmitting}
+              aria-label="编辑这条消息"
+              title="编辑这条消息"
+            >
+              <Pencil aria-hidden="true" size={13} />
+              编辑
+            </button>
+          </div>
+        ) : null}
+      </>
+    );
+  }
+
   function renderChatView() {
     return (
       <div className="reading-assistant-chat-view">
@@ -1035,6 +1587,8 @@ export function ReadingAssistantPanel({
                   message.status === "failed" ? "is-failed" : ""
                 } ${
                   message.status === "pending" ? "is-pending" : ""
+                } ${
+                  editingUserMessage?.messageId === message.id ? "is-editing" : ""
                 }`}
                 key={message.id}
               >
@@ -1044,6 +1598,8 @@ export function ReadingAssistantPanel({
                   ) : (
                     <Loader2 aria-hidden="true" className="spin" size={16} />
                   )
+                ) : message.role === "user" ? (
+                  renderUserMessage(message)
                 ) : (
                   <p>{message.content}</p>
                 )}
@@ -1110,20 +1666,23 @@ export function ReadingAssistantPanel({
             placeholder={isLoadingPreferences ? "正在读取偏好" : "问一个阅读问题"}
             rows={3}
           />
-          <button
-            className="reading-assistant-send-button"
-            type={isSubmitting ? "button" : "submit"}
-            disabled={isSubmitting ? !activeStreamId : !input.trim()}
-            onClick={isSubmitting ? () => void handleCancelSubmit() : undefined}
-            aria-label={isSubmitting ? "取消生成" : "发送"}
-            title={isSubmitting ? "取消生成" : "发送"}
-          >
-            {isSubmitting ? (
-              <X aria-hidden="true" size={16} />
-            ) : (
-              <Send aria-hidden="true" size={16} />
-            )}
-          </button>
+          <div className="reading-assistant-composer-footer">
+            {renderComposerModelControl()}
+            <button
+              className="reading-assistant-send-button"
+              type={isSubmitting ? "button" : "submit"}
+              disabled={isSubmitting ? !activeStreamId : !input.trim()}
+              onClick={isSubmitting ? () => void handleCancelSubmit() : undefined}
+              aria-label={isSubmitting ? "取消生成" : "发送"}
+              title={isSubmitting ? "取消生成" : "发送"}
+            >
+              {isSubmitting ? (
+                <X aria-hidden="true" size={16} />
+              ) : (
+                <Send aria-hidden="true" size={16} />
+              )}
+            </button>
+          </div>
         </form>
       </div>
     );
@@ -1133,7 +1692,9 @@ export function ReadingAssistantPanel({
     return (
       <div className="reading-assistant-subview reading-assistant-history-view">
         <div className="reading-assistant-subview-toolbar">
-          <span className="reading-assistant-subview-meta">{threads.length} 个会话</span>
+          <span className="reading-assistant-subview-meta">
+            {filteredThreads.length} / {threads.length} 个会话
+          </span>
           <button
             className="text-button reading-assistant-danger-action"
             type="button"
@@ -1147,14 +1708,47 @@ export function ReadingAssistantPanel({
 
         {renderError()}
 
+        <label className="reading-assistant-history-search">
+          <Search aria-hidden="true" size={15} />
+          <input
+            type="search"
+            value={historySearchQuery}
+            onChange={(event) => setHistorySearchQuery(event.currentTarget.value)}
+            placeholder="搜索标题或场景"
+          />
+        </label>
+
+        <div className="reading-assistant-history-filters" aria-label="按场景筛选">
+          {hasCurrentEntityHistoryFilter ? (
+            <button
+              className={isCurrentEntityHistoryFilterActive ? "is-active" : ""}
+              type="button"
+              onClick={() => setHistoryCurrentOnly((current) => !current)}
+              aria-pressed={isCurrentEntityHistoryFilterActive}
+            >
+              当前对象
+            </button>
+          ) : null}
+          {HISTORY_SCOPE_FILTERS.map((item) => (
+            <button
+              className={item.value === historyScopeFilter ? "is-active" : ""}
+              type="button"
+              key={item.value}
+              onClick={() => setHistoryScopeFilter(item.value)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+
         <div className="reading-assistant-thread-list reading-assistant-thread-list--full">
           {isLoadingThreads ? (
             <span className="reading-assistant-thread-empty">
               <Loader2 aria-hidden="true" className="spin" size={14} />
               正在读取历史
             </span>
-          ) : threads.length > 0 ? (
-            threads.map((thread) => (
+          ) : filteredThreads.length > 0 ? (
+            filteredThreads.map((thread) => (
               <button
                 className={thread.id === threadId ? "is-active" : ""}
                 type="button"
@@ -1162,9 +1756,11 @@ export function ReadingAssistantPanel({
                 onClick={() => void handleLoadThread(thread.id)}
               >
                 <span>{thread.title}</span>
-                <small>{thread.messageCount} 条</small>
+                <small>{historyThreadMeta(thread)}</small>
               </button>
             ))
+          ) : threads.length > 0 ? (
+            <span className="reading-assistant-thread-empty">没有匹配的历史</span>
           ) : (
             <span className="reading-assistant-thread-empty">暂无历史</span>
           )}
@@ -1417,6 +2013,91 @@ function recommendedBookSearchActionLabel(status: RecommendedBookSearchStatus): 
   }
 }
 
+function aiProviderDisplayLabel(settings: AiSettingsState): string {
+  const presetId = settings.provider.presetId;
+  if (presetId && PROVIDER_PRESET_LABELS[presetId]) {
+    return PROVIDER_PRESET_LABELS[presetId];
+  }
+
+  if (settings.provider.baseUrl) {
+    return "自定义";
+  }
+
+  return "未配置 Provider";
+}
+
+function historyThreadMeta(thread: ReadingAssistantThreadSummary): string {
+  return `${historyScopeLabel(thread.scope)} · ${thread.messageCount} 条`;
+}
+
+function historyScopeLabel(scope: AssistantContextScope): string {
+  return HISTORY_SCOPE_FILTERS.find((item) => item.value === scope)?.label ?? SCOPE_TITLES[scope];
+}
+
+function filterReadingAssistantThreads(
+  threads: ReadingAssistantThreadSummary[],
+  query: string,
+  scopeFilter: ReadingAssistantHistoryScopeFilter,
+  currentEntityFilter?: ReadingAssistantCurrentEntityFilter
+): ReadingAssistantThreadSummary[] {
+  const normalizedQuery = query.trim().toLowerCase();
+
+  return threads.filter((thread) => {
+    if (
+      currentEntityFilter &&
+      (thread.scope !== currentEntityFilter.scope || thread.entityId !== currentEntityFilter.entityId)
+    ) {
+      return false;
+    }
+
+    if (scopeFilter !== "all" && thread.scope !== scopeFilter) {
+      return false;
+    }
+
+    if (!normalizedQuery) {
+      return true;
+    }
+
+    const searchableText = [
+      thread.title,
+      historyScopeLabel(thread.scope),
+      SCOPE_TITLES[thread.scope],
+      thread.entityId ?? ""
+    ]
+      .join(" ")
+      .toLowerCase();
+
+    return searchableText.includes(normalizedQuery);
+  });
+}
+
+function findEditableUserMessageId(
+  messages: LocalAssistantMessage[],
+  isSubmitting: boolean
+): string | undefined {
+  if (isSubmitting) {
+    return undefined;
+  }
+
+  let userMessageIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role === "user") {
+      userMessageIndex = index;
+      break;
+    }
+  }
+  if (userMessageIndex < 0) {
+    return undefined;
+  }
+
+  const tailMessages = messages.slice(userMessageIndex + 1);
+  const hasOnlyCompletedAssistantTail = tailMessages.every(
+    (message) => message.role === "assistant" && message.status !== "pending"
+  );
+
+  return hasOnlyCompletedAssistantTail ? messages[userMessageIndex].id : undefined;
+}
+
 function buildEnabledContext(
   scope: AssistantContextScope,
   preferences: ReadingAssistantPreferences
@@ -1482,17 +2163,17 @@ function suggestionsForScope(scope: AssistantContextScope): string[] {
     case "bookDetail":
       return ["这本书我现在该怎么读？", "这本书适合我继续读吗？", "帮我安排下一次阅读"];
     case "bookNotes":
-      return ["基于我的笔记总结重点", "这本书最值得复盘的点是什么？", "帮我整理 3 个问题"];
+      return ["我为什么会关注这些笔记？", "这些笔记背后有什么反复问题？", "把这些笔记整理成 3 个复盘问题"];
     case "readingStats":
-      return ["总结我的阅读偏好", "我最近阅读有什么盲区？", "给我一个本周阅读动作"];
+      return ["这个周期最明显的阅读变化是什么？", "哪些数据说明我需要调整节奏？", "这个周期适合复盘哪几本？"];
     case "candidateShelf":
       return ["从候选书架里先读哪本？", "这些候选书怎么取舍？", "帮我缩小到 3 本"];
     case "aiAsset":
-      return ["解释这份结果的依据", "把行动项整理成今天可做的步骤", "哪里需要更新？"];
+      return ["这份复盘最值得继续追问什么？", "把当前洞察整理成写作提纲", "哪些行动项应该先做？"];
     case "localReaderSelection":
       return ["解释这段话", "这段话和前文有什么关系？", "继续追问这个概念"];
     case "global":
     default:
-      return ["推荐 3 本可加入候选书架的新书", "总结我的阅读偏好", "帮我制定本周阅读计划"];
+      return ["我最近反复关注什么主题？", "哪些复盘问题还没有处理？", "基于最近阅读资产，下一步适合整理哪本书？"];
   }
 }

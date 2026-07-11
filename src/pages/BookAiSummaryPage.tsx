@@ -10,6 +10,7 @@ import {
   Lightbulb,
   ListChecks,
   Loader2,
+  MessageSquare,
   Quote,
   RefreshCw,
   Settings,
@@ -18,6 +19,7 @@ import {
   Target
 } from "lucide-react";
 import { AiActionFeedbackChecklist } from "../components/AiActionFeedbackChecklist";
+import { BookInsightSection } from "../components/BookInsightSection";
 import { reflectionFeedbackLabels } from "../components/AiActionFeedbackChecklist";
 import { SkillUpgradeNotice } from "../components/SkillUpgradeNotice";
 import { useToast } from "../components/ToastProvider";
@@ -32,7 +34,10 @@ import {
   type AiActionFeedbackRecord,
   type AiReviewFeedbackState
 } from "../lib/ai-action-items";
+import { buildActionItemAssistantDraft } from "../lib/action-item-drafts";
+import { buildBookInsightViewModels } from "../lib/book-insights";
 import { copyTextToClipboard } from "../lib/clipboard";
+import { buildFeedbackOutcomeAssistantDraft } from "../lib/feedback-outcome-drafts";
 import {
   exportBookNotesSummaryMarkdown,
   getReadingItemState,
@@ -60,6 +65,7 @@ import type {
   BookAiSummarySourceStats,
   BookNotes,
   ExportAiMarkdownResponse,
+  FeedbackOutcomeSummary,
   NotebookBook,
   AiReviewFeedbackExport,
   PreparedAssetUpdate,
@@ -74,6 +80,7 @@ type BookAiSummaryPageProps = {
   onBack: () => void;
   backLabel?: string;
   preparedUpdate?: PreparedAssetUpdate;
+  onAskInsight?: (draft: string) => void;
 };
 
 type AiPageStatus =
@@ -93,7 +100,8 @@ export function BookAiSummaryPage({
   onOpenSettings,
   onBack,
   backLabel = "返回单本笔记",
-  preparedUpdate
+  preparedUpdate,
+  onAskInsight
 }: BookAiSummaryPageProps) {
   const targetBookId = bookId ?? book?.bookId ?? notes?.bookId;
   const [aiState, setAiState] = useState<AiSettingsState>();
@@ -664,6 +672,8 @@ export function BookAiSummaryPage({
             </div>
           </section>
 
+          <FeedbackOutcomeSummarySection summary={summary.feedbackOutcomeSummary} onAskInsight={onAskInsight} />
+
           <section className="ai-summary-section" aria-label="主题标签">
             <h4>
               <Tags aria-hidden="true" size={18} />
@@ -677,6 +687,8 @@ export function BookAiSummaryPage({
               )}
             </div>
           </section>
+
+          <BookInsightSection summary={summary} onAskInsight={onAskInsight} />
 
           <div className="ai-summary-grid">
             <SummaryList
@@ -694,13 +706,14 @@ export function BookAiSummaryPage({
               onCopy={(items) => void handleCopySection("我的关注点", items)}
             />
             <ActionItemChecklist
-              title="行动与复盘"
+              title="下一步行动"
               icon={<ListChecks aria-hidden="true" size={18} />}
               items={summary.actionItems}
-              emptyText="这次总结没有生成行动项。"
+              emptyText="这次总结没有生成下一步行动。"
               feedbackByItemId={reviewFeedback.actionItems}
               onFeedbackChange={handleActionFeedbackChange}
               onCopy={(items) => void handleCopyActionChecklist(items)}
+              onAskAction={onAskInsight}
             />
           </div>
 
@@ -873,7 +886,8 @@ function ActionItemChecklist({
   emptyText,
   feedbackByItemId,
   onFeedbackChange,
-  onCopy
+  onCopy,
+  onAskAction
 }: {
   title: string;
   icon: ReactNode;
@@ -882,6 +896,7 @@ function ActionItemChecklist({
   feedbackByItemId: AiActionFeedbackByItemId;
   onFeedbackChange: (itemId: string, feedback: AiActionFeedbackRecord | undefined) => void;
   onCopy: (items: string[]) => void;
+  onAskAction?: (draft: string) => void;
 }) {
   return (
     <AiActionFeedbackChecklist
@@ -895,6 +910,8 @@ function ActionItemChecklist({
       emptyText={emptyText}
       feedbackByItemId={feedbackByItemId}
       onFeedbackChange={onFeedbackChange}
+      onAskItem={onAskAction ? (item) => onAskAction(buildActionItemAssistantDraft(item.text)) : undefined}
+      askItemLabel="拆解"
       onCopy={() => onCopy(items)}
       copyButton={
         <>
@@ -966,7 +983,7 @@ function artifactKindFromSummarySectionTitle(title: string): ReadingArtifactKind
 
 function formatActionChecklist(items: string[], feedbackByItemId: AiActionFeedbackByItemId): string {
   return [
-    "## 行动与复盘",
+    "## 下一步行动",
     ...items.map((item, index) => {
       const itemId = buildAiActionItemId(item, index);
       const feedback = feedbackByItemId[itemId];
@@ -1019,6 +1036,7 @@ function formatFullSummary({
   summary: BookAiSummary;
 }): string {
   const title = book?.title ? `《${book.title}》AI 复盘` : "AI 复盘";
+  const feedbackOutcomeMarkdown = formatFeedbackOutcomeSummary(summary.feedbackOutcomeSummary);
   const metaLines = [
     book?.author ? `作者：${book.author}` : undefined,
     `生成时间：${formatAiTimestamp(summary.generatedAt) || "未知"}`,
@@ -1037,15 +1055,18 @@ function formatFullSummary({
     summary.overview,
     summary.basisNotice,
     "",
+    ...(feedbackOutcomeMarkdown ? [feedbackOutcomeMarkdown, ""] : []),
     formatSummarySection("主题标签", summary.themeTags),
+    "",
+    formatBookInsights(summary),
     "",
     formatSummarySection("关键观点", summary.keyIdeas),
     "",
     formatSummarySection("我的关注点", summary.myFocus),
     "",
-    formatSummarySection("行动与复盘", summary.actionItems),
+    formatSummarySection("下一步行动", summary.actionItems),
     "",
-    formatFeedbackSection("行动反馈记录", summary.actionItems, reviewFeedback.actionItems, buildAiActionItemId, actionFeedbackStatusLabel),
+    formatFeedbackSection("下一步行动反馈记录", summary.actionItems, reviewFeedback.actionItems, buildAiActionItemId, actionFeedbackStatusLabel),
     "",
     formatRepresentativeQuotes(summary.representativeQuotes),
     "",
@@ -1061,6 +1082,19 @@ function formatFullSummary({
     "",
     "## 数据边界",
     "本内容基于当前书本地笔记生成；书签只计数量，不含正文；不会包含 API Key、数据库路径或原始接口字段。"
+  ].join("\n");
+}
+
+function formatFeedbackOutcomeSummary(summary?: FeedbackOutcomeSummary): string | undefined {
+  if (!summary?.summary) {
+    return undefined;
+  }
+
+  const appliedChanges = summary.appliedChanges?.slice(0, 3) ?? [];
+  return [
+    "## 反馈沉淀",
+    summary.summary,
+    ...(appliedChanges.length > 0 ? ["", "本次吸收：", ...appliedChanges.map((item) => `- ${item}`)] : [])
   ].join("\n");
 }
 
@@ -1118,6 +1152,37 @@ function reflectionFeedbackStatusLabel(status: AiActionFeedbackRecord["status"])
   return "待思考";
 }
 
+function formatBookInsights(summary: BookAiSummary): string {
+  const insights = buildBookInsightViewModels(summary);
+
+  if (insights.length === 0) {
+    return "## 阅读洞察\n暂无可整理的阅读洞察。";
+  }
+
+  return [
+    "## 阅读洞察",
+    ...insights.map((insight, index) => {
+      const quoteLines = insight.sourceQuotes.flatMap((quote) => {
+        const source = [quote.noteType, quote.chapter].filter(Boolean).join(" · ");
+        return [
+          `   - 来源摘录：${quote.quote}`,
+          source ? `     来源：${source}` : undefined
+        ].filter(Boolean);
+      });
+      const questionLines = insight.followUpQuestions.map((question) => `   - 可继续追问：${question}`);
+
+      return [
+        `${index + 1}. ${insight.title}`,
+        insight.description ? `   - 说明：${insight.description}` : undefined,
+        ...quoteLines,
+        ...questionLines
+      ]
+        .filter(Boolean)
+        .join("\n");
+    })
+  ].join("\n");
+}
+
 function formatRepresentativeQuotes(quotes: BookAiRepresentativeQuote[]): string {
   if (quotes.length === 0) {
     return "## 代表性摘录\n暂无代表性摘录。";
@@ -1158,6 +1223,45 @@ function RepresentativeQuoteCard({ quote }: { quote: BookAiRepresentativeQuote }
         {quote.chapter ? ` · ${quote.chapter}` : ""}
       </small>
     </article>
+  );
+}
+
+function FeedbackOutcomeSummarySection({
+  summary,
+  onAskInsight
+}: {
+  summary?: FeedbackOutcomeSummary;
+  onAskInsight?: (draft: string) => void;
+}) {
+  if (!summary?.summary) {
+    return null;
+  }
+
+  return (
+    <section className="ai-summary-section" aria-label="反馈沉淀">
+      <h4>
+        <CheckCircle2 aria-hidden="true" size={18} />
+        反馈沉淀
+      </h4>
+      <p>{summary.summary}</p>
+      {summary.appliedChanges?.length ? (
+        <ul>
+          {summary.appliedChanges.slice(0, 3).map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+      ) : null}
+      {onAskInsight ? (
+        <button
+          className="text-button book-insight-ask-button"
+          type="button"
+          onClick={() => onAskInsight(buildFeedbackOutcomeAssistantDraft(summary))}
+        >
+          <MessageSquare aria-hidden="true" size={14} />
+          追问
+        </button>
+      ) : null}
+    </section>
   );
 }
 

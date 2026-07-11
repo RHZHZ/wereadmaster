@@ -1,0 +1,19 @@
+{
+  "version": "v1.0.12",
+  "date": "2026-07-11",
+  "title": "AI 阅读助手收口与发布候选验证",
+  "summary": "本版本在 v1.0.11 的 AI 阅读助手基础上完成发布前收口：补齐真实桌面流式 QA 脚本、历史压力验证、聊天框模型状态、最后一条用户消息编辑、当前对象历史筛选和分类书目可验证查询，并同步更新发布说明与 P6 发布候选验收清单。",
+  "highlights": [
+    "AI 阅读助手普通问答和新书推荐支持流式输出，并支持取消生成后的状态恢复。",
+    "模型状态下沉到聊天输入框，展示当前 Provider / Model / 兼容策略，并可跳转 AI 设置。",
+    "支持编辑最后一条用户消息并重新生成，生成中会禁用模型菜单动作，避免上下文和模型状态错乱。",
+    "历史页支持搜索、场景筛选和当前对象筛选，50 个历史线程压力场景已在隔离 mock 下通过验证。",
+    "分类书目查询只列出本地可验证书目，不把统计总数扩写成无法确认的书名，分类书卡可点击打开已有书籍详情。",
+    "新书推荐仍以结构化卡片展示，可加入候选书架，也可通过微信读书搜索确认书源后再保存。",
+    "新增桌面 QA 脚本，可通过本地 mock Provider 验证普通流式、取消生成、Provider 错误恢复和历史回放。",
+    "补齐 P5 稳定性计划和 P6 发布候选清单，明确真实 Provider 小样本、Release 产物、签名和 latest.json 复核边界。",
+    "同步 release notes 和公众号文案，当前 AI 阅读助手上下文不再误写为旧的三类入口。",
+    "本地发布候选验证通过 TypeScript、单元测试、AI 阅读助手 E2E、全量 E2E、生产构建和 Cargo check。"
+  ],
+  "releaseNotesMarkdown": "## 本次更新\n\n- 新增：AI 阅读助手普通问答和新书推荐支持流式输出，并支持取消生成后的状态恢复。\n- 新增：模型状态下沉到聊天输入框，展示当前 Provider / Model / 兼容策略，并可跳转 AI 设置。\n- 新增：支持编辑最后一条用户消息并重新生成，生成中会禁用模型菜单动作，避免上下文和模型状态错乱。\n- 新增：历史页支持搜索、场景筛选和当前对象筛选，50 个历史线程压力场景已在隔离 mock 下通过验证。\n- 新增：分类书目查询只列出本地可验证书目，不把统计总数扩写成无法确认的书名，分类书卡可点击打开已有书籍详情。\n- 优化：新书推荐继续以结构化卡片展示，可加入候选书架，也可通过微信读书搜索确认书源后再保存。\n- 优化：新增桌面 QA 脚本，可通过本地 mock Provider 验证普通流式、取消生成、Provider 错误恢复和历史回放。\n- 文档：补齐 P5 稳定性计划和 P6 发布候选清单，明确真实 Provider 小样本、Release 产物、签名和 latest.json 复核边界。\n- 文档：同步 release notes 和公众号文案，当前 AI 阅读助手上下文不再误写为旧的三类入口。\n- 验证：本地发布候选验证通过 TypeScript、单元测试、AI 阅读助手 E2E、全量 E2E、生产构建和 Cargo check。\n\n## 验证结果\n\n- `npx tsc --noEmit --pretty false`：通过。\n- `npm test`：402 passed。\n- `npm run e2e -- --grep \"AI 阅读助手\"`：10 passed。\n- `npm run e2e`：87 passed。\n- `npm run build`：通过，保留 Vite 大 chunk 提示。\n- `cargo check --manifest-path \"src-tauri/Cargo.toml\"`：通过，保留既有 dead_code / unused 警告。\n- `git diff --check`：通过，仅 LF/CRLF 提示。\n\n## 仍需发布前人工复核\n\n- 真实 Provider 小样本验收需手动触发，不进入默认 CI。\n- GitHub Actions 生成的 Windows 安装包、.sig 签名和 latest.json 仍需发布前复核。\n- Android APK 仍需以 CI 签名产物和 apksigner 校验结果为准。\n\n## 更新说明\n\n- 版本：v1.0.12\n- 适用平台：Windows x64 / Android APK\n- 更新方式：Windows 桌面端可在设置 > 应用更新中检查；Android 用户请从 GitHub Release 下载签名 APK。"
+}

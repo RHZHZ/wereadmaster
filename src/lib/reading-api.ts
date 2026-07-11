@@ -65,6 +65,7 @@ import type {
   ReadingCategory,
   ReadingAssistantActionOutput,
   ReadingAssistantAnswer,
+  ReadingAssistantCategoryBookItem,
   ReadingAssistantMessage,
   ReadingAssistantMessageOutput,
   ReadingAssistantPreferences,
@@ -685,6 +686,36 @@ type ReadingAssistantStatsCategoryRecord = {
   title?: unknown;
   readingTimeText?: unknown;
   readingCount?: unknown;
+};
+
+type ReadingAssistantBookReviewActionRecord = {
+  bookId?: unknown;
+  title?: unknown;
+  author?: unknown;
+  message?: unknown;
+  ctaLabel?: unknown;
+};
+
+type ReadingAssistantCategoryBookItemRecord = {
+  bookId?: unknown;
+  title?: unknown;
+  author?: unknown;
+  category?: unknown;
+  progressPercent?: unknown;
+  isFinished?: unknown;
+  readingTimeText?: unknown;
+  source?: unknown;
+};
+
+type ReadingAssistantCategoryBooksActionRecord = {
+  categoryLabel?: unknown;
+  matchedCategoryTitles?: unknown;
+  queryStatus?: unknown;
+  totalStatCount?: unknown;
+  totalStatReadingTimeText?: unknown;
+  listedCount?: unknown;
+  message?: unknown;
+  books?: unknown;
 };
 
 type ReadingAssistantActionOutputRecord = {
@@ -2859,6 +2890,14 @@ function mapReadingAssistantActionOutput(record: unknown): ReadingAssistantActio
     return mapReadingAssistantStatsAggregateAction(candidate.payload);
   }
 
+  if (type === "bookReview") {
+    return mapReadingAssistantBookReviewAction(candidate.payload);
+  }
+
+  if (type === "categoryBooks") {
+    return mapReadingAssistantCategoryBooksAction(candidate.payload);
+  }
+
   return undefined;
 }
 
@@ -2973,6 +3012,101 @@ function normalizeReadingAssistantStatsDataStatus(
   }
 
   return "partial";
+}
+
+function mapReadingAssistantBookReviewAction(
+  record: unknown
+): ReadingAssistantActionOutput | undefined {
+  if (!isObject(record)) {
+    return undefined;
+  }
+
+  const payload = record as ReadingAssistantBookReviewActionRecord;
+  const bookId = stringValue(payload.bookId);
+  const title = stringValue(payload.title);
+  if (!bookId || !title) {
+    return undefined;
+  }
+
+  return {
+    type: "bookReview",
+    payload: {
+      bookId,
+      title,
+      author: stringValue(payload.author),
+      message:
+        stringValue(payload.message) ?? "这类笔记总结应进入单本 AI 复盘，不走阅读指南。",
+      ctaLabel: stringValue(payload.ctaLabel) ?? "生成 AI 复盘"
+    }
+  };
+}
+
+function mapReadingAssistantCategoryBooksAction(
+  record: unknown
+): ReadingAssistantActionOutput | undefined {
+  if (!isObject(record)) {
+    return undefined;
+  }
+
+  const payload = record as ReadingAssistantCategoryBooksActionRecord;
+  const categoryLabel = stringValue(payload.categoryLabel);
+  if (!categoryLabel) {
+    return undefined;
+  }
+
+  return {
+    type: "categoryBooks",
+    payload: {
+      categoryLabel,
+      matchedCategoryTitles: Array.isArray(payload.matchedCategoryTitles)
+        ? payload.matchedCategoryTitles.map(stringValue).filter(isDefined)
+        : [],
+      queryStatus: normalizeReadingAssistantCategoryBooksStatus(payload.queryStatus),
+      totalStatCount: numberValue(payload.totalStatCount),
+      totalStatReadingTimeText: stringValue(payload.totalStatReadingTimeText),
+      listedCount: nonNegativeNumberValue(payload.listedCount) ?? 0,
+      message: stringValue(payload.message) ?? "",
+      books: Array.isArray(payload.books)
+        ? payload.books.map(mapReadingAssistantCategoryBookItem).filter(isDefined)
+        : []
+    }
+  };
+}
+
+function normalizeReadingAssistantCategoryBooksStatus(
+  value: unknown
+): "found" | "partial" | "empty" {
+  if (value === "found" || value === "partial" || value === "empty") {
+    return value;
+  }
+
+  return "partial";
+}
+
+function mapReadingAssistantCategoryBookItem(
+  record: unknown
+): ReadingAssistantCategoryBookItem | undefined {
+  if (!isObject(record)) {
+    return undefined;
+  }
+
+  const candidate = record as ReadingAssistantCategoryBookItemRecord;
+  const bookId = stringValue(candidate.bookId);
+  const title = stringValue(candidate.title);
+  if (!bookId || !title) {
+    return undefined;
+  }
+
+  return {
+    bookId,
+    title,
+    author: stringValue(candidate.author),
+    category: stringValue(candidate.category),
+    progressPercent: numberValue(candidate.progressPercent),
+    isFinished: booleanValue(candidate.isFinished),
+    readingTimeText: stringValue(candidate.readingTimeText),
+    source: stringValue(candidate.source) ?? "本地缓存"
+  };
 }
 
 function mapReadingAssistantRecommendedBook(

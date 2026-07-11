@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { auditVisualScroll, type VisualScrollAuditResult } from "./visual-scroll-helpers";
 
 type MockTauriOptions = {
@@ -22,6 +22,7 @@ type MockTauriOptions = {
   noRecentReadingEntries?: boolean;
   failReadingStatsSync?: boolean;
   longStatsAction?: boolean;
+  manyReadingAssistantThreads?: boolean;
 };
 
 const nowSeconds = 1_725_955_200;
@@ -229,6 +230,201 @@ test.describe("个人阅读管理应用 smoke", () => {
     await expect(page.getByLabel("作者偏好")).toContainText("长期常读作者");
     await expect(page.getByLabel("分类偏好")).toContainText("长期分类投入");
     await expect(page.getByLabel("长读书目")).toContainText("长期长读书目");
+  });
+
+  test("AI 阅读助手按分类列出本地可验证书目", async ({ page }) => {
+    await installTauriMock(page, { manyStatsItems: true });
+    await page.goto("/");
+
+    const readingAssistant = await openReadingAssistantFromStats(page);
+    await sendReadingAssistantMessage(readingAssistant, "我读过哪些理财类书籍");
+
+    await expect(readingAssistant).toContainText("小狗钱钱");
+    await expect(readingAssistant).toContainText("博多·舍费尔");
+    await expect(readingAssistant).toContainText("经济理财 · 本地可列 1 本 / 统计 4 本");
+    await expect(readingAssistant).toContainText("统计阅读时长 3小时28分钟");
+    await expect(readingAssistant).not.toContainText("无法一一列举");
+
+    await readingAssistant.getByRole("button", { name: /小狗钱钱/ }).click();
+    await expect(readingAssistant).toHaveCount(0);
+    const bookDetailPage = page.getByRole("region", { name: "书籍详情", exact: true });
+    await expect(bookDetailPage).toContainText("小狗钱钱");
+    await expect(bookDetailPage).toContainText("博多·舍费尔");
+  });
+
+  test("AI 阅读助手可编辑最后一条用户消息并重新生成", async ({ page }) => {
+    await installTauriMock(page, { manyStatsItems: true });
+    await page.goto("/");
+
+    const readingAssistant = await openReadingAssistantFromStats(page);
+    await sendReadingAssistantMessage(readingAssistant, "解释一下我的阅读节奏");
+    await expect(readingAssistant).toContainText("阅读节奏说明：当前周期比较稳定。");
+    await expect(readingAssistant.locator(".reading-assistant-message.is-pending")).toHaveCount(0);
+
+    await readingAssistant.getByRole("button", { name: "编辑这条消息" }).click();
+    const editTextarea = readingAssistant.locator(".reading-assistant-message-edit textarea");
+    await expect(editTextarea).toHaveValue("解释一下我的阅读节奏");
+    await expect(readingAssistant.locator(".reading-assistant-message-edit-save")).toHaveCount(1);
+    await editTextarea.fill("帮我列一个复盘问题");
+    await readingAssistant.locator(".reading-assistant-message-edit-save").click();
+
+    await expect(readingAssistant).toContainText("复盘问题说明：先处理一个关键问题。");
+    await expect(readingAssistant).toContainText("帮我列一个复盘问题");
+    await expect(readingAssistant).not.toContainText("阅读节奏说明：当前周期比较稳定。");
+    await expect(readingAssistant).not.toContainText("解释一下我的阅读节奏");
+
+    const args = await getLastInvokeArgs(page, "ask_reading_assistant_stream");
+    expect(args.request.request.replaceFromMessageId).toBe("assistant-user-message-edit-original");
+  });
+
+  test("AI 阅读助手历史支持搜索、场景筛选和打开对话", async ({ page }) => {
+    await installTauriMock(page, { manyStatsItems: true });
+    await page.goto("/");
+
+    const readingAssistant = await openReadingAssistantFromStats(page);
+
+    await readingAssistant.getByRole("button", { name: "查看最近对话" }).click();
+    await expect(readingAssistant).toContainText("3 / 3 个会话");
+    await expect(readingAssistant.getByRole("button", { name: "当前对象" })).toHaveCount(0);
+    await expect(readingAssistant).toContainText("深度工作复盘追问");
+    await expect(readingAssistant).toContainText("统计阅读节奏");
+    await expect(readingAssistant).toContainText("候选书决策");
+
+    await readingAssistant.getByPlaceholder("搜索标题或场景").fill("深度");
+    await expect(readingAssistant).toContainText("1 / 3 个会话");
+    await expect(readingAssistant).toContainText("深度工作复盘追问");
+    await expect(readingAssistant).not.toContainText("候选书决策");
+
+    await readingAssistant.getByPlaceholder("搜索标题或场景").fill("");
+    await readingAssistant.getByLabel("按场景筛选").getByRole("button", { name: "统计" }).click();
+    await expect(readingAssistant).toContainText("1 / 3 个会话");
+    await expect(readingAssistant).toContainText("统计阅读节奏");
+    await expect(readingAssistant).not.toContainText("深度工作复盘追问");
+
+    await readingAssistant.getByRole("button", { name: /统计阅读节奏/ }).click();
+    await expect(readingAssistant).toContainText("统计历史问题");
+    await expect(readingAssistant).toContainText("统计历史回答");
+  });
+
+  test("AI 阅读助手历史在 50 个线程下仍可搜索、筛选和打开", async ({ page }) => {
+    await installTauriMock(page, { manyReadingAssistantThreads: true });
+    await page.goto("/");
+
+    const readingAssistant = await openReadingAssistantFromStats(page);
+
+    await readingAssistant.getByRole("button", { name: "查看最近对话" }).click();
+    await expect(readingAssistant).toContainText("50 / 50 个会话");
+    const isScrollable = await readingAssistant.locator(".reading-assistant-thread-list").evaluate((list) => {
+      return list.scrollHeight > list.clientHeight;
+    });
+    expect(isScrollable).toBe(true);
+
+    await readingAssistant.getByPlaceholder("搜索标题或场景").fill("压力线程 42");
+    await expect(readingAssistant).toContainText("1 / 50 个会话");
+    await expect(readingAssistant).toContainText("压力线程 42");
+
+    await readingAssistant.getByPlaceholder("搜索标题或场景").fill("");
+    await readingAssistant.getByLabel("按场景筛选").getByRole("button", { name: "统计" }).click();
+    await expect(readingAssistant).toContainText("10 / 50 个会话");
+    await expect(readingAssistant).toContainText("压力线程 04 统计");
+
+    await readingAssistant.getByRole("button", { name: /压力线程 04 统计/ }).click();
+    await expect(readingAssistant).toContainText("压力线程 04 用户问题");
+    await expect(readingAssistant).toContainText("压力线程 04 历史回答");
+  });
+
+  test("AI 阅读助手历史可只看当前对象对话", async ({ page }) => {
+    await installTauriMock(page, { manyReadingAssistantThreads: true });
+    await page.goto("/");
+
+    await openDeepWorkDetailForAudit(page);
+    await page.getByLabel("打开 AI 阅读助手").click();
+    const readingAssistant = page.getByRole("complementary", { name: "AI 阅读助手" });
+    await expect(readingAssistant).toBeVisible();
+
+    await readingAssistant.getByRole("button", { name: "查看最近对话" }).click();
+    await expect(readingAssistant).toContainText("50 / 50 个会话");
+
+    await readingAssistant.getByRole("button", { name: "当前对象" }).click();
+    await expect(readingAssistant).toContainText("5 / 50 个会话");
+    await expect(readingAssistant).toContainText("压力线程 02 当前书");
+    await expect(readingAssistant).toContainText("压力线程 42 当前书");
+    await expect(readingAssistant).not.toContainText("压力线程 07 其他书");
+    await expect(readingAssistant).not.toContainText("压力线程 04 统计");
+  });
+
+  test("AI 阅读助手模型控件位于输入框并可进入模型设置", async ({ page }) => {
+    await installTauriMock(page, { hasCredential: true, hasAiCredential: true });
+    await page.goto("/");
+
+    const readingAssistant = await openReadingAssistantFromStats(page);
+
+    await expect(readingAssistant.locator(".reading-assistant-model-status")).toHaveCount(0);
+    await expect(readingAssistant.locator(".reading-assistant-composer")).toContainText("gpt-4o-mini");
+    await expect(readingAssistant.locator(".reading-assistant-composer")).toContainText("自动");
+
+    await readingAssistant.locator(".reading-assistant-model-chip").click();
+    const modelMenu = readingAssistant.getByRole("menu", { name: "当前模型" });
+    await expect(modelMenu).toBeVisible();
+    await expect(modelMenu).toContainText("当前模型");
+    await expect(modelMenu).toContainText("gpt-4o-mini");
+
+    await modelMenu.getByRole("menuitem", { name: "模型设置" }).click();
+    await expect(readingAssistant).toHaveCount(0);
+    await expect(page.getByRole("dialog", { name: "设置" })).toBeVisible();
+    await expect(page.locator('input[value="https://api.openai.com/v1"]')).toBeVisible();
+    await expect(page.locator('input[value="gpt-4o-mini"]')).toBeVisible();
+  });
+
+  test("AI 阅读助手普通问答显示流式增量内容", async ({ page }) => {
+    await installTauriMock(page, { hasCredential: true, hasAiCredential: true });
+    await page.goto("/");
+
+    const readingAssistant = await openReadingAssistantFromStats(page);
+    await sendReadingAssistantMessage(readingAssistant, "测试普通问答流式输出");
+
+    await expect(readingAssistant).toContainText("流式片段");
+    await expect(readingAssistant).toContainText("流式片段最终完成。");
+    await expect(await getInvokeCount(page, "ask_reading_assistant_stream")).toBeGreaterThan(0);
+  });
+
+  test("AI 阅读助手生成中禁用模型菜单动作并支持取消生成", async ({ page }) => {
+    await installTauriMock(page, { hasCredential: true, hasAiCredential: true });
+    await page.goto("/");
+
+    const readingAssistant = await openReadingAssistantFromStats(page);
+    await sendReadingAssistantMessage(readingAssistant, "测试长时间生成取消");
+
+    await expect(readingAssistant).toContainText("生成中片段");
+    await readingAssistant.locator(".reading-assistant-model-chip").click();
+    const modelMenu = readingAssistant.getByRole("menu", { name: "当前模型" });
+    await expect(modelMenu).toBeVisible();
+    await expect(modelMenu.getByRole("menuitem", { name: "模型设置" })).toBeDisabled();
+    await expect(modelMenu.getByRole("menuitem", { name: "刷新状态" })).toBeDisabled();
+
+    await readingAssistant.getByRole("button", { name: "取消生成" }).click();
+    await expect(readingAssistant).not.toContainText("生成中片段");
+    await expect(readingAssistant).not.toContainText("取消后不应显示");
+    await expect(await getInvokeCount(page, "cancel_reading_assistant_stream")).toBe(1);
+  });
+
+  test("AI 阅读助手新书推荐支持流式增量和结构化推荐卡片", async ({ page }) => {
+    await installTauriMock(page, { hasCredential: true, hasAiCredential: true });
+    await page.goto("/");
+
+    const readingAssistant = await openReadingAssistantFromStats(page);
+    await sendReadingAssistantMessage(readingAssistant, "测试新书推荐流式输出");
+
+    await expect(readingAssistant).toContainText("新书推荐片段");
+    await expect(readingAssistant).toContainText("新书推荐片段最终完成。");
+    await expect(readingAssistant.locator(".reading-assistant-recommendation-item")).toContainText(
+      "可能性的艺术"
+    );
+    await expect(readingAssistant.locator(".reading-assistant-recommendation-item")).toContainText(
+      "作者甲"
+    );
+    await expect(readingAssistant).toContainText("推荐理由");
+    await expect(readingAssistant).toContainText("加入候选");
   });
 
   test("总览今日可做同一本书只保留一个主动作", async ({ page }) => {
@@ -611,7 +807,7 @@ test.describe("个人阅读管理应用 smoke", () => {
     await expect(page.getByLabel("AI 结果版本详情")).not.toContainText("重新生成前应核对");
     await page.getByRole("button", { name: "准备更新指南" }).click();
     await expect(page.getByRole("dialog", { name: "更新前确认" })).toContainText("重新生成前应核对");
-    await expect(page.getByRole("dialog", { name: "更新前确认" })).toContainText("暂无行动反馈记录");
+    await expect(page.getByRole("dialog", { name: "更新前确认" })).toContainText("暂无下一步行动反馈记录");
     await expect(page.getByRole("dialog", { name: "更新前确认" })).not.toContainText("基于本地缓存");
     await page.getByRole("button", { name: "进入生成页确认更新" }).click();
     await expect(page.getByRole("heading", { name: "围绕《深度工作》规划下一步" })).toBeVisible();
@@ -634,12 +830,52 @@ test.describe("个人阅读管理应用 smoke", () => {
     await expect(await getInvokeCount(page, "get_ai_asset_detail")).toBeGreaterThan(0);
   });
 
+  test("复盘中心书籍复盘详情可将洞察和行动带入 AI 阅读助手", async ({ page }) => {
+    await installTauriMock(page);
+    await page.goto("/");
+
+    await openReadingReviewSubNav(page, "阅读指南");
+    const deepWorkAsset = page.locator(".ai-asset-card").filter({ hasText: "深度工作" });
+    await deepWorkAsset.click();
+    await page.getByRole("tab", { name: /书籍复盘 1/ }).click();
+    await page.getByLabel("当前书籍复盘").getByRole("button", { name: "查看复盘" }).click();
+
+    const detail = page.getByLabel("AI 结果版本详情");
+    await expect(detail).toContainText("反馈沉淀");
+    await expect(detail.getByLabel("阅读洞察")).toContainText("关注每日复盘和可执行习惯");
+    await expect(detail.getByLabel("下一步行动")).toContainText("为阅读和工作分别保留固定深度时段");
+    await expect(detail.getByLabel("复盘问题")).toContainText("我每天是否保留了不被打断的深度时段？");
+
+    const assistant = page.getByRole("complementary", { name: "AI 阅读助手" });
+    const assistantInput = assistant.getByPlaceholder("问一个阅读问题");
+
+    await detail.getByLabel("阅读洞察").getByRole("button", { name: "追问" }).first().click();
+    await expect(assistant).toBeVisible();
+    await expect(assistantInput).toHaveValue(/围绕这条阅读洞察继续追问/);
+    await expect(assistantInput).toHaveValue(/关注每日复盘和可执行习惯/);
+    await expect(assistant.getByRole("button", { name: "生成 AI 复盘" })).toHaveCount(0);
+    await assistant.getByRole("button", { name: "关闭 AI 阅读助手" }).click();
+
+    await detail.getByLabel("反馈沉淀").getByRole("button", { name: "追问" }).click();
+    await expect(assistant).toBeVisible();
+    await expect(assistantInput).toHaveValue(/围绕当前复盘中的反馈沉淀继续追问/);
+    await expect(assistantInput).toHaveValue(/上次反馈已确认固定深度时段有价值/);
+    await expect(assistant.getByRole("button", { name: "生成 AI 复盘" })).toHaveCount(0);
+    await assistant.getByRole("button", { name: "关闭 AI 阅读助手" }).click();
+
+    await detail.getByLabel("下一步行动").getByRole("button", { name: "拆解" }).click();
+    await expect(assistant).toBeVisible();
+    await expect(assistantInput).toHaveValue(/围绕这条下一步行动继续拆解/);
+    await expect(assistantInput).toHaveValue(/为阅读和工作分别保留固定深度时段/);
+    await expect(assistant.getByRole("button", { name: "生成 AI 复盘" })).toHaveCount(0);
+  });
+
   test("桌面端主流程可导航并使用本地命令 mock 数据", async ({ page }) => {
     await installTauriMock(page);
     await page.goto("/");
 
     await expect(page.getByLabel("应用窗口控制").getByText("个人阅读管理")).toBeVisible();
-    await expect(page.getByText("书架条目")).toBeVisible();
+    await expect(page.getByLabel("核心指标").getByText("书架条目")).toBeVisible();
     await expect(page.locator(".dashboard-status-strip")).toContainText("已连接本地阅读工作台");
     await expect(page.locator(".dashboard-status-strip").getByRole("button", { name: "打开设置" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "今日最值得做" })).toBeVisible();
@@ -963,6 +1199,19 @@ test.describe("个人阅读管理应用 smoke", () => {
     await page.getByRole("tab", { name: "章节", exact: true }).click();
     await expect(page.getByRole("heading", { name: "章节视图" })).toBeVisible();
     await expect(page.getByText("已导出")).toHaveCount(0);
+    const assistantSummaryCallCount = await getInvokeCount(page, "summarize_book_notes");
+    await page.getByLabel("打开 AI 阅读助手").click();
+    const readingAssistant = page.getByRole("complementary", { name: "AI 阅读助手" });
+    await expect(readingAssistant).toBeVisible();
+    await readingAssistant.getByPlaceholder("问一个阅读问题").fill("基于我的笔记总结重点");
+    await readingAssistant.getByRole("button", { name: "发送" }).click();
+    await expect(readingAssistant).toContainText("这类笔记总结适合进入单本 AI 复盘");
+    await expect(readingAssistant).toContainText("这类笔记总结应进入单本 AI 复盘，不走阅读指南。");
+    await readingAssistant.getByRole("button", { name: "生成 AI 复盘" }).click();
+    await expect(page.getByRole("heading", { name: "《深度工作》AI 复盘" })).toBeVisible();
+    await expect(await getInvokeCount(page, "summarize_book_notes")).toBe(assistantSummaryCallCount);
+    await page.getByRole("button", { name: "返回单本笔记" }).click();
+    await expect(page.getByRole("heading", { name: "章节视图" })).toBeVisible();
     const noteOverviewCallCount = await getInvokeCount(page, "get_notebook_overview");
     const bookNotesCallCount = await getInvokeCount(page, "get_book_notes");
     await page.getByRole("button", { name: "AI 复盘" }).click();
@@ -979,33 +1228,33 @@ test.describe("个人阅读管理应用 smoke", () => {
     await page.getByLabel("关键观点").getByRole("button", { name: "复制" }).click();
     await expect(page.getByText("已复制「关键观点」")).toBeVisible();
     await expect(page.locator(".status-message").filter({ hasText: "已复制" })).toHaveCount(0);
-    await expect(page.getByLabel("行动与复盘")).toContainText("已完成 0 / 共 1 项");
-    await page.getByLabel("行动与复盘").getByRole("button", { name: "记录反馈" }).click();
+    await expect(page.getByLabel("下一步行动")).toContainText("已完成 0 / 共 1 项");
+    await page.getByLabel("下一步行动").getByRole("button", { name: "记录反馈" }).click();
     await expect(page.getByRole("dialog", { name: "编辑状态与记录" })).toBeVisible();
     await page.getByRole("dialog", { name: "编辑状态与记录" }).getByRole("button", { name: "已完成" }).click();
     await page.getByRole("dialog", { name: "编辑状态与记录" }).getByRole("button", { name: "保存反馈" }).click();
-    await expect(page.getByLabel("行动与复盘")).toContainText("已完成 1 / 共 1 项");
+    await expect(page.getByLabel("下一步行动")).toContainText("已完成 1 / 共 1 项");
     await expect(
-      page.getByLabel("行动与复盘").locator(".ai-action-checklist-text", {
+      page.getByLabel("下一步行动").locator(".ai-action-checklist-text", {
         hasText: "为阅读和工作分别保留固定深度时段"
       })
     ).toHaveClass(/is-completed/);
-    await page.getByLabel("行动与复盘").getByRole("button", { name: "复制行动清单" }).click();
+    await page.getByLabel("下一步行动").getByRole("button", { name: "复制行动清单" }).click();
     await expect(page.getByLabel("通知").getByText("已复制：行动清单")).toBeVisible();
     await expect(page.getByRole("heading", { name: "代表性摘录" })).toBeVisible();
     await expect(page.getByText("直接体现本书笔记的核心关注点。")).toBeVisible();
     await expect(page.getByRole("heading", { name: "复盘问题" })).toBeVisible();
-    await expect(page.getByText("我每天是否保留了不被打断的深度时段？")).toBeVisible();
+    await expect(page.getByLabel("复盘问题").getByText("我每天是否保留了不被打断的深度时段？")).toBeVisible();
     await page.getByRole("button", { name: "导出 Markdown" }).click();
     await expect(page.getByText("deep-work-ai-summary.md")).toBeVisible();
     await expect(await getInvokeCount(page, "export_book_notes_summary_markdown")).toBe(1);
     await page.getByRole("button", { name: "返回单本笔记" }).click();
-    await expect(page.getByText("真正有价值的成果，来自长时间无干扰的专注。")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "章节视图" })).toBeVisible();
     await page.getByRole("button", { name: "AI 复盘" }).click();
     await expect(page.getByRole("heading", { name: "《深度工作》AI 复盘" })).toBeVisible();
-    await expect(page.getByLabel("行动与复盘")).toContainText("已完成 1 / 共 1 项");
+    await expect(page.getByLabel("下一步行动")).toContainText("已完成 1 / 共 1 项");
     await page.getByRole("button", { name: "返回单本笔记" }).click();
-    await expect(page.getByText("真正有价值的成果，来自长时间无干扰的专注。")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "章节视图" })).toBeVisible();
 
     await openPrimaryNav(page, "统计");
     await expect(page.getByRole("heading", { name: /阅读报告$/ })).toBeVisible();
@@ -1147,10 +1396,10 @@ test.describe("个人阅读管理应用 smoke", () => {
     await expect(factorSection).toContainText("近期阅读上下文");
     await expect(factorSection).toContainText("已读偏好与完成记录");
     await expect(factorSection).toContainText("阅读节奏与投入能力");
-    await expect(factorSection).toContainText("近 30 天有 15 本阅读记录");
+    await expect(factorSection).toContainText("近 30 天有 16 本阅读记录");
     await expect(factorSection.getByLabel("近期阅读时间范围")).toHaveValue("auto");
     await factorSection.getByLabel("近期阅读时间范围").selectOption("60");
-    await expect(factorSection).toContainText("近 60 天有 15 本阅读记录");
+    await expect(factorSection).toContainText("近 60 天有 16 本阅读记录");
     await expect(factorSection).toContainText("已缓存统计可用");
     await expect(factorSection).toContainText("本次将使用：1 本候选书，0 项参考因子");
     await page.getByLabel("参考因子选择").getByRole("checkbox", { name: "近期阅读上下文" }).check();
@@ -2306,9 +2555,9 @@ test.describe("个人阅读管理应用 smoke", () => {
     expect(mobileShelfLayout.toolbarTop).toBeLessThan(mobileShelfLayout.searchTop);
     expect(mobileShelfLayout.searchTop).toBeLessThan(mobileShelfLayout.filterTop);
     expect(mobileShelfLayout.filterTop).toBeLessThan(mobileShelfLayout.summaryTop);
-    expect(["auto", "scroll"]).toContain(mobileShelfLayout.typeTabsOverflowX);
-    expect(["auto", "scroll"]).toContain(mobileShelfLayout.categoryTabsOverflowX);
-    expect(["auto", "scroll"]).toContain(mobileShelfLayout.summaryOverflowX);
+    expect(["hidden", "visible", "clip"]).toContain(mobileShelfLayout.typeTabsOverflowX);
+    expect(["hidden", "visible", "clip"]).toContain(mobileShelfLayout.categoryTabsOverflowX);
+    expect(["hidden", "visible", "clip"]).toContain(mobileShelfLayout.summaryOverflowX);
     expect(mobileShelfLayout.bookGridColumnCount).toBe(1);
     expect(mobileShelfLayout.firstCardRight).toBeLessThanOrEqual(mobileShelfLayout.viewportWidth);
     expect(mobileShelfLayout.syncButtonHeight).toBeGreaterThanOrEqual(44);
@@ -2565,7 +2814,7 @@ test.describe("个人阅读管理应用 smoke", () => {
     await page.getByRole("button", { name: /深度工作/ }).click();
     await expectDarkModeSurfaceContrast(page, [
       { label: "书籍复盘主题标签区", locator: page.locator(".ai-summary-section").filter({ hasText: "主题标签" }) },
-      { label: "书籍复盘代表性摘录区", locator: page.locator(".ai-summary-section").filter({ hasText: "代表性摘录" }) },
+      { label: "书籍复盘代表性摘录区", locator: page.getByRole("region", { name: "代表性摘录" }) },
       { label: "书籍复盘代表性摘录卡片", locator: page.locator(".ai-quote-card").first() },
       { label: "书籍复盘来源统计", locator: page.locator(".ai-summary-source-card").first() }
     ]);
@@ -2761,7 +3010,7 @@ test.describe("个人阅读管理应用 smoke", () => {
     await expect(page.getByRole("heading", { name: "三体" })).toBeVisible();
     await expect(page.getByLabel("候选入口").getByRole("button", { name: /已读完/ })).toBeDisabled();
     await expect(page.getByLabel("候选入口")).toContainText("已读完");
-    await expect(page.getByLabel("候选入口")).toContainText("不再加入待读候选");
+    await expect(page.getByLabel("候选入口")).toContainText("建议进入复盘或阅读指南");
   });
 
   test.describe("页面滚动视觉回归", () => {
@@ -3011,7 +3260,8 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
       emptyReviewSignals,
       noRecentReadingEntries,
       failReadingStatsSync,
-      longStatsAction
+      longStatsAction,
+      manyReadingAssistantThreads
     }) => {
       const nowSeconds = 1_725_955_200;
       const currentNowSeconds = Math.floor(Date.now() / 1000);
@@ -3028,6 +3278,12 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
         : { hasCredential: false };
       const hasSavedAiCredential = hasAiCredential ?? hasCredential;
       const readableLastReadAt = (offsetSeconds) => noRecentReadingEntries ? 0 : currentNowSeconds - offsetSeconds;
+      let readingAssistantPreferences = {
+        usePersonalizedContext: true,
+        useReadingMemory: false,
+        allowRawBookNotes: false,
+        saveConversationHistory: true
+      };
       let aiState = {
         credential: hasSavedAiCredential
           ? { hasCredential: true, lastValidatedAt: String(nowSeconds - 1800) }
@@ -3037,6 +3293,182 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
           model: "gpt-4o-mini"
         }
       };
+      const baseReadingAssistantThreadSummaries = [
+        {
+          id: "assistant-history-book-notes",
+          scope: "bookNotes",
+          entityId: "book-deep-work",
+          title: "深度工作复盘追问",
+          createdAt: String(nowSeconds - 3600),
+          updatedAt: String(nowSeconds - 1800),
+          messageCount: 2
+        },
+        {
+          id: "assistant-history-stats",
+          scope: "readingStats",
+          title: "统计阅读节奏",
+          createdAt: String(nowSeconds - 3000),
+          updatedAt: String(nowSeconds - 1200),
+          messageCount: 2
+        },
+        {
+          id: "assistant-history-candidates",
+          scope: "candidateShelf",
+          title: "候选书决策",
+          createdAt: String(nowSeconds - 2400),
+          updatedAt: String(nowSeconds - 600),
+          messageCount: 2
+        }
+      ];
+      const largeReadingAssistantScopes = [
+        { scope: "global", label: "全局" },
+        { scope: "bookDetail", entityId: "book-deep-work", label: "当前书" },
+        { scope: "bookNotes", entityId: "book-deep-work", label: "笔记" },
+        { scope: "readingStats", label: "统计" },
+        { scope: "candidateShelf", label: "候选书" }
+      ];
+      const largeReadingAssistantThreadSummaries = Array.from({ length: 50 }, (_, index) => {
+        const number = String(index + 1).padStart(2, "0");
+        const scopeInfo = largeReadingAssistantScopes[index % largeReadingAssistantScopes.length];
+        const isOtherBookDetailThread =
+          scopeInfo.scope === "bookDetail" &&
+          Math.floor(index / largeReadingAssistantScopes.length) % 2 === 1;
+        const entityId = isOtherBookDetailThread ? "book-clean-code" : scopeInfo.entityId;
+        const label = isOtherBookDetailThread ? "其他书" : scopeInfo.label;
+        return {
+          id: `assistant-history-pressure-${number}`,
+          scope: scopeInfo.scope,
+          entityId,
+          title: `压力线程 ${number} ${label}`,
+          createdAt: String(nowSeconds - 7200 + index * 60),
+          updatedAt: String(nowSeconds - index * 60),
+          messageCount: 2
+        };
+      });
+      const readingAssistantThreadSummaries = manyReadingAssistantThreads
+        ? largeReadingAssistantThreadSummaries
+        : baseReadingAssistantThreadSummaries;
+      const baseReadingAssistantThreadDetails = {
+        "assistant-history-book-notes": {
+          ...baseReadingAssistantThreadSummaries[0],
+          contextSummary: {},
+          messages: [
+            {
+              id: "assistant-history-book-notes-user",
+              role: "user",
+              content: "深度工作历史问题",
+              status: "answered",
+              usedContext: [],
+              createdAt: String(nowSeconds - 3590)
+            },
+            {
+              id: "assistant-history-book-notes-assistant",
+              role: "assistant",
+              content: "深度工作历史回答",
+              status: "answered",
+              usedContext: [],
+              output: {
+                suggestions: [],
+                recommendedBooks: [],
+                basisNotice: "基于历史对话。"
+              },
+              createdAt: String(nowSeconds - 3580)
+            }
+          ]
+        },
+        "assistant-history-stats": {
+          ...baseReadingAssistantThreadSummaries[1],
+          contextSummary: {},
+          messages: [
+            {
+              id: "assistant-history-stats-user",
+              role: "user",
+              content: "统计历史问题",
+              status: "answered",
+              usedContext: [],
+              createdAt: String(nowSeconds - 2990)
+            },
+            {
+              id: "assistant-history-stats-assistant",
+              role: "assistant",
+              content: "统计历史回答",
+              status: "answered",
+              usedContext: [],
+              output: {
+                suggestions: [],
+                recommendedBooks: [],
+                basisNotice: "基于历史对话。"
+              },
+              createdAt: String(nowSeconds - 2980)
+            }
+          ]
+        },
+        "assistant-history-candidates": {
+          ...baseReadingAssistantThreadSummaries[2],
+          contextSummary: {},
+          messages: [
+            {
+              id: "assistant-history-candidates-user",
+              role: "user",
+              content: "候选书历史问题",
+              status: "answered",
+              usedContext: [],
+              createdAt: String(nowSeconds - 2390)
+            },
+            {
+              id: "assistant-history-candidates-assistant",
+              role: "assistant",
+              content: "候选书历史回答",
+              status: "answered",
+              usedContext: [],
+              output: {
+                suggestions: [],
+                recommendedBooks: [],
+                basisNotice: "基于历史对话。"
+              },
+              createdAt: String(nowSeconds - 2380)
+            }
+          ]
+        }
+      };
+      const largeReadingAssistantThreadDetails = Object.fromEntries(
+        largeReadingAssistantThreadSummaries.map((summary, index) => {
+          const number = String(index + 1).padStart(2, "0");
+          return [
+            summary.id,
+            {
+              ...summary,
+              contextSummary: {},
+              messages: [
+                {
+                  id: `${summary.id}-user`,
+                  role: "user",
+                  content: `压力线程 ${number} 用户问题`,
+                  status: "answered",
+                  usedContext: [],
+                  createdAt: String(nowSeconds - 7200 + index * 60 + 10)
+                },
+                {
+                  id: `${summary.id}-assistant`,
+                  role: "assistant",
+                  content: `压力线程 ${number} 历史回答`,
+                  status: "answered",
+                  usedContext: [],
+                  output: {
+                    suggestions: [],
+                    recommendedBooks: [],
+                    basisNotice: "基于压力历史 mock。"
+                  },
+                  createdAt: String(nowSeconds - 7200 + index * 60 + 20)
+                }
+              ]
+            }
+          ];
+        })
+      );
+      const readingAssistantThreadDetails = manyReadingAssistantThreads
+        ? largeReadingAssistantThreadDetails
+        : baseReadingAssistantThreadDetails;
       let hasReturnedBookReviewExportFailure = false;
       Object.defineProperty(navigator, "clipboard", {
         configurable: true,
@@ -3125,6 +3557,17 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
               isSecret: false,
               isFinished: false,
               lastReadAt: readableLastReadAt(432_000)
+            },
+            {
+              id: "book-money",
+              type: "book",
+              title: "小狗钱钱",
+              author: "博多·舍费尔",
+              category: "经济理财",
+              isTop: false,
+              isSecret: false,
+              isFinished: true,
+              lastReadAt: readableLastReadAt(475_200)
             },
             {
               id: "book-ai-primer",
@@ -3260,11 +3703,11 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
             }
           ],
           summary: {
-            totalVisibleEntries: 17,
-            bookCount: 15,
+            totalVisibleEntries: 18,
+            bookCount: 16,
             albumCount: 1,
             mpCount: 1,
-            publicCount: 16,
+            publicCount: 17,
             secretCount: 1
           }
         },
@@ -3475,6 +3918,7 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
         const isDarkForest = bookId === "dark-forest";
         const isMoon = bookId === "rec-moon";
         const isCleanCode = bookId === "book-code-review";
+        const isMoney = bookId === "book-money";
         const isLiuCixin = isThreeBody || isDarkForest;
         return {
           detail: {
@@ -3484,12 +3928,22 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
               : isDarkForest
                 ? "黑暗森林"
                 : isMoon
-                  ? "月亮与六便士"
-                  : isCleanCode
-                    ? "代码整洁之道"
+                ? "月亮与六便士"
+                : isCleanCode
+                  ? "代码整洁之道"
+                  : isMoney
+                    ? "小狗钱钱"
                     : "深度工作",
-            author: isLiuCixin ? "刘慈欣" : isMoon ? "毛姆" : isCleanCode ? "Robert C. Martin" : "卡尔·纽波特",
-            translator: isLiuCixin || isCleanCode ? undefined : "宋伟",
+            author: isLiuCixin
+              ? "刘慈欣"
+              : isMoon
+                ? "毛姆"
+                : isCleanCode
+                  ? "Robert C. Martin"
+                  : isMoney
+                    ? "博多·舍费尔"
+                    : "卡尔·纽波特",
+            translator: isLiuCixin || isCleanCode || isMoney ? undefined : "宋伟",
             intro: isThreeBody
               ? "一部关于文明、宇宙和选择的科幻小说。"
               : isDarkForest
@@ -3498,8 +3952,10 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
                 ? "关于艺术、选择和人生代价的经典小说。"
               : isCleanCode
                 ? "关于代码质量、命名和持续整理的工程实践。"
+              : isMoney
+                ? "关于金钱观、储蓄和目标管理的财商启蒙读物。"
                 : "在碎片化世界中训练深度专注能力的方法论。",
-            category: isLiuCixin ? "科幻" : isMoon ? "文学" : isCleanCode ? "计算机" : "效率",
+            category: isLiuCixin ? "科幻" : isMoon ? "文学" : isCleanCode ? "计算机" : isMoney ? "经济理财" : "效率",
             publisher: isLiuCixin ? "重庆出版社" : "江西人民出版社",
             publishTime: "2024-01",
             isbn: "9780000000000",
@@ -3511,12 +3967,12 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
             bookId,
             chapterUid: 2,
             chapterOffset: 120,
-            progressPercent: isThreeBody ? 100 : 42,
+            progressPercent: isThreeBody || isMoney ? 100 : 42,
             updatedAt: nowSeconds - 86_400,
-            recordReadingTimeSeconds: isThreeBody ? 18_000 : 7_200,
-            finishTime: isThreeBody ? nowSeconds - 172_800 : undefined,
+            recordReadingTimeSeconds: isThreeBody ? 18_000 : isMoney ? 3_600 : 7_200,
+            finishTime: isThreeBody || isMoney ? nowSeconds - 172_800 : undefined,
             isStarted: true,
-            isFinished: isThreeBody
+            isFinished: isThreeBody || isMoney
           },
           chapters: [
             {
@@ -4069,8 +4525,19 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
               myFocus: ["关注每日复盘和可执行习惯"],
               actionItems: ["为阅读和工作分别保留固定深度时段"],
               themeTags: ["专注", "复盘"],
-              representativeQuotes: [],
+              representativeQuotes: [
+                {
+                  quote: "真正有价值的成果，来自长时间无干扰的专注。",
+                  reason: "直接体现本书笔记的核心关注点。",
+                  chapter: "第一章 专注力",
+                  noteType: "划线"
+                }
+              ],
               reflectionQuestions: ["我每天是否保留了不被打断的深度时段？"],
+              feedbackOutcomeSummary: {
+                summary: "上次反馈已确认固定深度时段有价值，本次保留为可执行行动。",
+                appliedChanges: ["保留深度时段行动", "减少泛化复盘建议"]
+              },
               sourceStats: {
                 highlightCount: 1,
                 thoughtCount: 1,
@@ -4285,6 +4752,194 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
                   ? "AI Provider 连通性测试通过。"
                   : "还没有保存 AI API Key，也没有输入新的 AI API Key。"
               };
+            case "get_reading_assistant_preferences":
+              return readingAssistantPreferences;
+            case "save_reading_assistant_preferences":
+              readingAssistantPreferences = { ...readingAssistantPreferences, ...args.preferences };
+              return readingAssistantPreferences;
+            case "list_reading_assistant_threads":
+              return readingAssistantThreadSummaries;
+            case "get_reading_assistant_thread":
+              return readingAssistantThreadDetails[args.threadId] || null;
+            case "clear_reading_assistant_history":
+              return null;
+            case "cancel_reading_assistant_stream":
+              return null;
+            case "ask_reading_assistant_stream": {
+              const assistantRequest = args.request?.request || {};
+              const assistantMessage = String(assistantRequest.message || "");
+              if (assistantMessage.includes("理财") && assistantMessage.includes("哪些")) {
+                return {
+                  threadId: assistantRequest.threadId || "assistant-thread-category-books",
+                  userMessageId: "assistant-user-message-category-books",
+                  messageId: "assistant-message-category-books",
+                  answer:
+                    "统计缓存显示“经济理财”相关分类累计 4 本、3小时28分钟。当前本地明细可验证到 1 本，先列出可验证书目，不补写缺失书名：\n1. 《小狗钱钱》 - 博多·舍费尔",
+                  suggestions: ["帮我只看经济理财里已读完的书。", "帮我解释经济理财类阅读偏好。"],
+                  recommendedBooks: [],
+                  action: {
+                    type: "categoryBooks",
+                    payload: {
+                      categoryLabel: "经济理财",
+                      matchedCategoryTitles: ["经济理财"],
+                      queryStatus: "partial",
+                      totalStatCount: 4,
+                      totalStatReadingTimeText: "3小时28分钟",
+                      listedCount: 1,
+                      message: "当前本地明细可验证到 1 本。",
+                      books: [
+                        {
+                          bookId: "book-money",
+                          title: "小狗钱钱",
+                          author: "博多·舍费尔",
+                          category: "经济理财",
+                          progressPercent: 100,
+                          isFinished: true,
+                          readingTimeText: "1小时",
+                          source: "书架"
+                        }
+                      ]
+                    }
+                  },
+                  usedContext: [],
+                  generatedAt: String(nowSeconds),
+                  promptVersion: "reading-assistant-chat-v1.3",
+                  providerModel: null,
+                  basisNotice: "基于本地统计和书架明细。"
+                };
+              }
+              if (assistantMessage.includes("阅读节奏")) {
+                return {
+                  threadId: assistantRequest.threadId || "assistant-thread-edit",
+                  userMessageId: "assistant-user-message-edit-original",
+                  messageId: "assistant-message-edit-original",
+                  answer: "阅读节奏说明：当前周期比较稳定。",
+                  suggestions: ["把这个判断转成一个复盘问题。"],
+                  recommendedBooks: [],
+                  usedContext: [],
+                  generatedAt: String(nowSeconds),
+                  promptVersion: "reading-assistant-chat-v1.3",
+                  providerModel: null,
+                  basisNotice: "基于本地统计摘要。"
+                };
+              }
+              if (assistantMessage.includes("复盘问题")) {
+                return {
+                  threadId: assistantRequest.threadId || "assistant-thread-edit",
+                  userMessageId: "assistant-user-message-edit-updated",
+                  messageId: "assistant-message-edit-updated",
+                  answer: "复盘问题说明：先处理一个关键问题。",
+                  suggestions: [],
+                  recommendedBooks: [],
+                  usedContext: [],
+                  generatedAt: String(nowSeconds),
+                  promptVersion: "reading-assistant-chat-v1.3",
+                  providerModel: null,
+                  basisNotice: "基于本地统计摘要。"
+                };
+              }
+              if (assistantMessage.includes("长时间生成取消")) {
+                window.__e2eEmitTauriEvent("reading-assistant-stream", {
+                  streamId: args.request?.streamId,
+                  delta: "生成中片段",
+                  content: "生成中片段"
+                });
+                await new Promise((resolve) => setTimeout(resolve, 800));
+                return {
+                  threadId: assistantRequest.threadId || "assistant-thread-cancel",
+                  userMessageId: "assistant-user-message-cancel",
+                  messageId: "assistant-message-cancel",
+                  answer: "取消后不应显示。",
+                  suggestions: [],
+                  recommendedBooks: [],
+                  usedContext: [],
+                  generatedAt: String(nowSeconds),
+                  promptVersion: "reading-assistant-chat-v1.3",
+                  providerModel: aiState.provider.model,
+                  basisNotice: "基于取消生成测试。"
+                };
+              }
+              if (assistantMessage.includes("新书推荐流式输出")) {
+                window.__e2eEmitTauriEvent("reading-assistant-stream", {
+                  streamId: args.request?.streamId,
+                  delta: "新书推荐片段",
+                  content: "新书推荐片段"
+                });
+                await new Promise((resolve) => setTimeout(resolve, 120));
+                return {
+                  threadId: assistantRequest.threadId || "assistant-thread-new-book-streaming",
+                  userMessageId: "assistant-user-message-new-book-streaming",
+                  messageId: "assistant-message-new-book-streaming",
+                  answer: "新书推荐片段最终完成。",
+                  suggestions: ["把第一本加入候选前先搜索微信读书。"],
+                  recommendedBooks: [
+                    {
+                      title: "可能性的艺术",
+                      author: "作者甲",
+                      reason: "承接近期统计里的决策和长期主义主题。",
+                      fit: "适合在读完效率类书后换到更开阔的思考框架。",
+                      risk: "如果当前只想读强工具书，节奏可能偏慢。"
+                    }
+                  ],
+                  usedContext: [],
+                  generatedAt: String(nowSeconds),
+                  promptVersion: "reading-assistant-chat-v1.3",
+                  providerModel: aiState.provider.model,
+                  basisNotice: "基于新书推荐流式测试。"
+                };
+              }
+              if (assistantMessage.includes("流式输出")) {
+                window.__e2eEmitTauriEvent("reading-assistant-stream", {
+                  streamId: args.request?.streamId,
+                  delta: "流式片段",
+                  content: "流式片段"
+                });
+                await new Promise((resolve) => setTimeout(resolve, 120));
+                return {
+                  threadId: assistantRequest.threadId || "assistant-thread-streaming",
+                  userMessageId: "assistant-user-message-streaming",
+                  messageId: "assistant-message-streaming",
+                  answer: "流式片段最终完成。",
+                  suggestions: [],
+                  recommendedBooks: [],
+                  usedContext: [],
+                  generatedAt: String(nowSeconds),
+                  promptVersion: "reading-assistant-chat-v1.3",
+                  providerModel: aiState.provider.model,
+                  basisNotice: "基于普通问答流式测试。"
+                };
+              }
+              return {
+                threadId: assistantRequest.threadId || "assistant-thread-book-notes",
+                userMessageId: "assistant-user-message-book-notes",
+                messageId: "assistant-message-book-review",
+                answer: "这类笔记总结适合进入单本 AI 复盘，而不是阅读指南。",
+                suggestions: [],
+                recommendedBooks: [],
+                action: {
+                  type: "bookReview",
+                  payload: {
+                    bookId: assistantRequest.entityId || "book-deep-work",
+                    title: "深度工作",
+                    author: "卡尔·纽波特",
+                    message: "这类笔记总结应进入单本 AI 复盘，不走阅读指南。",
+                    ctaLabel: "生成 AI 复盘"
+                  }
+                },
+                usedContext: [
+                  {
+                    contextType: "rawBookNotes",
+                    label: "原始笔记",
+                    sourceRefs: ["book-deep-work"],
+                    itemCount: 2
+                  }
+                ],
+                generatedAt: String(nowSeconds),
+                promptVersion: "reading-assistant-chat-v1.3",
+                providerModel: aiState.provider.model,
+                basisNotice: "基于当前书籍笔记上下文回答。"
+              };
+            }
             case "remove_ai_credential":
               aiState = {
                 ...aiState,
@@ -4867,7 +5522,8 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
       emptyReviewSignals: options.emptyReviewSignals ?? false,
       noRecentReadingEntries: options.noRecentReadingEntries ?? false,
       failReadingStatsSync: options.failReadingStatsSync ?? false,
-      longStatsAction: options.longStatsAction ?? false
+      longStatsAction: options.longStatsAction ?? false,
+      manyReadingAssistantThreads: options.manyReadingAssistantThreads ?? false
     }
   );
 }
@@ -4880,6 +5536,19 @@ async function openPrimaryNav(page: Page, label: string) {
 
   await ensurePrimaryNavOpen(page);
   await page.locator(".sidebar").getByRole("button", { name: label, exact: true }).dispatchEvent("click");
+}
+
+async function openReadingAssistantFromStats(page: Page) {
+  await openPrimaryNav(page, "统计");
+  await page.getByLabel("打开 AI 阅读助手").click();
+  const readingAssistant = page.getByRole("complementary", { name: "AI 阅读助手" });
+  await expect(readingAssistant).toBeVisible();
+  return readingAssistant;
+}
+
+async function sendReadingAssistantMessage(readingAssistant: Locator, message: string) {
+  await readingAssistant.getByPlaceholder("问一个阅读问题").fill(message);
+  await readingAssistant.getByRole("button", { name: "发送" }).click();
 }
 
 async function closeSettingsDialog(page: Page) {

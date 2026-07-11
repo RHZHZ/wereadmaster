@@ -137,7 +137,7 @@ function buildBookReviewChanges(current: AIAssetVersionDetail, previous: AIAsset
 
   items.push(summarizeAddedOnlyDelta("主题标签", currentSummary.themeTags, previousSummary.themeTags, "个"));
   items.push(summarizeAddedOnlyDelta("关键观点", currentSummary.keyIdeas, previousSummary.keyIdeas, "条"));
-  items.push(summarizeListDelta("行动与复盘", currentSummary.actionItems, previousSummary.actionItems, "条"));
+  items.push(summarizeListDelta("下一步行动", currentSummary.actionItems, previousSummary.actionItems, "条"));
   items.push(summarizeListDelta("复盘问题", currentSummary.reflectionQuestions, previousSummary.reflectionQuestions, "条"));
 
   return items.filter(Boolean);

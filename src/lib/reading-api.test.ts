@@ -355,6 +355,119 @@ describe("settings export directory API", () => {
     });
   });
 
+  test("reading assistant maps category books action output", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    const request = {
+      scope: "readingStats" as const,
+      message: "我读过哪些理财类书籍",
+      enabledContext: []
+    };
+    invokeMock.mockResolvedValue({
+      threadId: "thread_1",
+      messageId: "msg_1",
+      answer: "统计缓存显示经济理财 4 本；当前本地可验证到 1 本。",
+      suggestions: [],
+      recommendedBooks: [],
+      action: {
+        type: "categoryBooks",
+        payload: {
+          categoryLabel: "经济理财",
+          matchedCategoryTitles: ["经济理财"],
+          queryStatus: "partial",
+          totalStatCount: 4,
+          totalStatReadingTimeText: "3小时28分钟",
+          listedCount: 1,
+          message: "当前本地明细可验证到 1 本。",
+          books: [
+            {
+              bookId: "book_money",
+              title: "小狗钱钱",
+              author: "博多·舍费尔",
+              category: "经济理财",
+              progressPercent: 100,
+              isFinished: true,
+              readingTimeText: "1小时",
+              source: "书架"
+            },
+            {
+              bookId: "",
+              title: "缺少 ID 的项应被过滤"
+            }
+          ]
+        }
+      },
+      usedContext: [],
+      generatedAt: "100",
+      promptVersion: "reading-assistant-chat-v1.3",
+      providerModel: null,
+      basisNotice: "基于本地统计。"
+    });
+
+    await expect(askReadingAssistant(request)).resolves.toMatchObject({
+      action: {
+        type: "categoryBooks",
+        payload: {
+          categoryLabel: "经济理财",
+          queryStatus: "partial",
+          totalStatCount: 4,
+          listedCount: 1,
+          books: [
+            {
+              bookId: "book_money",
+              title: "小狗钱钱",
+              isFinished: true,
+              source: "书架"
+            }
+          ]
+        }
+      }
+    });
+  });
+
+  test("reading assistant maps book review action output", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    const request = {
+      scope: "bookNotes" as const,
+      entityId: "book_1",
+      message: "基于我的笔记总结重点",
+      enabledContext: ["currentBook" as const, "rawBookNotes" as const]
+    };
+    invokeMock.mockResolvedValue({
+      threadId: "thread_1",
+      messageId: "msg_1",
+      answer: "这些重点适合进入单本 AI 复盘。",
+      suggestions: [],
+      recommendedBooks: [],
+      action: {
+        type: "bookReview",
+        payload: {
+          bookId: "book_1",
+          title: "富爸爸穷爸爸",
+          author: "罗伯特·清崎",
+          message: "这类笔记总结应进入单本 AI 复盘，不走阅读指南。",
+          ctaLabel: "生成 AI 复盘"
+        }
+      },
+      usedContext: [],
+      generatedAt: "100",
+      promptVersion: "reading-assistant-chat-v1.3",
+      providerModel: "gpt-4o-mini",
+      basisNotice: "基于当前书籍笔记上下文回答。"
+    });
+
+    await expect(askReadingAssistant(request)).resolves.toMatchObject({
+      action: {
+        type: "bookReview",
+        payload: {
+          bookId: "book_1",
+          title: "富爸爸穷爸爸",
+          author: "罗伯特·清崎",
+          ctaLabel: "生成 AI 复盘"
+        }
+      }
+    });
+  });
+
   test("reading assistant stream invokes Tauri with stream id", async () => {
     vi.stubGlobal("__TAURI__", {});
     const request = {
@@ -454,7 +567,17 @@ describe("settings export directory API", () => {
                 reason: "缺少标题的项应被过滤。"
               }
             ],
-            basisNotice: "基于当前阅读画像回答。"
+            basisNotice: "基于当前阅读画像回答。",
+            action: {
+              type: "bookReview",
+              payload: {
+                bookId: "book_1",
+                title: "富爸爸穷爸爸",
+                author: "罗伯特·清崎",
+                message: "这类笔记总结应进入单本 AI 复盘，不走阅读指南。",
+                ctaLabel: "生成 AI 复盘"
+              }
+            }
           },
           createdAt: "101"
         }
@@ -473,7 +596,15 @@ describe("settings export directory API", () => {
                 author: "作者甲"
               }
             ],
-            basisNotice: "基于当前阅读画像回答。"
+            basisNotice: "基于当前阅读画像回答。",
+            action: {
+              type: "bookReview",
+              payload: {
+                bookId: "book_1",
+                title: "富爸爸穷爸爸",
+                ctaLabel: "生成 AI 复盘"
+              }
+            }
           }
         }
       ]

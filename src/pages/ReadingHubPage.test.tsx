@@ -206,13 +206,52 @@ describe("reading hub asset history section", () => {
 
     const markup = renderToStaticMarkup(
       <ToastProvider>
-        <AIAssetVersionDetailView detail={detail} isLoading={false} onBack={() => undefined} />
+        <AIAssetVersionDetailView
+          detail={detail}
+          isLoading={false}
+          onBack={() => undefined}
+          onAskInsight={() => undefined}
+        />
       </ToastProvider>
     );
 
-    expect(markup).toContain("上次沉淀");
+    expect(markup).toContain("反馈沉淀");
     expect(markup).toContain("上一版已完成观点整理，本次改为压缩输出一页复盘。");
     expect(markup).toContain("不再重复生成观点整理动作");
+  });
+
+  test("renders feedback outcome follow-up action when assistant callback is available", () => {
+    const detail = createRouteVersionDetail({
+      inputHash: "route-v2",
+      progress: 68,
+      readingStageLabel: "收束整理",
+      refreshReason: "notes_changed",
+      promptVersion: "reading-route-v2.1",
+      routeOverview: "先收束当前书，再整理成一页复盘。",
+      nextActions: ["本周完成1页复盘，保留2条继续执行的动作。"],
+      reviewQuestion: "哪些规则值得下周继续执行？"
+    });
+    detail.readingRoute = {
+      ...detail.readingRoute!,
+      feedbackOutcomeSummary: {
+        summary: "上一版已完成观点整理，本次改为压缩输出一页复盘。",
+        appliedChanges: ["不再重复生成观点整理动作"]
+      }
+    };
+
+    const markup = renderToStaticMarkup(
+      <ToastProvider>
+        <AIAssetVersionDetailView
+          detail={detail}
+          isLoading={false}
+          onBack={() => undefined}
+          onAskInsight={() => undefined}
+        />
+      </ToastProvider>
+    );
+
+    expect(markup).toContain("反馈沉淀");
+    expect(markup).toContain("追问");
   });
 
   test("does not render feedback outcome summary when the asset version omits one", () => {
@@ -229,11 +268,16 @@ describe("reading hub asset history section", () => {
 
     const markup = renderToStaticMarkup(
       <ToastProvider>
-        <AIAssetVersionDetailView detail={detail} isLoading={false} onBack={() => undefined} />
+        <AIAssetVersionDetailView
+          detail={detail}
+          isLoading={false}
+          onBack={() => undefined}
+          onAskInsight={() => undefined}
+        />
       </ToastProvider>
     );
 
-    expect(markup).not.toContain("上次沉淀");
+    expect(markup).not.toContain("反馈沉淀");
   });
 
   test("renders local action feedback summary and regeneration boundary", () => {
@@ -269,15 +313,20 @@ describe("reading hub asset history section", () => {
 
     const markup = renderToStaticMarkup(
       <ToastProvider>
-        <AIAssetVersionDetailView detail={detail} isLoading={false} onBack={() => undefined} />
+        <AIAssetVersionDetailView
+          detail={detail}
+          isLoading={false}
+          onBack={() => undefined}
+          onAskInsight={() => undefined}
+        />
       </ToastProvider>
     );
 
     expect(markup).toContain("准备更新指南");
-    expect(markup).not.toContain("当前版本行动反馈摘要");
+    expect(markup).not.toContain("当前版本下一步行动反馈摘要");
     expect(markup).not.toContain("<dt>反馈记录</dt><dd>1</dd>");
     expect(markup).not.toContain("重新生成前应核对");
-    expect(markup).not.toContain("行动反馈摘要：已完成 1，暂不做 0，不适合 0，有记录 1");
+    expect(markup).not.toContain("下一步行动反馈摘要：已完成 1，暂不做 0，不适合 0，有记录 1");
   });
 
   test("uses stable version title instead of AI overview text", () => {
@@ -323,16 +372,22 @@ describe("reading hub asset history section", () => {
 
     const markup = renderToStaticMarkup(
       <ToastProvider>
-        <AIAssetVersionDetailView detail={detail} isLoading={false} onBack={() => undefined} />
+        <AIAssetVersionDetailView
+          detail={detail}
+          isLoading={false}
+          onBack={() => undefined}
+          onAskInsight={() => undefined}
+        />
       </ToastProvider>
     );
 
     expect(markup).toContain("准备更新复盘");
-    expect(markup).not.toContain("当前版本行动反馈摘要");
+    expect(markup).not.toContain("当前版本下一步行动反馈摘要");
     expect(markup).not.toContain("<dt>已完成</dt><dd>1</dd>");
     expect(markup).not.toContain("重新生成前应核对");
     expect(markup).toContain("已完成");
     expect(markup).toContain("编辑反馈");
+    expect(markup).toContain("拆解");
     expect(markup).toContain("已完成 1 / 共 1 项，记录 1");
     expect(markup).toContain("已完成复盘");
   });

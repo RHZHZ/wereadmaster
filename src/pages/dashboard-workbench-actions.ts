@@ -121,6 +121,16 @@ function resolveActionPreset(action: WorkbenchActionInput): WorkbenchActionPrese
     };
   }
 
+  if (title.startsWith("继续处理《") && title.includes("洞察")) {
+    return {
+      verb: "处理",
+      reason: "这本书已有生成过的复盘洞察，但还没有行动或问题反馈",
+      outcome: `回到${getReadingArtifactLabel("book-review-markdown")}，继续处理洞察、行动项和复盘问题`,
+      effort: "light",
+      source: "review"
+    };
+  }
+
   if (title.startsWith("去笔记中心同步笔记")) {
     return {
       verb: "同步",

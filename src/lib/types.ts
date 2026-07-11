@@ -150,6 +150,14 @@ export type ReadingAssistantActionOutput =
   | {
       type: "statsAggregate";
       payload: ReadingAssistantStatsAggregateOutput;
+    }
+  | {
+      type: "bookReview";
+      payload: ReadingAssistantBookReviewActionOutput;
+    }
+  | {
+      type: "categoryBooks";
+      payload: ReadingAssistantCategoryBooksOutput;
     };
 
 export type ReadingAssistantWereadSearchOutput = {
@@ -190,6 +198,36 @@ export type ReadingAssistantStatsCategory = {
   title: string;
   readingTimeText: string;
   readingCount?: number;
+};
+
+export type ReadingAssistantBookReviewActionOutput = {
+  bookId: string;
+  title: string;
+  author?: string;
+  message: string;
+  ctaLabel: string;
+};
+
+export type ReadingAssistantCategoryBooksOutput = {
+  categoryLabel: string;
+  matchedCategoryTitles: string[];
+  queryStatus: "found" | "partial" | "empty";
+  totalStatCount?: number;
+  totalStatReadingTimeText?: string;
+  listedCount: number;
+  message: string;
+  books: ReadingAssistantCategoryBookItem[];
+};
+
+export type ReadingAssistantCategoryBookItem = {
+  bookId: string;
+  title: string;
+  author?: string;
+  category?: string;
+  progressPercent?: number;
+  isFinished: boolean;
+  readingTimeText?: string;
+  source: string;
 };
 
 export type ReadingAssistantMessageOutput = {
@@ -233,6 +271,7 @@ export type ReadingAssistantRequest = {
   entityId?: string;
   message: string;
   enabledContext: ReadingAssistantContextOption[];
+  replaceFromMessageId?: string;
 };
 
 export type ReadingAssistantStreamEvent = {
@@ -243,6 +282,7 @@ export type ReadingAssistantStreamEvent = {
 
 export type ReadingAssistantAnswer = {
   threadId: string;
+  userMessageId: string;
   messageId: string;
   answer: string;
   suggestions: string[];

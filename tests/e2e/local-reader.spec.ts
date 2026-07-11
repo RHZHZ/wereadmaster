@@ -1545,7 +1545,7 @@ async function openPreviewLocalLibrary(page: Page) {
 
   await page.locator(".sidebar").getByRole("button", { name: "书架", exact: true }).click();
   await page.getByLabel("书架子菜单").getByRole("button", { name: "本地书库" }).click();
-  await expect(page.getByLabel("本地书库")).toBeVisible();
+  await expect(page.getByRole("region", { name: "本地书库" })).toBeVisible();
 }
 
 async function gotoLocalReaderPreview(page: Page) {

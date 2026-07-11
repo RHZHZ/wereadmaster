@@ -100,7 +100,7 @@ node scripts/run-tauri.mjs dev --config "%TEMP%/wxreadmaster-tauri-no-before-dev
 ```text
 Base URL: http://127.0.0.1:8787/v1
 Model: mock-gpt
-API Key: sk-local-mock
+API Key: sk-local-mock-1234567890
 ```
 
 建议同时确认：
@@ -109,6 +109,30 @@ API Key: sk-local-mock
 - 阅读助手“阅读记忆”：开启。
 - 阅读助手“原始笔记片段”：保持关闭。
 - 阅读助手“保存对话历史”：开启。
+
+### 4. P5 脚本化复跑入口
+
+P5 已新增桌面 QA 脚本，可在完成上述前置条件后复跑核心链路：
+
+```bash
+node scripts/qa-ai-reading-assistant-desktop.mjs --case normal-stream --preflight
+node scripts/qa-ai-reading-assistant-desktop.mjs --case normal-stream --verify-history
+```
+
+脚本默认会通过 UI 把 AI Provider 保存为本地 mock 配置。若已手动配置完成，可追加：
+
+```bash
+node scripts/qa-ai-reading-assistant-desktop.mjs --case normal-stream --verify-history --skip-configure
+```
+
+更多 case：
+
+```bash
+node scripts/qa-ai-reading-assistant-desktop.mjs --case cancel
+node scripts/qa-ai-reading-assistant-desktop.mjs --case provider-error
+```
+
+脚本不启动 Tauri，不启动 mock provider，也不调用真实 Provider。
 
 ## 用例 1：正常流式问答
 

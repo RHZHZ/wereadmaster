@@ -10,6 +10,7 @@ import {
   Download,
   ListChecks,
   Loader2,
+  MessageSquare,
   Search,
   SearchX,
   Sparkles,
@@ -17,10 +18,13 @@ import {
   X
 } from "lucide-react";
 import { AiActionFeedbackChecklist } from "../components/AiActionFeedbackChecklist";
+import { BookInsightSection } from "../components/BookInsightSection";
 import { reflectionFeedbackLabels } from "../components/AiActionFeedbackChecklist";
 import { SkillUpgradeNotice } from "../components/SkillUpgradeNotice";
 import { calculateTotalNotes } from "../lib/business-rules";
 import { buildAssetVersionChangeSummary } from "../lib/ai-asset-version-diff";
+import { buildActionItemAssistantDraft } from "../lib/action-item-drafts";
+import { buildFeedbackOutcomeAssistantDraft } from "../lib/feedback-outcome-drafts";
 import {
   buildAiActionItemId,
   buildAiReflectionQuestionId,
@@ -68,6 +72,7 @@ import type {
   ExportAiBulkMarkdownResponse,
   FeedbackOutcomeSummary,
   NotebookBook,
+  AssistantContextScope,
   ReadingStatsMode
 } from "../lib/types";
 import { buildBookReviewAssetOverview, type BookReviewAssetOverview } from "./book-review-asset-overview";
@@ -93,6 +98,10 @@ type ReadingHubPageProps = {
   onOpenReadingAssets: () => void;
   onOpenReadingReport: () => void;
   onOpenCandidateShelf: () => void;
+  onAskInsight?: (
+    draft: string,
+    context?: { scope: AssistantContextScope; entityId?: string }
+  ) => void;
   notesOverview?: NotebookOverviewResponse;
   onNotesOverviewChange: (overview: NotebookOverviewResponse | undefined) => void;
 };
@@ -109,6 +118,7 @@ export function ReadingHubPage({
   onOpenReadingAssets,
   onOpenReadingReport,
   onOpenCandidateShelf,
+  onAskInsight,
   notesOverview,
   onNotesOverviewChange
 }: ReadingHubPageProps) {
@@ -603,6 +613,11 @@ export function ReadingHubPage({
           assetBook={assetDetail}
           onBack={handleBackToAssetDetail}
           onPrepareUpdate={onPrepareAssetUpdate}
+          onAskInsight={
+            onAskInsight
+              ? (draft) => onAskInsight(draft, { scope: "aiAsset", entityId: selectedAssetBookId })
+              : undefined
+          }
         />
       ) : null}
 
@@ -1367,7 +1382,8 @@ export function AIAssetVersionDetailView({
   isLoading,
   assetBook,
   onBack,
-  onPrepareUpdate
+  onPrepareUpdate,
+  onAskInsight
 }: {
   detail?: AIAssetVersionDetail;
   previousDetail?: AIAssetVersionDetail;
@@ -1375,6 +1391,7 @@ export function AIAssetVersionDetailView({
   assetBook?: AIAssetDetail;
   onBack: () => void;
   onPrepareUpdate?: (detail: AIAssetVersionDetail, book: AIAssetDetail) => void;
+  onAskInsight?: (draft: string) => void;
 }) {
   const route = detail?.readingRoute;
   const summary = detail?.bookSummary;
@@ -1546,7 +1563,7 @@ export function AIAssetVersionDetailView({
               </ul>
             </section>
           ) : null}
-          <FeedbackOutcomeSummarySection summary={feedbackOutcomeSummary} />
+          <FeedbackOutcomeSummarySection summary={feedbackOutcomeSummary} onAskInsight={onAskInsight} />
         </div>
         {detail ? (
           <div className="ai-asset-detail-refresh">
@@ -1625,6 +1642,7 @@ export function AIAssetVersionDetailView({
               onActionFeedbackChange={handleBookReviewActionFeedbackChange}
               reflectionFeedbackByQuestionId={reviewFeedback.reflectionQuestions}
               onReflectionFeedbackChange={handleBookReviewReflectionFeedbackChange}
+              onAskInsight={onAskInsight}
             />
           ) : null}
 
@@ -1654,14 +1672,20 @@ export function AIAssetVersionDetailView({
   }
 }
 
-function FeedbackOutcomeSummarySection({ summary }: { summary?: FeedbackOutcomeSummary }) {
+function FeedbackOutcomeSummarySection({
+  summary,
+  onAskInsight
+}: {
+  summary?: FeedbackOutcomeSummary;
+  onAskInsight?: (draft: string) => void;
+}) {
   if (!summary?.summary) {
     return null;
   }
 
   return (
-    <section className="ai-asset-version-context" aria-label="上次沉淀">
-      <h4>上次沉淀</h4>
+    <section className="ai-asset-version-context" aria-label="反馈沉淀">
+      <h4>反馈沉淀</h4>
       <p>{summary.summary}</p>
       {summary.appliedChanges?.length ? (
         <ul>
@@ -1669,6 +1693,16 @@ function FeedbackOutcomeSummarySection({ summary }: { summary?: FeedbackOutcomeS
             <li key={item}>{item}</li>
           ))}
         </ul>
+      ) : null}
+      {onAskInsight ? (
+        <button
+          className="text-button book-insight-ask-button"
+          type="button"
+          onClick={() => onAskInsight(buildFeedbackOutcomeAssistantDraft(summary))}
+        >
+          <MessageSquare aria-hidden="true" size={14} />
+          追问
+        </button>
       ) : null}
     </section>
   );
@@ -1737,8 +1771,8 @@ function AIAssetUpdateDialog({
             </ul>
           </section>
 
-          <section className="ai-asset-update-section" aria-label="行动反馈摘要">
-            <h4>行动反馈摘要</h4>
+          <section className="ai-asset-update-section" aria-label="下一步行动反馈摘要">
+            <h4>下一步行动反馈摘要</h4>
             {hasFeedback ? (
               <dl className="ai-asset-update-feedback-grid">
                 <div>
@@ -1759,7 +1793,7 @@ function AIAssetUpdateDialog({
                 </div>
               </dl>
             ) : (
-              <p className="ai-asset-update-muted">暂无行动反馈记录。</p>
+              <p className="ai-asset-update-muted">暂无下一步行动反馈记录。</p>
             )}
           </section>
 
@@ -1814,11 +1848,11 @@ function buildRegenerationReviewItems(
     previousDetail
       ? `上一版：${formatAiTimestamp(previousDetail.generatedAt) || "未知时间"} · ${previousDetail.promptVersion}`
       : "上一版：暂无可对比版本",
-    `行动反馈摘要：已完成 ${summary?.completed ?? 0}，暂不做 ${summary?.skipped ?? 0}，不适合 ${summary?.notApplicable ?? 0}，有记录 ${summary?.withNote ?? 0}`
+    `下一步行动反馈摘要：已完成 ${summary?.completed ?? 0}，暂不做 ${summary?.skipped ?? 0}，不适合 ${summary?.notApplicable ?? 0}，有记录 ${summary?.withNote ?? 0}`
   ];
 
   if (detail.feature === "book-review") {
-    items.push("复盘更新前应额外核对：关键观点、行动与复盘问题是否仍贴合当前笔记。");
+    items.push("复盘更新前应额外核对：关键观点、下一步行动与复盘问题是否仍贴合当前笔记。");
   } else {
     items.push("指南更新前应额外核对：推进任务、复盘点和下一步行动是否仍贴合当前阅读阶段。");
   }
@@ -1833,7 +1867,8 @@ function BookReviewVersionContent({
   actionFeedbackByItemId,
   onActionFeedbackChange,
   reflectionFeedbackByQuestionId,
-  onReflectionFeedbackChange
+  onReflectionFeedbackChange,
+  onAskInsight
 }: {
   summary: NonNullable<AIAssetVersionDetail["bookSummary"]>;
   providerModel?: string;
@@ -1842,6 +1877,7 @@ function BookReviewVersionContent({
   onActionFeedbackChange: (itemId: string, feedback: AiActionFeedbackRecord | undefined) => void;
   reflectionFeedbackByQuestionId: AiActionFeedbackByItemId;
   onReflectionFeedbackChange: (questionId: string, feedback: AiActionFeedbackRecord | undefined) => void;
+  onAskInsight?: (draft: string) => void;
 }) {
   return (
     <div className="ai-summary-content ai-asset-version-review">
@@ -1865,20 +1901,24 @@ function BookReviewVersionContent({
         </div>
       </section>
 
+      <BookInsightSection summary={summary} onAskInsight={onAskInsight} />
+
       <div className="ai-summary-grid">
         <StaticSummaryList title="关键观点" items={summary.keyIdeas} emptyText="这次复盘没有提取到关键观点。" />
         <StaticSummaryList title="我的关注点" items={summary.myFocus} emptyText="这次复盘没有形成稳定关注点。" />
         <AiActionFeedbackChecklist
-          title="行动与复盘"
-          ariaLabel="行动与复盘"
+          title="下一步行动"
+          ariaLabel="下一步行动"
           icon={<ListChecks aria-hidden="true" size={18} />}
           items={summary.actionItems.map((item, index) => ({
             id: buildAiActionItemId(item, index),
             text: item
           }))}
-          emptyText="这次复盘没有生成行动项。"
+          emptyText="这次复盘没有生成下一步行动。"
           feedbackByItemId={actionFeedbackByItemId}
           onFeedbackChange={onActionFeedbackChange}
+          onAskItem={onAskInsight ? (item) => onAskInsight(buildActionItemAssistantDraft(item.text)) : undefined}
+          askItemLabel="拆解"
         />
       </div>
 

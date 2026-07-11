@@ -1,4 +1,5 @@
 import { useEffect, useId, useState, type ReactNode } from "react";
+import { MessageSquare } from "lucide-react";
 import {
   createAiActionFeedbackRecord,
   normalizeAiActionFeedbackNote,
@@ -26,6 +27,8 @@ type AiActionFeedbackChecklistProps = {
   onFeedbackChange: (itemId: string, feedback: AiActionFeedbackRecord | undefined) => void;
   onCopy?: () => void;
   copyButton?: ReactNode;
+  onAskItem?: (item: AiActionFeedbackChecklistItem) => void;
+  askItemLabel?: string;
   labels?: AiActionFeedbackChecklistLabels;
 };
 
@@ -77,6 +80,8 @@ export function AiActionFeedbackChecklist({
   onFeedbackChange,
   onCopy,
   copyButton,
+  onAskItem,
+  askItemLabel = "拆解",
   labels = actionFeedbackLabels
 }: AiActionFeedbackChecklistProps) {
   const [editingItem, setEditingItem] = useState<AiActionFeedbackChecklistItem>();
@@ -118,6 +123,8 @@ export function AiActionFeedbackChecklist({
               feedback={feedbackByItemId[item.id]}
               labels={labels}
               onEdit={() => setEditingItem(item)}
+              onAsk={onAskItem ? () => onAskItem(item) : undefined}
+              askLabel={askItemLabel}
             />
           ))}
         </ul>
@@ -145,12 +152,16 @@ function ActionFeedbackRow({
   item,
   feedback,
   labels,
-  onEdit
+  onEdit,
+  onAsk,
+  askLabel
 }: {
   item: AiActionFeedbackChecklistItem;
   feedback?: AiActionFeedbackRecord;
   labels: AiActionFeedbackChecklistLabels;
   onEdit: () => void;
+  onAsk?: () => void;
+  askLabel: string;
 }) {
   const status = feedback?.status ?? "todo";
   const note = feedback?.note ?? "";
@@ -183,6 +194,16 @@ function ActionFeedbackRow({
             >
               {feedback ? "编辑反馈" : "记录反馈"}
             </button>
+            {onAsk ? (
+              <button
+                className="text-button ai-action-feedback-note-toggle"
+                type="button"
+                onClick={onAsk}
+              >
+                <MessageSquare aria-hidden="true" size={14} />
+                {askLabel}
+              </button>
+            ) : null}
           </div>
         </div>
       </div>

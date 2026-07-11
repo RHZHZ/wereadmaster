@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { BookshelfResponse, NotebookOverviewResponse, ReadingStatsResponse } from "../lib/reading-api";
 import type { ReadingStatsCache } from "./reading-stats-period";
 import { DashboardPage } from "./DashboardPage";
+import { buildUnprocessedInsightItem } from "./DashboardPage";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn()
@@ -17,6 +18,61 @@ vi.mock("@tauri-apps/plugin-updater", () => ({
 }));
 
 describe("dashboard page reading persona overview", () => {
+  test("builds a recent unprocessed insight reminder from generated reviews", () => {
+    const openedBooks: string[] = [];
+    const item = buildUnprocessedInsightItem({
+      summaries: [
+        {
+          bookId: "old",
+          title: "旧复盘",
+          overview: "旧内容",
+          cachedUpdatedAt: "2026-06-01T00:00:00.000Z",
+          feedbackCount: 0
+        },
+        {
+          bookId: "done",
+          title: "已处理复盘",
+          overview: "已处理",
+          cachedUpdatedAt: "2026-07-01T00:00:00.000Z",
+          feedbackCount: 2
+        },
+        {
+          bookId: "latest",
+          title: "最新复盘",
+          author: "作者",
+          overview: "新内容",
+          cachedUpdatedAt: "2026-07-10T00:00:00.000Z",
+          feedbackCount: 0
+        }
+      ],
+      onOpenBookSummary: (book) => openedBooks.push(book.bookId),
+      onOpenReadingReview: () => openedBooks.push("review")
+    });
+
+    expect(item?.title).toBe("最新复盘");
+    expect(item?.meta).toContain("尚无反馈");
+
+    item?.onClick();
+    expect(openedBooks).toEqual(["latest"]);
+  });
+
+  test("does not build insight reminder when every generated review has feedback", () => {
+    const item = buildUnprocessedInsightItem({
+      summaries: [
+        {
+          bookId: "done",
+          title: "已处理复盘",
+          overview: "已处理",
+          cachedUpdatedAt: "2026-07-01T00:00:00.000Z",
+          feedbackCount: 1
+        }
+      ],
+      onOpenReadingReview: () => undefined
+    });
+
+    expect(item).toBeUndefined();
+  });
+
   test("renders daily workbench primary action before auxiliary actions", () => {
     const markup = renderToStaticMarkup(
       <DashboardPage

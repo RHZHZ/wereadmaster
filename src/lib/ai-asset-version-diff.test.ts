@@ -59,7 +59,7 @@ describe("ai asset version diff", () => {
     expect(summary?.items).toContain("复盘概览已更新。");
     expect(summary?.items).toContain("主题标签：新增 1 个，当前共 2 个。");
     expect(summary?.items).toContain("关键观点：新增 1 条，当前共 2 条。");
-    expect(summary?.items).toContain("行动与复盘：新增 1 条，移除 1 条，当前共 1 条。");
+    expect(summary?.items).toContain("下一步行动：新增 1 条，移除 1 条，当前共 1 条。");
     expect(summary?.items).toContain("复盘问题：新增 1 条，移除 1 条，当前共 1 条。");
   });
 

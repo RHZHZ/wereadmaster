@@ -455,6 +455,14 @@ export function App() {
   const [settingsPreferredCategory, setSettingsPreferredCategory] =
     useState<SettingsCategoryId>();
   const [isReadingAssistantOpen, setIsReadingAssistantOpen] = useState(false);
+  const [readingAssistantOverrideContext, setReadingAssistantOverrideContext] = useState<{
+    scope: AssistantContextScope;
+    entityId?: string;
+  }>();
+  const [readingAssistantInitialDraft, setReadingAssistantInitialDraft] = useState<{
+    text: string;
+    nonce: number;
+  }>();
   const [candidateShelfRefreshKey, setCandidateShelfRefreshKey] = useState(0);
   const [appUpdateRuntime, setAppUpdateRuntime] = useState<AppUpdateRuntime>();
   const [appUpdateStatus, setAppUpdateStatus] = useState<AppUpdateStatus>();
@@ -471,12 +479,14 @@ export function App() {
   >(null);
   const { showToast } = useToast();
   const activeDetailEntry = detailEntry;
-  const readingAssistantContext = resolveReadingAssistantContext({
+  const resolvedReadingAssistantContext = resolveReadingAssistantContext({
     activeView,
     detailEntry: activeDetailEntry,
     selectedNotebookBook,
     readingHubTab,
   });
+  const readingAssistantContext =
+    readingAssistantOverrideContext ?? resolvedReadingAssistantContext;
   const effectiveTheme =
     preferences.themeMode === "system"
       ? systemPrefersDark
@@ -942,6 +952,35 @@ export function App() {
     setIsSettingsOpen(true);
   }
 
+  function handleOpenReadingAssistant() {
+    setReadingAssistantOverrideContext(undefined);
+    setReadingAssistantInitialDraft(undefined);
+    setIsReadingAssistantOpen(true);
+  }
+
+  function handleCloseReadingAssistant() {
+    setIsReadingAssistantOpen(false);
+    setReadingAssistantOverrideContext(undefined);
+    setReadingAssistantInitialDraft(undefined);
+  }
+
+  function handleAskInsight(
+    draft: string,
+    context?: { scope: AssistantContextScope; entityId?: string },
+  ) {
+    const normalizedDraft = draft.trim();
+    if (!normalizedDraft) {
+      return;
+    }
+
+    setReadingAssistantOverrideContext(context);
+    setReadingAssistantInitialDraft({
+      text: normalizedDraft,
+      nonce: Date.now(),
+    });
+    setIsReadingAssistantOpen(true);
+  }
+
   function handleOpenReadingReviewTab(tab: ReadingHubTab) {
     closeMobileSidebar();
     setSidebarMenuState(openSidebarMenuState("readingReview"));
@@ -1011,6 +1050,22 @@ export function App() {
     startTransition(() => {
       setActiveView("bookDetail");
     });
+  }
+
+  function findShelfBookEntry(bookId: string): ShelfEntry | undefined {
+    return bookshelf?.snapshot.entries.find(
+      (entry) => entry.type === "book" && entry.id === bookId,
+    );
+  }
+
+  function handleOpenBookDetailFromAssistant(bookId: string) {
+    const entry = findShelfBookEntry(bookId);
+    if (!entry) {
+      return;
+    }
+
+    handleCloseReadingAssistant();
+    handleOpenBookDetail(entry);
   }
 
   function handleOpenReadingRouteForShelfEntry(entry: ShelfEntry) {
@@ -1163,6 +1218,52 @@ export function App() {
       readingProgress: bookDetail?.progress.progressPercent,
     });
     setBookAiBackView("bookDetail");
+    startTransition(() => {
+      setActiveView("bookAiSummary");
+    });
+  }
+
+  function handleOpenBookReviewFromAssistant(
+    bookId: string,
+    title?: string,
+    author?: string,
+  ) {
+    setPreparedAssetUpdateIntent(undefined);
+    const detail = bookDetail?.detail;
+    const detailBookId = detail?.bookId ?? activeDetailEntry?.id;
+    const currentDetailBook =
+      detailBookId === bookId
+        ? {
+            bookId,
+            title: detail?.title ?? activeDetailEntry?.title ?? title ?? "未命名书籍",
+            author: detail?.author ?? activeDetailEntry?.author ?? author,
+            cover: detail?.cover ?? activeDetailEntry?.cover,
+            reviewCount: 0,
+            noteCount: 1,
+            bookmarkCount: 0,
+            totalNoteCount: 1,
+            readingProgress: bookDetail?.progress.progressPercent,
+          }
+        : undefined;
+    const cachedBook = bookNotesCache[bookId]?.book;
+    const selectedBook =
+      selectedNotebookBook?.bookId === bookId ? selectedNotebookBook : undefined;
+
+    setSelectedNotebookBook(
+      selectedBook ??
+        cachedBook ??
+        currentDetailBook ?? {
+          bookId,
+          title: title ?? "未命名书籍",
+          author,
+          reviewCount: 0,
+          noteCount: 0,
+          bookmarkCount: 0,
+          totalNoteCount: 0,
+        },
+    );
+    setBookAiBackView(activeView === "bookDetail" ? "bookDetail" : "bookNotes");
+    handleCloseReadingAssistant();
     startTransition(() => {
       setActiveView("bookAiSummary");
     });
@@ -1558,6 +1659,7 @@ export function App() {
             onOpenNotes={() => handleNavigate("notes")}
             onOpenStats={() => handleNavigate("stats")}
             onOpenReadingReview={() => handleOpenReadingReviewTab("report")}
+            onOpenBookSummary={handleOpenBookAiSummaryFromHub}
             onOpenDiscovery={() => handleNavigate("discovery")}
             onOpenShelfEntry={handleOpenBookDetail}
             onOpenBookNotes={handleOpenBookNotes}
@@ -1691,6 +1793,12 @@ export function App() {
             preparedUpdate={
               preparedAssetUpdateIntent?.feature === "book-review" ? preparedAssetUpdateIntent : undefined
             }
+            onAskInsight={(draft) =>
+              handleAskInsight(draft, {
+                scope: "bookNotes",
+                entityId: selectedNotebookBook?.bookId,
+              })
+            }
             backLabel={
               bookAiBackView === "readingReview"
                 ? "返回复盘中心"
@@ -1739,6 +1847,7 @@ export function App() {
             onOpenReadingAssets={() => setReadingHubTab("guides")}
             onOpenReadingReport={() => setReadingHubTab("report")}
             onOpenCandidateShelf={() => handleNavigate("candidateShelf")}
+            onAskInsight={handleAskInsight}
             notesOverview={notesOverview}
             onNotesOverviewChange={setNotesOverview}
           />
@@ -1777,18 +1886,27 @@ export function App() {
         />
       ) : null}
       <ReadingAssistantLauncher
-        onOpen={() => setIsReadingAssistantOpen(true)}
+        onOpen={handleOpenReadingAssistant}
       />
       <ReadingAssistantPanel
         open={isReadingAssistantOpen}
         scope={readingAssistantContext.scope}
         entityId={readingAssistantContext.entityId}
+        initialDraft={readingAssistantInitialDraft?.text}
+        initialDraftNonce={readingAssistantInitialDraft?.nonce}
         onCandidateAdded={() => setCandidateShelfRefreshKey((current) => current + 1)}
         onOpenCandidateShelf={() => {
-          setIsReadingAssistantOpen(false);
+          handleCloseReadingAssistant();
           handleNavigate("candidateShelf");
         }}
-        onClose={() => setIsReadingAssistantOpen(false)}
+        onOpenBookReview={handleOpenBookReviewFromAssistant}
+        onOpenBookDetail={handleOpenBookDetailFromAssistant}
+        canOpenBookDetail={(bookId) => Boolean(findShelfBookEntry(bookId))}
+        onOpenAiSettings={() => {
+          handleCloseReadingAssistant();
+          handleOpenSettings("ai");
+        }}
+        onClose={handleCloseReadingAssistant}
       />
       <SettingsPage
         open={isSettingsOpen}
