@@ -1,6 +1,6 @@
 [package]
 name = "personal-reading-app"
-version = "1.0.12"
+version = "1.0.13"
 description = "A local-first personal reading manager for WeRead users"
 authors = ["RHZ"]
 edition = "2021"
