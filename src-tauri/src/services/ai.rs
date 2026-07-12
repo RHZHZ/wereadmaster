@@ -9588,6 +9588,10 @@ fn is_reading_route_request(message: &str) -> bool {
 }
 
 fn is_note_summary_or_review_request(message: &str) -> bool {
+    if !is_explicit_formal_book_review_request(message) && is_direct_note_question_request(message) {
+        return false;
+    }
+
     let mentions_notes = [
         "笔记", "划线", "想法", "摘录", "高亮", "批注", "标注", "书摘",
     ]
@@ -9605,6 +9609,52 @@ fn is_note_summary_or_review_request(message: &str) -> bool {
     is_explicit_formal_book_review_request(message)
         || (mentions_notes && (asks_summary || targets_review_output))
         || (asks_summary && targets_review_output)
+}
+
+fn is_direct_note_question_request(message: &str) -> bool {
+    let asks_direct_question_output = [
+        "有什么",
+        "有哪些",
+        "哪些",
+        "哪几个",
+        "什么",
+        "为什么",
+        "如何",
+        "是否",
+        "怎么",
+        "怎么看",
+        "列出",
+        "列一下",
+        "给出",
+        "帮我列",
+        "整理",
+        "反复问题",
+        "后续问题",
+        "共同点",
+        "矛盾",
+        "困惑",
+        "张力",
+        "反映",
+        "背后",
+    ]
+    .iter()
+    .any(|token| message.contains(token));
+    let mentions_note_context = [
+        "笔记",
+        "划线",
+        "想法",
+        "摘录",
+        "高亮",
+        "批注",
+        "标注",
+        "书摘",
+        "当前复盘",
+        "已有复盘",
+    ]
+    .iter()
+    .any(|token| message.contains(token));
+
+    asks_direct_question_output && (mentions_note_context || message.contains("个问题"))
 }
 
 fn is_existing_review_or_insight_follow_up_request(message: &str) -> bool {
@@ -16351,6 +16401,40 @@ mod tests {
                 assert_eq!(payload.cta_label, "生成 AI 复盘");
             }
             other => panic!("unexpected action: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reading_assistant_book_review_action_skips_direct_note_question_request() {
+        let connection = Connection::open_in_memory().expect("in-memory db should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        connection
+            .execute(
+                "
+                INSERT INTO book_details (
+                    book_id, title, author, cover, category, intro, raw_json, updated_at
+                ) VALUES ('book_1', '大医（全集）', '马伯庸', NULL, '历史', NULL, '{}', '100')
+                ",
+                [],
+            )
+            .expect("book detail should insert");
+
+        for message in [
+            "这些笔记背后有什么反复问题?",
+            "帮我整理 3 个问题",
+            "这些笔记背后的共同点是什么?",
+            "这些摘录反映了什么矛盾?",
+        ] {
+            let action = build_reading_assistant_book_review_action(
+                &connection,
+                &AssistantContextScope::BookNotes,
+                Some("book_1"),
+                message,
+                ReadingAssistantIntent::General,
+            )
+            .expect("book review action should not fail");
+
+            assert!(action.is_none(), "{message} should stay in chat");
         }
     }
 
