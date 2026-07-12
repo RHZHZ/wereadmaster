@@ -3201,6 +3201,24 @@ button:disabled {
   line-height: 1.5;
 }
 
+.public-content-panel .secondary-action {
+  min-height: 38px;
+  border-color: rgba(47, 111, 94, 0.26);
+  padding: 8px 12px;
+  color: var(--green);
+  background:
+    linear-gradient(180deg, rgba(255, 253, 248, 0.92), rgba(244, 249, 244, 0.82)),
+    rgba(255, 253, 248, 0.88);
+  box-shadow: 0 8px 18px rgba(36, 49, 58, 0.06);
+}
+
+.public-content-panel .secondary-action:hover:not(:disabled) {
+  border-color: rgba(47, 111, 94, 0.38);
+  background:
+    linear-gradient(180deg, rgba(255, 253, 248, 0.98), rgba(235, 247, 241, 0.88)),
+    rgba(255, 253, 248, 0.94);
+}
+
 .public-content-status,
 .public-content-empty,
 .public-reviews-status,
@@ -3235,7 +3253,7 @@ button:disabled {
 .public-content-list,
 .public-review-list {
   display: grid;
-  gap: 12px;
+  gap: 14px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -3244,15 +3262,14 @@ button:disabled {
 .public-content-item,
 .public-review-item {
   display: grid;
-  gap: 8px;
-  border-top: 1px solid var(--line);
-  padding-top: 12px;
-}
-
-.public-content-item:first-child,
-.public-review-item:first-child {
-  border-top: 0;
-  padding-top: 0;
+  gap: 10px;
+  border: 1px solid rgba(36, 49, 58, 0.10);
+  border-radius: 8px;
+  padding: 14px 16px;
+  background:
+    linear-gradient(180deg, rgba(255, 253, 248, 0.90), rgba(250, 246, 236, 0.72)),
+    rgba(255, 253, 248, 0.78);
+  box-shadow: 0 8px 18px rgba(36, 49, 58, 0.04);
 }
 
 .public-content-meta,
@@ -3260,21 +3277,27 @@ button:disabled {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .public-content-meta strong,
 .public-review-meta strong {
   color: var(--ink);
+  font-size: 13px;
 }
 
 .public-content-meta span,
 .public-review-meta span {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: #315348;
+  background: rgba(47, 111, 94, 0.08);
 }
 
 .public-content-item p,
@@ -3286,7 +3309,28 @@ button:disabled {
   white-space: pre-wrap;
 }
 
+.best-bookmark-quote {
+  max-width: 88ch;
+  border-left: 3px solid rgba(202, 163, 93, 0.58);
+  border-radius: 0 8px 8px 0;
+  padding: 8px 0 8px 12px;
+  background:
+    linear-gradient(90deg, rgba(202, 163, 93, 0.08), transparent 76%),
+    transparent;
+  font-size: 15px;
+  line-height: 1.85;
+}
+
+.public-review-body {
+  max-width: 82ch;
+  font-size: 15px;
+  line-height: 1.9;
+}
+
 .read-reviews-toggle {
+  min-height: 32px;
+  border-radius: 8px;
+  padding: 0 2px;
   justify-self: start;
   font-size: 13px;
 }
@@ -3299,8 +3343,11 @@ button:disabled {
 .read-reviews-inline {
   display: grid;
   gap: 10px;
+  border: 1px solid rgba(47, 111, 94, 0.12);
   border-left: 3px solid rgba(47, 111, 94, 0.32);
-  padding: 2px 0 2px 12px;
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: rgba(47, 111, 94, 0.055);
 }
 
 .read-reviews-inline-heading {
@@ -3335,9 +3382,94 @@ button:disabled {
 .read-reviews-inline p {
   margin: 0;
   color: var(--ink);
-  line-height: 1.7;
+  line-height: 1.75;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+.read-review-body {
+  max-width: 78ch;
+}
+
+.app-frame[data-effective-theme="dark"] .public-content-panel .secondary-action {
+  border-color: rgba(116, 185, 156, 0.28);
+  color: #d7f2e7;
+  background:
+    linear-gradient(180deg, rgba(31, 43, 39, 0.94), rgba(22, 33, 31, 0.82)),
+    rgba(31, 43, 39, 0.86);
+  box-shadow: 0 10px 22px rgba(3, 12, 10, 0.22);
+}
+
+.app-frame[data-effective-theme="dark"] .public-content-panel .secondary-action:hover:not(:disabled) {
+  border-color: rgba(116, 185, 156, 0.44);
+  background:
+    linear-gradient(180deg, rgba(38, 54, 49, 0.96), rgba(31, 43, 39, 0.90)),
+    rgba(31, 43, 39, 0.92);
+}
+
+.app-frame[data-effective-theme="dark"] .public-content-item,
+.app-frame[data-effective-theme="dark"] .public-review-item {
+  border-color: rgba(232, 238, 233, 0.12);
+  background:
+    linear-gradient(180deg, rgba(31, 43, 39, 0.88), rgba(22, 33, 31, 0.72)),
+    rgba(31, 43, 39, 0.82);
+  box-shadow: 0 10px 24px rgba(3, 12, 10, 0.18);
+}
+
+.app-frame[data-effective-theme="dark"] .public-content-meta span,
+.app-frame[data-effective-theme="dark"] .public-review-meta span {
+  color: #cfe7dc;
+  background: rgba(116, 185, 156, 0.14);
+}
+
+.app-frame[data-effective-theme="dark"] .best-bookmark-quote {
+  border-left-color: rgba(224, 188, 112, 0.62);
+  background:
+    linear-gradient(90deg, rgba(224, 188, 112, 0.10), transparent 76%),
+    transparent;
+}
+
+.app-frame[data-effective-theme="dark"] .read-reviews-inline {
+  border-color: rgba(116, 185, 156, 0.16);
+  border-left-color: rgba(116, 185, 156, 0.42);
+  background: rgba(116, 185, 156, 0.075);
+}
+
+.app-frame[data-effective-theme="dark"] .public-content-status,
+.app-frame[data-effective-theme="dark"] .public-content-empty,
+.app-frame[data-effective-theme="dark"] .public-reviews-status,
+.app-frame[data-effective-theme="dark"] .public-reviews-empty {
+  border-color: rgba(232, 238, 233, 0.12);
+  background: rgba(31, 43, 39, 0.74);
+}
+
+.app-frame[data-effective-theme="dark"] .public-content-status.is-error,
+.app-frame[data-effective-theme="dark"] .public-reviews-status.is-error {
+  color: #ffd1c2;
+  background: rgba(143, 61, 50, 0.20);
+}
+
+@media (max-width: 700px) {
+  .public-content-panel .panel-heading,
+  .public-reviews-panel .panel-heading {
+    display: grid;
+    justify-items: start;
+  }
+
+  .public-content-panel .secondary-action {
+    min-height: 44px;
+  }
+
+  .public-content-item,
+  .public-review-item {
+    padding: 13px;
+  }
+
+  .best-bookmark-quote,
+  .public-review-body,
+  .read-review-body {
+    max-width: 100%;
+  }
 }
 
 .book-intro {
@@ -8063,6 +8195,41 @@ h6.local-reader-markdown-block--heading {
   align-content: start;
 }
 
+.candidate-bookshelf-card.shelf-card--menu-card {
+  padding-right: 48px;
+}
+
+.candidate-bookshelf-card .shelf-card-menu {
+  top: 9px;
+  right: 9px;
+}
+
+.candidate-bookshelf-card .shelf-card-menu-trigger {
+  width: 34px;
+  height: 34px;
+}
+
+.candidate-bookshelf-card .shelf-card-menu-popover {
+  top: 40px;
+  width: 136px;
+}
+
+@media (max-width: 620px) {
+  .candidate-bookshelf-card.shelf-card--menu-card {
+    padding-right: 54px;
+  }
+
+  .candidate-bookshelf-card .shelf-card-menu-trigger {
+    width: 40px;
+    height: 40px;
+  }
+
+  .candidate-bookshelf-card .shelf-card-menu-popover {
+    top: 46px;
+    right: -2px;
+  }
+}
+
 .candidate-source-badge {
   display: inline-flex;
   align-items: center;
@@ -8155,10 +8322,6 @@ h6.local-reader-markdown-block--heading {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-}
-
-.candidate-remove-button {
-  justify-self: start;
 }
 
 .candidate-decision-entry,
@@ -15932,6 +16095,26 @@ h6.local-reader-markdown-block--heading {
   background: rgba(47, 111, 94, 0.08);
 }
 
+.shelf-card-menu-popover button:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.66;
+}
+
+.shelf-card-menu-popover button:disabled:hover {
+  color: var(--muted);
+  background: transparent;
+}
+
+.shelf-card-menu-popover button.is-danger {
+  color: var(--rust);
+}
+
+.shelf-card-menu-popover button.is-danger:hover:not(:disabled) {
+  color: #8f3d32;
+  background: rgba(143, 61, 50, 0.09);
+}
+
 .shelf-loading {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -18668,6 +18851,15 @@ h6.local-reader-markdown-block--heading {
   color: #d7f2e7;
   border-color: rgba(116, 185, 156, 0.34);
   background: var(--surface-hover);
+}
+
+.app-frame[data-effective-theme="dark"] .shelf-card-menu-popover button.is-danger {
+  color: #ffd1c2;
+}
+
+.app-frame[data-effective-theme="dark"] .shelf-card-menu-popover button.is-danger:hover:not(:disabled) {
+  color: #ffe2d8;
+  background: rgba(190, 91, 73, 0.16);
 }
 
 .app-frame[data-effective-theme="dark"] .stats-period-anchor,
@@ -22507,15 +22699,37 @@ h6.local-reader-markdown-block--heading {
 
 .reading-assistant-markdown-lite {
   display: grid;
-  gap: 8px;
+  gap: 10px;
+}
+
+.reading-assistant-markdown-lite p {
+  margin: 0;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.reading-assistant-markdown-lite-label {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.45;
 }
 
 .reading-assistant-markdown-lite ul,
 .reading-assistant-markdown-lite ol {
   display: grid;
-  gap: 6px;
+  gap: 7px;
   margin: 0;
-  padding-left: 20px;
+  padding-left: 19px;
+}
+
+.reading-assistant-markdown-lite-list.is-after-label {
+  border-left: 2px solid rgba(33, 125, 131, 0.18);
+  border-radius: 0 6px 6px 0;
+  padding: 2px 0 2px 22px;
+  background:
+    linear-gradient(90deg, rgba(33, 125, 131, 0.055), transparent 78%),
+    transparent;
 }
 
 .reading-assistant-markdown-lite li {
@@ -22548,10 +22762,9 @@ h6.local-reader-markdown-block--heading {
 }
 
 .reading-assistant-recommendation-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
+  min-width: 0;
+  display: grid;
+  gap: 4px;
 }
 
 .reading-assistant-recommendation-heading > span {
@@ -22570,11 +22783,17 @@ h6.local-reader-markdown-block--heading {
   color: var(--muted);
 }
 
+.reading-assistant-recommendation-footer {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: 10px;
+}
+
 .reading-assistant-recommendation-actions {
-  flex: 0 0 auto;
+  min-width: 0;
   display: flex;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 6px;
 }
 
@@ -22585,15 +22804,17 @@ h6.local-reader-markdown-block--heading {
   gap: 5px;
 }
 
-.reading-assistant-recommendation-item dl {
+.reading-assistant-recommendation-item dl,
+.reading-assistant-recommendation-body {
   display: grid;
-  gap: 7px;
-  margin: 9px 0 0;
+  gap: 9px;
+  margin: 10px 0 0;
 }
 
-.reading-assistant-recommendation-item dl div {
+.reading-assistant-recommendation-item dl div,
+.reading-assistant-recommendation-section {
   display: grid;
-  gap: 2px;
+  gap: 3px;
 }
 
 .reading-assistant-recommendation-item dt {
@@ -23095,6 +23316,13 @@ h6.local-reader-markdown-block--heading {
 
 .app-frame[data-effective-theme="dark"] .reading-assistant-model-chip {
   background: rgba(33, 125, 131, 0.14);
+}
+
+.app-frame[data-effective-theme="dark"] .reading-assistant-markdown-lite-list.is-after-label {
+  border-left-color: rgba(116, 185, 156, 0.24);
+  background:
+    linear-gradient(90deg, rgba(116, 185, 156, 0.08), transparent 78%),
+    transparent;
 }
 
 @media (max-width: 720px) {

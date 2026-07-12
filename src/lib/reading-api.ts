@@ -1052,6 +1052,10 @@ export async function askReadingAssistantStream(
 export async function listenReadingAssistantStream(
   handler: (event: ReadingAssistantStreamEvent) => void
 ): Promise<() => void> {
+  if (!hasTauriRuntime()) {
+    return () => undefined;
+  }
+
   return listen<ReadingAssistantStreamEvent>("reading-assistant-stream", (event) => {
     handler(event.payload);
   });

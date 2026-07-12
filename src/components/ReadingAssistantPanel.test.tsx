@@ -2,7 +2,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import {
   ReadingAssistantBookReviewAction,
-  ReadingAssistantCategoryBooksAction
+  ReadingAssistantCategoryBooksAction,
+  ReadingAssistantMarkdownLite,
+  ReadingAssistantRecommendedBookCard
 } from "./ReadingAssistantPanel";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -53,6 +55,47 @@ describe("ReadingAssistantBookReviewAction", () => {
 
     expect(markup).toContain("富爸爸穷爸爸");
     expect(markup).not.toContain("reading-assistant-book-review-button");
+  });
+});
+
+describe("ReadingAssistantRecommendedBookCard", () => {
+  it("keeps recommendation actions below the book detail sections", () => {
+    const markup = renderToStaticMarkup(
+      <ReadingAssistantRecommendedBookCard
+        book={{
+          title: "创业维艰",
+          author: "本·霍洛维茨",
+          reason: "硅谷顶级创业者的实战回忆录，聚焦公司生死存亡时刻的真实决策。",
+          fit: "能补足《奥尔特曼传》的组织管理视角，适合在技术阅读之间切换语境。",
+          risk: "管理案例密度较高，不适合想轻松阅读时打开。"
+        }}
+      />
+    );
+
+    expect(markup).toContain("reading-assistant-recommendation-footer");
+    expect(markup).toContain("为什么推荐");
+    expect(markup).toContain("适合你");
+    expect(markup).toContain("取舍");
+    expect(markup).toContain("搜索确认");
+    expect(markup).toContain("加入本地候选");
+    expect(markup.indexOf("reading-assistant-recommendation-body")).toBeLessThan(
+      markup.indexOf("reading-assistant-recommendation-actions")
+    );
+  });
+});
+
+describe("ReadingAssistantMarkdownLite", () => {
+  it("marks compact section labels and their following lists", () => {
+    const markup = renderToStaticMarkup(
+      <ReadingAssistantMarkdownLite
+        content={"当前可验证口径：全部历史。\n\n下一步：\n- 确认作者和版本。\n- 加入本地候选。"}
+      />
+    );
+
+    expect(markup).toContain("reading-assistant-markdown-lite-label");
+    expect(markup).toContain("reading-assistant-markdown-lite-list is-after-label");
+    expect(markup).toContain("确认作者和版本");
+    expect(markup).toContain("加入本地候选");
   });
 });
 

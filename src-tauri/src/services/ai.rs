@@ -2050,20 +2050,14 @@ impl AiService {
             let (status, answer, action_message, suggestions) = if result_count == 0 {
                 (
                     "notFound".to_string(),
-                    format!(
-                        "没有在微信读书搜索到《{}》的明确匹配项。可以换一个关键词再试，或先保留为未确认候选。",
-                        keyword
-                    ),
+                    reading_assistant_weread_search_answer(&keyword, 0),
                     format!("未找到《{}》的明确匹配项。", keyword),
                     vec![format!("帮我换关键词继续搜索《{}》", keyword)],
                 )
             } else {
                 (
                     "found".to_string(),
-                    format!(
-                        "我在微信读书搜索到 {} 个《{}》相关结果。请从结果中确认版本后，再加入本地候选。",
-                        result_count, keyword
-                    ),
+                    reading_assistant_weread_search_answer(&keyword, result_count),
                     format!("搜索到 {} 个可能匹配项。", result_count),
                     vec![
                         format!("帮我推荐与《{}》同主题但未读过的书", keyword),
@@ -2202,7 +2196,7 @@ impl AiService {
             build_reading_assistant_category_books_output(&connection, message)?
         };
         let generated = ReadingAssistantGeneratedOutput {
-            answer: action.message.clone(),
+            answer: reading_assistant_category_books_answer(&action),
             suggestions: vec![
                 format!("帮我只看{}里已读完的书。", action.category_label),
                 format!("帮我解释{}类阅读偏好。", action.category_label),
@@ -2326,9 +2320,8 @@ impl AiService {
             let connection = self.open_connection()?;
             build_reading_assistant_stats_aggregate_output(&connection)?
         };
-        let answer = action.message.clone();
         let generated = ReadingAssistantGeneratedOutput {
-            answer,
+            answer: reading_assistant_stats_aggregate_answer(&action),
             suggestions: vec![
                 "帮我按分类解释累计阅读偏好".to_string(),
                 "帮我找出下一步最值得复盘的书".to_string(),
@@ -4615,8 +4608,8 @@ fn reading_assistant_system_prompt() -> &'static str {
     concat!(
         "你是 wxreadmaster 的 AI 阅读对话助手。默认只能基于输入中提供的本地阅读上下文回答，不得编造用户没有读过、没有保存、没有生成过的阅读记录，不得声称读取了整本书或原始笔记，除非输入明确包含这些内容。",
         "唯一受控例外：当 payload.intent 为 newBookRecommendation，或用户明确要求推荐新书/推荐可加入候选书架的书时，可以结合输入中的阅读画像、阅读统计、AI 资产摘要和通用书目知识提出 3-5 本新书候选；每本必须包含书名、作者、推荐理由、适合用户的原因和可能风险/取舍，并避开 payload 或上下文里的 bookExclusionList；必须说明这些书不是本地候选书架已有项、未确认微信读书可用、需要用户确认后再加入候选书架。",
-        "必须使用简体中文，只输出一个顶层 JSON 对象，不要 Markdown。字段必须使用英文 camelCase，且必须包含 answer、suggestions、basisNotice、recommendedBooks；为了支持流式展示，输出字段顺序必须先 answer，再 suggestions、basisNotice、recommendedBooks。",
-        "新书推荐场景必须把具体书籍放入 recommendedBooks，每项包含 title、author、reason、fit、risk；非新书推荐场景 recommendedBooks 必须返回空数组。answer 写 2-8 句，先直接回应用户，再说明依据和不确定性；当用户要求整理、生成或列出 N 个问题/复盘问题/追问时，answer 必须直接列出对应数量的编号问题，不得只说明已整理；上下文不足时也要给出可执行的下一步，不把缺数据作为错误。",
+        "必须使用简体中文，只输出一个顶层 JSON 对象，JSON 外壳不要 Markdown。answer 字段可以使用 Markdown-lite：短段落、无序列表、有序列表和加粗；不要输出表格、图片、HTML 或代码块。字段必须使用英文 camelCase，且必须包含 answer、suggestions、basisNotice、recommendedBooks；为了支持流式展示，输出字段顺序必须先 answer，再 suggestions、basisNotice、recommendedBooks。",
+        "新书推荐场景必须把具体书籍放入 recommendedBooks，每项包含 title、author、reason、fit、risk；非新书推荐场景 recommendedBooks 必须返回空数组。新书推荐的 answer 只写摘要、选择依据和可用性提醒，建议 120-220 个中文字符，不逐本展开推荐理由、适合原因或风险；每本书详情必须写入 recommendedBooks。普通问答的 answer 写 2-8 句，优先短段落和列表，先直接回应用户，再说明依据和不确定性；当用户要求整理、生成或列出 N 个问题/复盘问题/追问时，answer 必须直接列出对应数量的编号问题，不得只说明已整理；上下文不足时也要给出可执行的下一步，不把缺数据作为错误。",
         "推荐书籍、阅读计划或复盘动作时，必须说明来自哪些本地信号，并给出下一步动作。用户要求生成正式复盘、阅读指南或候选书架内选书决策时，引导用户使用对应功能，不要声称已经保存或覆盖正式 AI 资产；但用户追问已有复盘、阅读洞察、反馈沉淀、下一步行动、来源摘录或要求列出后续问题时，必须直接回答，不要引导生成正式复盘。",
         "用户要求基于笔记、划线、想法总结重点、提炼观点或归纳复盘时，对应功能是「生成 AI 复盘」或「书籍复盘」，不是「生成阅读指南」；阅读指南只用于规划后续阅读路线和复盘点。不得输出 API Key、数据库路径、本地文件路径、原始 WeRead 响应或内部实现细节。",
         "suggestions 为 0-3 个可点击追问，每个都必须像用户本人准备提交给 AI 的下一条问题，优先以“帮我/请/为我”开头；不得用“你是否/你想不想/是否想/需要……吗”反问用户，也不得给是/否式选项。basisNotice 用 1 句说明本次依据范围。"
@@ -7928,7 +7921,7 @@ fn build_reading_assistant_payload(
             "readingGuideRequests": "阅读指南用于规划后续怎么读、读完交付什么和复盘点，不用于替代既有笔记重点总结。"
         },
         "outputContract": {
-            "answer": "2-6 句中文回答，直接回应用户问题。",
+            "answer": "2-6 句中文回答，直接回应用户问题；可以使用 Markdown-lite 的短段落和列表。",
             "suggestions": "0-3 个可直接点击追问的问题。",
             "basisNotice": "1 句说明本次依据范围。",
             "recommendedBooks": "新书推荐场景返回 3-5 本结构化书籍；非新书推荐场景返回空数组。",
@@ -7938,7 +7931,7 @@ fn build_reading_assistant_payload(
 
     if intent == ReadingAssistantIntent::NewBookRecommendation {
         payload["outputContract"]["answer"] = json!(
-            "用 1-3 句说明推荐依据；具体书籍必须放入 recommendedBooks；最后说明需要用户确认后再加入候选书架。"
+            "只写摘要、选择依据和可用性提醒，建议 120-220 个中文字符；可用 Markdown-lite 短段落和列表；不得逐本展开推荐理由、适合原因或风险；具体书籍详情必须放入 recommendedBooks；最后说明需要用户确认后再加入候选书架。"
         );
         payload["outputContract"]["recommendedBooks"] = json!(
             "返回 3-5 本具体新书；每本包含 title、author、reason、fit、risk；避开 bookExclusionList。"
@@ -8379,6 +8372,20 @@ fn reading_assistant_weread_search_result(
         local_label,
         can_add_to_candidate,
     }
+}
+
+fn reading_assistant_weread_search_answer(keyword: &str, result_count: usize) -> String {
+    if result_count == 0 {
+        return format!(
+            "没有在微信读书搜索到《{}》的明确匹配项。\n\n下一步：\n- 换一个关键词继续搜索。\n- 或先保留为未确认候选，后续再确认版本。",
+            keyword
+        );
+    }
+
+    format!(
+        "微信读书搜索到 {} 个《{}》相关结果。\n\n下一步：\n- 先在下方结果中确认作者和版本。\n- 确认后再加入本地候选书架。",
+        result_count, keyword
+    )
 }
 
 fn build_reading_assistant_category_books_output(
@@ -8903,6 +8910,48 @@ fn reading_assistant_category_books_message(
     }
 }
 
+fn reading_assistant_category_books_answer(action: &ReadingAssistantCategoryBooksOutput) -> String {
+    if action.query_status == "empty" {
+        return format!(
+            "当前本地缓存没有找到“{}”相关的可验证书目。\n\n建议：\n- 先同步书架和阅读统计。\n- 或换一个更具体的分类关键词再查。",
+            action.category_label
+        );
+    }
+
+    let stat_summary = match (
+        action.total_stat_count,
+        action.total_stat_reading_time_text.as_deref(),
+    ) {
+        (Some(count), Some(duration)) => {
+            format!("统计聚合显示共 {count} 本，累计阅读 {duration}。")
+        }
+        (Some(count), None) => format!("统计聚合显示共 {count} 本。"),
+        (None, Some(duration)) => format!("统计聚合显示累计阅读 {duration}。"),
+        (None, None) => "统计聚合没有提供总数。".to_string(),
+    };
+    let listing_summary = if action.listed_count == 0 {
+        format!(
+            "当前本地明细暂时无法列出具体《{}》书名。",
+            action.category_label
+        )
+    } else {
+        format!(
+            "当前本地明细可验证到 {} 本{}类书籍。",
+            action.listed_count, action.category_label
+        )
+    };
+    let boundary = if action
+        .total_stat_count
+        .is_some_and(|count| count > action.listed_count as i64)
+    {
+        "这里只列本地书架、书籍详情或阅读进度可确认的书，不会把统计总数展开成伪书名。"
+    } else {
+        "下方列表只展示本地可确认的书目和阅读状态。"
+    };
+
+    format!("{listing_summary}\n\n范围说明：\n- {stat_summary}\n- {boundary}")
+}
+
 fn category_matches_query(value: &str, query: &ReadingAssistantCategoryBooksQuery) -> bool {
     let key = normalize_local_book_title_key(value);
     if key.is_empty() {
@@ -8993,6 +9042,59 @@ fn build_reading_assistant_stats_aggregate_output(
         updated_at: Some(updated_at),
         top_categories,
     })
+}
+
+fn reading_assistant_stats_aggregate_answer(
+    action: &ReadingAssistantStatsAggregateOutput,
+) -> String {
+    if action.data_status == "empty" {
+        return "当前本机还没有可验证的阅读统计缓存。\n\n建议：\n- 先同步阅读统计。\n- 同步后再查看总计历史、分类分布和候选书架关系。".to_string();
+    }
+
+    let mut lines = vec![
+        format!("累计阅读：{}", action.total_reading_time_text),
+        format!("活跃天数：{} 天", action.read_days.unwrap_or(0)),
+        format!(
+            "书架电子书：{} 本，其中已读完 {} 本、在读 {} 本",
+            action.shelf_book_count, action.finished_book_count, action.reading_book_count
+        ),
+        format!("候选书架：{} 本", action.candidate_book_count),
+    ];
+    if !action.top_categories.is_empty() {
+        let categories = action
+            .top_categories
+            .iter()
+            .take(3)
+            .map(|category| {
+                let count = category
+                    .reading_count
+                    .map(|value| format!("，{} 本", value))
+                    .unwrap_or_default();
+                format!(
+                    "{}（{}{}）",
+                    category.title, category.reading_time_text, count
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("、");
+        lines.push(format!("主要分类：{categories}"));
+    }
+
+    let scope_sentence = if action.data_status == "complete" {
+        format!("当前可验证口径：{}。", action.range_label)
+    } else {
+        format!(
+            "当前只有 {} 的本地统计缓存，更早或更细的历史明细需要先同步统计。",
+            action.range_label
+        )
+    };
+    let bullet_list = lines
+        .into_iter()
+        .map(|line| format!("- {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!("{scope_sentence}\n\n核心数据：\n{bullet_list}")
 }
 
 fn read_preferred_reading_stats_aggregate_source(
@@ -9572,7 +9674,7 @@ fn reading_assistant_book_review_route_answer(
     payload: &ReadingAssistantBookReviewActionOutput,
 ) -> String {
     format!(
-        "《{}》的正式阅读复盘应进入本应用的单本 AI 复盘生成，不在聊天里临时替代完成。点击下方「{}」，系统会基于本机已同步的笔记、划线和想法生成结构化复盘；如果本机笔记不足，复盘页会明确提示依据有限。",
+        "《{}》的正式阅读复盘应进入本应用的单本 AI 复盘生成，不在聊天里临时替代完成。\n\n下一步：\n- 点击下方「{}」。\n- 系统会基于本机已同步的笔记、划线和想法生成结构化复盘。\n- 如果本机笔记不足，复盘页会明确提示依据有限。",
         payload.title, payload.cta_label
     )
 }
@@ -14150,7 +14252,7 @@ fn read_reading_assistant_messages(
                 created_at
             FROM ai_assistant_messages
             WHERE thread_id = ?1
-            ORDER BY CAST(created_at AS INTEGER) ASC, id ASC
+            ORDER BY CAST(created_at AS INTEGER) ASC, rowid ASC
             ",
         )
         .map_err(AiServiceError::storage)?;
@@ -14557,10 +14659,11 @@ mod tests {
         read_ai_output, read_ai_review_feedback, read_assistant_local_book_index,
         read_book_summary_export_items, read_book_summary_list, read_latest_ai_output,
         read_local_book_notes, read_provider_settings, read_reading_assistant_messages,
-        read_reading_assistant_preferences, reading_assistant_intent_supports_streaming,
-        reading_assistant_json_schema, reading_assistant_system_prompt,
-        reading_assistant_weread_search_result, reading_route_json_schema,
-        reading_route_update_context, reading_stats_review_json_schema,
+        read_reading_assistant_preferences, reading_assistant_category_books_answer,
+        reading_assistant_intent_supports_streaming, reading_assistant_json_schema,
+        reading_assistant_stats_aggregate_answer, reading_assistant_system_prompt,
+        reading_assistant_weread_search_answer, reading_assistant_weread_search_result,
+        reading_route_json_schema, reading_route_update_context, reading_stats_review_json_schema,
         recommend_response_format_policy, replace_reading_assistant_thread_tail,
         require_ai_credential_for_uncached_summary, resolve_book_summary_update_context,
         resolve_reading_assistant_search_keyword, resolve_reading_persona,
@@ -15715,7 +15818,13 @@ mod tests {
         assert!(payload["outputContract"]["answer"]
             .as_str()
             .expect("answer contract should be a string")
-            .contains("具体书籍必须放入 recommendedBooks"));
+            .contains("不得逐本展开推荐理由"));
+        assert!(payload["outputContract"]["answer"]
+            .as_str()
+            .expect("answer contract should be a string")
+            .contains("具体书籍详情必须放入 recommendedBooks"));
+        assert!(reading_assistant_system_prompt().contains("Markdown-lite"));
+        assert!(reading_assistant_system_prompt().contains("不逐本展开推荐理由"));
     }
 
     #[test]
@@ -16120,6 +16229,10 @@ mod tests {
         assert_eq!(output.query_status, "partial");
         assert_eq!(output.books[0].title, "小狗钱钱");
         assert!(output.message.contains("不补写缺失书名"));
+        let answer = reading_assistant_category_books_answer(&output);
+        assert!(answer.contains("范围说明："));
+        assert!(answer.contains("- 统计聚合显示共 4 本"));
+        assert!(answer.contains("- 这里只列本地书架"));
     }
 
     #[test]
@@ -16146,6 +16259,18 @@ mod tests {
 
         assert_eq!(output.listed_count, 1);
         assert_eq!(output.books[0].book_id, "book_done");
+    }
+
+    #[test]
+    fn reading_assistant_weread_search_answer_uses_markdown_lite_steps() {
+        let found = reading_assistant_weread_search_answer("创业维艰", 2);
+        assert!(found.contains("下一步："));
+        assert!(found.contains("- 先在下方结果中确认作者和版本。"));
+        assert!(found.contains("- 确认后再加入本地候选书架。"));
+
+        let not_found = reading_assistant_weread_search_answer("不存在的书", 0);
+        assert!(not_found.contains("没有在微信读书搜索到"));
+        assert!(not_found.contains("- 换一个关键词继续搜索。"));
     }
 
     #[test]
@@ -16499,6 +16624,8 @@ mod tests {
 
         assert!(output.answer.contains("本应用"));
         assert!(output.answer.contains("生成 AI 复盘"));
+        assert!(output.answer.contains("下一步："));
+        assert!(output.answer.contains("- 点击下方"));
         assert!(!output.answer.contains("微信读书"));
         assert!(!output.answer.contains("阅读指南"));
         assert!(output.suggestions[0].contains("复盘前值得关注"));
@@ -16671,6 +16798,10 @@ mod tests {
         assert_eq!(output.finished_book_count, 1);
         assert_eq!(output.candidate_book_count, 1);
         assert_eq!(output.top_categories[0].title, "经济理财");
+        let answer = reading_assistant_stats_aggregate_answer(&output);
+        assert!(answer.contains("核心数据："));
+        assert!(answer.contains("- 累计阅读：70小时50分钟"));
+        assert!(answer.contains("- 主要分类：经济理财"));
     }
 
     #[test]
@@ -16860,6 +16991,47 @@ mod tests {
         );
         assert_eq!(output.recommended_books[0].title, "可能性的艺术");
         assert_eq!(output.basis_notice, "基于本地阅读画像和统计生成。");
+    }
+
+    #[test]
+    fn reading_assistant_history_keeps_insert_order_for_same_second_messages() {
+        let connection = Connection::open_in_memory().expect("in-memory db should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        upsert_reading_assistant_thread(
+            &connection,
+            "thread_1",
+            &AssistantContextScope::Global,
+            None,
+            "我读过哪些理财类书籍",
+            &json!({}),
+            "100",
+        )
+        .expect("thread should insert");
+        for draft in [
+            test_reading_assistant_message(
+                "msg_z_user",
+                "thread_1",
+                "user",
+                "我读过哪些理财类书籍",
+                "101",
+            ),
+            test_reading_assistant_message(
+                "msg_a_assistant",
+                "thread_1",
+                "assistant",
+                "当前本地明细可验证到 3 本。",
+                "101",
+            ),
+        ] {
+            insert_reading_assistant_message(&connection, &draft).expect("message should insert");
+        }
+
+        let messages =
+            read_reading_assistant_messages(&connection, "thread_1").expect("messages should read");
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].id, "msg_z_user");
+        assert_eq!(messages[1].id, "msg_a_assistant");
     }
 
     #[test]

@@ -54,6 +54,30 @@ describe("book review asset overview", () => {
     expect(overview.nextActionReason).toContain("已有 2 条反馈");
   });
 
+  test("keeps candidate index loading distinct from an empty pending queue", () => {
+    const overview = buildBookReviewAssetOverview({
+      summaries: [summary({ bookId: "book-1", title: "深度工作", feedbackCount: 0 })],
+      candidates: [],
+      candidateIndexLoading: true
+    });
+
+    expect(overview).toMatchObject({
+      label: "复盘缓存可用",
+      title: "正在更新待生成复盘的判断",
+      generatedCount: 1,
+      pendingCount: 0,
+      pendingCountLabel: "判断中",
+      nextActionLabel: "先回看",
+      nextActionTitle: "回看《深度工作》",
+      nextActionButtonLabel: "查看复盘",
+      nextActionTarget: "summary",
+      nextActionBookId: "book-1",
+      tone: "complete"
+    });
+    expect(overview.body).toContain("已先展示 1 本已生成复盘");
+    expect(overview.title).not.toBe("当前没有待生成复盘的书");
+  });
+
   test("does not invent asset progress when there are no summaries or candidates", () => {
     const overview = buildBookReviewAssetOverview({
       summaries: [],

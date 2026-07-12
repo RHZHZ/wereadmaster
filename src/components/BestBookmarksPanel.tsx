@@ -131,7 +131,7 @@ function BestBookmarkItem({
           </span>
         ) : null}
       </div>
-      <p>{bookmark.markText}</p>
+      <p className="best-bookmark-quote">{bookmark.markText}</p>
       {canLoadReadReviews ? (
         <button
           className="text-button read-reviews-toggle"
@@ -190,7 +190,7 @@ function ReadReviewsList({ result }: { result: ReadReviewsResult }) {
                 <strong>{authorName}</strong>
                 {timeText ? <span>{timeText}</span> : null}
               </div>
-              <p>{review.content}</p>
+              <p className="read-review-body">{review.content}</p>
             </li>
           );
         })}

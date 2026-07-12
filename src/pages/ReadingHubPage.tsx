@@ -136,7 +136,7 @@ export function ReadingHubPage({
   const [isLoadingAssets, setIsLoadingAssets] = useState(false);
   const [isLoadingAssetDetail, setIsLoadingAssetDetail] = useState(false);
   const [isLoadingAssetVersionDetail, setIsLoadingAssetVersionDetail] = useState(false);
-  const [isLoadingNotebook, setIsLoadingNotebook] = useState(false);
+  const [hasNotebookIndexLoadFailed, setHasNotebookIndexLoadFailed] = useState(false);
   const [exportResult, setExportResult] = useState<ExportAiBulkMarkdownResponse>();
   const [isBookReviewExportDialogOpen, setIsBookReviewExportDialogOpen] = useState(false);
   const [error, setError] = useState<CommandErrorInfo>();
@@ -312,7 +312,7 @@ export function ReadingHubPage({
     let isMounted = true;
 
     async function loadNotebookOverview() {
-      setIsLoadingNotebook(true);
+      setHasNotebookIndexLoadFailed(false);
 
       try {
         const response = await getNotebookOverview();
@@ -322,10 +322,7 @@ export function ReadingHubPage({
       } catch (loadError) {
         if (isMounted) {
           setError(getCommandErrorInfo(loadError));
-        }
-      } finally {
-        if (isMounted) {
-          setIsLoadingNotebook(false);
+          setHasNotebookIndexLoadFailed(true);
         }
       }
     }
@@ -339,12 +336,15 @@ export function ReadingHubPage({
 
   const filteredItems = filterBookAiSummaryItems(summaryItems, deferredQuery);
   const filteredAssetSummaries = filterAssetSummaries(assetSummaries, deferredQuery);
-  const reviewCandidates = getReviewCandidates(notesOverview?.books ?? [], summaryItems);
+  const shouldLoadCandidateIndex = activeTab === "books" && hasCredential && !notesOverview;
+  const isCandidateIndexLoading = shouldLoadCandidateIndex && !hasNotebookIndexLoadFailed;
+  const reviewCandidates = notesOverview ? getReviewCandidates(notesOverview.books, summaryItems) : [];
   const latestSummaryTime = getLatestSummaryTime(summaryItems);
   const latestAssetTime = getLatestAssetTime(assetSummaries);
   const bookReviewAssetOverview = buildBookReviewAssetOverview({
     summaries: summaryItems,
-    candidates: reviewCandidates
+    candidates: reviewCandidates,
+    candidateIndexLoading: isCandidateIndexLoading
   });
 
   function handleQueryKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
@@ -493,7 +493,14 @@ export function ReadingHubPage({
             </div>
           ) : null}
 
-          {isLoadingNotebook ? (
+          {isCandidateIndexLoading && summaryItems.length > 0 ? (
+            <div className="status-message status-message--neutral" aria-label="正在更新复盘候选">
+              <Loader2 aria-hidden="true" size={18} className="spin" />
+              <span>正在后台更新本地笔记索引，已先展示已生成复盘。</span>
+            </div>
+          ) : null}
+
+          {isCandidateIndexLoading && summaryItems.length === 0 ? (
             <section className="book-detail-loading" aria-label="正在读取复盘候选">
               <Loader2 aria-hidden="true" size={26} className="spin" />
               <div>
@@ -590,6 +597,11 @@ export function ReadingHubPage({
                   {reviewCandidates.map((book) => (
                     <ReviewCandidateCard key={book.bookId} book={book} onOpen={onOpenBookSummary} />
                   ))}
+                </div>
+              ) : isCandidateIndexLoading ? (
+                <div className="review-candidate-empty">
+                  <Loader2 aria-hidden="true" size={24} className="spin" />
+                  <span>正在判断哪些书适合生成复盘...</span>
                 </div>
               ) : (
                 <div className="review-candidate-empty">
@@ -802,7 +814,7 @@ function BookReviewAssetOverviewPanel({
         </span>
         <span>
           <small>待整理</small>
-          <strong>{overview.pendingCount} 本</strong>
+          <strong>{overview.pendingCountLabel ?? `${overview.pendingCount} 本`}</strong>
         </span>
         <span>
           <small>有反馈</small>

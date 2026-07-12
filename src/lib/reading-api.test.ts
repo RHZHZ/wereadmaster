@@ -501,6 +501,7 @@ describe("settings export directory API", () => {
   });
 
   test("reading assistant stream listener maps event payload", async () => {
+    vi.stubGlobal("__TAURI__", {});
     const unlisten = vi.fn();
     const handler = vi.fn();
     listenMock.mockImplementation(async (_event, callback) => {
@@ -524,6 +525,16 @@ describe("settings export directory API", () => {
       delta: "可以",
       content: "可以"
     });
+  });
+
+  test("reading assistant stream listener is noop outside Tauri", async () => {
+    const handler = vi.fn();
+
+    const unlisten = await listenReadingAssistantStream(handler);
+    unlisten();
+
+    expect(listenMock).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
   });
 
   test("reading assistant stream cancel invokes Tauri with stream id", async () => {

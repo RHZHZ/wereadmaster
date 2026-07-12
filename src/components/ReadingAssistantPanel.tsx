@@ -47,6 +47,7 @@ import {
 } from "../lib/reading-assistant-recommendations";
 import {
   parseReadingAssistantMarkdownLite,
+  type ReadingAssistantMarkdownBlock,
   type ReadingAssistantMarkdownInline
 } from "../lib/reading-assistant-markdown-lite";
 import type {
@@ -143,6 +144,19 @@ type RecommendedBookSearchState = {
   status: RecommendedBookSearchStatus;
   results: SearchResult[];
   errorMessage?: string;
+};
+
+export type ReadingAssistantRecommendedBookCardProps = {
+  book: ReadingAssistantRecommendedBook;
+  candidateState?: RecommendedBookCandidateState;
+  searchState?: RecommendedBookSearchState;
+  onSearchBook?: (book: ReadingAssistantRecommendedBook) => void;
+  onAddBook?: (book: ReadingAssistantRecommendedBook) => void;
+  onOpenCandidateShelf?: () => void;
+  onAddSearchResultCandidate?: (
+    book: ReadingAssistantRecommendedBook,
+    result: SearchResult
+  ) => void;
 };
 
 const DEFAULT_PREFERENCES: ReadingAssistantPreferences = {
@@ -329,6 +343,159 @@ export function ReadingAssistantCategoryBooksAction({
           统计阅读时长 {action.totalStatReadingTimeText}
         </small>
       ) : null}
+    </div>
+  );
+}
+
+export function ReadingAssistantRecommendedBookCard({
+  book,
+  candidateState = "available",
+  searchState = { status: "idle", results: [] },
+  onSearchBook,
+  onAddBook,
+  onOpenCandidateShelf,
+  onAddSearchResultCandidate
+}: ReadingAssistantRecommendedBookCardProps) {
+  const isDone =
+    candidateState === "added" ||
+    candidateState === "exists" ||
+    candidateState === "inLibrary";
+  const isAdding = candidateState === "adding";
+  const isSearching = searchState.status === "searching";
+  const sections = [
+    { label: "为什么推荐", content: book.reason },
+    { label: "适合你", content: book.fit },
+    { label: "取舍", content: book.risk }
+  ].filter((section) => section.content.trim());
+
+  return (
+    <div className="reading-assistant-recommendation-item">
+      <div className="reading-assistant-recommendation-heading">
+        <span>
+          <strong>{book.title}</strong>
+          {book.author ? <small>{book.author}</small> : null}
+        </span>
+      </div>
+
+      {sections.length > 0 ? (
+        <dl className="reading-assistant-recommendation-body">
+          {sections.map((section) => (
+            <div className="reading-assistant-recommendation-section" key={section.label}>
+              <dt>{section.label}</dt>
+              <dd>{section.content}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
+
+      <div className="reading-assistant-recommendation-footer">
+        <div className="reading-assistant-recommendation-actions">
+          <button
+            className="text-button"
+            type="button"
+            disabled={isSearching || isDone}
+            onClick={() => onSearchBook?.(book)}
+          >
+            {isSearching ? (
+              <Loader2 aria-hidden="true" className="spin" size={14} />
+            ) : (
+              <Search aria-hidden="true" size={14} />
+            )}
+            {recommendedBookSearchActionLabel(searchState.status)}
+          </button>
+          <button
+            className="text-button"
+            type="button"
+            disabled={isAdding || isDone}
+            onClick={() => onAddBook?.(book)}
+          >
+            {isAdding ? (
+              <Loader2 aria-hidden="true" className="spin" size={14} />
+            ) : isDone ? (
+              <Check aria-hidden="true" size={14} />
+            ) : (
+              <Plus aria-hidden="true" size={14} />
+            )}
+            {recommendedBookActionLabel(candidateState)}
+          </button>
+          {(candidateState === "added" || candidateState === "exists") && onOpenCandidateShelf ? (
+            <button className="text-button" type="button" onClick={onOpenCandidateShelf}>
+              <BookOpen aria-hidden="true" size={14} />
+              查看候选
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      <ReadingAssistantRecommendedBookSearchResults
+        book={book}
+        searchState={searchState}
+        disableActions={isAdding || isDone}
+        onAddSearchResultCandidate={onAddSearchResultCandidate}
+      />
+    </div>
+  );
+}
+
+function ReadingAssistantRecommendedBookSearchResults({
+  book,
+  searchState,
+  disableActions,
+  onAddSearchResultCandidate
+}: {
+  book: ReadingAssistantRecommendedBook;
+  searchState: RecommendedBookSearchState;
+  disableActions: boolean;
+  onAddSearchResultCandidate?: (
+    book: ReadingAssistantRecommendedBook,
+    result: SearchResult
+  ) => void;
+}) {
+  if (searchState.status === "idle" || searchState.status === "searching") {
+    return null;
+  }
+
+  if (searchState.status === "notFound") {
+    return (
+      <p className="reading-assistant-search-status">
+        没有找到明确匹配项，可以先保存为本地候选。
+      </p>
+    );
+  }
+
+  if (searchState.status === "failed") {
+    return (
+      <p className="reading-assistant-search-status is-error">
+        {searchState.errorMessage || "搜索失败，可重试或先保存为本地候选。"}
+      </p>
+    );
+  }
+
+  return (
+    <div className="reading-assistant-search-results">
+      <span className="reading-assistant-search-results-title">选择微信读书匹配项</span>
+      {searchState.results.map((result) => (
+        <div className="reading-assistant-search-result" key={result.bookId}>
+          {result.cover ? (
+            <img src={result.cover} alt="" loading="lazy" />
+          ) : (
+            <span className="reading-assistant-search-result-cover" aria-hidden="true" />
+          )}
+          <span>
+            <strong>{result.title}</strong>
+            <small>{[result.author, result.category].filter(Boolean).join(" · ")}</small>
+          </span>
+          <button
+            className="text-button"
+            type="button"
+            disabled={disableActions}
+            onClick={() => onAddSearchResultCandidate?.(book, result)}
+          >
+            <Check aria-hidden="true" size={14} />
+            确认加入
+          </button>
+        </div>
+      ))}
     </div>
   );
 }
@@ -1215,134 +1382,21 @@ export function ReadingAssistantPanel({
       <div className="reading-assistant-recommendation-list">
         {message.recommendedBooks.map((book) => {
           const bookKey = recommendedBookKey(book);
-          const state = candidateBookStates[bookKey] ?? "available";
-          const searchState = recommendedBookSearchStates[bookKey] ?? {
-            status: "idle",
-            results: []
-          };
-          const isDone = state === "added" || state === "exists" || state === "inLibrary";
-          const isAdding = state === "adding";
-          const isSearching = searchState.status === "searching";
           return (
-            <div className="reading-assistant-recommendation-item" key={bookKey}>
-              <div className="reading-assistant-recommendation-heading">
-                <span>
-                  <strong>{book.title}</strong>
-                  {book.author ? <small>{book.author}</small> : null}
-                </span>
-                <div className="reading-assistant-recommendation-actions">
-                  <button
-                    className="text-button"
-                    type="button"
-                    disabled={isSearching || isDone}
-                    onClick={() => void handleSearchRecommendedBook(book)}
-                  >
-                    {isSearching ? (
-                      <Loader2 aria-hidden="true" className="spin" size={14} />
-                    ) : (
-                      <Search aria-hidden="true" size={14} />
-                    )}
-                    {recommendedBookSearchActionLabel(searchState.status)}
-                  </button>
-                  <button
-                    className="text-button"
-                    type="button"
-                    disabled={isAdding || isDone}
-                    onClick={() => void handleAddRecommendedBook(book)}
-                  >
-                    {isAdding ? (
-                      <Loader2 aria-hidden="true" className="spin" size={14} />
-                    ) : isDone ? (
-                      <Check aria-hidden="true" size={14} />
-                    ) : (
-                      <Plus aria-hidden="true" size={14} />
-                    )}
-                    {recommendedBookActionLabel(state)}
-                  </button>
-                  {(state === "added" || state === "exists") && onOpenCandidateShelf ? (
-                    <button
-                      className="text-button"
-                      type="button"
-                      onClick={onOpenCandidateShelf}
-                    >
-                      <BookOpen aria-hidden="true" size={14} />
-                      查看候选
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-              <dl>
-                <div>
-                  <dt>推荐理由</dt>
-                  <dd>{book.reason}</dd>
-                </div>
-                <div>
-                  <dt>适合你</dt>
-                  <dd>{book.fit}</dd>
-                </div>
-                <div>
-                  <dt>取舍</dt>
-                  <dd>{book.risk}</dd>
-                </div>
-              </dl>
-              {renderRecommendedBookSearchResults(book, searchState, isAdding || isDone)}
-            </div>
+            <ReadingAssistantRecommendedBookCard
+              book={book}
+              candidateState={candidateBookStates[bookKey] ?? "available"}
+              searchState={recommendedBookSearchStates[bookKey]}
+              onSearchBook={(targetBook) => void handleSearchRecommendedBook(targetBook)}
+              onAddBook={(targetBook) => void handleAddRecommendedBook(targetBook)}
+              onOpenCandidateShelf={onOpenCandidateShelf}
+              onAddSearchResultCandidate={(targetBook, result) =>
+                void handleAddSearchResultCandidate(targetBook, result)
+              }
+              key={bookKey}
+            />
           );
         })}
-      </div>
-    );
-  }
-
-  function renderRecommendedBookSearchResults(
-    book: ReadingAssistantRecommendedBook,
-    searchState: RecommendedBookSearchState,
-    disableActions: boolean
-  ) {
-    if (searchState.status === "idle" || searchState.status === "searching") {
-      return null;
-    }
-
-    if (searchState.status === "notFound") {
-      return (
-        <p className="reading-assistant-search-status">
-          没有找到明确匹配项，可以先保存为本地候选。
-        </p>
-      );
-    }
-
-    if (searchState.status === "failed") {
-      return (
-        <p className="reading-assistant-search-status is-error">
-          {searchState.errorMessage || "搜索失败，可重试或先保存为本地候选。"}
-        </p>
-      );
-    }
-
-    return (
-      <div className="reading-assistant-search-results">
-        <span className="reading-assistant-search-results-title">选择微信读书匹配项</span>
-        {searchState.results.map((result) => (
-          <div className="reading-assistant-search-result" key={result.bookId}>
-            {result.cover ? (
-              <img src={result.cover} alt="" loading="lazy" />
-            ) : (
-              <span className="reading-assistant-search-result-cover" aria-hidden="true" />
-            )}
-            <span>
-              <strong>{result.title}</strong>
-              <small>{[result.author, result.category].filter(Boolean).join(" · ")}</small>
-            </span>
-            <button
-              className="text-button"
-              type="button"
-              disabled={disableActions}
-              onClick={() => void handleAddSearchResultCandidate(book, result)}
-            >
-              <Check aria-hidden="true" size={14} />
-              确认加入
-            </button>
-          </div>
-        ))}
       </div>
     );
   }
@@ -1884,7 +1938,7 @@ export function ReadingAssistantPanel({
   );
 }
 
-function ReadingAssistantMarkdownLite({ content }: { content: string }) {
+export function ReadingAssistantMarkdownLite({ content }: { content: string }) {
   const blocks = useMemo(() => parseReadingAssistantMarkdownLite(content), [content]);
 
   if (blocks.length === 0) {
@@ -1895,12 +1949,22 @@ function ReadingAssistantMarkdownLite({ content }: { content: string }) {
     <div className="reading-assistant-markdown-lite">
       {blocks.map((block, blockIndex) => {
         if (block.type === "paragraph") {
-          return <p key={blockIndex}>{renderMarkdownInline(block.children, blockIndex)}</p>;
+          return (
+            <p
+              className={readingAssistantMarkdownParagraphClassName(block)}
+              key={blockIndex}
+            >
+              {renderMarkdownInline(block.children, blockIndex)}
+            </p>
+          );
         }
 
         const ListTag = block.ordered ? "ol" : "ul";
         return (
-          <ListTag key={blockIndex}>
+          <ListTag
+            className={readingAssistantMarkdownListClassName(blocks, blockIndex)}
+            key={blockIndex}
+          >
             {block.items.map((item, itemIndex) => (
               <li key={itemIndex}>{renderMarkdownInline(item, `${blockIndex}-${itemIndex}`)}</li>
             ))}
@@ -1909,6 +1973,52 @@ function ReadingAssistantMarkdownLite({ content }: { content: string }) {
       })}
     </div>
   );
+}
+
+function readingAssistantMarkdownParagraphClassName(
+  block: Extract<ReadingAssistantMarkdownBlock, { type: "paragraph" }>
+): string | undefined {
+  return isReadingAssistantMarkdownSectionLabel(block)
+    ? "reading-assistant-markdown-lite-label"
+    : undefined;
+}
+
+function readingAssistantMarkdownListClassName(
+  blocks: ReadingAssistantMarkdownBlock[],
+  blockIndex: number
+): string {
+  const classNames = ["reading-assistant-markdown-lite-list"];
+  const previousBlock = blocks[blockIndex - 1];
+  if (previousBlock?.type === "paragraph" && isReadingAssistantMarkdownSectionLabel(previousBlock)) {
+    classNames.push("is-after-label");
+  }
+
+  return classNames.join(" ");
+}
+
+function isReadingAssistantMarkdownSectionLabel(
+  block: Extract<ReadingAssistantMarkdownBlock, { type: "paragraph" }>
+): boolean {
+  const text = plainTextFromMarkdownInline(block.children).trim();
+  const normalized = text.replace(/[:：]\s*$/, "");
+  return (
+    normalized.length < 16 &&
+    text.length <= 18 &&
+    /[:：]\s*$/.test(text) &&
+    READING_ASSISTANT_MARKDOWN_SECTION_LABELS.has(normalized)
+  );
+}
+
+function plainTextFromMarkdownInline(nodes: ReadingAssistantMarkdownInline[]): string {
+  return nodes
+    .map((node) => {
+      if (node.type === "strong") {
+        return plainTextFromMarkdownInline(node.children);
+      }
+
+      return node.text;
+    })
+    .join("");
 }
 
 function renderMarkdownInline(
@@ -1928,6 +2038,17 @@ function renderMarkdownInline(
     }
   });
 }
+
+const READING_ASSISTANT_MARKDOWN_SECTION_LABELS = new Set([
+  "下一步",
+  "建议",
+  "范围说明",
+  "核心数据",
+  "选择依据",
+  "注意",
+  "原因",
+  "结论"
+]);
 
 function normalizeMessageSuggestions(suggestions: string[]): string[] {
   const seen = new Set<string>();

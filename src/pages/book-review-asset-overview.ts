@@ -10,6 +10,7 @@ export type BookReviewAssetOverview = {
   body: string;
   generatedCount: number;
   pendingCount: number;
+  pendingCountLabel?: string;
   feedbackCount: number;
   nextActionLabel: string;
   nextActionTitle: string;
@@ -23,11 +24,13 @@ export type BookReviewAssetOverview = {
 export type BookReviewAssetOverviewInput = {
   summaries: BookAiSummaryListItem[];
   candidates: NotebookBook[];
+  candidateIndexLoading?: boolean;
 };
 
 export function buildBookReviewAssetOverview({
   summaries,
-  candidates
+  candidates,
+  candidateIndexLoading = false
 }: BookReviewAssetOverviewInput): BookReviewAssetOverview {
   const generatedCount = summaries.length;
   const pendingCount = candidates.length;
@@ -50,6 +53,46 @@ export function buildBookReviewAssetOverview({
       nextActionTarget: "candidate",
       nextActionBookId: topCandidate.bookId,
       tone: "active"
+    };
+  }
+
+  if (candidateIndexLoading && topSummary) {
+    return {
+      label: "复盘缓存可用",
+      title: "正在更新待生成复盘的判断",
+      body: `已先展示 ${generatedCount} 本已生成复盘；本地笔记索引读取完成后，会更新待生成书籍数量。`,
+      generatedCount,
+      pendingCount,
+      pendingCountLabel: "判断中",
+      feedbackCount,
+      nextActionLabel: "先回看",
+      nextActionTitle: `回看《${topSummary.title}》`,
+      nextActionReason:
+        topSummary.feedbackCount > 0
+          ? `这本复盘已有 ${topSummary.feedbackCount} 条反馈，可以先确认行动完成情况。`
+          : "候选判断还在更新，可以先查看或导出已生成复盘。",
+      nextActionButtonLabel: "查看复盘",
+      nextActionTarget: "summary",
+      nextActionBookId: topSummary.bookId,
+      tone: "complete"
+    };
+  }
+
+  if (candidateIndexLoading) {
+    return {
+      label: "索引更新中",
+      title: "正在读取本地笔记索引",
+      body: "正在判断哪些书适合生成复盘；读取完成后会更新待生成书籍数量。",
+      generatedCount,
+      pendingCount,
+      pendingCountLabel: "判断中",
+      feedbackCount,
+      nextActionLabel: "先同步",
+      nextActionTitle: "本地笔记索引",
+      nextActionReason: "读取完成后，会显示适合生成复盘的书。",
+      nextActionButtonLabel: "去笔记中心",
+      nextActionTarget: "notes",
+      tone: "empty"
     };
   }
 

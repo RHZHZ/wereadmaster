@@ -423,7 +423,8 @@ test.describe("个人阅读管理应用 smoke", () => {
     await expect(readingAssistant.locator(".reading-assistant-recommendation-item")).toContainText(
       "作者甲"
     );
-    await expect(readingAssistant).toContainText("推荐理由");
+    await expect(readingAssistant).toContainText("为什么推荐");
+    await expect(readingAssistant.locator(".reading-assistant-recommendation-footer")).toBeVisible();
     await expect(readingAssistant).toContainText("加入候选");
   });
 
@@ -996,10 +997,24 @@ test.describe("个人阅读管理应用 smoke", () => {
     });
 
     await openShelfSubNav(page, "候选书架");
-    await expect(page.getByLabel("候选书架条目")).toContainText("中国通史");
-    await expect(page.getByLabel("候选书架条目")).toContainText("有声书");
-    await expect(page.getByLabel("候选书架条目")).toContainText("文章收藏");
-    await expect(page.getByLabel("候选书架条目")).toContainText("轻管理候选");
+    const candidateEntries = page.getByLabel("候选书架条目");
+    await expect(candidateEntries).toContainText("中国通史");
+    await expect(candidateEntries).toContainText("有声书");
+    await expect(candidateEntries).toContainText("文章收藏");
+    await expect(candidateEntries).toContainText("轻管理候选");
+    await expect(candidateEntries.getByRole("button", { name: "移除" })).toHaveCount(0);
+    const historyCandidateCard = candidateEntries.locator(".candidate-bookshelf-card").filter({ hasText: "中国通史" });
+    await expect(historyCandidateCard).toHaveCount(1);
+    await expect(historyCandidateCard.locator(".candidate-card-actions")).toHaveCount(0);
+    await historyCandidateCard.getByRole("button", { name: "更多候选操作：中国通史" }).click();
+    await expect(historyCandidateCard.getByRole("menu", { name: "候选操作" })).toBeVisible();
+    await expect(historyCandidateCard.getByRole("menuitem", { name: "移除候选" })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(historyCandidateCard.getByRole("menu", { name: "候选操作" })).toHaveCount(0);
+    await historyCandidateCard.getByRole("button", { name: "更多候选操作：中国通史" }).click();
+    await historyCandidateCard.getByRole("menuitem", { name: "移除候选" }).click();
+    await expect(page.getByLabel("通知").getByText("已从候选书架移除《中国通史》")).toBeVisible();
+    await expect(historyCandidateCard).toHaveCount(0);
     await openShelfSubNav(page, "微信书架");
     await page.getByLabel("书架条目").getByRole("button", { name: /深度工作/ }).click();
     await expect(page.getByRole("heading", { name: "深度工作" })).toBeVisible();

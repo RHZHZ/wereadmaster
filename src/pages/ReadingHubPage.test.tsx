@@ -56,6 +56,9 @@ describe("reading hub asset history section", () => {
     expect(markup).toContain("回顾一段时间");
     expect(markup).toContain("决定下一本");
     expect(markup).toContain("模板连接现有页面和已确认输入范围");
+    expect(markup).toContain("正在读取本地笔记索引");
+    expect(markup).toContain("判断中");
+    expect(markup).not.toContain("当前没有待生成复盘的书");
   });
 
   test("renders collapsed lightweight history rows with required metadata", () => {

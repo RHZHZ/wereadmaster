@@ -88,7 +88,7 @@ function PublicReviewItem({ review }: { review: PublicReview }) {
         {review.chapterName ? <span>{review.chapterName}</span> : null}
         {timeText ? <span>{timeText}</span> : null}
       </div>
-      <p>{review.content}</p>
+      <p className="public-review-body">{review.content}</p>
     </li>
   );
 }

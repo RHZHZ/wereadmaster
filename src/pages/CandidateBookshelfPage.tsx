@@ -5,6 +5,7 @@ import {
   Check,
   Compass,
   Loader2,
+  MoreHorizontal,
   Search,
   Sparkles,
   Trash2,
@@ -111,6 +112,7 @@ export function CandidateBookshelfPage({
   const [query, setQuery] = useState("");
   const [candidateSourceFilter, setCandidateSourceFilter] =
     useState<CandidateSourceFilter>("all");
+  const [openActionMenuBookId, setOpenActionMenuBookId] = useState<string>();
   const [error, setError] = useState<string>();
   const deferredQuery = useDeferredValue(query);
   const { showToast } = useToast();
@@ -203,6 +205,33 @@ export function CandidateBookshelfPage({
   }, [isGenerating, isInputDialogOpen]);
 
   useEffect(() => {
+    if (!openActionMenuBookId) {
+      return;
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setOpenActionMenuBookId(undefined);
+      }
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      if (event.target instanceof Element && event.target.closest("[data-candidate-card-menu-root]")) {
+        return;
+      }
+
+      setOpenActionMenuBookId(undefined);
+    }
+
+    document.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [openActionMenuBookId]);
+
+  useEffect(() => {
     if (isLoading) {
       return;
     }
@@ -245,6 +274,15 @@ export function CandidateBookshelfPage({
         return next;
       });
     }
+  }
+
+  function handleToggleCandidateActionMenu(bookId: string) {
+    setOpenActionMenuBookId((current) => (current === bookId ? undefined : bookId));
+  }
+
+  function handleRemoveCandidateFromMenu(book: LocalCandidateBook) {
+    setOpenActionMenuBookId(undefined);
+    void handleRemoveCandidate(book);
   }
 
   async function handleSearchCandidateConfirmation(book: LocalCandidateBook) {
@@ -635,8 +673,10 @@ export function CandidateBookshelfPage({
                     results: []
                   };
                   const isSearching = searchState.status === "searching";
+                  const isActionMenuOpen = openActionMenuBookId === book.bookId;
+                  const isRemoving = removingIds.has(book.bookId);
                   return (
-                    <article key={book.bookId} className="shelf-card candidate-bookshelf-card">
+                    <article key={book.bookId} className="shelf-card shelf-card--menu-card candidate-bookshelf-card">
                       <button
                         type="button"
                         className="shelf-card-main shelf-card-main--button"
@@ -657,8 +697,34 @@ export function CandidateBookshelfPage({
                           </span>
                         </span>
                       </button>
-                      <div className="candidate-card-actions">
-                        {canConfirmSource ? (
+                      <div className="shelf-card-menu" data-candidate-card-menu-root>
+                        <button
+                          className="shelf-card-menu-trigger"
+                          type="button"
+                          aria-label={`更多候选操作：${book.title}`}
+                          aria-haspopup="menu"
+                          aria-expanded={isActionMenuOpen}
+                          onClick={() => handleToggleCandidateActionMenu(book.bookId)}
+                        >
+                          <MoreHorizontal aria-hidden="true" size={18} />
+                        </button>
+                        {isActionMenuOpen ? (
+                          <div className="shelf-card-menu-popover" role="menu" aria-label="候选操作">
+                            <button
+                              className="is-danger"
+                              type="button"
+                              role="menuitem"
+                              disabled={isRemoving}
+                              onClick={() => handleRemoveCandidateFromMenu(book)}
+                            >
+                              <Trash2 aria-hidden="true" size={16} />
+                              {isRemoving ? "移除中" : "移除候选"}
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                      {canConfirmSource ? (
+                        <div className="candidate-card-actions">
                           <button
                             className="text-button"
                             type="button"
@@ -672,17 +738,8 @@ export function CandidateBookshelfPage({
                             )}
                             {candidateConfirmationSearchActionLabel(searchState.status)}
                           </button>
-                        ) : null}
-                        <button
-                          className="text-button candidate-remove-button"
-                          type="button"
-                          disabled={removingIds.has(book.bookId)}
-                          onClick={() => void handleRemoveCandidate(book)}
-                        >
-                          <Trash2 aria-hidden="true" size={15} />
-                          {removingIds.has(book.bookId) ? "移除中" : "移除"}
-                        </button>
-                      </div>
+                        </div>
+                      ) : null}
                       {canConfirmSource ? renderCandidateConfirmationSearchResults(book, searchState) : null}
                     </article>
                   );
