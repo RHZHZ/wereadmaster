@@ -39,6 +39,10 @@ export type ReportGenerationDownloadMode = "poster" | "wide" | "cards-current" |
 type ReportGenerationDialogStep = "type" | "time" | "preview";
 
 const useBrowserLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
+const POSTER_PREVIEW_WIDTH = 720;
+const POSTER_PREVIEW_HEIGHT = 960;
+const WIDE_PREVIEW_WIDTH = 1120;
+const WIDE_PREVIEW_HEIGHT = 630;
 
 const reportPeriodOptions: Array<{ mode: ReadingStatsMode; label: string; description: string }> = [
   { mode: "weekly", label: "周报", description: "短周期节奏回看" },
@@ -88,6 +92,7 @@ export function ReportGenerationWizardDialog({
   const previewShellRef = useRef<HTMLDivElement>(null);
   const hasInitializedOpenDialogRef = useRef(false);
   const [posterScale, setPosterScale] = useState(1);
+  const [wideScale, setWideScale] = useState(1);
   const [storyPageIndex, setStoryPageIndex] = useState(0);
   const activeReportMode = draftPeriod.mode;
   const activePeriodReportMode: ReportGenerationPeriodMode =
@@ -192,10 +197,50 @@ export function ReportGenerationWizardDialog({
       const styles = window.getComputedStyle(shell);
       const verticalPadding = Number.parseFloat(styles.paddingTop) + Number.parseFloat(styles.paddingBottom);
       const availableHeight = Math.max(0, shell.clientHeight - verticalPadding);
-      const widthFitScale = shell.clientWidth / 720;
-      const heightFitScale = availableHeight / 960;
+      const widthFitScale = shell.clientWidth / POSTER_PREVIEW_WIDTH;
+      const heightFitScale = availableHeight / POSTER_PREVIEW_HEIGHT;
       const nextScale = Math.min(0.86, widthFitScale, heightFitScale);
       setPosterScale(Math.max(0.28, Number(nextScale.toFixed(3))));
+    };
+
+    updateScale();
+
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", updateScale);
+      return () => window.removeEventListener("resize", updateScale);
+    }
+
+    const observer = new ResizeObserver(updateScale);
+    observer.observe(shell);
+    window.addEventListener("resize", updateScale);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", updateScale);
+    };
+  }, [isLifetimeReportMode, isPreviewStep, open, previewMode]);
+
+  useBrowserLayoutEffect(() => {
+    if (!open || !isPreviewStep || (!isLifetimeReportMode && previewMode !== "wide")) {
+      setWideScale(1);
+      return undefined;
+    }
+
+    const shell = previewShellRef.current;
+    if (!shell) {
+      return undefined;
+    }
+
+    const updateScale = () => {
+      const styles = window.getComputedStyle(shell);
+      const horizontalPadding = Number.parseFloat(styles.paddingLeft) + Number.parseFloat(styles.paddingRight);
+      const verticalPadding = Number.parseFloat(styles.paddingTop) + Number.parseFloat(styles.paddingBottom);
+      const availableWidth = Math.max(0, shell.clientWidth - horizontalPadding);
+      const availableHeight = Math.max(0, shell.clientHeight - verticalPadding);
+      const widthFitScale = availableWidth / WIDE_PREVIEW_WIDTH;
+      const heightFitScale = availableHeight / WIDE_PREVIEW_HEIGHT;
+      const nextScale = Math.min(1, widthFitScale, heightFitScale);
+      setWideScale(Math.max(0.24, Number(nextScale.toFixed(3))));
     };
 
     updateScale();
@@ -219,10 +264,19 @@ export function ReportGenerationWizardDialog({
     previewMode === "poster" && !isLifetimeReportMode
       ? ({
           "--monthly-report-poster-preview-scale": posterScale,
-          "--monthly-report-poster-preview-width": `${720 * posterScale}px`,
-          "--monthly-report-poster-preview-height": `${960 * posterScale}px`
+          "--monthly-report-poster-preview-width": `${POSTER_PREVIEW_WIDTH * posterScale}px`,
+          "--monthly-report-poster-preview-height": `${POSTER_PREVIEW_HEIGHT * posterScale}px`
         } as CSSProperties)
       : undefined;
+  const widePreviewStyle =
+    isPreviewStep && (isLifetimeReportMode || previewMode === "wide")
+      ? ({
+          "--monthly-report-wide-preview-scale": wideScale,
+          "--monthly-report-wide-preview-width": `${WIDE_PREVIEW_WIDTH * wideScale}px`,
+          "--monthly-report-wide-preview-height": `${WIDE_PREVIEW_HEIGHT * wideScale}px`
+        } as CSSProperties)
+      : undefined;
+  const previewShellStyle = posterPreviewStyle ?? widePreviewStyle;
 
   if (!open) {
     return null;
@@ -450,7 +504,7 @@ export function ReportGenerationWizardDialog({
                 ? "monthly-report-poster-preview-shell is-wide lifetime-reading-report-preview-shell"
                 : `monthly-report-poster-preview-shell is-${previewMode}`
             }
-            style={posterPreviewStyle}
+            style={previewShellStyle}
             aria-busy={isDataLoading}
           >
             {!canPreview ? (
@@ -481,7 +535,9 @@ export function ReportGenerationWizardDialog({
                 </p>
               </section>
             ) : isLifetimeReportMode ? (
-              <LifetimeReadingReportWide data={lifetimeData!} />
+              <div className="monthly-report-wide-scale-frame">
+                <LifetimeReadingReportWide data={lifetimeData!} />
+              </div>
             ) : previewMode === "poster" ? (
               <div className="monthly-report-poster-scale-frame">
                 <PeriodReportPoster data={data!} />
@@ -493,7 +549,9 @@ export function ReportGenerationWizardDialog({
                 onActiveIndexChange={setStoryPageIndex}
               />
             ) : (
-              <PeriodReportWidePrototype data={data!} />
+              <div className="monthly-report-wide-scale-frame">
+                <PeriodReportWidePrototype data={data!} />
+              </div>
             )}
           </div>
         ) : null}

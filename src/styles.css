@@ -28,6 +28,10 @@
   --paper-fiber: rgba(36, 49, 58, 0.028);
   --binding-line: rgba(169, 94, 53, 0.30);
   --blocking-dialog-z-index: 90;
+  --toast-z-index: 120;
+  --mobile-safe-top: env(safe-area-inset-top, 0px);
+  --mobile-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --mobile-bottom-nav-height: 69px;
 }
 
 :root:has(.app-frame[data-font-scale="large"]) {
@@ -11328,7 +11332,7 @@ h6.local-reader-markdown-block--heading {
 
 .toast-viewport {
   position: fixed;
-  z-index: 40;
+  z-index: var(--toast-z-index);
   top: 28px;
   right: 32px;
   display: grid;
@@ -12336,9 +12340,21 @@ h6.local-reader-markdown-block--heading {
   padding-inline: 4px;
 }
 
-.monthly-report-poster-preview-shell.is-wide .monthly-report-wide {
+.monthly-report-poster-preview-shell.is-wide > .monthly-report-wide {
   width: min(1120px, 100%, 103vh);
   width: min(1120px, 100%, 103dvh);
+}
+
+.monthly-report-wide-scale-frame {
+  width: var(--monthly-report-wide-preview-width, 1120px);
+  height: var(--monthly-report-wide-preview-height, 630px);
+}
+
+.monthly-report-poster-preview-shell.is-wide .monthly-report-wide-scale-frame > .monthly-report-wide {
+  width: 1120px;
+  max-width: none;
+  transform: scale(var(--monthly-report-wide-preview-scale, 1));
+  transform-origin: top left;
 }
 
 .monthly-report-poster-dialog-actions {
@@ -14672,7 +14688,7 @@ h6.local-reader-markdown-block--heading {
   max-height: min(860px, calc(100dvh - 32px));
 }
 
-.monthly-report-poster-preview-shell.is-wide.lifetime-reading-report-preview-shell .lifetime-reading-report-wide {
+.monthly-report-poster-preview-shell.is-wide.lifetime-reading-report-preview-shell > .lifetime-reading-report-wide {
   width: min(1120px, 100%, 88vh);
   width: min(1120px, 100%, 88dvh);
 }
@@ -22454,9 +22470,14 @@ h6.local-reader-markdown-block--heading {
     justify-items: stretch;
   }
 
-  .app-frame.mobile-shell .toast-viewport {
+  :root:has(.app-frame.mobile-shell) .toast-viewport {
     top: auto;
     bottom: calc(var(--mobile-bottom-nav-height) + var(--mobile-safe-bottom) + 12px);
+  }
+
+  :root:has(.app-frame.mobile-shell):has(.reading-route-dialog-backdrop) .toast-viewport {
+    top: calc(var(--mobile-safe-top) + 18px);
+    bottom: auto;
   }
 
   .toast-card {
@@ -23453,6 +23474,7 @@ h6.local-reader-markdown-block--heading {
 .reading-assistant-markdown-lite p {
   margin: 0;
   line-height: 1.7;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 

@@ -302,6 +302,33 @@ test.describe("个人阅读管理应用 smoke", () => {
       await expectReportPreviewModeCentered(mobileDialog, "cards");
       await mobileDialog.getByRole("tab", { name: "16:9 报告" }).tap();
       await expectReportPreviewModeCentered(mobileDialog, "wide");
+      await mobileDialog.getByRole("button", { name: "下载横版 PNG" }).tap();
+      await expect(
+        mobilePage.getByLabel("通知").getByText(/已导出：周期阅读报告/)
+      ).toBeVisible();
+      const toastLayer = await mobilePage.evaluate(() => {
+        const backdrop = document.querySelector<HTMLElement>(".reading-route-dialog-backdrop");
+        const dialogElement = document.querySelector<HTMLElement>(".monthly-report-poster-dialog");
+        const toastViewport = document.querySelector<HTMLElement>(".toast-viewport");
+        const toastCard = document.querySelector<HTMLElement>(".toast-card");
+        if (!backdrop || !dialogElement || !toastViewport || !toastCard) {
+          throw new Error("阅读报告下载提示层级元素缺失");
+        }
+
+        const readZIndex = (element: HTMLElement) => Number.parseInt(window.getComputedStyle(element).zIndex, 10);
+        const toastRect = toastCard.getBoundingClientRect();
+        return {
+          backdrop: readZIndex(backdrop),
+          dialogTop: Math.round(dialogElement.getBoundingClientRect().top),
+          toast: readZIndex(toastViewport),
+          toastBottom: Math.round(toastRect.bottom),
+          toastTop: Math.round(toastRect.top),
+          viewportHeight: window.innerHeight
+        };
+      });
+      expect(toastLayer.toast).toBeGreaterThan(toastLayer.backdrop);
+      expect(toastLayer.toastTop).toBeGreaterThanOrEqual(0);
+      expect(toastLayer.toastBottom).toBeLessThanOrEqual(toastLayer.viewportHeight);
 
       const mobileOverflow = await mobilePage.evaluate(() => ({
         hasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
@@ -845,6 +872,9 @@ test.describe("个人阅读管理应用 smoke", () => {
 
     await expect(readingAssistant).toContainText("流式片段");
     await expect(readingAssistant).toContainText("流式片段最终完成。");
+    const answerListItems = readingAssistant.locator(".reading-assistant-markdown-lite ol li");
+    await expect(answerListItems).toHaveCount(2);
+    await expect(answerListItems.nth(1)).toHaveText("保留编号列表");
     await expect(await getInvokeCount(page, "ask_reading_assistant_stream")).toBeGreaterThan(0);
   });
 
@@ -4332,7 +4362,10 @@ async function expectReportPreviewModeCentered(dialog: Locator, mode: ReportPrev
         mode,
         shellBottom: Math.round(shellRect.bottom),
         shellOverflowY: window.getComputedStyle(shell).overflowY,
+        targetLayoutHeight: Math.round(target.offsetHeight),
+        targetLayoutWidth: Math.round(target.offsetWidth),
         targetLeft: Math.round(targetRect.left),
+        targetRatio: Number((target.offsetWidth / target.offsetHeight).toFixed(3)),
         targetRight: Math.round(targetRect.right),
         targetWidth: Math.round(targetRect.width),
         viewportHeight: window.innerHeight,
@@ -4349,6 +4382,11 @@ async function expectReportPreviewModeCentered(dialog: Locator, mode: ReportPrev
   expect(layout.targetRight, `${mode} preview right`).toBeLessThanOrEqual(layout.viewportWidth);
   expect(layout.footerTop, `${mode} footer top`).toBeGreaterThanOrEqual(layout.shellBottom - 1);
   expect(layout.footerBottom, `${mode} footer bottom`).toBeLessThanOrEqual(layout.viewportHeight);
+  if (mode === "wide") {
+    expect(layout.targetLayoutWidth, `${mode} layout width`).toBeGreaterThanOrEqual(1000);
+    expect(layout.targetRatio, `${mode} layout ratio`).toBeGreaterThan(1.76);
+    expect(layout.targetRatio, `${mode} layout ratio`).toBeLessThan(1.79);
+  }
   if (mode === "cards" && layout.viewportWidth > 900) {
     expect(layout.shellOverflowY, `${mode} shell overflow`).toMatch(/^(hidden|auto|scroll)$/);
   } else {
@@ -6200,7 +6238,7 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
                   threadId: assistantRequest.threadId || "assistant-thread-streaming",
                   userMessageId: "assistant-user-message-streaming",
                   messageId: "assistant-message-streaming",
-                  answer: "流式片段最终完成。",
+                  answer: "流式片段最终完成。\n\n1. 保留段落换行\n2. 保留编号列表",
                   suggestions: [],
                   recommendedBooks: [],
                   usedContext: [],
@@ -6465,6 +6503,12 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
               return {
                 fileName: "deep-work-reading-route.md",
                 path: "C:/Users/RHZ/AppData/Roaming/wxreadmaster/exports/deep-work-reading-route.md",
+                exportedAt: String(nowSeconds)
+              };
+            case "export_report_image":
+              return {
+                fileName: args.fileName || "reading-report.png",
+                path: `D:/wxreadmaster-exports/reports/${args.fileName || "reading-report.png"}`,
                 exportedAt: String(nowSeconds)
               };
             case "get_latest_book_decision":
