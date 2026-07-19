@@ -27,6 +27,7 @@
   --paper-rule: rgba(49, 95, 136, 0.075);
   --paper-fiber: rgba(36, 49, 58, 0.028);
   --binding-line: rgba(169, 94, 53, 0.30);
+  --blocking-dialog-z-index: 90;
 }
 
 :root:has(.app-frame[data-font-scale="large"]) {
@@ -81,6 +82,7 @@
 body {
   min-width: 320px;
   min-height: 100vh;
+  min-height: 100dvh;
   margin: 0;
   overflow: hidden;
 }
@@ -96,6 +98,23 @@ button {
   cursor: pointer;
 }
 
+.icon-button {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  background: rgba(255, 253, 248, 0.82);
+}
+
+.icon-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
 button:disabled {
   cursor: not-allowed;
   opacity: 0.58;
@@ -105,10 +124,11 @@ button:disabled {
   --mobile-safe-top: env(safe-area-inset-top, 0px);
   --mobile-safe-bottom: env(safe-area-inset-bottom, 0px);
   --mobile-appbar-height: 52px;
-  --mobile-bottom-nav-height: 64px;
+  --mobile-bottom-nav-height: 69px;
   --mobile-page-padding-x: 16px;
   --mobile-page-padding-y: 16px;
   height: 100vh;
+  height: 100dvh;
   min-height: 0;
   display: grid;
   grid-template-rows: 40px minmax(0, 1fr);
@@ -126,6 +146,11 @@ button:disabled {
     repeating-linear-gradient(0deg, transparent 0 27px, rgba(232, 238, 233, 0.012) 28px),
     repeating-linear-gradient(90deg, transparent 0 33px, var(--paper-fiber) 34px),
     linear-gradient(120deg, rgba(21, 34, 31, 0.96), rgba(22, 33, 31, 0.98));
+}
+
+.app-frame[data-effective-theme="dark"] .icon-button {
+  color: var(--ink);
+  background: rgba(31, 43, 39, 0.86);
 }
 
 .app-frame.android-shell {
@@ -224,6 +249,7 @@ button:disabled {
 }
 
 .app-frame[data-effective-theme="dark"] .hero-panel,
+.app-frame[data-effective-theme="dark"] .app-view-loading,
 .app-frame[data-effective-theme="dark"] .setup-panel,
 .app-frame[data-effective-theme="dark"] .empty-state,
 .app-frame[data-effective-theme="dark"] .report-panel,
@@ -835,6 +861,18 @@ button:disabled {
   margin-top: 4px;
   font-size: 34px;
   line-height: 1.15;
+}
+
+.app-view-loading {
+  display: flex;
+  min-height: 220px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(47, 111, 94, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #52645d;
+  font-size: 14px;
 }
 
 .mine-page {
@@ -3161,6 +3199,7 @@ button:disabled {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   max-height: min(72vh, 760px);
+  max-height: min(72dvh, 760px);
   overflow: hidden;
 }
 
@@ -3517,6 +3556,7 @@ button:disabled {
   margin: 18px 0 0;
   min-height: 0;
   max-height: calc(min(72vh, 760px) - 92px);
+  max-height: calc(min(72dvh, 760px) - 92px);
   overflow-y: auto;
   padding: 0 8px 2px 0;
   list-style: none;
@@ -4203,12 +4243,39 @@ button:disabled {
   right: 8px;
   z-index: 2;
   opacity: 0;
+  pointer-events: none;
   transition: opacity 160ms ease;
 }
 
 .recommendation-rail-card:hover .recommendation-rail-menu,
 .recommendation-rail-card:focus-within .recommendation-rail-menu {
   opacity: 1;
+  pointer-events: auto;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .recommendation-rail-copy {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  .recommendation-rail-menu {
+    top: 6px;
+    right: 6px;
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .recommendation-rail-menu .shelf-card-menu-popover {
+    right: auto;
+    left: 0;
+  }
+
+  .recommendation-rail-card:last-child:not(:first-child) .recommendation-rail-menu .shelf-card-menu-popover {
+    right: 0;
+    left: auto;
+  }
+
 }
 
 .recommendation-rail-menu .shelf-card-menu-trigger {
@@ -4739,6 +4806,7 @@ button:disabled {
   grid-template-rows: auto minmax(0, 1fr) auto;
   width: min(720px, calc(100vw - 48px));
   max-height: min(720px, calc(100vh - 48px));
+  max-height: min(720px, calc(100dvh - 48px));
   overflow: hidden;
 }
 
@@ -4756,6 +4824,7 @@ button:disabled {
 
 .book-decision-input-dialog .book-decision-candidate-list {
   max-height: min(520px, calc(100vh - 260px));
+  max-height: min(520px, calc(100dvh - 260px));
   overflow: auto;
   padding-right: 4px;
 }
@@ -5182,6 +5251,7 @@ button:disabled {
   grid-auto-rows: max-content;
   gap: 18px;
   min-height: calc(100vh - 160px);
+  min-height: calc(100dvh - 160px);
 }
 
 .local-library-commandbar {
@@ -5981,6 +6051,7 @@ button:disabled {
   gap: 8px;
   width: min(320px, calc(100vw - 32px));
   max-height: min(420px, calc(100vh - 150px));
+  max-height: min(420px, calc(100dvh - 150px));
   overflow: hidden;
   border: 1px solid rgba(40, 58, 48, 0.16);
   border-radius: 8px;
@@ -6102,6 +6173,7 @@ button:disabled {
   gap: 4px;
   min-height: 0;
   max-height: min(320px, calc(100vh - 210px));
+  max-height: min(320px, calc(100dvh - 210px));
   overflow: auto;
   margin: 0;
   padding: 0 2px 0 0;
@@ -6875,11 +6947,21 @@ h6.local-reader-markdown-block--heading {
   background: var(--green);
 }
 
+@media (hover: none), (pointer: coarse) {
+  .local-reader-ai-composer header button {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+}
+
 .local-reader-thought-composer--floating,
 .local-reader-ai-composer--floating {
   position: fixed;
   z-index: 70;
   max-height: calc(100vh - 96px);
+  max-height: calc(100dvh - 96px);
   overflow: auto;
   transform: translate(-50%, -100%);
   border-color: rgba(40, 58, 48, 0.18);
@@ -7237,6 +7319,24 @@ h6.local-reader-markdown-block--heading {
   background: rgba(47, 111, 94, 0.10);
 }
 
+@media (hover: none), (pointer: coarse) {
+  .local-reader-highlight-list li,
+  .local-reader-thought-list li {
+    padding-right: 64px;
+  }
+
+  .local-reader-ai-list li {
+    padding-right: 68px;
+  }
+
+  .local-reader-highlight-delete,
+  .local-reader-thought-delete,
+  .local-reader-ai-card-actions button {
+    width: 44px;
+    height: 44px;
+  }
+}
+
 .local-reader-ai-list li.is-delete-pending .local-reader-ai-card-actions button:last-child {
   color: #fffdf8;
   background: var(--rust);
@@ -7318,6 +7418,7 @@ h6.local-reader-markdown-block--heading {
   width: max-content;
   max-width: min(620px, calc(100vw - 32px));
   max-height: min(420px, calc(100vh - 92px));
+  max-height: min(420px, calc(100dvh - 92px));
   overflow: hidden;
   transform: translateX(-50%);
 }
@@ -7430,15 +7531,34 @@ h6.local-reader-markdown-block--heading {
   white-space: nowrap;
 }
 
+@media (max-width: 720px) and (max-height: 430px) {
+  .local-reader-selection-popover.has-thoughts {
+    max-height: clamp(96px, calc(100dvh - 260px), 148px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .local-reader-selection-popover.has-thoughts .local-reader-selection-thoughts {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .local-reader-selection-thought-card {
+    min-height: 44px;
+  }
+}
+
 .local-reader-thought-modal {
   position: fixed;
   inset: 0;
-  z-index: 90;
+  z-index: var(--blocking-dialog-z-index);
   display: grid;
   place-items: center;
   padding: 24px;
   background: rgba(22, 33, 31, 0.24);
   backdrop-filter: blur(6px);
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .local-reader-thought-modal-panel {
@@ -7447,6 +7567,7 @@ h6.local-reader-markdown-block--heading {
   gap: 14px;
   width: min(720px, calc(100vw - 32px));
   max-height: min(760px, calc(100vh - 48px));
+  max-height: min(760px, calc(100dvh - 48px));
   border: 1px solid rgba(40, 58, 48, 0.16);
   border-radius: 8px;
   padding: 16px;
@@ -7465,6 +7586,7 @@ h6.local-reader-markdown-block--heading {
 .local-reader-ai-detail-modal {
   --local-reader-ai-detail-bottom: 24px;
   --local-reader-ai-detail-top: clamp(112px, 14vh, 146px);
+  --local-reader-ai-detail-top: clamp(112px, 14dvh, 146px);
   display: block;
   padding: 0;
   background: transparent;
@@ -7482,6 +7604,10 @@ h6.local-reader-markdown-block--heading {
   max-height: min(
     720px,
     calc(100vh - var(--local-reader-ai-detail-top) - var(--local-reader-ai-detail-bottom))
+  );
+  max-height: min(
+    720px,
+    calc(100dvh - var(--local-reader-ai-detail-top) - var(--local-reader-ai-detail-bottom))
   );
   padding: 0;
   border-color: rgba(47, 111, 94, 0.18);
@@ -7692,6 +7818,7 @@ h6.local-reader-markdown-block--heading {
   display: grid;
   gap: 8px;
   max-height: min(260px, 30vh);
+  max-height: min(260px, 30dvh);
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
@@ -7822,6 +7949,7 @@ h6.local-reader-markdown-block--heading {
 @media (max-width: 860px) {
   .local-reader-ai-detail-modal {
     --local-reader-ai-detail-top: clamp(92px, 12vh, 120px);
+    --local-reader-ai-detail-top: clamp(92px, 12dvh, 120px);
     display: grid;
     place-items: start center;
     padding-top: var(--local-reader-ai-detail-top);
@@ -7972,6 +8100,7 @@ h6.local-reader-markdown-block--heading {
 
 .local-reader-thought-modal-content {
   max-height: min(280px, 32vh);
+  max-height: min(280px, 32dvh);
   overflow: auto;
   color: var(--ink);
   font-size: 14px;
@@ -8022,7 +8151,9 @@ h6.local-reader-markdown-block--heading {
 .local-reader-thought-edit-form textarea {
   width: 100%;
   min-height: min(260px, 30vh);
+  min-height: min(260px, 30dvh);
   max-height: min(360px, 42vh);
+  max-height: min(360px, 42dvh);
   resize: vertical;
   overflow: auto;
   border: 1px solid rgba(40, 58, 48, 0.13);
@@ -8073,6 +8204,23 @@ h6.local-reader-markdown-block--heading {
   color: #fffdf8;
   border-color: rgba(47, 111, 94, 0.38);
   background: var(--green);
+}
+
+@media (hover: none), (pointer: coarse) {
+  .local-reader-thought-modal .local-reader-thought-modal-close {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+
+  .local-reader-thought-modal .local-reader-thought-modal-copy,
+  .local-reader-thought-modal .local-reader-highlight-tone-actions button,
+  .local-reader-thought-modal .local-reader-ai-followups button,
+  .local-reader-thought-modal .local-reader-thought-modal-actions button {
+    min-width: 44px;
+    min-height: 44px;
+  }
 }
 
 .local-reader-selection-dot {
@@ -8797,10 +8945,11 @@ h6.local-reader-markdown-block--heading {
 .settings-modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 90;
+  z-index: var(--blocking-dialog-z-index);
   display: grid;
   place-items: center;
   padding: clamp(32px, 4vh, 48px) clamp(32px, 4vw, 56px);
+  padding: clamp(32px, 4dvh, 48px) clamp(32px, 4vw, 56px);
   background: rgba(36, 49, 58, 0.30);
   backdrop-filter: blur(4px);
 }
@@ -9466,6 +9615,11 @@ h6.local-reader-markdown-block--heading {
   gap: 8px;
 }
 
+.dialog-actions button {
+  min-width: 44px;
+  min-height: 44px;
+}
+
 .settings-actions {
   align-items: center;
   justify-content: flex-start;
@@ -9631,37 +9785,46 @@ h6.local-reader-markdown-block--heading {
 .dialog-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 50;
+  z-index: var(--blocking-dialog-z-index);
   display: grid;
   place-items: center;
   padding: 20px;
   background: rgba(22, 36, 42, 0.42);
   backdrop-filter: blur(6px);
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .confirm-dialog {
   position: relative;
   width: min(460px, 100%);
+  max-height: calc(100vh - 40px);
+  max-height: calc(100dvh - 40px);
   display: grid;
   gap: 14px;
   padding: 24px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .update-dialog-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 55;
+  z-index: var(--blocking-dialog-z-index);
   display: grid;
   place-items: center;
   padding: 20px;
   background: rgba(22, 36, 42, 0.46);
   backdrop-filter: blur(8px);
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .update-dialog {
   position: relative;
   width: min(640px, 100%);
   max-height: calc(100vh - 40px);
+  max-height: calc(100dvh - 40px);
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto auto;
   gap: 16px;
@@ -9713,11 +9876,24 @@ h6.local-reader-markdown-block--heading {
   gap: 10px;
 }
 
+.update-dialog-actions .sync-button,
+.update-dialog-actions .secondary-action,
+.update-dialog-actions .text-button {
+  min-width: 44px;
+  min-height: 44px;
+}
+
 .dialog-close {
   position: absolute;
   top: 12px;
   right: 12px;
+  display: inline-grid;
+  place-items: center;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
   border: 0;
+  border-radius: 8px;
   color: var(--muted);
   background: transparent;
 }
@@ -9907,18 +10083,21 @@ h6.local-reader-markdown-block--heading {
 
 .bulk-export-backdrop {
   position: fixed;
-  z-index: 32;
+  z-index: var(--blocking-dialog-z-index);
   inset: 0;
   display: grid;
   place-items: center;
   padding: 24px;
   background: rgba(36, 49, 58, 0.34);
   backdrop-filter: blur(7px);
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .bulk-export-dialog {
   width: min(960px, 100%);
   height: min(820px, calc(100vh - 12px));
+  height: min(820px, calc(100dvh - 12px));
   overflow: hidden;
   display: grid;
   grid-template-rows: auto auto auto minmax(240px, 1fr) auto;
@@ -10439,18 +10618,21 @@ h6.local-reader-markdown-block--heading {
 
 .book-review-export-backdrop {
   position: fixed;
-  z-index: 34;
+  z-index: var(--blocking-dialog-z-index);
   inset: 0;
   display: grid;
   place-items: center;
   padding: 24px;
   background: rgba(36, 49, 58, 0.34);
   backdrop-filter: blur(7px);
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .book-review-export-dialog {
   width: min(920px, 100%);
   height: min(760px, calc(100vh - 48px));
+  height: min(760px, calc(100dvh - 48px));
   overflow: hidden;
   display: grid;
   grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
@@ -11534,12 +11716,21 @@ h6.local-reader-markdown-block--heading {
   display: grid;
   gap: 7px;
   margin: 0;
-  padding-left: 18px;
+  padding-left: 0;
+  list-style: none;
 }
 
-.book-insight-followups li {
+.book-insight-followup-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
   color: var(--muted);
   line-height: 1.55;
+}
+
+.book-insight-followup-question {
+  min-width: 0;
 }
 
 .book-insight-ask-button {
@@ -11552,6 +11743,19 @@ h6.local-reader-markdown-block--heading {
 }
 
 .book-insight-ask-button:hover {
+  color: var(--green);
+}
+
+.book-insight-question-button {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--teal);
+  white-space: nowrap;
+}
+
+.book-insight-question-button:hover {
   color: var(--green);
 }
 
@@ -11757,6 +11961,7 @@ h6.local-reader-markdown-block--heading {
   position: relative;
   width: min(640px, 100%);
   max-height: min(720px, calc(100vh - 40px));
+  max-height: min(720px, calc(100dvh - 40px));
   display: grid;
   gap: 14px;
   overflow: auto;
@@ -11811,6 +12016,7 @@ h6.local-reader-markdown-block--heading {
 }
 
 .ai-action-feedback-dialog-status {
+  min-height: 44px;
   justify-content: center;
   border: 1px solid rgba(36, 49, 58, 0.12);
   border-radius: 999px;
@@ -11864,6 +12070,11 @@ h6.local-reader-markdown-block--heading {
 
 .ai-action-feedback-dialog-actions {
   justify-content: flex-end;
+}
+
+.ai-action-feedback-dialog-actions .secondary-action,
+.ai-action-feedback-dialog-actions .sync-button {
+  min-height: 44px;
 }
 
 .ai-quote-grid {
@@ -12007,13 +12218,15 @@ h6.local-reader-markdown-block--heading {
 
 .reading-route-dialog-backdrop {
   position: fixed;
-  z-index: 30;
+  z-index: var(--blocking-dialog-z-index);
   inset: 0;
   display: grid;
   place-items: center;
   padding: 24px;
   background: rgba(36, 49, 58, 0.30);
   backdrop-filter: blur(6px);
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .reading-route-dialog {
@@ -12021,7 +12234,9 @@ h6.local-reader-markdown-block--heading {
   gap: 14px;
   width: min(860px, 100%);
   max-height: min(760px, calc(100vh - 48px));
+  max-height: min(760px, calc(100dvh - 48px));
   overflow-y: auto;
+  overscroll-behavior: contain;
   border: 1px solid rgba(36, 49, 58, 0.14);
   border-radius: 12px;
   padding: 18px;
@@ -12058,12 +12273,13 @@ h6.local-reader-markdown-block--heading {
 .monthly-report-poster-dialog {
   width: min(1240px, 100%);
   max-height: min(920px, calc(100vh - 32px));
+  max-height: min(920px, calc(100dvh - 32px));
   grid-template-rows: auto auto auto minmax(0, 1fr) auto;
   overflow: hidden;
 }
 
 .monthly-report-poster-dialog.is-type-step {
-  grid-template-rows: auto auto auto auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
 }
 
 .monthly-report-poster-dialog.is-time-step {
@@ -12078,6 +12294,7 @@ h6.local-reader-markdown-block--heading {
   max-height: none;
   overflow: auto;
   padding: clamp(8px, 1vh, 12px) 0;
+  padding: clamp(8px, 1dvh, 12px) 0;
   scrollbar-gutter: stable both-edges;
 }
 
@@ -12088,6 +12305,7 @@ h6.local-reader-markdown-block--heading {
   border: 1px solid rgba(36, 49, 58, 0.08);
   border-radius: 28px;
   padding: clamp(14px, 2vh, 22px);
+  padding: clamp(14px, 2dvh, 22px);
   background:
     radial-gradient(circle at 50% 0%, rgba(47, 111, 94, 0.08), transparent 38%),
     rgba(255, 253, 248, 0.46);
@@ -12103,7 +12321,7 @@ h6.local-reader-markdown-block--heading {
   width: 720px;
   max-width: none;
   transform: scale(var(--monthly-report-poster-preview-scale, 1));
-  transform-origin: top center;
+  transform-origin: top left;
 }
 
 .monthly-report-poster-preview-shell.is-wide {
@@ -12113,13 +12331,14 @@ h6.local-reader-markdown-block--heading {
 
 .monthly-report-poster-preview-shell.is-cards {
   align-items: center;
-  justify-items: stretch;
+  justify-items: center;
   overflow: hidden;
   padding-inline: 4px;
 }
 
 .monthly-report-poster-preview-shell.is-wide .monthly-report-wide {
   width: min(1120px, 100%, 103vh);
+  width: min(1120px, 100%, 103dvh);
 }
 
 .monthly-report-poster-dialog-actions {
@@ -12154,6 +12373,9 @@ h6.local-reader-markdown-block--heading {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .monthly-report-kind-selector button {
@@ -12229,6 +12451,8 @@ h6.local-reader-markdown-block--heading {
 
 .monthly-report-dialog-toolbar.is-select-step {
   grid-template-columns: minmax(0, 1fr);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .monthly-report-dialog-toolbar.is-select-step .monthly-report-period-selector {
@@ -12423,6 +12647,7 @@ h6.local-reader-markdown-block--heading {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
   max-height: clamp(172px, calc(100vh - 510px), 340px);
+  max-height: clamp(172px, calc(100dvh - 510px), 340px);
   gap: 10px;
   padding-right: 4px;
 }
@@ -12494,6 +12719,7 @@ h6.local-reader-markdown-block--heading {
 .monthly-report-week-grid {
   grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
   max-height: clamp(118px, calc(100vh - 650px), 220px);
+  max-height: clamp(118px, calc(100dvh - 650px), 220px);
   gap: 8px;
 }
 
@@ -14443,10 +14669,12 @@ h6.local-reader-markdown-block--heading {
 
 .lifetime-reading-report-dialog {
   max-height: min(860px, calc(100vh - 32px));
+  max-height: min(860px, calc(100dvh - 32px));
 }
 
 .monthly-report-poster-preview-shell.is-wide.lifetime-reading-report-preview-shell .lifetime-reading-report-wide {
   width: min(1120px, 100%, 88vh);
+  width: min(1120px, 100%, 88dvh);
 }
 
 .lifetime-reading-report-wide {
@@ -14794,17 +15022,20 @@ h6.local-reader-markdown-block--heading {
 .reading-guide-node-dialog-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 60;
+  z-index: var(--blocking-dialog-z-index);
   display: grid;
   place-items: center;
   padding: 20px;
   background: rgba(18, 24, 28, 0.36);
   backdrop-filter: blur(8px);
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .reading-guide-node-dialog {
   width: min(620px, 100%);
   max-height: min(760px, calc(100vh - 40px));
+  max-height: min(760px, calc(100dvh - 40px));
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   overflow: hidden;
@@ -15197,6 +15428,7 @@ h6.local-reader-markdown-block--heading {
   border-top: 1px solid rgba(36, 49, 58, 0.08);
   padding-top: 12px;
   max-height: clamp(180px, 42vh, 360px);
+  max-height: clamp(180px, 42dvh, 360px);
   overflow-y: auto;
   padding-right: 2px;
   scrollbar-gutter: stable;
@@ -15822,6 +16054,7 @@ h6.local-reader-markdown-block--heading {
 }
 
 .stats-period-jump-grid button {
+  min-height: 44px;
   border: 1px solid rgba(36, 49, 58, 0.10);
   border-radius: 999px;
   padding: 9px 14px;
@@ -15858,6 +16091,8 @@ h6.local-reader-markdown-block--heading {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  min-width: 44px;
+  min-height: 44px;
 }
 
 .stats-period-drill {
@@ -16108,6 +16343,34 @@ h6.local-reader-markdown-block--heading {
 
 .shelf-card-menu-popover button.is-danger {
   color: var(--rust);
+}
+
+@media (hover: none), (pointer: coarse) {
+  .shelf-card--menu-card {
+    padding-right: 56px;
+  }
+
+  .shelf-card-menu-trigger {
+    width: 44px;
+    height: 44px;
+  }
+
+  .shelf-card-menu-popover {
+    top: 50px;
+  }
+
+  .candidate-bookshelf-card.shelf-card--menu-card {
+    padding-right: 58px;
+  }
+
+  .candidate-bookshelf-card .shelf-card-menu-trigger {
+    width: 44px;
+    height: 44px;
+  }
+
+  .candidate-bookshelf-card .shelf-card-menu-popover {
+    top: 50px;
+  }
 }
 
 .shelf-card-menu-popover button.is-danger:hover:not(:disabled) {
@@ -16921,6 +17184,7 @@ h6.local-reader-markdown-block--heading {
 
 .stats-scroll-list {
   max-height: min(320px, 44vh);
+  max-height: min(320px, 44dvh);
   overflow-y: auto;
   padding-right: 4px;
   scrollbar-gutter: stable;
@@ -17520,17 +17784,20 @@ h6.local-reader-markdown-block--heading {
 .ai-asset-update-dialog-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 35;
+  z-index: var(--blocking-dialog-z-index);
   display: grid;
   place-items: center;
   padding: 30px;
   background: rgba(24, 31, 35, 0.36);
   backdrop-filter: blur(8px);
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .ai-asset-update-dialog {
   width: min(720px, calc(100vw - 48px));
   max-height: min(720px, calc(100vh - 64px));
+  max-height: min(720px, calc(100dvh - 64px));
   overflow: hidden;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
@@ -17578,6 +17845,7 @@ h6.local-reader-markdown-block--heading {
 .ai-asset-update-dialog-body {
   min-height: 0;
   max-height: min(460px, calc(100vh - 260px));
+  max-height: min(460px, calc(100dvh - 260px));
   overflow: auto;
   display: grid;
   gap: 10px;
@@ -17655,6 +17923,13 @@ h6.local-reader-markdown-block--heading {
   padding: 14px 24px 20px;
   border-top: 1px solid rgba(36, 49, 58, 0.08);
   background: #fffdf8;
+}
+
+.ai-asset-update-dialog-actions .text-button,
+.ai-asset-update-dialog-actions .secondary-action {
+  min-width: 44px;
+  min-height: 44px;
+  padding-inline: 14px;
 }
 
 .ai-asset-detail-tabs {
@@ -20137,6 +20412,7 @@ h6.local-reader-markdown-block--heading {
     z-index: 40;
     width: min(320px, calc(100vw - 56px));
     height: calc(100vh - 40px);
+    height: calc(100dvh - 40px);
     min-height: 0;
     gap: 18px;
     overflow: hidden;
@@ -20155,6 +20431,7 @@ h6.local-reader-markdown-block--heading {
   .app-frame.android-shell .sidebar {
     top: calc(var(--mobile-safe-top) + var(--mobile-appbar-height));
     height: calc(100vh - var(--mobile-safe-top) - var(--mobile-appbar-height));
+    height: calc(100dvh - var(--mobile-safe-top) - var(--mobile-appbar-height));
   }
 
   .app-frame.sidebar-collapsed .sidebar {
@@ -20201,9 +20478,15 @@ h6.local-reader-markdown-block--heading {
   }
 
   .app-frame.mobile-shell .workspace:not(.workspace--local-reader) {
-    padding-bottom: calc(
-      28px + var(--mobile-bottom-nav-height) + var(--mobile-safe-bottom)
-    );
+    height: calc(100vh - 40px - var(--mobile-bottom-nav-height) - var(--mobile-safe-bottom));
+    height: calc(100dvh - 40px - var(--mobile-bottom-nav-height) - var(--mobile-safe-bottom));
+    padding-bottom: 28px;
+    scroll-padding-bottom: 28px;
+  }
+
+  .app-frame.android-shell.mobile-shell .workspace:not(.workspace--local-reader) {
+    height: calc(100vh - var(--mobile-bottom-nav-height) - var(--mobile-safe-bottom));
+    height: calc(100dvh - var(--mobile-bottom-nav-height) - var(--mobile-safe-bottom));
   }
 
   .app-frame.mobile-sidebar-open .workspace {
@@ -20548,6 +20831,14 @@ h6.local-reader-markdown-block--heading {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .book-insight-followup-item {
+    grid-template-columns: 1fr;
+  }
+
+  .book-insight-question-button {
+    justify-self: start;
+  }
+
   .book-asset-status-main {
     grid-template-columns: auto minmax(0, 1fr);
   }
@@ -20809,6 +21100,7 @@ h6.local-reader-markdown-block--heading {
   .local-reader-layout {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(0, 1fr) minmax(200px, 28vh);
+    grid-template-rows: minmax(0, 1fr) minmax(200px, 28dvh);
     overflow: hidden;
   }
 
@@ -20848,6 +21140,23 @@ h6.local-reader-markdown-block--heading {
     min-height: 40px;
     flex: 0 0 auto;
     padding: 0 10px;
+  }
+
+  .local-reader-outline-popover,
+  .local-reader-tool-popover,
+  .local-reader-search-popover {
+    position: fixed;
+    top: calc(var(--mobile-safe-top) + 86px);
+    right: 12px;
+    left: 12px;
+    width: auto;
+    max-height: calc(100vh - var(--mobile-safe-top) - 112px);
+    max-height: calc(100dvh - var(--mobile-safe-top) - 112px);
+    overflow-y: auto;
+  }
+
+  .local-reader-tool-popover--export {
+    width: auto;
   }
 
   .local-reader-document {
@@ -21455,6 +21764,7 @@ h6.local-reader-markdown-block--heading {
 
   .book-review-export-dialog {
     height: calc(100vh - 24px);
+    height: calc(100dvh - 24px);
     padding: 16px;
   }
 
@@ -21470,6 +21780,45 @@ h6.local-reader-markdown-block--heading {
 
   .book-review-export-row-meta {
     grid-column: auto;
+  }
+
+  .book-review-export-toolbar .text-button {
+    width: 100%;
+    min-height: 44px;
+    justify-content: center;
+  }
+
+  @media (max-height: 430px) {
+    .book-review-export-dialog {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      overflow: hidden;
+      padding: 14px;
+    }
+
+    .book-review-export-heading p:not(.section-kicker),
+    .book-review-export-steps,
+    .book-review-export-dialog > .bulk-export-summary {
+      display: none;
+    }
+
+    .book-review-export-body {
+      flex: 1 1 auto;
+      min-height: 0;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    .book-review-export-toolbar {
+      gap: 8px;
+    }
+
+    .book-review-export-list,
+    .book-review-export-settings {
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
   }
 
   .activity-heading,
@@ -21498,7 +21847,9 @@ h6.local-reader-markdown-block--heading {
   .settings-modal {
     width: 100vw;
     height: 100vh;
+    height: 100dvh;
     max-height: 100vh;
+    max-height: 100dvh;
     border-radius: 0;
   }
 
@@ -21568,6 +21919,59 @@ h6.local-reader-markdown-block--heading {
     flex: 1 1 100%;
   }
 
+  .update-dialog-backdrop {
+    padding: 12px;
+  }
+
+  .update-dialog {
+    width: calc(100vw - 24px);
+    height: min(640px, calc(100vh - 24px));
+    height: min(640px, calc(100dvh - 24px));
+    max-height: calc(100vh - 24px);
+    max-height: calc(100dvh - 24px);
+    gap: 12px;
+    border-radius: 12px;
+    padding: 16px;
+  }
+
+  .update-dialog-heading {
+    padding-right: 48px;
+  }
+
+  .update-dialog-heading h3 {
+    font-size: 20px;
+  }
+
+  .update-dialog-actions {
+    justify-content: stretch;
+  }
+
+  .update-dialog-actions > button {
+    flex: 1 1 104px;
+    justify-content: center;
+  }
+
+  @media (max-height: 430px) {
+    .update-dialog {
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      gap: 10px;
+      padding: 14px;
+    }
+
+    .update-dialog-heading p:not(.section-kicker),
+    .update-dialog-meta {
+      display: none;
+    }
+
+    .update-dialog-notes {
+      padding: 10px 12px;
+    }
+
+    .update-dialog-actions {
+      gap: 8px;
+    }
+  }
+
   .settings-update-card .settings-card-actions > button {
     flex: 1 1 180px;
   }
@@ -21586,6 +21990,7 @@ h6.local-reader-markdown-block--heading {
   .discovery-search-form .text-button,
   .discovery-search-form .secondary-action {
     width: 100%;
+    min-height: 44px;
     justify-content: center;
   }
 
@@ -21635,6 +22040,7 @@ h6.local-reader-markdown-block--heading {
   .ai-asset-update-dialog {
     width: calc(100vw - 24px);
     max-height: calc(100vh - 24px);
+    max-height: calc(100dvh - 24px);
     border-radius: 16px;
   }
 
@@ -21645,7 +22051,53 @@ h6.local-reader-markdown-block--heading {
 
   .ai-asset-update-dialog-body {
     max-height: calc(100vh - 238px);
+    max-height: calc(100dvh - 238px);
     padding-inline: 16px;
+  }
+
+  @media (max-height: 430px) {
+    .ai-action-feedback-dialog {
+      width: calc(100vw - 24px);
+      max-height: calc(100vh - 24px);
+      max-height: calc(100dvh - 24px);
+      grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+      gap: 10px;
+      overflow: hidden;
+      padding: 14px;
+    }
+
+    .ai-action-feedback-dialog-heading {
+      min-height: 44px;
+      padding-right: 48px;
+    }
+
+    .ai-action-feedback-dialog-heading h3 {
+      font-size: 20px;
+    }
+
+    .ai-action-feedback-dialog-target {
+      padding: 10px;
+    }
+
+    .ai-action-feedback-dialog-target p,
+    .ai-action-feedback-attachment-note {
+      display: none;
+    }
+
+    .ai-action-feedback-dialog-note {
+      min-height: 0;
+      grid-template-rows: auto minmax(44px, 1fr) auto;
+    }
+
+    .ai-action-feedback-dialog-note textarea {
+      min-height: 44px;
+      height: 100%;
+      resize: none;
+    }
+
+    .ai-action-feedback-dialog-actions {
+      align-self: end;
+    }
   }
 
   .ai-asset-update-feedback-grid {
@@ -21747,12 +22199,76 @@ h6.local-reader-markdown-block--heading {
     padding: 12px;
   }
 
+  .reading-route-dialog {
+    max-height: calc(100vh - 24px);
+    max-height: calc(100dvh - 24px);
+    padding: 16px;
+  }
+
+  .reading-route-dialog .icon-button,
+  .reading-route-dialog .secondary-action,
+  .reading-route-dialog .sync-button,
+  .reading-route-dialog .text-button,
+  .reading-route-dialog input[type="search"],
+  .reading-route-dialog select {
+    min-height: 44px;
+  }
+
+  .reading-route-dialog .icon-button {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+  }
+
+  .reading-route-dialog-footer {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .reading-route-input-panel .reading-route-dialog {
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    overflow: hidden;
+  }
+
+  .reading-route-input-panel .reading-route-optional-panel {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  @media (max-height: 430px) {
+    .reading-route-input-panel .reading-route-dialog {
+      gap: 10px;
+      padding: 14px;
+    }
+
+    .reading-route-input-panel .reading-route-dialog-heading p:not(.section-kicker),
+    .reading-route-input-panel .reading-route-input-book-card small {
+      display: none;
+    }
+
+    .reading-route-input-panel .reading-route-input-book-card,
+    .reading-route-input-panel .reading-route-optional-panel {
+      padding: 10px;
+    }
+
+    .reading-route-input-panel .reading-route-input-book-card strong {
+      margin-top: 0;
+      font-size: 16px;
+    }
+
+    .reading-route-input-panel .reading-route-input-book-card > span {
+      padding: 6px 9px;
+    }
+  }
+
   .bulk-export-backdrop {
     padding: 12px;
   }
 
   .bulk-export-dialog {
     height: calc(100vh - 24px);
+    height: calc(100dvh - 24px);
     padding: 16px;
   }
 
@@ -21799,6 +22315,56 @@ h6.local-reader-markdown-block--heading {
   .bulk-export-actions .secondary-action,
   .bulk-export-actions .text-button {
     width: 100%;
+    min-height: 44px;
+  }
+
+  @media (max-height: 430px) {
+    .bulk-export-dialog {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      overflow: hidden;
+      padding: 14px;
+    }
+
+    .bulk-export-heading p:not(.section-kicker),
+    .bulk-export-summary,
+    .bulk-export-boundary,
+    .bulk-export-strategy small {
+      display: none;
+    }
+
+    .bulk-export-setup {
+      flex: 0 0 auto;
+      min-height: 0;
+      max-height: 128px;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+
+    .bulk-export-strategies {
+      max-height: 112px;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+
+    .bulk-export-strategy {
+      min-height: 44px;
+      align-items: center;
+    }
+
+    .bulk-export-list,
+    .bulk-export-result,
+    .bulk-export-progress,
+    .book-review-export-body {
+      flex: 1 1 auto;
+      min-height: 0;
+    }
+
+    .bulk-export-actions {
+      flex: 0 0 auto;
+      gap: 8px;
+    }
   }
 
   .ai-summary-hero-side,
@@ -21841,6 +22407,7 @@ h6.local-reader-markdown-block--heading {
   .reading-guide-node-dialog {
     width: 100%;
     max-height: 82vh;
+    max-height: 82dvh;
     border-radius: 8px 8px 0 0;
   }
 
@@ -22010,6 +22577,31 @@ h6.local-reader-markdown-block--heading {
     white-space: nowrap;
   }
 
+  .app-frame.mobile-shell .sync-button,
+  .app-frame.mobile-shell .secondary-action,
+  .app-frame.mobile-shell .text-button,
+  .app-frame.mobile-shell .search-field,
+  .app-frame.mobile-shell .filter-tabs button,
+  .app-frame.mobile-shell .bookshelf-filter-tabs button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .app-frame.mobile-shell .shelf-card--menu-card {
+    padding-right: 56px;
+  }
+
+  .app-frame.mobile-shell .shelf-card-menu-trigger {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+
+  .app-frame.mobile-shell .shelf-card-menu-popover {
+    top: 50px;
+  }
+
   .bookshelf-search-row {
     flex-direction: column;
     align-items: stretch;
@@ -22083,6 +22675,10 @@ h6.local-reader-markdown-block--heading {
   .stats-hero-copy {
     min-height: 360px;
     padding: 24px;
+  }
+
+  .stats-hero-actions > button {
+    min-height: 44px;
   }
 
   .review-cover-main h3 {
@@ -22213,6 +22809,158 @@ h6.local-reader-markdown-block--heading {
   .monthly-report-period-grid--years,
   .monthly-report-period-grid--weeks {
     max-height: 118px;
+  }
+
+  @media (max-height: 430px) {
+    .monthly-report-poster-dialog {
+      height: calc(100vh - 24px);
+      height: calc(100dvh - 24px);
+      max-height: calc(100vh - 24px);
+      max-height: calc(100dvh - 24px);
+      gap: 10px;
+      overflow: hidden;
+      padding: 14px;
+    }
+
+    .monthly-report-poster-dialog.is-type-step,
+    .monthly-report-poster-dialog.is-time-step {
+      grid-template-rows: auto minmax(0, 1fr) auto;
+    }
+
+    .monthly-report-poster-dialog.is-preview-step {
+      grid-template-rows: auto auto minmax(0, 1fr) auto;
+    }
+
+    .monthly-report-poster-dialog .reading-route-dialog-heading {
+      padding-right: 48px;
+    }
+
+    .monthly-report-poster-dialog .reading-route-dialog-heading h3 {
+      font-size: 20px;
+    }
+
+    .monthly-report-poster-dialog .reading-route-dialog-heading p:not(.section-kicker),
+    .monthly-report-step-indicator,
+    .monthly-report-kind-selector small,
+    .monthly-report-period-selector-heading small,
+    .monthly-report-period-option-group span,
+    .monthly-report-overall-range span {
+      display: none;
+    }
+
+    .monthly-report-kind-selector {
+      align-content: start;
+      gap: 8px;
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+
+    .monthly-report-kind-selector button {
+      min-height: 60px;
+      gap: 3px;
+      border-radius: 16px;
+      padding: 10px 12px;
+    }
+
+    .monthly-report-kind-selector strong {
+      font-size: 22px;
+    }
+
+    .monthly-report-kind-selector span {
+      font-size: 12px;
+    }
+
+    .monthly-report-dialog-toolbar.is-select-step,
+    .monthly-report-dialog-toolbar.is-preview-step {
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+
+    .monthly-report-period-selector {
+      min-height: 0;
+      gap: 8px;
+      padding: 10px;
+    }
+
+    .monthly-report-period-selector-heading strong {
+      font-size: 16px;
+    }
+
+    .monthly-report-overall-range {
+      min-height: 44px;
+      align-items: center;
+      padding: 10px;
+    }
+
+    .monthly-report-period-mode-tabs {
+      gap: 6px;
+    }
+
+    .monthly-report-period-mode-tabs button {
+      min-height: 44px;
+      padding: 7px 9px;
+    }
+
+    .monthly-report-period-mode-tabs button small {
+      display: none;
+    }
+
+    .monthly-report-period-picker {
+      min-height: 0;
+      gap: 8px;
+    }
+
+    .monthly-report-period-picker.is-weekly .monthly-report-period-grid--years button {
+      min-height: 44px;
+    }
+
+    .monthly-report-period-grid--months {
+      gap: 6px;
+    }
+
+    .monthly-report-period-grid--years,
+    .monthly-report-period-grid--weeks {
+      max-height: 86px;
+    }
+
+    .monthly-report-week-grid {
+      max-height: 92px;
+    }
+
+    .monthly-report-preview-tabs {
+      width: 100%;
+      align-self: stretch;
+    }
+
+    .monthly-report-preview-tabs button {
+      min-height: 44px;
+      padding: 8px;
+    }
+
+    .monthly-report-poster-preview-shell {
+      min-height: 0;
+      padding: 6px 0;
+      overflow: auto;
+    }
+
+    .monthly-report-poster-preview-shell.is-poster {
+      border-radius: 16px;
+      padding: 8px;
+    }
+
+    .monthly-report-poster-dialog-actions {
+      flex: 0 0 auto;
+      align-self: stretch;
+      gap: 8px;
+    }
+
+    .monthly-report-poster-dialog-actions > button {
+      flex: 1 1 128px;
+      min-width: 0;
+      min-height: 44px;
+    }
   }
 
   .review-cover-actions,
@@ -23325,10 +24073,38 @@ h6.local-reader-markdown-block--heading {
     transparent;
 }
 
+@media (max-width: 980px) {
+  .mobile-sidebar-close,
+  .mobile-sidebar-trigger,
+  .settings-modal-close,
+  .local-reader-back-button,
+  .local-reader-toolbar button,
+  .local-reader-inspector-tabs button,
+  .local-reader-selection-menu button,
+  .local-reader-search-popover button,
+  .local-reader-thought-composer button,
+  .local-reader-ai-composer button,
+  .local-reader-thought-modal-close,
+  .local-reader-thought-modal-actions button,
+  .local-reader-toolbar .local-reader-tool-primary-action,
+  .settings-modal-content .credential-input input,
+  .settings-modal-content .credential-input select,
+  .settings-modal-content .settings-card-actions > button,
+  .settings-modal-content .ai-model-control .sync-button,
+  .settings-modal-content .ai-model-option,
+  .reading-assistant-icon-button,
+  .reading-assistant-model-chip,
+  .reading-assistant-model-menu-actions button,
+  .reading-assistant-send-button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
 @media (max-width: 720px) {
   .reading-assistant-launcher {
     right: max(16px, env(safe-area-inset-right, 0px) + 12px);
-    bottom: max(82px, env(safe-area-inset-bottom, 0px) + 76px);
+    bottom: calc(var(--mobile-bottom-nav-height) + var(--mobile-safe-bottom) + 18px);
   }
 
   .reading-assistant-panel {
@@ -23343,5 +24119,33 @@ h6.local-reader-markdown-block--heading {
 
   .reading-assistant-model-chip {
     max-width: 48%;
+  }
+}
+
+@media (max-width: 720px) and (max-height: 430px) {
+  .reading-assistant-panel {
+    gap: 10px;
+    padding: 10px 16px;
+  }
+
+  .reading-assistant-chat-view {
+    gap: 8px;
+  }
+
+  .reading-assistant-suggestions {
+    display: none;
+  }
+
+  .reading-assistant-composer {
+    grid-template-rows: minmax(44px, auto) auto;
+    gap: 8px;
+    min-height: 0;
+    padding: 10px;
+  }
+
+  .reading-assistant-composer textarea {
+    min-height: 44px;
+    max-height: 64px;
+    line-height: 1.45;
   }
 }

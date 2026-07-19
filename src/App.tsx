@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useRef, useState } from "react";
+import { Suspense, lazy, startTransition, useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   BarChart3,
@@ -24,27 +24,9 @@ import {
   BottomNavigation,
   type BottomNavigationId,
 } from "./components/BottomNavigation";
-import {
-  ReadingAssistantLauncher,
-  ReadingAssistantPanel,
-} from "./components/ReadingAssistantPanel";
+import { ReadingAssistantLauncher } from "./components/ReadingAssistantLauncher";
 import { useToast } from "./components/ToastProvider";
-import { DashboardPage } from "./pages/DashboardPage";
-import { BookshelfPage } from "./pages/BookshelfPage";
-import { CandidateBookshelfPage } from "./pages/CandidateBookshelfPage";
-import { LocalLibraryPage } from "./pages/LocalLibraryPage";
-import { LocalReaderPage } from "./pages/LocalReaderPage";
-import { BookDecisionPage } from "./pages/BookDecisionPage";
-import { BookDetailPage } from "./pages/BookDetailPage";
-import { NotesPage } from "./pages/NotesPage";
-import { BookNotesPage } from "./pages/BookNotesPage";
-import { BookAiSummaryPage } from "./pages/BookAiSummaryPage";
-import { ReadingRoutePage } from "./pages/ReadingRoutePage";
-import { StatisticsPage } from "./pages/StatisticsPage";
-import { ReadingHubPage } from "./pages/ReadingHubPage";
-import { DiscoveryPage } from "./pages/DiscoveryPage";
-import { MinePage } from "./pages/MinePage";
-import { SettingsPage, type SettingsCategoryId } from "./pages/SettingsPage";
+import type { SettingsCategoryId } from "./pages/SettingsPage";
 import type { BookDecisionSession } from "./pages/book-decision-input-model";
 import {
   type ReadingStatsCache,
@@ -99,6 +81,58 @@ import {
   shouldShowAppUpdateBadge,
   writeAppUpdateNoticeState
 } from "./lib/app-updates";
+
+const DashboardPage = lazy(() =>
+  import("./pages/DashboardPage").then((module) => ({ default: module.DashboardPage })),
+);
+const BookshelfPage = lazy(() =>
+  import("./pages/BookshelfPage").then((module) => ({ default: module.BookshelfPage })),
+);
+const CandidateBookshelfPage = lazy(() =>
+  import("./pages/CandidateBookshelfPage").then((module) => ({ default: module.CandidateBookshelfPage })),
+);
+const LocalLibraryPage = lazy(() =>
+  import("./pages/LocalLibraryPage").then((module) => ({ default: module.LocalLibraryPage })),
+);
+const LocalReaderPage = lazy(() =>
+  import("./pages/LocalReaderPage").then((module) => ({ default: module.LocalReaderPage })),
+);
+const BookDecisionPage = lazy(() =>
+  import("./pages/BookDecisionPage").then((module) => ({ default: module.BookDecisionPage })),
+);
+const BookDetailPage = lazy(() =>
+  import("./pages/BookDetailPage").then((module) => ({ default: module.BookDetailPage })),
+);
+const NotesPage = lazy(() =>
+  import("./pages/NotesPage").then((module) => ({ default: module.NotesPage })),
+);
+const BookNotesPage = lazy(() =>
+  import("./pages/BookNotesPage").then((module) => ({ default: module.BookNotesPage })),
+);
+const BookAiSummaryPage = lazy(() =>
+  import("./pages/BookAiSummaryPage").then((module) => ({ default: module.BookAiSummaryPage })),
+);
+const ReadingRoutePage = lazy(() =>
+  import("./pages/ReadingRoutePage").then((module) => ({ default: module.ReadingRoutePage })),
+);
+const StatisticsPage = lazy(() =>
+  import("./pages/StatisticsPage").then((module) => ({ default: module.StatisticsPage })),
+);
+const ReadingHubPage = lazy(() =>
+  import("./pages/ReadingHubPage").then((module) => ({ default: module.ReadingHubPage })),
+);
+const DiscoveryPage = lazy(() =>
+  import("./pages/DiscoveryPage").then((module) => ({ default: module.DiscoveryPage })),
+);
+const MinePage = lazy(() =>
+  import("./pages/MinePage").then((module) => ({ default: module.MinePage })),
+);
+const SettingsPage = lazy(() =>
+  import("./pages/SettingsPage").then((module) => ({ default: module.SettingsPage })),
+);
+const ReadingAssistantPanel = lazy(() =>
+  import("./components/ReadingAssistantPanel").then((module) => ({ default: module.ReadingAssistantPanel })),
+);
 
 type ReadingHubTab = "books" | "guides" | "report";
 type ShelfTab = "wechat" | "candidate" | "local";
@@ -262,6 +296,14 @@ export function isMobileShellViewport(
 
 function getInitialPreferences(): UserPreferences {
   return readUserPreferences();
+}
+
+function AppViewFallback() {
+  return (
+    <div className="app-view-loading" role="status" aria-live="polite">
+      正在加载页面...
+    </div>
+  );
 }
 
 function getInitialSidebarCollapsed(): boolean {
@@ -452,9 +494,12 @@ export function App() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [commandError, setCommandError] = useState<CommandErrorInfo>();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [hasSettingsMounted, setHasSettingsMounted] = useState(false);
   const [settingsPreferredCategory, setSettingsPreferredCategory] =
     useState<SettingsCategoryId>();
   const [isReadingAssistantOpen, setIsReadingAssistantOpen] = useState(false);
+  const [hasReadingAssistantMounted, setHasReadingAssistantMounted] =
+    useState(false);
   const [readingAssistantOverrideContext, setReadingAssistantOverrideContext] = useState<{
     scope: AssistantContextScope;
     entityId?: string;
@@ -474,6 +519,7 @@ export function App() {
   const [appUpdateProgress, setAppUpdateProgress] =
     useState<AppUpdateInstallProgress>();
   const mobileSidebarTriggerRef = useRef<HTMLButtonElement>(null);
+  const workspaceRef = useRef<HTMLElement>(null);
   const pendingAppUpdateRef = useRef<
     Awaited<ReturnType<typeof prepareAppUpdate>>["update"]
   >(null);
@@ -554,6 +600,14 @@ export function App() {
   });
   const shouldShowBottomNavigation =
     isMobileShell && activeView !== "localReader";
+
+  useEffect(() => {
+    if (activeView === "localReader") {
+      return;
+    }
+
+    workspaceRef.current?.scrollTo({ top: 0, left: 0 });
+  }, [activeView, readingHubTab]);
 
   useEffect(() => {
     let isMounted = true;
@@ -949,12 +1003,14 @@ export function App() {
     closeMobileSidebar();
     setSidebarMenuState(createCollapsedSidebarMenuState());
     setSettingsPreferredCategory(preferredCategory);
+    setHasSettingsMounted(true);
     setIsSettingsOpen(true);
   }
 
   function handleOpenReadingAssistant() {
     setReadingAssistantOverrideContext(undefined);
     setReadingAssistantInitialDraft(undefined);
+    setHasReadingAssistantMounted(true);
     setIsReadingAssistantOpen(true);
   }
 
@@ -978,6 +1034,7 @@ export function App() {
       text: normalizedDraft,
       nonce: Date.now(),
     });
+    setHasReadingAssistantMounted(true);
     setIsReadingAssistantOpen(true);
   }
 
@@ -1626,7 +1683,10 @@ export function App() {
         </div>
       </aside>
 
-      <main className={`workspace ${activeView === "localReader" ? "workspace--local-reader" : ""}`}>
+      <main
+        ref={workspaceRef}
+        className={`workspace ${activeView === "localReader" ? "workspace--local-reader" : ""}`}
+      >
         {activeView !== "localReader" ? (
           <header className="topbar">
             <button
@@ -1647,8 +1707,9 @@ export function App() {
           </header>
         ) : null}
 
-        {activeView === "dashboard" ? (
-          <DashboardPage
+        <Suspense fallback={<AppViewFallback />}>
+          {activeView === "dashboard" ? (
+            <DashboardPage
             credentialStatus={credentialStatus}
             bookshelf={bookshelf}
             isLoading={isLoading}
@@ -1673,7 +1734,7 @@ export function App() {
             onReadingStatsCacheChange={handleReadingStatsChange}
           />
         ) : null}
-        {activeView === "shelf" ? (
+          {activeView === "shelf" ? (
           <BookshelfPage
             credentialStatus={credentialStatus}
             bookshelf={bookshelf}
@@ -1686,7 +1747,7 @@ export function App() {
             onSearchInDiscovery={handleSearchShelfEntryInDiscovery}
           />
         ) : null}
-        {activeView === "candidateShelf" ? (
+          {activeView === "candidateShelf" ? (
           <CandidateBookshelfPage
             credentialStatus={credentialStatus}
             bookshelf={bookshelf}
@@ -1698,19 +1759,19 @@ export function App() {
             onBookDecisionGenerated={handleBookDecisionGenerated}
           />
         ) : null}
-        {activeView === "localLibrary" ? (
+          {activeView === "localLibrary" ? (
           <LocalLibraryPage
             onOpenBook={handleOpenLocalBook}
             wereadEntries={bookshelf?.snapshot.entries}
           />
         ) : null}
-        {activeView === "localReader" && selectedLocalBookId ? (
+          {activeView === "localReader" && selectedLocalBookId ? (
           <LocalReaderPage
             bookId={selectedLocalBookId}
             onBack={() => handleNavigate("localLibrary")}
           />
         ) : null}
-        {activeView === "bookDecision" ? (
+          {activeView === "bookDecision" ? (
           <BookDecisionPage
             bookshelf={bookshelf}
             readingStatsCache={readingStatsCache}
@@ -1719,7 +1780,7 @@ export function App() {
             onBack={() => handleNavigate("candidateShelf")}
           />
         ) : null}
-        {activeView === "bookDetail" ? (
+          {activeView === "bookDetail" ? (
           <BookDetailPage
             shelfEntry={activeDetailEntry}
             detailResponse={bookDetail}
@@ -1752,7 +1813,7 @@ export function App() {
             onOpenReadingRoute={handleOpenReadingRouteFromDetail}
           />
         ) : null}
-        {activeView === "notes" ? (
+          {activeView === "notes" ? (
           <NotesPage
             credentialStatus={credentialStatus}
             overview={notesOverview}
@@ -1761,7 +1822,7 @@ export function App() {
             onOpenBookNotes={handleOpenBookNotes}
           />
         ) : null}
-        {activeView === "bookNotes" ? (
+          {activeView === "bookNotes" ? (
           <BookNotesPage
             book={selectedNotebookBook}
             bookId={selectedNotebookBook?.bookId}
@@ -1779,7 +1840,7 @@ export function App() {
             defaultViewMode={preferences.defaultNotesView}
           />
         ) : null}
-        {activeView === "bookAiSummary" ? (
+          {activeView === "bookAiSummary" ? (
           <BookAiSummaryPage
             book={selectedNotebookBook}
             bookId={selectedNotebookBook?.bookId}
@@ -1808,7 +1869,7 @@ export function App() {
             }
           />
         ) : null}
-        {activeView === "readingRoute" ? (
+          {activeView === "readingRoute" ? (
           <ReadingRoutePage
             shelfEntry={activeDetailEntry}
             detail={bookDetail?.detail}
@@ -1821,7 +1882,7 @@ export function App() {
             onOpenDiscovery={() => handleNavigate("discovery")}
           />
         ) : null}
-        {activeView === "stats" ? (
+          {activeView === "stats" ? (
           <StatisticsPage
             credentialStatus={credentialStatus}
             cache={readingStatsCache}
@@ -1834,7 +1895,7 @@ export function App() {
             defaultMode={preferences.defaultStatsPeriod}
           />
         ) : null}
-        {activeView === "readingReview" ? (
+          {activeView === "readingReview" ? (
           <ReadingHubPage
             credentialStatus={credentialStatus}
             cache={readingStatsCache}
@@ -1852,7 +1913,7 @@ export function App() {
             onNotesOverviewChange={setNotesOverview}
           />
         ) : null}
-        {activeView === "discovery" ? (
+          {activeView === "discovery" ? (
           <DiscoveryPage
             credentialStatus={credentialStatus}
             bookshelf={bookshelf}
@@ -1866,7 +1927,7 @@ export function App() {
             onClearInitialQuery={() => setDiscoveryInitialQuery(undefined)}
           />
         ) : null}
-        {activeView === "mine" ? (
+          {activeView === "mine" ? (
           <MinePage
             credentialStatus={credentialStatus}
             bookshelf={bookshelf}
@@ -1877,7 +1938,8 @@ export function App() {
             onOpenSettings={handleOpenSettings}
             onOpenLocalLibrary={() => handleNavigate("localLibrary")}
           />
-        ) : null}
+          ) : null}
+        </Suspense>
       </main>
       {shouldShowBottomNavigation ? (
         <BottomNavigation
@@ -1888,50 +1950,58 @@ export function App() {
       <ReadingAssistantLauncher
         onOpen={handleOpenReadingAssistant}
       />
-      <ReadingAssistantPanel
-        open={isReadingAssistantOpen}
-        scope={readingAssistantContext.scope}
-        entityId={readingAssistantContext.entityId}
-        initialDraft={readingAssistantInitialDraft?.text}
-        initialDraftNonce={readingAssistantInitialDraft?.nonce}
-        onCandidateAdded={() => setCandidateShelfRefreshKey((current) => current + 1)}
-        onOpenCandidateShelf={() => {
-          handleCloseReadingAssistant();
-          handleNavigate("candidateShelf");
-        }}
-        onOpenBookReview={handleOpenBookReviewFromAssistant}
-        onOpenBookDetail={handleOpenBookDetailFromAssistant}
-        canOpenBookDetail={(bookId) => Boolean(findShelfBookEntry(bookId))}
-        onOpenAiSettings={() => {
-          handleCloseReadingAssistant();
-          handleOpenSettings("ai");
-        }}
-        onClose={handleCloseReadingAssistant}
-      />
-      <SettingsPage
-        open={isSettingsOpen}
-        credentialStatus={credentialStatus}
-        onCredentialChange={handleCredentialChange}
-        onLocalCacheCleared={handleLocalCacheCleared}
-        preferences={preferences}
-        onPreferencesChange={handlePreferencesChange}
-        onClose={() => {
-          setIsSettingsOpen(false);
-          setSettingsPreferredCategory(undefined);
-        }}
-        preferredCategory={settingsPreferredCategory}
-        appUpdateStatus={appUpdateStatus}
-        hasPendingAppUpdate={hasPendingAppUpdate}
-        isCheckingForAppUpdate={isCheckingForAppUpdate}
-        isInstallingAppUpdate={isInstallingAppUpdate}
-        appUpdateProgressLabel={appUpdateProgressLabel}
-        onCheckForAppUpdate={async () => {
-          await handleCheckForAppUpdate();
-          return;
-        }}
-        onInstallAppUpdate={handleInstallAppUpdate}
-        onViewAppUpdate={handleReviewedAppUpdate}
-      />
+      {hasReadingAssistantMounted ? (
+        <Suspense fallback={null}>
+          <ReadingAssistantPanel
+            open={isReadingAssistantOpen}
+            scope={readingAssistantContext.scope}
+            entityId={readingAssistantContext.entityId}
+            initialDraft={readingAssistantInitialDraft?.text}
+            initialDraftNonce={readingAssistantInitialDraft?.nonce}
+            onCandidateAdded={() => setCandidateShelfRefreshKey((current) => current + 1)}
+            onOpenCandidateShelf={() => {
+              handleCloseReadingAssistant();
+              handleNavigate("candidateShelf");
+            }}
+            onOpenBookReview={handleOpenBookReviewFromAssistant}
+            onOpenBookDetail={handleOpenBookDetailFromAssistant}
+            canOpenBookDetail={(bookId) => Boolean(findShelfBookEntry(bookId))}
+            onOpenAiSettings={() => {
+              handleCloseReadingAssistant();
+              handleOpenSettings("ai");
+            }}
+            onClose={handleCloseReadingAssistant}
+          />
+        </Suspense>
+      ) : null}
+      {hasSettingsMounted ? (
+        <Suspense fallback={null}>
+          <SettingsPage
+            open={isSettingsOpen}
+            credentialStatus={credentialStatus}
+            onCredentialChange={handleCredentialChange}
+            onLocalCacheCleared={handleLocalCacheCleared}
+            preferences={preferences}
+            onPreferencesChange={handlePreferencesChange}
+            onClose={() => {
+              setIsSettingsOpen(false);
+              setSettingsPreferredCategory(undefined);
+            }}
+            preferredCategory={settingsPreferredCategory}
+            appUpdateStatus={appUpdateStatus}
+            hasPendingAppUpdate={hasPendingAppUpdate}
+            isCheckingForAppUpdate={isCheckingForAppUpdate}
+            isInstallingAppUpdate={isInstallingAppUpdate}
+            appUpdateProgressLabel={appUpdateProgressLabel}
+            onCheckForAppUpdate={async () => {
+              await handleCheckForAppUpdate();
+              return;
+            }}
+            onInstallAppUpdate={handleInstallAppUpdate}
+            onViewAppUpdate={handleReviewedAppUpdate}
+          />
+        </Suspense>
+      ) : null}
       <AppUpdateDialog
         open={isAppUpdateDialogOpen}
         status={appUpdateStatus}

@@ -237,6 +237,11 @@ const SELECTION_POPOVER_WIDTH = 520;
 const SELECTION_POPOVER_BASE_HEIGHT = 58;
 const SELECTION_POPOVER_RELATED_GROUP_HEIGHT = 174;
 const SELECTION_POPOVER_MAX_HEIGHT = 420;
+const SELECTION_POPOVER_SHORT_VIEWPORT_MEDIA = "(max-width: 720px) and (max-height: 430px)";
+const SELECTION_POPOVER_SHORT_VIEWPORT_MIN_HEIGHT = 96;
+const SELECTION_POPOVER_SHORT_VIEWPORT_MAX_HEIGHT = 148;
+const SELECTION_POPOVER_SHORT_VIEWPORT_RESERVED_HEIGHT = 260;
+const SELECTION_POPOVER_STATUSBAR_GAP = 4;
 const THOUGHT_COMPOSER_WIDTH = 360;
 const THOUGHT_COMPOSER_HEIGHT = 220;
 const AI_QUESTION_COMPOSER_WIDTH = 380;
@@ -678,6 +683,11 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
     isOutlineOpen,
     isSearchOpen
   ]);
+
+  useEffect(() => {
+    document.addEventListener("selectionchange", handleSelectionChange);
+    return () => document.removeEventListener("selectionchange", handleSelectionChange);
+  }, [aiQuestionRecords, content.length, thoughts]);
 
   useEffect(() => {
     if (!selectionMenu) {
@@ -2259,6 +2269,7 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
               tabIndex={-1}
               onScroll={handleReaderScroll}
               onMouseUp={handleSelectionChange}
+              onTouchEnd={handleSelectionChange}
               onKeyUp={handleSelectionChange}
             >
               <div
@@ -3289,9 +3300,24 @@ function getSelectionPopoverEstimatedHeight(
     (relatedThoughtCount > 0 ? 1 : 0) + (relatedAiQuestionCount > 0 ? 1 : 0);
 
   return Math.min(
-    SELECTION_POPOVER_MAX_HEIGHT,
+    getSelectionPopoverMaxHeight(),
     SELECTION_POPOVER_BASE_HEIGHT + relatedGroupCount * SELECTION_POPOVER_RELATED_GROUP_HEIGHT
   );
+}
+
+function getSelectionPopoverMaxHeight(): number {
+  if (
+    typeof window !== "undefined" &&
+    window.matchMedia(SELECTION_POPOVER_SHORT_VIEWPORT_MEDIA).matches
+  ) {
+    return clampNumber(
+      window.innerHeight - SELECTION_POPOVER_SHORT_VIEWPORT_RESERVED_HEIGHT,
+      SELECTION_POPOVER_SHORT_VIEWPORT_MIN_HEIGHT,
+      SELECTION_POPOVER_SHORT_VIEWPORT_MAX_HEIGHT
+    );
+  }
+
+  return SELECTION_POPOVER_MAX_HEIGHT;
 }
 
 function readTextOffset(root: HTMLElement, container: Node, offset: number): number {
@@ -3332,12 +3358,32 @@ function getFloatingLayerPosition(
       options.width,
       options.bounds
     ),
-    top: clampFloatingLayerTop(rect.top - 54, options.height, options.bounds)
+    top: clampSelectionPopoverTop(rect.top - 54, options.height, options.bounds)
   };
 }
 
 function getFloatingLayerBounds(anchor: Element): DOMRect | undefined {
-  return anchor.closest(".local-reader-main-pane")?.getBoundingClientRect();
+  return (
+    anchor.closest(".local-reader-document") ??
+    anchor.closest(".local-reader-main-pane")
+  )?.getBoundingClientRect();
+}
+
+function clampSelectionPopoverTop(top: number, height: number, bounds?: DOMRect): number {
+  if (typeof window === "undefined") {
+    return Math.max(58, Math.round(top));
+  }
+
+  const statusbar = document.querySelector(".local-reader-statusbar");
+  if (statusbar instanceof HTMLElement) {
+    const statusbarRect = statusbar.getBoundingClientRect();
+    const maxTopBeforeStatusbar = statusbarRect.top - height - SELECTION_POPOVER_STATUSBAR_GAP;
+    if (statusbarRect.height > 0 && maxTopBeforeStatusbar >= 58) {
+      return Math.round(clampNumber(top, 58, maxTopBeforeStatusbar));
+    }
+  }
+
+  return clampFloatingLayerTop(top, height, bounds);
 }
 
 function clampFloatingLayerLeft(left: number, width: number, bounds?: DOMRect): number {

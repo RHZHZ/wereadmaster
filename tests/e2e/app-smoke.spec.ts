@@ -2,6 +2,7 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 import { auditVisualScroll, type VisualScrollAuditResult } from "./visual-scroll-helpers";
 
 type MockTauriOptions = {
+  availableAppUpdate?: boolean;
   hasCredential?: boolean;
   hasAiCredential?: boolean;
   longNoteCardContent?: boolean;
@@ -230,6 +231,465 @@ test.describe("个人阅读管理应用 smoke", () => {
     await expect(page.getByLabel("作者偏好")).toContainText("长期常读作者");
     await expect(page.getByLabel("分类偏好")).toContainText("长期分类投入");
     await expect(page.getByLabel("长读书目")).toContainText("长期长读书目");
+  });
+
+  test("移动端阅读报告生成类型步骤可点击并可滚动", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await installTauriMock(page, { manyStatsItems: true });
+    await page.goto("/");
+
+    await openPrimaryNav(page, "统计");
+    await page.getByRole("button", { name: "生成阅读报告" }).click();
+
+    const dialog = page.getByRole("dialog", { name: "阅读报告生成" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole("button", { name: /下一步：选择月报时间/ })).toBeVisible();
+
+    const overlayLayer = await readOverlayZIndexes(page, ".reading-route-dialog-backdrop");
+
+    expect(overlayLayer.backdrop).toBeGreaterThan(overlayLayer.bottomNav);
+    expect(overlayLayer.backdrop).toBeGreaterThan(overlayLayer.assistantLauncher);
+
+    const kindSelectorScroll = await dialog.locator(".monthly-report-kind-selector").evaluate((element) => {
+      const selector = element as HTMLElement;
+      selector.scrollTop = selector.scrollHeight;
+      return {
+        canScroll: selector.scrollHeight > selector.clientHeight,
+        overflowY: window.getComputedStyle(selector).overflowY,
+        scrollTop: Math.round(selector.scrollTop)
+      };
+    });
+
+    expect(kindSelectorScroll.canScroll).toBe(true);
+    expect(kindSelectorScroll.overflowY).toBe("auto");
+    expect(kindSelectorScroll.scrollTop).toBeGreaterThan(0);
+
+    const monthlyOption = dialog.locator(".monthly-report-kind-selector button", { hasText: "月报" });
+    await monthlyOption.click();
+    await expect(monthlyOption).toHaveClass(/is-active/);
+
+    await dialog.getByRole("button", { name: /下一步：选择月报时间/ }).click();
+    await expect(dialog.getByLabel("阅读报告周期选择")).toBeVisible();
+  });
+
+  test("阅读报告预览三种形态保持居中且移动端无横向溢出", async ({ browser, page }) => {
+    await page.setViewportSize({ width: 1366, height: 768 });
+    await installTauriMock(page, { manyStatsItems: true });
+    await page.goto("/");
+
+    const desktopDialog = await openMonthlyReportPreview(page);
+    await expectReportPreviewModeCentered(desktopDialog, "poster");
+    await desktopDialog.getByRole("tab", { name: "轮播报告" }).click();
+    await expectReportPreviewModeCentered(desktopDialog, "cards");
+    await desktopDialog.getByRole("tab", { name: "16:9 报告" }).click();
+    await expectReportPreviewModeCentered(desktopDialog, "wide");
+
+    const mobileContext = await browser.newContext({
+      baseURL: "http://127.0.0.1:5173",
+      viewport: { width: 390, height: 844 },
+      hasTouch: true,
+      isMobile: true
+    });
+    const mobilePage = await mobileContext.newPage();
+
+    try {
+      await installTauriMock(mobilePage, { manyStatsItems: true });
+      await mobilePage.goto("/");
+
+      const mobileDialog = await openMonthlyReportPreview(mobilePage);
+      await expectReportPreviewModeCentered(mobileDialog, "poster");
+      await mobileDialog.getByRole("tab", { name: "轮播报告" }).tap();
+      await expectReportPreviewModeCentered(mobileDialog, "cards");
+      await mobileDialog.getByRole("tab", { name: "16:9 报告" }).tap();
+      await expectReportPreviewModeCentered(mobileDialog, "wide");
+
+      const mobileOverflow = await mobilePage.evaluate(() => ({
+        hasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+        scrollWidth: document.documentElement.scrollWidth,
+        viewportWidth: window.innerWidth
+      }));
+      expect(mobileOverflow.hasHorizontalOverflow).toBe(false);
+      expect(mobileOverflow.scrollWidth).toBeLessThanOrEqual(mobileOverflow.viewportWidth);
+    } finally {
+      await mobileContext.close();
+    }
+  });
+
+  test("移动端阻塞式弹层覆盖阅读助手并保留内容滚动", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await installTauriMock(page, { longBulkExportList: true });
+    await page.goto("/");
+
+    await page.getByLabel("打开 AI 阅读助手").click();
+    const assistantPanel = page.getByRole("complementary", { name: "AI 阅读助手" });
+    await expect(assistantPanel).toBeVisible();
+    const assistantPanelZIndex = await assistantPanel.evaluate((element) =>
+      Number.parseInt(window.getComputedStyle(element).zIndex, 10)
+    );
+    const assistantTouchTargets = await assistantPanel.evaluate((element) => {
+      const closeButton = element.querySelector<HTMLElement>('button[aria-label="关闭 AI 阅读助手"]');
+      const sendButton = element.querySelector<HTMLElement>(".reading-assistant-send-button");
+      if (!closeButton || !sendButton) {
+        throw new Error("阅读助手高频操作按钮缺失");
+      }
+
+      const closeRect = closeButton.getBoundingClientRect();
+      const sendRect = sendButton.getBoundingClientRect();
+      return {
+        closeHeight: Math.round(closeRect.height),
+        closeWidth: Math.round(closeRect.width),
+        sendHeight: Math.round(sendRect.height),
+        sendWidth: Math.round(sendRect.width)
+      };
+    });
+    expect(assistantTouchTargets.closeWidth).toBeGreaterThanOrEqual(44);
+    expect(assistantTouchTargets.closeHeight).toBeGreaterThanOrEqual(44);
+    expect(assistantTouchTargets.sendWidth).toBeGreaterThanOrEqual(44);
+    expect(assistantTouchTargets.sendHeight).toBeGreaterThanOrEqual(44);
+    await assistantPanel.getByRole("button", { name: "关闭 AI 阅读助手" }).click();
+
+    await openPrimaryNav(page, "笔记");
+    await page.getByRole("button", { name: "批量导出" }).click();
+    const bulkExportDialog = page.getByRole("dialog", { name: "批量导出向导" });
+    await expect(bulkExportDialog).toBeVisible();
+
+    const bulkExportLayers = await readOverlayZIndexes(page, ".bulk-export-backdrop");
+    expect(bulkExportLayers.backdrop).toBeGreaterThan(assistantPanelZIndex);
+    expect(bulkExportLayers.backdrop).toBeGreaterThan(bulkExportLayers.assistantLauncher);
+    expect(bulkExportLayers.backdrop).toBeGreaterThan(bulkExportLayers.bottomNav);
+
+    const bulkExportScroll = await bulkExportDialog.locator(".bulk-export-list").evaluate((element) => {
+      const list = element as HTMLElement;
+      list.scrollTop = list.scrollHeight;
+      return {
+        canScroll: list.scrollHeight > list.clientHeight,
+        overflowY: window.getComputedStyle(list).overflowY,
+        scrollTop: Math.round(list.scrollTop)
+      };
+    });
+    expect(bulkExportScroll.canScroll).toBe(true);
+    expect(bulkExportScroll.overflowY).toBe("auto");
+    expect(bulkExportScroll.scrollTop).toBeGreaterThan(0);
+    await bulkExportDialog.getByRole("button", { name: "关闭批量导出向导" }).click();
+
+    await page.getByRole("navigation", { name: "移动端主导航" }).getByRole("button", { name: "书架" }).click();
+    await page.getByLabel("书架条目").getByRole("button", { name: /深度工作/ }).click();
+    await page.getByLabel("本书管理").getByRole("button", { name: /本书阅读指南/ }).click();
+    await page
+      .getByLabel("本书指南图")
+      .getByRole("button", { name: /查看读完第 2 章到第 3 章的完整阅读节点详情/ })
+      .click();
+
+    const guideNodeDialog = page.getByRole("dialog", { name: "读完第 2 章到第 3 章" });
+    await expect(guideNodeDialog).toBeVisible();
+    const guideNodeLayers = await readOverlayZIndexes(page, ".reading-guide-node-dialog-backdrop");
+    expect(guideNodeLayers.backdrop).toBeGreaterThan(assistantPanelZIndex);
+    expect(guideNodeLayers.backdrop).toBeGreaterThan(guideNodeLayers.assistantLauncher);
+    expect(guideNodeLayers.backdrop).toBeGreaterThan(guideNodeLayers.bottomNav);
+    await expect(guideNodeDialog.locator(".reading-guide-node-dialog-body")).toHaveCSS("overflow-y", "auto");
+    await guideNodeDialog.getByRole("button", { name: "关闭", exact: true }).click();
+    await expect(guideNodeDialog).toHaveCount(0);
+  });
+
+  test("移动端横屏短视口下设置与阅读报告保持可滚动", async ({ page }) => {
+    await page.setViewportSize({ width: 844, height: 390 });
+    await installTauriMock(page, { manyStatsItems: true });
+    await page.goto("/");
+
+    await openPrimaryNav(page, "设置");
+    const settingsDialog = page.getByRole("dialog", { name: "设置" });
+    await expect(settingsDialog).toBeVisible();
+
+    const settingsLayout = await settingsDialog.evaluate((dialog) => {
+      const content = dialog.querySelector<HTMLElement>(".settings-modal-content");
+      const closeButton = dialog.querySelector<HTMLElement>(".settings-modal-close");
+      if (!content || !closeButton) {
+        throw new Error("设置内容滚动容器或关闭按钮缺失");
+      }
+
+      content.scrollTop = content.scrollHeight;
+      const rect = dialog.getBoundingClientRect();
+      const closeRect = closeButton.getBoundingClientRect();
+      return {
+        bottom: Math.round(rect.bottom),
+        canScroll: content.scrollHeight > content.clientHeight,
+        closeHeight: Math.round(closeRect.height),
+        closeWidth: Math.round(closeRect.width),
+        height: Math.round(rect.height),
+        overflowY: window.getComputedStyle(content).overflowY,
+        scrollTop: Math.round(content.scrollTop),
+        top: Math.round(rect.top),
+        viewportHeight: window.innerHeight
+      };
+    });
+
+    expect(settingsLayout.top).toBe(0);
+    expect(settingsLayout.bottom).toBe(settingsLayout.viewportHeight);
+    expect(settingsLayout.height).toBe(settingsLayout.viewportHeight);
+    expect(settingsLayout.canScroll).toBe(true);
+    expect(settingsLayout.overflowY).toBe("auto");
+    expect(settingsLayout.scrollTop).toBeGreaterThan(0);
+    expect(settingsLayout.closeWidth).toBeGreaterThanOrEqual(44);
+    expect(settingsLayout.closeHeight).toBeGreaterThanOrEqual(44);
+    await settingsDialog.getByRole("button", { name: "关闭设置" }).click();
+
+    await openPrimaryNav(page, "统计");
+    await page.getByRole("button", { name: "生成阅读报告" }).click();
+    const reportDialog = page.getByRole("dialog", { name: "阅读报告生成" });
+    await expect(reportDialog).toBeVisible();
+
+    const reportLayout = await reportDialog.evaluate((dialog) => {
+      const selector = dialog.querySelector<HTMLElement>(".monthly-report-kind-selector");
+      if (!selector) {
+        throw new Error("阅读报告类型滚动容器缺失");
+      }
+
+      selector.scrollTop = selector.scrollHeight;
+      const rect = dialog.getBoundingClientRect();
+      return {
+        bottom: Math.round(rect.bottom),
+        canScroll: selector.scrollHeight > selector.clientHeight,
+        overflowY: window.getComputedStyle(selector).overflowY,
+        scrollTop: Math.round(selector.scrollTop),
+        top: Math.round(rect.top),
+        viewportHeight: window.innerHeight
+      };
+    });
+
+    expect(reportLayout.top).toBeGreaterThanOrEqual(0);
+    expect(reportLayout.bottom).toBeLessThanOrEqual(reportLayout.viewportHeight);
+    expect(reportLayout.canScroll).toBe(true);
+    expect(reportLayout.overflowY).toBe("auto");
+    expect(reportLayout.scrollTop).toBeGreaterThan(0);
+    await reportDialog.getByRole("button", { name: /下一步：选择月报时间/ }).click();
+    await expect(reportDialog.getByLabel("阅读报告周期选择")).toBeVisible();
+  });
+
+  test("触屏设备可发现并使用推荐卡片更多操作", async ({ browser }) => {
+    const context = await browser.newContext({
+      baseURL: "http://127.0.0.1:5173",
+      viewport: { width: 390, height: 844 },
+      hasTouch: true,
+      isMobile: true
+    });
+    const mobilePage = await context.newPage();
+
+    await installTauriMock(mobilePage, { emptyCandidateStates: true });
+    await mobilePage.goto("/");
+    await openPrimaryNav(mobilePage, "发现");
+
+    const recommendationCard = mobilePage.locator(".recommendation-rail-card", { hasText: "月亮与六便士" });
+    const recommendationCopy = recommendationCard.locator(".recommendation-rail-copy");
+    const menu = recommendationCard.locator(".recommendation-rail-menu");
+    const menuTrigger = recommendationCard.getByRole("button", { name: "月亮与六便士 更多操作" });
+
+    await expect(recommendationCard).toBeVisible();
+    await expect(recommendationCopy).toHaveCSS("opacity", "1");
+    await expect(recommendationCopy).toContainText("月亮与六便士");
+    await expect(recommendationCopy).toContainText("你常读文学和思考类作品");
+    await expect(menu).toHaveCSS("opacity", "1");
+    await expect(menu).toHaveCSS("pointer-events", "auto");
+
+    const triggerBox = await menuTrigger.boundingBox();
+    expect(triggerBox?.width ?? 0).toBeGreaterThanOrEqual(44);
+    expect(triggerBox?.height ?? 0).toBeGreaterThanOrEqual(44);
+
+    await menuTrigger.tap();
+    await expect(menuTrigger).toHaveAttribute("aria-expanded", "true");
+    const recommendationRail = mobilePage.locator(".recommendation-list--rail .recommendation-stack");
+    const menuPopover = recommendationCard.getByRole("menu", { name: "月亮与六便士 操作菜单" });
+    const saveCandidate = recommendationCard.getByRole("menuitem", { name: "保存候选" });
+    const railBox = await recommendationRail.boundingBox();
+    const activeTriggerBox = await menuTrigger.boundingBox();
+    const popoverBox = await menuPopover.boundingBox();
+    expect(popoverBox?.y ?? 0).toBeGreaterThanOrEqual(
+      (activeTriggerBox?.y ?? 0) + (activeTriggerBox?.height ?? 0)
+    );
+    expect(popoverBox?.x ?? 0).toBeGreaterThanOrEqual(railBox?.x ?? 0);
+    expect((popoverBox?.x ?? 0) + (popoverBox?.width ?? 0)).toBeLessThanOrEqual(
+      (railBox?.x ?? 0) + (railBox?.width ?? 0)
+    );
+    await expect(saveCandidate).toBeVisible();
+    await saveCandidate.tap();
+
+    await expect(menuTrigger).toHaveAttribute("aria-expanded", "false");
+    await expect(mobilePage.getByLabel("通知").getByText("已保存《月亮与六便士》到本地候选")).toBeVisible();
+
+    await mobilePage
+      .getByRole("navigation", { name: "移动端主导航" })
+      .getByRole("button", { name: "书架" })
+      .tap();
+    const articleCard = mobilePage.locator(".shelf-card--menu-card", { hasText: "文章收藏" });
+    const articleMenuTrigger = articleCard.getByRole("button", { name: "文章收藏 更多操作" });
+    await expect(articleCard).toBeVisible();
+    const articleTriggerBox = await articleMenuTrigger.boundingBox();
+    expect(articleTriggerBox?.width ?? 0).toBeGreaterThanOrEqual(44);
+    expect(articleTriggerBox?.height ?? 0).toBeGreaterThanOrEqual(44);
+    await context.close();
+  });
+
+  test("桌面推荐卡片隐藏菜单不截获指针且支持键盘聚焦", async ({ page }) => {
+    await installTauriMock(page, { emptyCandidateStates: true });
+    await page.goto("/");
+    await openPrimaryNav(page, "发现");
+
+    const recommendationCard = page.locator(".recommendation-rail-card", { hasText: "月亮与六便士" });
+    const recommendationCopy = recommendationCard.locator(".recommendation-rail-copy");
+    const menu = recommendationCard.locator(".recommendation-rail-menu");
+    const menuTrigger = recommendationCard.getByRole("button", { name: "月亮与六便士 更多操作" });
+
+    await expect(recommendationCard).toBeVisible();
+    await expect(recommendationCopy).toHaveCSS("opacity", "0");
+    await expect(menu).toHaveCSS("opacity", "0");
+    await expect(menu).toHaveCSS("pointer-events", "none");
+
+    await menuTrigger.focus();
+    await expect(recommendationCopy).toHaveCSS("opacity", "1");
+    await expect(menu).toHaveCSS("opacity", "1");
+    await expect(menu).toHaveCSS("pointer-events", "auto");
+  });
+
+  test("触屏设备点击阅读人格插图可查看说明", async ({ browser }) => {
+    const context = await browser.newContext({
+      baseURL: "http://127.0.0.1:5173",
+      viewport: { width: 390, height: 844 },
+      hasTouch: true,
+      isMobile: true
+    });
+    const mobilePage = await context.newPage();
+
+    await installTauriMock(mobilePage, { manyStatsItems: true });
+    await mobilePage.goto("/");
+    await openReadingReviewSubNav(mobilePage, "阅读报告");
+
+    const profileVisual = mobilePage.locator(".review-profile-visual");
+    const profileTip = profileVisual.locator(".review-profile-visual-tip");
+    await expect(profileVisual).toBeVisible();
+    await expect(profileTip).toHaveCSS("opacity", "0");
+
+    await profileVisual.tap();
+    await expect(profileTip).toHaveCSS("opacity", "1");
+    await context.close();
+  });
+
+  test("触屏短视口下 AI 阅读助手输入区和模型菜单保持可操作", async ({ browser }) => {
+    const context = await browser.newContext({
+      baseURL: "http://127.0.0.1:5173",
+      viewport: { width: 390, height: 360 },
+      hasTouch: true,
+      isMobile: true
+    });
+    const mobilePage = await context.newPage();
+
+    try {
+      await installTauriMock(mobilePage, { hasCredential: true, hasAiCredential: true });
+      await mobilePage.goto("/");
+      await mobilePage.getByLabel("打开 AI 阅读助手").tap();
+
+      const readingAssistant = mobilePage.getByRole("complementary", { name: "AI 阅读助手" });
+      await expect(readingAssistant).toBeVisible();
+
+      const composerLayout = await readingAssistant.evaluate((panel) => {
+        const messages = panel.querySelector<HTMLElement>(".reading-assistant-messages");
+        const suggestions = panel.querySelector<HTMLElement>(".reading-assistant-suggestions");
+        const composer = panel.querySelector<HTMLElement>(".reading-assistant-composer");
+        const chip = panel.querySelector<HTMLElement>(".reading-assistant-model-chip");
+        const send = panel.querySelector<HTMLElement>(".reading-assistant-send-button");
+        if (!messages || !suggestions || !composer || !chip || !send) {
+          throw new Error("AI 阅读助手短视口布局元素缺失");
+        }
+
+        const panelRect = panel.getBoundingClientRect();
+        const composerRect = composer.getBoundingClientRect();
+        const chipRect = chip.getBoundingClientRect();
+        const sendRect = send.getBoundingClientRect();
+
+        return {
+          chipHeight: Math.round(chipRect.height),
+          chipWidth: Math.round(chipRect.width),
+          composerBottom: Math.round(composerRect.bottom),
+          composerTop: Math.round(composerRect.top),
+          messagesHeight: Math.round(messages.getBoundingClientRect().height),
+          messagesOverflowY: window.getComputedStyle(messages).overflowY,
+          panelBottom: Math.round(panelRect.bottom),
+          panelTop: Math.round(panelRect.top),
+          sendBottom: Math.round(sendRect.bottom),
+          sendHeight: Math.round(sendRect.height),
+          sendTop: Math.round(sendRect.top),
+          sendWidth: Math.round(sendRect.width),
+          suggestionsDisplay: window.getComputedStyle(suggestions).display,
+          viewportHeight: window.innerHeight
+        };
+      });
+
+      expect(composerLayout.panelTop).toBeGreaterThanOrEqual(0);
+      expect(composerLayout.panelBottom).toBeLessThanOrEqual(composerLayout.viewportHeight);
+      expect(composerLayout.composerTop).toBeGreaterThanOrEqual(composerLayout.panelTop);
+      expect(composerLayout.composerBottom).toBeLessThanOrEqual(composerLayout.panelBottom);
+      expect(composerLayout.sendTop).toBeGreaterThanOrEqual(composerLayout.panelTop);
+      expect(composerLayout.sendBottom).toBeLessThanOrEqual(composerLayout.panelBottom);
+      expect(composerLayout.messagesHeight).toBeGreaterThan(0);
+      expect(composerLayout.messagesOverflowY).toBe("auto");
+      expect(composerLayout.suggestionsDisplay).toBe("none");
+      expect(composerLayout.chipWidth).toBeGreaterThanOrEqual(44);
+      expect(composerLayout.chipHeight).toBeGreaterThanOrEqual(44);
+      expect(composerLayout.sendWidth).toBeGreaterThanOrEqual(44);
+      expect(composerLayout.sendHeight).toBeGreaterThanOrEqual(44);
+
+      await readingAssistant.locator(".reading-assistant-model-chip").tap();
+      const modelMenu = readingAssistant.getByRole("menu", { name: "当前模型" });
+      await expect(modelMenu).toBeVisible();
+
+      const modelMenuLayout = await readingAssistant.evaluate((panel) => {
+        const chip = panel.querySelector<HTMLElement>(".reading-assistant-model-chip");
+        const menu = panel.querySelector<HTMLElement>(".reading-assistant-model-menu");
+        const actions = Array.from(
+          panel.querySelectorAll<HTMLElement>(".reading-assistant-model-menu-actions button")
+        );
+        if (!chip || !menu || actions.length === 0) {
+          throw new Error("AI 阅读助手模型菜单元素缺失");
+        }
+
+        const panelRect = panel.getBoundingClientRect();
+        const chipRect = chip.getBoundingClientRect();
+        const menuRect = menu.getBoundingClientRect();
+        return {
+          actionRects: actions.map((action) => {
+            const rect = action.getBoundingClientRect();
+            return {
+              height: Math.round(rect.height),
+              width: Math.round(rect.width)
+            };
+          }),
+          menuBottom: Math.round(menuRect.bottom),
+          menuLeft: Math.round(menuRect.left),
+          menuRight: Math.round(menuRect.right),
+          menuTop: Math.round(menuRect.top),
+          overlapsChip:
+            menuRect.left < chipRect.right &&
+            menuRect.right > chipRect.left &&
+            menuRect.top < chipRect.bottom &&
+            menuRect.bottom > chipRect.top,
+          panelBottom: Math.round(panelRect.bottom),
+          panelTop: Math.round(panelRect.top),
+          viewportHeight: window.innerHeight,
+          viewportWidth: window.innerWidth
+        };
+      });
+
+      expect(modelMenuLayout.menuTop).toBeGreaterThanOrEqual(modelMenuLayout.panelTop);
+      expect(modelMenuLayout.menuBottom).toBeLessThanOrEqual(modelMenuLayout.panelBottom);
+      expect(modelMenuLayout.menuLeft).toBeGreaterThanOrEqual(0);
+      expect(modelMenuLayout.menuRight).toBeLessThanOrEqual(modelMenuLayout.viewportWidth);
+      expect(modelMenuLayout.menuBottom).toBeLessThanOrEqual(modelMenuLayout.viewportHeight);
+      expect(modelMenuLayout.overlapsChip).toBe(false);
+      for (const actionRect of modelMenuLayout.actionRects) {
+        expect(actionRect.width).toBeGreaterThanOrEqual(44);
+        expect(actionRect.height).toBeGreaterThanOrEqual(44);
+      }
+    } finally {
+      await context.close();
+    }
   });
 
   test("AI 阅读助手按分类列出本地可验证书目", async ({ page }) => {
@@ -850,7 +1310,15 @@ test.describe("个人阅读管理应用 smoke", () => {
     const assistant = page.getByRole("complementary", { name: "AI 阅读助手" });
     const assistantInput = assistant.getByPlaceholder("问一个阅读问题");
 
-    await detail.getByLabel("阅读洞察").getByRole("button", { name: "追问" }).first().click();
+    await detail.getByLabel("阅读洞察").getByRole("button", { name: "问这个问题" }).first().click();
+    await expect(assistant).toBeVisible();
+    await expect(assistantInput).toHaveValue(/围绕这个复盘问题继续追问/);
+    await expect(assistantInput).toHaveValue(/我每天是否保留了不被打断的深度时段？/);
+    await expect(assistantInput).toHaveValue(/关联洞察：「关注每日复盘和可执行习惯」/);
+    await expect(assistant.getByRole("button", { name: "生成 AI 复盘" })).toHaveCount(0);
+    await assistant.getByRole("button", { name: "关闭 AI 阅读助手" }).click();
+
+    await detail.getByLabel("阅读洞察").getByRole("button", { name: "围绕洞察追问" }).first().click();
     await expect(assistant).toBeVisible();
     await expect(assistantInput).toHaveValue(/围绕这条阅读洞察继续追问/);
     await expect(assistantInput).toHaveValue(/关注每日复盘和可执行习惯/);
@@ -2368,6 +2836,625 @@ test.describe("个人阅读管理应用 smoke", () => {
     await expectNoHorizontalOverflow(page);
   });
 
+  test("触屏短视口下发现页搜索控件保持可触达", async ({ browser }) => {
+    const context = await browser.newContext({
+      baseURL: "http://127.0.0.1:5173",
+      viewport: { width: 390, height: 360 },
+      hasTouch: true,
+      isMobile: true
+    });
+    const mobilePage = await context.newPage();
+
+    try {
+      await installTauriMock(mobilePage);
+      await mobilePage.goto("/");
+      await openPrimaryNav(mobilePage, "发现");
+
+      const searchPanel = mobilePage.getByLabel("搜索", { exact: true });
+      await expect(searchPanel).toBeVisible();
+      await searchPanel.scrollIntoViewIfNeeded();
+
+      const searchLayout = await mobilePage.evaluate(() => {
+        const panel = document.querySelector<HTMLElement>(".discovery-search-panel");
+        const form = document.querySelector<HTMLElement>(".discovery-search-form");
+        const input = document.querySelector<HTMLElement>(".discovery-search-form input");
+        const formButtons = Array.from(
+          document.querySelectorAll<HTMLElement>(".discovery-search-form button")
+        );
+        const scopeTabs = document.querySelector<HTMLElement>(".scope-tabs");
+        const bottomNav = document.querySelector<HTMLElement>(".bottom-nav");
+        const workspace = document.querySelector<HTMLElement>(".workspace");
+        if (!panel || !form || !input || formButtons.length === 0 || !scopeTabs || !bottomNav || !workspace) {
+          throw new Error("发现页搜索短视口布局元素缺失");
+        }
+
+        const navRect = bottomNav.getBoundingClientRect();
+        const panelRect = panel.getBoundingClientRect();
+        const formRect = form.getBoundingClientRect();
+        const inputRect = input.getBoundingClientRect();
+        const scopeTabsRect = scopeTabs.getBoundingClientRect();
+        const workspaceRect = workspace.getBoundingClientRect();
+
+        return {
+          allFormButtonsInsideViewport: formButtons.every((button) => {
+            const rect = button.getBoundingClientRect();
+            return (
+              rect.left >= 0 &&
+              rect.top >= 0 &&
+              rect.right <= window.innerWidth &&
+              rect.bottom <= window.innerHeight
+            );
+          }),
+          allFormButtonsTouch: formButtons.every((button) => {
+            const rect = button.getBoundingClientRect();
+            return rect.width >= 44 && rect.height >= 44;
+          }),
+          formBottom: Math.round(formRect.bottom),
+          formTop: Math.round(formRect.top),
+          inputLeft: Math.round(inputRect.left),
+          inputRight: Math.round(inputRect.right),
+          navTop: Math.round(navRect.top),
+          overflowX: document.documentElement.scrollWidth > window.innerWidth,
+          panelBottom: Math.round(panelRect.bottom),
+          panelLeft: Math.round(panelRect.left),
+          panelRight: Math.round(panelRect.right),
+          panelTop: Math.round(panelRect.top),
+          scopeTabsBottom: Math.round(scopeTabsRect.bottom),
+          scopeTabsLeft: Math.round(scopeTabsRect.left),
+          scopeTabsRight: Math.round(scopeTabsRect.right),
+          viewportHeight: window.innerHeight,
+          viewportWidth: window.innerWidth,
+          workspaceBottom: Math.round(workspaceRect.bottom),
+          workspaceCanScroll: workspace.scrollHeight > workspace.clientHeight,
+          workspacePaddingBottom: Number.parseFloat(window.getComputedStyle(workspace).paddingBottom)
+        };
+      });
+
+      expect(searchLayout.panelLeft).toBeGreaterThanOrEqual(0);
+      expect(searchLayout.panelRight).toBeLessThanOrEqual(searchLayout.viewportWidth);
+      expect(searchLayout.formTop).toBeGreaterThanOrEqual(0);
+      expect(searchLayout.formBottom).toBeLessThanOrEqual(searchLayout.navTop);
+      expect(searchLayout.inputLeft).toBeGreaterThanOrEqual(searchLayout.panelLeft);
+      expect(searchLayout.inputRight).toBeLessThanOrEqual(searchLayout.panelRight);
+      expect(searchLayout.scopeTabsLeft).toBeGreaterThanOrEqual(searchLayout.panelLeft);
+      expect(searchLayout.scopeTabsRight).toBeLessThanOrEqual(searchLayout.panelRight);
+      expect(searchLayout.allFormButtonsInsideViewport).toBe(true);
+      expect(searchLayout.allFormButtonsTouch).toBe(true);
+      expect(searchLayout.overflowX).toBe(false);
+      expect(searchLayout.workspaceCanScroll).toBe(true);
+      expect(searchLayout.workspaceBottom).toBeLessThanOrEqual(searchLayout.navTop);
+      expect(searchLayout.workspacePaddingBottom).toBeGreaterThanOrEqual(28);
+
+      await mobilePage.locator(".scope-tabs").scrollIntoViewIfNeeded();
+      await mobilePage.evaluate(() => {
+        const workspace = document.querySelector<HTMLElement>(".workspace");
+        const scopeTabs = document.querySelector<HTMLElement>(".scope-tabs");
+        const bottomNav = document.querySelector<HTMLElement>(".bottom-nav");
+        if (!workspace || !scopeTabs || !bottomNav) {
+          throw new Error("发现页搜索范围滚动元素缺失");
+        }
+
+        const overlap = scopeTabs.getBoundingClientRect().bottom - bottomNav.getBoundingClientRect().top;
+        if (overlap > 0) {
+          workspace.scrollTop += overlap + 12;
+        }
+      });
+      const scopeLayout = await mobilePage.locator(".scope-tabs").evaluate((scopeTabs) => {
+        const bottomNav = document.querySelector<HTMLElement>(".bottom-nav");
+        const scopeButtons = Array.from(scopeTabs.querySelectorAll<HTMLElement>("button"));
+        if (!bottomNav || scopeButtons.length === 0) {
+          throw new Error("发现页搜索范围布局元素缺失");
+        }
+
+        const scopeTabsRect = scopeTabs.getBoundingClientRect();
+        const navRect = bottomNav.getBoundingClientRect();
+        return {
+          allScopeButtonsInsideViewport: scopeButtons.every((button) => {
+            const rect = button.getBoundingClientRect();
+            return (
+              rect.left >= 0 &&
+              rect.top >= 0 &&
+              rect.right <= window.innerWidth &&
+              rect.bottom <= window.innerHeight
+            );
+          }),
+          allScopeButtonsTouch: scopeButtons.every((button) => {
+            const rect = button.getBoundingClientRect();
+            return rect.width >= 44 && rect.height >= 44;
+          }),
+          bottom: Math.round(scopeTabsRect.bottom),
+          left: Math.round(scopeTabsRect.left),
+          navTop: Math.round(navRect.top),
+          right: Math.round(scopeTabsRect.right),
+          top: Math.round(scopeTabsRect.top),
+          viewportWidth: window.innerWidth
+        };
+      });
+
+      expect(scopeLayout.left).toBeGreaterThanOrEqual(searchLayout.panelLeft);
+      expect(scopeLayout.right).toBeLessThanOrEqual(scopeLayout.viewportWidth);
+      expect(scopeLayout.top).toBeGreaterThanOrEqual(0);
+      expect(scopeLayout.bottom).toBeLessThanOrEqual(scopeLayout.navTop);
+      expect(scopeLayout.allScopeButtonsInsideViewport).toBe(true);
+      expect(scopeLayout.allScopeButtonsTouch).toBe(true);
+
+      await mobilePage
+        .getByPlaceholder("输入书名、作者、主题，或试试“听书/网文/全文”")
+        .fill("心理学");
+      await expect(
+        mobilePage.getByPlaceholder("输入书名、作者、主题，或试试“听书/网文/全文”")
+      ).toHaveValue("心理学");
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("触屏短视口下设置输入控件保持可触达", async ({ browser }) => {
+    const context = await browser.newContext({
+      baseURL: "http://127.0.0.1:5173",
+      viewport: { width: 390, height: 360 },
+      hasTouch: true,
+      isMobile: true
+    });
+    const mobilePage = await context.newPage();
+
+    try {
+      await installTauriMock(mobilePage, { hasCredential: true, hasAiCredential: true });
+      await mobilePage.goto("/");
+      await openPrimaryNav(mobilePage, "设置");
+      await openSettingsCategory(mobilePage, "AI 设置");
+
+      const dialog = mobilePage.getByRole("dialog", { name: "设置" });
+      await expect(dialog).toBeVisible();
+
+      const settingsLayout = await dialog.evaluate((modal) => {
+        const content = modal.querySelector<HTMLElement>(".settings-modal-content");
+        const closeButton = modal.querySelector<HTMLElement>(".settings-modal-close");
+        const aiCard = modal.querySelector<HTMLElement>(".ai-settings-card");
+        const credentialControls = Array.from(
+          modal.querySelectorAll<HTMLElement>(".ai-settings-card .credential-input input, .ai-settings-card .credential-input select")
+        );
+        const actionButtons = Array.from(
+          modal.querySelectorAll<HTMLElement>(".ai-settings-card .settings-card-actions > button")
+        );
+        if (!content || !closeButton || !aiCard || credentialControls.length === 0 || actionButtons.length === 0) {
+          throw new Error("设置短视口 AI 控件缺失");
+        }
+
+        const modalRect = modal.getBoundingClientRect();
+        const contentRect = content.getBoundingClientRect();
+        const closeRect = closeButton.getBoundingClientRect();
+        return {
+          allActionButtonsTouch: actionButtons.every((button) => {
+            const rect = button.getBoundingClientRect();
+            return rect.width >= 44 && rect.height >= 44;
+          }),
+          allCredentialControlsTouch: credentialControls.every((control) => {
+            const rect = control.getBoundingClientRect();
+            return rect.width >= 44 && rect.height >= 44;
+          }),
+          closeHeight: Math.round(closeRect.height),
+          closeWidth: Math.round(closeRect.width),
+          contentBottom: Math.round(contentRect.bottom),
+          contentCanScroll: content.scrollHeight > content.clientHeight,
+          contentOverflowY: window.getComputedStyle(content).overflowY,
+          contentTop: Math.round(contentRect.top),
+          modalBottom: Math.round(modalRect.bottom),
+          modalLeft: Math.round(modalRect.left),
+          modalRight: Math.round(modalRect.right),
+          modalTop: Math.round(modalRect.top),
+          overflowX: document.documentElement.scrollWidth > window.innerWidth,
+          viewportHeight: window.innerHeight,
+          viewportWidth: window.innerWidth
+        };
+      });
+
+      expect(settingsLayout.modalTop).toBe(0);
+      expect(settingsLayout.modalBottom).toBe(settingsLayout.viewportHeight);
+      expect(settingsLayout.modalLeft).toBe(0);
+      expect(settingsLayout.modalRight).toBe(settingsLayout.viewportWidth);
+      expect(settingsLayout.contentTop).toBeGreaterThanOrEqual(0);
+      expect(settingsLayout.contentBottom).toBeLessThanOrEqual(settingsLayout.viewportHeight);
+      expect(settingsLayout.contentCanScroll).toBe(true);
+      expect(settingsLayout.contentOverflowY).toBe("auto");
+      expect(settingsLayout.closeWidth).toBeGreaterThanOrEqual(44);
+      expect(settingsLayout.closeHeight).toBeGreaterThanOrEqual(44);
+      expect(settingsLayout.allCredentialControlsTouch).toBe(true);
+      expect(settingsLayout.allActionButtonsTouch).toBe(true);
+      expect(settingsLayout.overflowX).toBe(false);
+
+      await mobilePage.locator('input[value="gpt-4o-mini"]').fill("gpt-4.1-mini");
+      await expect(mobilePage.locator('input[value="gpt-4.1-mini"]')).toBeVisible();
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("触屏短视口下选书决策输入弹窗保持可滚动可操作", async ({ browser }) => {
+    const context = await browser.newContext({
+      baseURL: "http://127.0.0.1:5173",
+      viewport: { width: 390, height: 360 },
+      hasTouch: true,
+      isMobile: true
+    });
+    const mobilePage = await context.newPage();
+
+    try {
+      await installTauriMock(mobilePage);
+      await mobilePage.goto("/");
+      await openPrimaryNav(mobilePage, "发现");
+      await mobilePage.getByLabel("本地候选").getByRole("button", { name: "去候选书架决策" }).click();
+      await expect(mobilePage.getByRole("heading", { name: "候选书架", exact: true })).toBeVisible();
+      await mobilePage.getByRole("button", { name: "推荐下一本" }).click();
+
+      const dialog = mobilePage.getByRole("dialog", { name: "调整选书决策输入范围" });
+      await expect(dialog).toBeVisible();
+      const stepOneLayout = await readMobileBlockingDialogLayout(mobilePage, ".book-decision-input-dialog");
+      expectMobileBlockingDialogLayout(stepOneLayout);
+      expect(stepOneLayout.undersizedTargets).toEqual([]);
+
+      await dialog.getByRole("button", { name: "下一步" }).click();
+      await expect(dialog).toContainText("步骤 2 / 3");
+      const stepTwoLayout = await readMobileBlockingDialogLayout(mobilePage, ".book-decision-input-dialog");
+      expectMobileBlockingDialogLayout(stepTwoLayout);
+      expect(stepTwoLayout.undersizedTargets).toEqual([]);
+
+      await dialog.getByRole("button", { name: "下一步" }).click();
+      await expect(dialog).toContainText("步骤 3 / 3");
+      const stepThreeLayout = await readMobileBlockingDialogLayout(mobilePage, ".book-decision-input-dialog");
+      expectMobileBlockingDialogLayout(stepThreeLayout);
+      expect(stepThreeLayout.undersizedTargets).toEqual([]);
+
+      await dialog.getByLabel("近期阅读时间范围").selectOption("60");
+      await expect(dialog).toContainText("近 60 天有 16 本阅读记录");
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("触屏短视口下阅读指南输入弹窗保持可滚动可操作", async ({ browser }) => {
+    const context = await browser.newContext({
+      baseURL: "http://127.0.0.1:5173",
+      viewport: { width: 390, height: 360 },
+      hasTouch: true,
+      isMobile: true
+    });
+    const mobilePage = await context.newPage();
+
+    try {
+      await installTauriMock(mobilePage);
+      await mobilePage.goto("/");
+      await openShelfSubNav(mobilePage, "微信书架");
+      await mobilePage.getByLabel("书架条目", { exact: true }).getByRole("button", { name: /深度工作/ }).click();
+      await expect(mobilePage.getByLabel("本书管理")).toBeVisible();
+      await mobilePage.getByLabel("本书管理").getByRole("button", { name: /本书阅读指南/ }).click();
+      await expect(mobilePage.getByLabel("阅读指南输入范围")).toBeVisible();
+      await mobilePage.getByRole("button", { name: "调整输入范围" }).click();
+
+      const dialog = mobilePage.getByRole("dialog", { name: "调整阅读指南输入范围" });
+      await expect(dialog).toBeVisible();
+      const layout = await readMobileBlockingDialogLayout(mobilePage, ".reading-route-dialog");
+      expectMobileBlockingDialogLayout(layout);
+      expect(layout.undersizedTargets).toEqual([]);
+
+      await dialog.getByRole("button", { name: "全选候选" }).click();
+      await expect(dialog).toContainText("1 / 1 本候选已纳入");
+      await dialog.getByRole("button", { name: "完成" }).click();
+      await expect(dialog).toHaveCount(0);
+      await expect(mobilePage.getByLabel("阅读指南输入范围")).toContainText("1 / 1 本候选已纳入");
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("触屏短视口下行动反馈编辑弹窗保持可操作", async ({ browser }) => {
+    const context = await browser.newContext({
+      baseURL: "http://127.0.0.1:5173",
+      viewport: { width: 390, height: 360 },
+      hasTouch: true,
+      isMobile: true
+    });
+    const mobilePage = await context.newPage();
+
+    try {
+      await installTauriMock(mobilePage);
+      await mobilePage.goto("/");
+      await openShelfSubNav(mobilePage, "微信书架");
+      await mobilePage.getByLabel("书架条目", { exact: true }).getByRole("button", { name: /深度工作/ }).click();
+      await expect(mobilePage.getByLabel("本书管理")).toBeVisible();
+      await mobilePage.getByLabel("本书管理").getByRole("button", { name: /AI 复盘/ }).click();
+      await expect(mobilePage.getByRole("heading", { name: "《深度工作》AI 复盘" })).toBeVisible();
+      await mobilePage.getByLabel("下一步行动").scrollIntoViewIfNeeded();
+      await mobilePage.getByLabel("下一步行动").getByRole("button", { name: "记录反馈" }).click();
+
+      const dialog = mobilePage.getByRole("dialog", { name: "编辑状态与记录" });
+      await expect(dialog).toBeVisible();
+      const layout = await readMobileOverlayDialogLayout(mobilePage, {
+        actionsSelector: ".ai-action-feedback-dialog-actions",
+        backdropSelector: ".dialog-backdrop",
+        dialogSelector: ".ai-action-feedback-dialog"
+      });
+      expectMobileOverlayDialogLayout(layout);
+      expect(layout.undersizedTargets).toEqual([]);
+
+      await dialog.getByRole("button", { name: "已完成" }).click();
+      await dialog.getByRole("button", { name: "保存反馈" }).click();
+      await expect(mobilePage.getByLabel("下一步行动")).toContainText("已完成 1 / 共 1 项");
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("触屏短视口下更新前确认弹窗保持可滚动可操作", async ({ browser }) => {
+    const context = await browser.newContext({
+      baseURL: "http://127.0.0.1:5173",
+      viewport: { width: 390, height: 360 },
+      hasTouch: true,
+      isMobile: true
+    });
+    const mobilePage = await context.newPage();
+
+    try {
+      await installTauriMock(mobilePage);
+      await mobilePage.goto("/");
+      await openReadingReviewSubNav(mobilePage, "阅读指南");
+
+      const deepWorkAsset = mobilePage.locator(".ai-asset-card").filter({ hasText: "深度工作" });
+      await expect(deepWorkAsset).toContainText("建议更新");
+      await deepWorkAsset.click();
+      await expect(mobilePage.getByLabel("书籍阅读成果详情")).toBeVisible();
+      await mobilePage.getByRole("tab", { name: /跨书路线 2/ }).click();
+      await mobilePage.getByLabel("以本书为起点的跨书路线").getByRole("button", { name: "查看路线" }).click();
+      await expect(mobilePage.getByLabel("AI 结果版本详情")).toContainText("准备更新指南");
+      await mobilePage.getByRole("button", { name: "准备更新指南" }).click();
+
+      const dialog = mobilePage.getByRole("dialog", { name: "更新前确认" });
+      await expect(dialog).toBeVisible();
+      const layout = await readMobileOverlayDialogLayout(mobilePage, {
+        actionsSelector: ".ai-asset-update-dialog-actions",
+        backdropSelector: ".ai-asset-update-dialog-backdrop",
+        dialogSelector: ".ai-asset-update-dialog"
+      });
+      expectMobileOverlayDialogLayout(layout);
+      expect(layout.undersizedTargets).toEqual([]);
+
+      await dialog.getByRole("button", { name: "进入生成页确认更新" }).click();
+      await expect(mobilePage.getByLabel("准备更新上下文")).toContainText("正在准备更新上一版阅读指南");
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("触屏短视口下通用确认弹窗保持可操作", async ({ browser }) => {
+    const context = await browser.newContext({
+      baseURL: "http://127.0.0.1:5173",
+      viewport: { width: 390, height: 360 },
+      hasTouch: true,
+      isMobile: true
+    });
+    const mobilePage = await context.newPage();
+
+    try {
+      await installTauriMock(mobilePage, { hasCredential: true, hasAiCredential: true });
+      await mobilePage.goto("/");
+      await openPrimaryNav(mobilePage, "设置");
+      await openSettingsCategory(mobilePage, "高级维护");
+      await mobilePage.getByRole("button", { name: "清除 AI 输出缓存" }).click();
+
+      const dialog = mobilePage.getByRole("dialog", { name: "确认清除 AI 输出缓存？" });
+      await expect(dialog).toBeVisible();
+      const layout = await readMobileOverlayDialogLayout(mobilePage, {
+        actionsSelector: ".dialog-actions",
+        backdropSelector: ".dialog-backdrop",
+        dialogSelector: ".confirm-dialog"
+      });
+      expectMobileOverlayDialogLayout(layout);
+      expect(layout.undersizedTargets).toEqual([]);
+
+      await dialog.getByRole("button", { name: "取消" }).click();
+      await expect(dialog).toHaveCount(0);
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("触屏短视口下更新说明弹窗保持可操作", async ({ browser }) => {
+    const context = await browser.newContext({
+      baseURL: "http://127.0.0.1:5173",
+      viewport: { width: 390, height: 360 },
+      hasTouch: true,
+      isMobile: true
+    });
+    const mobilePage = await context.newPage();
+
+    try {
+      await installTauriMock(mobilePage, { availableAppUpdate: true });
+      await mobilePage.addInitScript(() => {
+        const nativeSetTimeout = window.setTimeout.bind(window);
+        window.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+          const nextTimeout = timeout === 5000 ? 0 : timeout;
+          return nativeSetTimeout(handler, nextTimeout, ...args);
+        }) as typeof window.setTimeout;
+      });
+      await mobilePage.goto("/");
+
+      const dialog = mobilePage.getByRole("dialog", { name: "1.0.14 已可下载" });
+      await expect(dialog).toBeVisible();
+      const layout = await readMobileOverlayDialogLayout(mobilePage, {
+        actionsSelector: ".update-dialog-actions",
+        backdropSelector: ".update-dialog-backdrop",
+        dialogSelector: ".update-dialog"
+      });
+      expectMobileOverlayDialogLayout(layout);
+      expect(layout.undersizedTargets).toEqual([]);
+
+      await dialog.getByRole("button", { name: "查看详情" }).click();
+      await expect(dialog).toHaveCount(0);
+      await expect(mobilePage.getByRole("dialog", { name: "设置" })).toBeVisible();
+      await expect(mobilePage.getByRole("region", { name: "应用更新", exact: true })).toContainText("1.0.14");
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("触屏短视口下批量导出弹窗保持可操作", async ({ browser }) => {
+    const context = await browser.newContext({
+      baseURL: "http://127.0.0.1:5173",
+      viewport: { width: 390, height: 360 },
+      hasTouch: true,
+      isMobile: true
+    });
+    const mobilePage = await context.newPage();
+
+    try {
+      await installTauriMock(mobilePage, { longBulkExportList: true });
+      await mobilePage.goto("/");
+      await openPrimaryNav(mobilePage, "笔记");
+      await mobilePage.getByRole("button", { name: "批量导出" }).click();
+
+      const dialog = mobilePage.getByRole("dialog", { name: "批量导出向导" });
+      await expect(dialog).toBeVisible();
+      await dialog.getByLabel("导出策略").getByText("先同步缺失笔记再导出").click();
+
+      const layout = await readMobileFormOverlayDialogLayout(mobilePage, {
+        actionsSelector: ".bulk-export-actions",
+        backdropSelector: ".bulk-export-backdrop",
+        dialogSelector: ".bulk-export-dialog"
+      });
+      expectMobileOverlayDialogLayout(layout);
+      expect(layout.undersizedTargets).toEqual([]);
+
+      await expect(dialog.getByRole("button", { name: "开始导出" })).toBeVisible();
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("触屏短视口下书籍复盘导出弹窗保持可操作", async ({ browser }) => {
+    const context = await browser.newContext({
+      baseURL: "http://127.0.0.1:5173",
+      viewport: { width: 390, height: 360 },
+      hasTouch: true,
+      isMobile: true
+    });
+    const mobilePage = await context.newPage();
+
+    try {
+      await installTauriMock(mobilePage, { manyBookReviewSummaries: true });
+      await mobilePage.goto("/");
+      await openPrimaryNav(mobilePage, "书籍复盘");
+      await mobilePage.getByRole("button", { name: "导出书籍复盘" }).click();
+
+      const dialog = mobilePage.getByRole("dialog", { name: "导出书籍复盘" });
+      await expect(dialog).toBeVisible();
+      await expect(dialog.getByLabel("可导出的书籍复盘").locator("label")).toHaveCount(18);
+
+      const selectLayout = await readMobileFormOverlayDialogLayout(mobilePage, {
+        actionsSelector: ".bulk-export-actions",
+        backdropSelector: ".book-review-export-backdrop",
+        dialogSelector: ".book-review-export-dialog"
+      });
+      expectMobileOverlayDialogLayout(selectLayout);
+      expect(selectLayout.undersizedTargets).toEqual([]);
+
+      await dialog.getByRole("button", { name: "选择当前筛选" }).click();
+      await expect(dialog).toContainText("已选 18 本");
+      await dialog.getByRole("button", { name: "下一步" }).click();
+      const settingsLayout = await readMobileFormOverlayDialogLayout(mobilePage, {
+        actionsSelector: ".bulk-export-actions",
+        backdropSelector: ".book-review-export-backdrop",
+        dialogSelector: ".book-review-export-dialog"
+      });
+      expectMobileOverlayDialogLayout(settingsLayout);
+      expect(settingsLayout.undersizedTargets).toEqual([]);
+      await expect(dialog.getByRole("button", { name: "开始导出" })).toBeVisible();
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("触屏短视口下阅读报告生成弹窗保持可操作", async ({ browser }) => {
+    const context = await browser.newContext({
+      baseURL: "http://127.0.0.1:5173",
+      viewport: { width: 390, height: 360 },
+      hasTouch: true,
+      isMobile: true
+    });
+    const mobilePage = await context.newPage();
+
+    try {
+      await installTauriMock(mobilePage, { manyStatsItems: true });
+      await mobilePage.goto("/");
+      await openPrimaryNav(mobilePage, "统计");
+      const reportEntryButton = mobilePage.getByRole("button", { name: "生成阅读报告" });
+      const reportEntryButtonRect = await reportEntryButton.evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          height: Math.round(rect.height),
+          width: Math.round(rect.width)
+        };
+      });
+      expect(reportEntryButtonRect.height).toBeGreaterThanOrEqual(44);
+      expect(reportEntryButtonRect.width).toBeGreaterThanOrEqual(44);
+      await reportEntryButton.click();
+
+      const dialog = mobilePage.getByRole("dialog", { name: "阅读报告生成" });
+      await expect(dialog).toBeVisible();
+      const typeLayout = await readMobileBlockingDialogLayout(mobilePage, ".monthly-report-poster-dialog");
+      expectMobileBlockingDialogLayout(typeLayout);
+      expect(typeLayout.undersizedTargets).toEqual([]);
+
+      await dialog.getByRole("button", { name: /下一步：选择月报时间/ }).click();
+      await expect(dialog.getByLabel("阅读报告周期选择")).toBeVisible();
+      const timeLayout = await readMobileBlockingDialogLayout(mobilePage, ".monthly-report-poster-dialog");
+      expectMobileBlockingDialogLayout(timeLayout);
+      expect(timeLayout.undersizedTargets).toEqual([]);
+
+      await dialog.getByRole("button", { name: "生成报告预览" }).click();
+      await expect(dialog.locator(".monthly-report-poster-preview-shell")).toBeVisible();
+      const previewLayout = await readMobileBlockingDialogLayout(mobilePage, ".monthly-report-poster-dialog");
+      expectMobileBlockingDialogLayout(previewLayout);
+      expect(previewLayout.undersizedTargets).toEqual([]);
+      await dialog.getByRole("button", { name: "重新选择时间" }).click();
+      await expect(dialog.getByLabel("阅读报告周期选择")).toBeVisible();
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("触屏短视口下统计时间跳转弹窗保持可操作", async ({ browser }) => {
+    const context = await browser.newContext({
+      baseURL: "http://127.0.0.1:5173",
+      viewport: { width: 390, height: 360 },
+      hasTouch: true,
+      isMobile: true
+    });
+    const mobilePage = await context.newPage();
+
+    try {
+      await installTauriMock(mobilePage);
+      await mobilePage.goto("/");
+      await openPrimaryNav(mobilePage, "统计");
+      await mobilePage.getByLabel("统计时间锚点").getByRole("button", { name: "跳转" }).click();
+
+      const dialog = mobilePage.getByRole("dialog", { name: "跳到月份" });
+      await expect(dialog).toBeVisible();
+      const layout = await readMobileStandaloneDialogLayout(mobilePage, {
+        backdropSelector: ".reading-route-dialog-backdrop",
+        dialogSelector: ".reading-stats-jump-dialog"
+      });
+      expectMobileStandaloneDialogLayout(layout);
+      expect(layout.undersizedTargets).toEqual([]);
+
+      await dialog.getByRole("button", { name: /2026 年/ }).click();
+      await dialog.getByRole("button", { name: "1 月", exact: true }).click();
+      await expect(dialog).toHaveCount(0);
+      await expect(mobilePage.getByLabel("统计时间锚点")).toContainText("2026 年 1 月");
+    } finally {
+      await context.close();
+    }
+  });
+
   test("窄屏底部导航承载主入口并收敛低频功能到我的", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await installTauriMock(page);
@@ -2413,34 +3500,142 @@ test.describe("个人阅读管理应用 smoke", () => {
       const nav = document.querySelector(".bottom-nav");
       const workspace = document.querySelector(".workspace");
       const toastViewport = document.querySelector(".toast-viewport");
+      const assistantLauncher = document.querySelector(".reading-assistant-launcher");
 
       if (
         !(nav instanceof HTMLElement) ||
         !(workspace instanceof HTMLElement) ||
-        !(toastViewport instanceof HTMLElement)
+        !(toastViewport instanceof HTMLElement) ||
+        !(assistantLauncher instanceof HTMLElement)
       ) {
         throw new Error("移动端底部导航布局元素缺失");
       }
 
       const navRect = nav.getBoundingClientRect();
+      const workspaceRect = workspace.getBoundingClientRect();
+      const assistantLauncherRect = assistantLauncher.getBoundingClientRect();
       const workspacePaddingBottom = Number.parseFloat(
         window.getComputedStyle(workspace).paddingBottom,
       );
       const toastBottom = window.getComputedStyle(toastViewport).bottom;
 
       return {
+        assistantLauncherBottom: Math.round(assistantLauncherRect.bottom),
+        assistantLauncherHeight: Math.round(assistantLauncherRect.height),
+        assistantLauncherWidth: Math.round(assistantLauncherRect.width),
         navBottom: Math.round(navRect.bottom),
         navHeight: Math.round(navRect.height),
+        navTop: Math.round(navRect.top),
         viewportHeight: window.innerHeight,
+        workspaceBottom: Math.round(workspaceRect.bottom),
         workspacePaddingBottom,
         toastBottom,
       };
     });
 
+    expect(bottomNavLayout.assistantLauncherWidth).toBeGreaterThanOrEqual(44);
+    expect(bottomNavLayout.assistantLauncherHeight).toBeGreaterThanOrEqual(44);
+    expect(bottomNavLayout.assistantLauncherBottom).toBeLessThanOrEqual(bottomNavLayout.navTop);
     expect(bottomNavLayout.navBottom).toBe(bottomNavLayout.viewportHeight);
     expect(bottomNavLayout.navHeight).toBeGreaterThanOrEqual(64);
-    expect(bottomNavLayout.workspacePaddingBottom).toBeGreaterThanOrEqual(92);
+    expect(bottomNavLayout.workspaceBottom).toBeLessThanOrEqual(bottomNavLayout.navTop);
+    expect(bottomNavLayout.workspacePaddingBottom).toBeGreaterThanOrEqual(28);
     expect(bottomNavLayout.toastBottom).not.toBe("auto");
+  });
+
+  test("触屏窄屏主页面高频控件保留 44px 热区", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await installTauriMock(page, {
+      manyBookReviewSummaries: true,
+      manyCandidateBooks: true
+    });
+    await page.goto("/");
+    const bottomNav = page.getByRole("navigation", { name: "移动端主导航" });
+    const expectTargetsClear = (targets: Awaited<ReturnType<typeof readVisibleTouchTargets>>) => {
+      expect(targets.undersizedTargets).toEqual([]);
+      expect(targets.bottomNavBlockedTargets).toEqual([]);
+    };
+    const scrollWorkspaceToBottom = async () => {
+      await page.locator(".workspace").evaluate((workspace) => {
+        workspace.scrollTop = workspace.scrollHeight;
+      });
+    };
+
+    const dashboardTargets = await readVisibleTouchTargets(page, [
+      ".dashboard-status-strip .text-button",
+      ".dashboard-status-strip .secondary-action",
+      ".today-action-card"
+    ]);
+    expectTargetsClear(dashboardTargets);
+
+    await scrollWorkspaceToBottom();
+    const dashboardBottomTargets = await readVisibleTouchTargets(page, [
+      ".dashboard-status-strip .text-button",
+      ".dashboard-status-strip .secondary-action",
+      ".text-button",
+      ".secondary-action"
+    ]);
+    expectTargetsClear(dashboardBottomTargets);
+
+    await bottomNav.getByRole("button", { name: "书架" }).click();
+    await expect(page.locator(".topbar h2")).toHaveText("书架");
+    const shelfTargets = await readVisibleTouchTargets(page, [
+      ".bookshelf-toolbar .sync-button",
+      ".bookshelf-filter-tabs button",
+      ".bookshelf-search-row .search-field",
+      ".bookshelf-results .shelf-card-menu-trigger"
+    ]);
+    expectTargetsClear(shelfTargets);
+
+    await scrollWorkspaceToBottom();
+    const shelfBottomTargets = await readVisibleTouchTargets(page, [
+      ".bookshelf-results .shelf-card-menu-trigger",
+      ".bookshelf-load-more .secondary-action"
+    ]);
+    expectTargetsClear(shelfBottomTargets);
+
+    await bottomNav.getByRole("button", { name: "笔记" }).click();
+    await expect(page.locator(".topbar h2")).toHaveText("笔记");
+    const notesTargets = await readVisibleTouchTargets(page, [
+      ".notes-hero-actions .sync-button",
+      ".note-list-toolbar-actions .sync-button",
+      ".note-list-toolbar-actions .filter-tabs button",
+      ".notes-page .search-field"
+    ]);
+    expectTargetsClear(notesTargets);
+
+    await scrollWorkspaceToBottom();
+    const notesBottomTargets = await readVisibleTouchTargets(page, [
+      ".notes-page .text-button",
+      ".notes-page .secondary-action"
+    ]);
+    expectTargetsClear(notesBottomTargets);
+
+    await bottomNav.getByRole("button", { name: "复盘" }).click();
+    await expect(page.locator(".topbar h2")).toHaveText("书籍复盘");
+    const reviewTargets = await readVisibleTouchTargets(page, [
+      ".reading-hub-books-toolbar .search-field",
+      ".reading-hub-books-toolbar .text-button",
+      ".reading-hub-books-toolbar .secondary-action",
+      ".reading-workflow-template-card"
+    ]);
+    expectTargetsClear(reviewTargets);
+
+    await scrollWorkspaceToBottom();
+    const reviewBottomTargets = await readVisibleTouchTargets(page, [
+      ".reading-hub-page .text-button",
+      ".reading-hub-page .secondary-action"
+    ]);
+    expectTargetsClear(reviewBottomTargets);
+
+    await bottomNav.getByRole("button", { name: "我的" }).click();
+    await expect(page.locator(".topbar h2")).toHaveText("我的");
+    const mineTargets = await readVisibleTouchTargets(page, [
+      ".mine-sync-button",
+      ".mine-shortcut-card",
+      ".mine-link-item"
+    ]);
+    expectTargetsClear(mineTargets);
   });
 
   test("窄屏设置层全屏承载分类并覆盖底部导航", async ({ page }) => {
@@ -3072,6 +4267,95 @@ test.describe("个人阅读管理应用 smoke", () => {
   });
 });
 
+async function readOverlayZIndexes(page: Page, backdropSelector: string) {
+  return page.evaluate((selector) => {
+    const readZIndex = (targetSelector: string) => {
+      const element = document.querySelector(targetSelector);
+      if (!(element instanceof HTMLElement)) {
+        return -1;
+      }
+
+      const parsed = Number.parseInt(window.getComputedStyle(element).zIndex, 10);
+      return Number.isNaN(parsed) ? 0 : parsed;
+    };
+
+    return {
+      assistantLauncher: readZIndex(".reading-assistant-launcher"),
+      backdrop: readZIndex(selector),
+      bottomNav: readZIndex(".bottom-nav")
+    };
+  }, backdropSelector);
+}
+
+type ReportPreviewMode = "poster" | "cards" | "wide";
+
+async function openMonthlyReportPreview(page: Page) {
+  await openPrimaryNav(page, "统计");
+  await page.getByRole("button", { name: "生成阅读报告" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "阅读报告生成" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: /下一步：选择月报时间/ }).click();
+  await expect(dialog.getByLabel("阅读报告周期选择")).toBeVisible();
+  await dialog.getByRole("button", { name: "生成报告预览" }).click();
+  await expect(dialog.locator(".monthly-report-poster-preview-shell")).toBeVisible();
+  await expect(dialog.locator(".monthly-report-preview-empty")).toHaveCount(0);
+
+  return dialog;
+}
+
+async function expectReportPreviewModeCentered(dialog: Locator, mode: ReportPreviewMode) {
+  const targetSelectorByMode: Record<ReportPreviewMode, string> = {
+    poster: ".monthly-report-poster",
+    cards: ".monthly-report-card-set",
+    wide: ".monthly-report-wide"
+  };
+  const layout = await dialog.evaluate(
+    (dialogElement, { mode, targetSelector }) => {
+      const shell = dialogElement.querySelector<HTMLElement>(".monthly-report-poster-preview-shell");
+      const target = dialogElement.querySelector<HTMLElement>(targetSelector);
+      const footer = dialogElement.querySelector<HTMLElement>(".monthly-report-poster-dialog-actions");
+      if (!shell || !target || !footer) {
+        throw new Error(`阅读报告 ${mode} 预览布局元素缺失`);
+      }
+
+      const shellRect = shell.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      const footerRect = footer.getBoundingClientRect();
+      const shellCenterX = shellRect.left + shellRect.width / 2;
+      const targetCenterX = targetRect.left + targetRect.width / 2;
+
+      return {
+        centerDelta: Math.abs(shellCenterX - targetCenterX),
+        footerBottom: Math.round(footerRect.bottom),
+        footerTop: Math.round(footerRect.top),
+        mode,
+        shellBottom: Math.round(shellRect.bottom),
+        shellOverflowY: window.getComputedStyle(shell).overflowY,
+        targetLeft: Math.round(targetRect.left),
+        targetRight: Math.round(targetRect.right),
+        targetWidth: Math.round(targetRect.width),
+        viewportHeight: window.innerHeight,
+        viewportWidth: window.innerWidth
+      };
+    },
+    { mode, targetSelector: targetSelectorByMode[mode] }
+  );
+
+  const centerTolerance = mode === "cards" ? 24 : 16;
+  expect(layout.centerDelta, `${mode} preview center delta`).toBeLessThanOrEqual(centerTolerance);
+  expect(layout.targetWidth, `${mode} preview width`).toBeGreaterThan(0);
+  expect(layout.targetLeft, `${mode} preview left`).toBeGreaterThanOrEqual(0);
+  expect(layout.targetRight, `${mode} preview right`).toBeLessThanOrEqual(layout.viewportWidth);
+  expect(layout.footerTop, `${mode} footer top`).toBeGreaterThanOrEqual(layout.shellBottom - 1);
+  expect(layout.footerBottom, `${mode} footer bottom`).toBeLessThanOrEqual(layout.viewportHeight);
+  if (mode === "cards" && layout.viewportWidth > 900) {
+    expect(layout.shellOverflowY, `${mode} shell overflow`).toMatch(/^(hidden|auto|scroll)$/);
+  } else {
+    expect(layout.shellOverflowY, `${mode} shell overflow`).toMatch(/^(auto|scroll)$/);
+  }
+}
+
 type VisualAppScenario = {
   id: string;
   label: string;
@@ -3276,7 +4560,8 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
       noRecentReadingEntries,
       failReadingStatsSync,
       longStatsAction,
-      manyReadingAssistantThreads
+      manyReadingAssistantThreads,
+      availableAppUpdate
     }) => {
       const nowSeconds = 1_725_955_200;
       const currentNowSeconds = Math.floor(Date.now() / 1000);
@@ -4205,7 +5490,8 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
           defaultExportDir: "C:/Users/RHZ/AppData/Roaming/wxreadmaster/exports",
           isCustomExportDir: false
         },
-        appVersion: "0.1.0"
+        appVersion: "0.1.0",
+        supportsNativeUpdater: false
       };
 
       function bulkPreflight(selectedBookIds?: string[], excludeWithoutExportableNotes = true) {
@@ -5393,6 +6679,14 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
             }
             case "get_settings_state":
               return settingsState;
+            case "get_remote_app_update_manifest":
+              return {
+                version: availableAppUpdate ? "1.0.14" : settingsState.appVersion,
+                notes: availableAppUpdate
+                  ? "移动端触控布局优化。\n\n- 修复底部导航遮挡主内容\n- 改善短视口弹窗和选区浮层可操作性\n- 统一关键按钮触控热区"
+                  : "",
+                publishedAt: "2026-07-19T08:00:00Z"
+              };
             case "choose_custom_export_directory":
               return {
                 path: "D:/wxreadmaster-exports"
@@ -5519,6 +6813,7 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
     },
     {
       hasCredential: options.hasCredential ?? true,
+      availableAppUpdate: options.availableAppUpdate ?? false,
       hasAiCredential: options.hasAiCredential,
       longNoteCardContent: options.longNoteCardContent ?? false,
       longBulkExportList: options.longBulkExportList ?? false,
@@ -5541,6 +6836,384 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
       manyReadingAssistantThreads: options.manyReadingAssistantThreads ?? false
     }
   );
+}
+
+async function readMobileBlockingDialogLayout(page: Page, dialogSelector: string) {
+  return page.locator(dialogSelector).evaluate((dialog) => {
+    const backdrop = dialog.closest<HTMLElement>(".reading-route-dialog-backdrop");
+    const footer = dialog.querySelector<HTMLElement>(".reading-route-dialog-footer");
+    const bottomNav = document.querySelector<HTMLElement>(".bottom-nav");
+    if (!backdrop || !footer || !bottomNav) {
+      throw new Error("移动端弹窗布局元素缺失");
+    }
+
+    const dialogRect = dialog.getBoundingClientRect();
+    const footerRect = footer.getBoundingClientRect();
+    const navRect = bottomNav.getBoundingClientRect();
+    const touchTargets = Array.from(
+      dialog.querySelectorAll<HTMLElement>(
+        [
+          "button:not([disabled])",
+          "input[type='search']:not([disabled])",
+          "select:not([disabled])",
+          ".book-decision-factor",
+          ".book-decision-candidate label",
+          ".reading-route-candidate-grid button:not([disabled])"
+        ].join(", ")
+      )
+    ).filter((element, index, elements) => elements.indexOf(element) === index);
+    const undersizedTargets = touchTargets
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          className: String(element.getAttribute("class") ?? ""),
+          height: Math.round(rect.height),
+          label: String(element.getAttribute("aria-label") ?? element.textContent ?? "").trim().slice(0, 40),
+          tagName: element.tagName.toLowerCase(),
+          width: Math.round(rect.width)
+        };
+      })
+      .filter((target) => target.width > 0 && target.height > 0 && (target.width < 44 || target.height < 44));
+
+    return {
+      backdropZIndex: Number.parseInt(window.getComputedStyle(backdrop).zIndex || "0", 10),
+      bottomNavZIndex: Number.parseInt(window.getComputedStyle(bottomNav).zIndex || "0", 10),
+      dialogBottom: Math.round(dialogRect.bottom),
+      dialogCanScroll: dialog.scrollHeight > dialog.clientHeight,
+      dialogLeft: Math.round(dialogRect.left),
+      dialogOverflowY: window.getComputedStyle(dialog).overflowY,
+      dialogRight: Math.round(dialogRect.right),
+      dialogTop: Math.round(dialogRect.top),
+      footerBottom: Math.round(footerRect.bottom),
+      footerTop: Math.round(footerRect.top),
+      navTop: Math.round(navRect.top),
+      overflowX: document.documentElement.scrollWidth > window.innerWidth,
+      undersizedTargets,
+      viewportHeight: window.innerHeight,
+      viewportWidth: window.innerWidth
+    };
+  });
+}
+
+async function readVisibleTouchTargets(page: Page, selectors: string[]) {
+  return page.evaluate((targetSelectors) => {
+    const compact = (value: string | null | undefined) =>
+      String(value ?? "").replace(/\s+/g, " ").trim().slice(0, 48);
+    const isVisible = (element: HTMLElement) => {
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+
+      return (
+        style.display !== "none" &&
+        style.visibility !== "hidden" &&
+        Number(style.opacity) !== 0 &&
+        rect.width > 0 &&
+        rect.height > 0 &&
+        rect.bottom > 0 &&
+        rect.top < window.innerHeight &&
+        rect.right > 0 &&
+        rect.left < window.innerWidth
+      );
+    };
+    const bottomNav = document.querySelector<HTMLElement>(".bottom-nav");
+    const bottomNavTop = bottomNav ? Math.round(bottomNav.getBoundingClientRect().top) : null;
+    const readVisibleBounds = (element: HTMLElement, rect: DOMRect) => {
+      let visibleTop = Math.max(0, rect.top);
+      let visibleBottom = Math.min(window.innerHeight, rect.bottom, bottomNavTop ?? window.innerHeight);
+      let current = element.parentElement;
+
+      while (current) {
+        const style = window.getComputedStyle(current);
+        if (/(auto|scroll|hidden|clip)/.test(`${style.overflowY} ${style.overflowX}`)) {
+          const currentRect = current.getBoundingClientRect();
+          visibleTop = Math.max(visibleTop, currentRect.top);
+          visibleBottom = Math.min(visibleBottom, currentRect.bottom);
+        }
+        current = current.parentElement;
+      }
+
+      return {
+        visibleBottom: Math.round(visibleBottom),
+        visibleHeight: Math.round(Math.max(0, visibleBottom - visibleTop)),
+        visibleTop: Math.round(visibleTop)
+      };
+    };
+
+    const targets = targetSelectors.flatMap((selector) =>
+      Array.from(document.querySelectorAll<HTMLElement>(selector))
+        .filter(isVisible)
+        .map((element) => {
+          const rect = element.getBoundingClientRect();
+          const visibleBounds = readVisibleBounds(element, rect);
+          const probeX = Math.round(Math.min(Math.max(rect.left + rect.width / 2, 1), window.innerWidth - 1));
+          const probeY = Math.round(
+            Math.min(
+              visibleBounds.visibleTop + visibleBounds.visibleHeight / 2,
+              (bottomNavTop ?? window.innerHeight) - 2,
+              window.innerHeight - 1
+            )
+          );
+          const hitElement =
+            visibleBounds.visibleHeight > 0 ? document.elementFromPoint(probeX, probeY) : null;
+
+          return {
+            bottomNavHitBlocked:
+              visibleBounds.visibleHeight > 0 &&
+              hitElement instanceof HTMLElement &&
+              hitElement !== element &&
+              !element.contains(hitElement),
+            className: compact(element.getAttribute("class")),
+            bottom: Math.round(rect.bottom),
+            height: Math.round(rect.height),
+            label: compact(
+              element.getAttribute("aria-label") ||
+                element.textContent ||
+                element.getAttribute("placeholder")
+            ),
+            selector,
+            tagName: element.tagName.toLowerCase(),
+            top: Math.round(rect.top),
+            visibleHeightAboveBottomNav: visibleBounds.visibleHeight,
+            width: Math.round(rect.width)
+          };
+        })
+        .filter((target) => target.visibleHeightAboveBottomNav >= 44)
+    );
+
+    return {
+      bottomNavTop,
+      bottomNavBlockedTargets: targets.filter(
+        (target) => target.visibleHeightAboveBottomNav < 44 || target.bottomNavHitBlocked
+      ),
+      targets,
+      undersizedTargets: targets.filter(
+        (target) => target.width > 0 && target.height > 0 && (target.width < 44 || target.height < 44)
+      )
+    };
+  }, selectors);
+}
+
+function expectMobileBlockingDialogLayout(layout: Awaited<ReturnType<typeof readMobileBlockingDialogLayout>>) {
+  expect(layout.dialogLeft).toBeGreaterThanOrEqual(0);
+  expect(layout.dialogRight).toBeLessThanOrEqual(layout.viewportWidth);
+  expect(layout.dialogTop).toBeGreaterThanOrEqual(0);
+  expect(layout.dialogBottom).toBeLessThanOrEqual(layout.viewportHeight);
+  expect(layout.footerTop).toBeGreaterThanOrEqual(0);
+  expect(layout.footerBottom).toBeLessThanOrEqual(layout.viewportHeight);
+  expect(["auto", "scroll", "hidden"]).toContain(layout.dialogOverflowY);
+  expect(layout.backdropZIndex).toBeGreaterThan(layout.bottomNavZIndex);
+  expect(layout.overflowX).toBe(false);
+}
+
+async function readMobileOverlayDialogLayout(
+  page: Page,
+  selectors: {
+    actionsSelector: string;
+    backdropSelector: string;
+    dialogSelector: string;
+  }
+) {
+  return page.locator(selectors.dialogSelector).evaluate((dialog, currentSelectors) => {
+    const backdrop = document.querySelector<HTMLElement>(currentSelectors.backdropSelector);
+    const actions = dialog.querySelector<HTMLElement>(currentSelectors.actionsSelector);
+    const bottomNav = document.querySelector<HTMLElement>(".bottom-nav");
+    if (!backdrop || !actions || !bottomNav) {
+      throw new Error("移动端覆盖弹窗布局元素缺失");
+    }
+
+    const dialogRect = dialog.getBoundingClientRect();
+    const actionsRect = actions.getBoundingClientRect();
+    const navRect = bottomNav.getBoundingClientRect();
+    const touchTargets = Array.from(
+      dialog.querySelectorAll<HTMLElement>(
+        [
+          "button:not([disabled])",
+          "textarea:not([disabled])",
+          "input:not([disabled])",
+          "select:not([disabled])"
+        ].join(", ")
+      )
+    );
+    const undersizedTargets = touchTargets
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          className: String(element.getAttribute("class") ?? ""),
+          height: Math.round(rect.height),
+          label: String(element.getAttribute("aria-label") ?? element.textContent ?? "").trim().slice(0, 40),
+          tagName: element.tagName.toLowerCase(),
+          width: Math.round(rect.width)
+        };
+      })
+      .filter((target) => target.width > 0 && target.height > 0 && (target.width < 44 || target.height < 44));
+
+    return {
+      actionsBottom: Math.round(actionsRect.bottom),
+      actionsTop: Math.round(actionsRect.top),
+      backdropZIndex: Number.parseInt(window.getComputedStyle(backdrop).zIndex || "0", 10),
+      bottomNavZIndex: Number.parseInt(window.getComputedStyle(bottomNav).zIndex || "0", 10),
+      dialogBottom: Math.round(dialogRect.bottom),
+      dialogCanScroll: dialog.scrollHeight > dialog.clientHeight,
+      dialogLeft: Math.round(dialogRect.left),
+      dialogOverflowY: window.getComputedStyle(dialog).overflowY,
+      dialogRight: Math.round(dialogRect.right),
+      dialogTop: Math.round(dialogRect.top),
+      navTop: Math.round(navRect.top),
+      overflowX: document.documentElement.scrollWidth > window.innerWidth,
+      undersizedTargets,
+      viewportHeight: window.innerHeight,
+      viewportWidth: window.innerWidth
+    };
+  }, selectors);
+}
+
+function expectMobileOverlayDialogLayout(layout: Awaited<ReturnType<typeof readMobileOverlayDialogLayout>>) {
+  expect(layout.dialogLeft).toBeGreaterThanOrEqual(0);
+  expect(layout.dialogRight).toBeLessThanOrEqual(layout.viewportWidth);
+  expect(layout.dialogTop).toBeGreaterThanOrEqual(0);
+  expect(layout.dialogBottom).toBeLessThanOrEqual(layout.viewportHeight);
+  expect(layout.actionsTop).toBeGreaterThanOrEqual(0);
+  expect(layout.actionsBottom).toBeLessThanOrEqual(layout.viewportHeight);
+  expect(["auto", "scroll", "hidden"]).toContain(layout.dialogOverflowY);
+  expect(layout.backdropZIndex).toBeGreaterThan(layout.bottomNavZIndex);
+  expect(layout.overflowX).toBe(false);
+}
+
+async function readMobileFormOverlayDialogLayout(
+  page: Page,
+  selectors: {
+    actionsSelector: string;
+    backdropSelector: string;
+    dialogSelector: string;
+  }
+) {
+  return page.locator(selectors.dialogSelector).evaluate((dialog, currentSelectors) => {
+    const backdrop = document.querySelector<HTMLElement>(currentSelectors.backdropSelector);
+    const actions = dialog.querySelector<HTMLElement>(currentSelectors.actionsSelector);
+    const bottomNav = document.querySelector<HTMLElement>(".bottom-nav");
+    if (!backdrop || !actions || !bottomNav) {
+      throw new Error("移动端表单弹窗布局元素缺失");
+    }
+
+    const dialogRect = dialog.getBoundingClientRect();
+    const actionsRect = actions.getBoundingClientRect();
+    const navRect = bottomNav.getBoundingClientRect();
+    const directControls = Array.from(
+      dialog.querySelectorAll<HTMLElement>(
+        [
+          "button:not([disabled])",
+          "textarea:not([disabled])",
+          "input:not([disabled]):not([type='checkbox']):not([type='radio'])",
+          "select:not([disabled])"
+        ].join(", ")
+      )
+    ).map((element) =>
+      element.matches("input, textarea, select") ? element.closest<HTMLElement>("label") ?? element : element
+    );
+    const labeledChoiceControls = Array.from(
+      dialog.querySelectorAll<HTMLInputElement>(
+        "input[type='checkbox']:not([disabled]), input[type='radio']:not([disabled])"
+      )
+    )
+      .map((input) => input.closest<HTMLElement>("label") ?? input)
+      .filter((element, index, elements) => elements.indexOf(element) === index);
+    const touchTargets = [...directControls, ...labeledChoiceControls];
+    const undersizedTargets = touchTargets
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          className: String(element.getAttribute("class") ?? ""),
+          height: Math.round(rect.height),
+          label: String(element.getAttribute("aria-label") ?? element.textContent ?? "").trim().slice(0, 40),
+          tagName: element.tagName.toLowerCase(),
+          width: Math.round(rect.width)
+        };
+      })
+      .filter((target) => target.width > 0 && target.height > 0 && (target.width < 44 || target.height < 44));
+
+    return {
+      actionsBottom: Math.round(actionsRect.bottom),
+      actionsTop: Math.round(actionsRect.top),
+      backdropZIndex: Number.parseInt(window.getComputedStyle(backdrop).zIndex || "0", 10),
+      bottomNavZIndex: Number.parseInt(window.getComputedStyle(bottomNav).zIndex || "0", 10),
+      dialogBottom: Math.round(dialogRect.bottom),
+      dialogCanScroll: dialog.scrollHeight > dialog.clientHeight,
+      dialogLeft: Math.round(dialogRect.left),
+      dialogOverflowY: window.getComputedStyle(dialog).overflowY,
+      dialogRight: Math.round(dialogRect.right),
+      dialogTop: Math.round(dialogRect.top),
+      navTop: Math.round(navRect.top),
+      overflowX: document.documentElement.scrollWidth > window.innerWidth,
+      undersizedTargets,
+      viewportHeight: window.innerHeight,
+      viewportWidth: window.innerWidth
+    };
+  }, selectors);
+}
+
+async function readMobileStandaloneDialogLayout(
+  page: Page,
+  selectors: {
+    backdropSelector: string;
+    dialogSelector: string;
+  }
+) {
+  return page.locator(selectors.dialogSelector).evaluate((dialog, currentSelectors) => {
+    const backdrop = document.querySelector<HTMLElement>(currentSelectors.backdropSelector);
+    const bottomNav = document.querySelector<HTMLElement>(".bottom-nav");
+    if (!backdrop || !bottomNav) {
+      throw new Error("移动端独立弹窗布局元素缺失");
+    }
+
+    const dialogRect = dialog.getBoundingClientRect();
+    const touchTargets = Array.from(
+      dialog.querySelectorAll<HTMLElement>(
+        [
+          "button:not([disabled])",
+          "textarea:not([disabled])",
+          "input:not([disabled])",
+          "select:not([disabled])"
+        ].join(", ")
+      )
+    );
+    const undersizedTargets = touchTargets
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          className: String(element.getAttribute("class") ?? ""),
+          height: Math.round(rect.height),
+          label: String(element.getAttribute("aria-label") ?? element.textContent ?? "").trim().slice(0, 40),
+          tagName: element.tagName.toLowerCase(),
+          width: Math.round(rect.width)
+        };
+      })
+      .filter((target) => target.width > 0 && target.height > 0 && (target.width < 44 || target.height < 44));
+
+    return {
+      backdropZIndex: Number.parseInt(window.getComputedStyle(backdrop).zIndex || "0", 10),
+      bottomNavZIndex: Number.parseInt(window.getComputedStyle(bottomNav).zIndex || "0", 10),
+      dialogBottom: Math.round(dialogRect.bottom),
+      dialogCanScroll: dialog.scrollHeight > dialog.clientHeight,
+      dialogLeft: Math.round(dialogRect.left),
+      dialogOverflowY: window.getComputedStyle(dialog).overflowY,
+      dialogRight: Math.round(dialogRect.right),
+      dialogTop: Math.round(dialogRect.top),
+      overflowX: document.documentElement.scrollWidth > window.innerWidth,
+      undersizedTargets,
+      viewportHeight: window.innerHeight,
+      viewportWidth: window.innerWidth
+    };
+  }, selectors);
+}
+
+function expectMobileStandaloneDialogLayout(layout: Awaited<ReturnType<typeof readMobileStandaloneDialogLayout>>) {
+  expect(layout.dialogLeft).toBeGreaterThanOrEqual(0);
+  expect(layout.dialogRight).toBeLessThanOrEqual(layout.viewportWidth);
+  expect(layout.dialogTop).toBeGreaterThanOrEqual(0);
+  expect(layout.dialogBottom).toBeLessThanOrEqual(layout.viewportHeight);
+  expect(["auto", "scroll", "hidden"]).toContain(layout.dialogOverflowY);
+  expect(layout.backdropZIndex).toBeGreaterThan(layout.bottomNavZIndex);
+  expect(layout.overflowX).toBe(false);
 }
 
 async function openPrimaryNav(page: Page, label: string) {

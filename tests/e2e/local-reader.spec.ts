@@ -255,6 +255,165 @@ test.describe("本地阅读器想法详情", () => {
     );
   });
 
+  test("触屏短视口下书内搜索浮层保持在视口内", async ({ browser }) => {
+    const context = await browser.newContext({
+      baseURL: LOCAL_READER_ORIGIN,
+      viewport: { width: 390, height: 360 },
+      hasTouch: true,
+      isMobile: true
+    });
+    const mobilePage = await context.newPage();
+
+    try {
+      await openPreviewLocalReader(mobilePage);
+
+      const searchPanel = await openLocalReaderSearch(mobilePage);
+      await expect(searchPanel).toContainText("书内搜索");
+
+      const searchLayout = await searchPanel.evaluate((panel) => {
+        const input = panel.querySelector<HTMLElement>(".local-reader-search-field input");
+        const footer = panel.querySelector<HTMLElement>("footer");
+        const buttons = Array.from(panel.querySelectorAll<HTMLElement>("button"));
+        if (!input || !footer || buttons.length === 0) {
+          throw new Error("书内搜索浮层布局元素缺失");
+        }
+
+        const panelRect = panel.getBoundingClientRect();
+        const inputRect = input.getBoundingClientRect();
+        const footerRect = footer.getBoundingClientRect();
+        return {
+          allButtonsInsideViewport: buttons.every((button) => {
+            const rect = button.getBoundingClientRect();
+            return (
+              rect.left >= 0 &&
+              rect.top >= 0 &&
+              rect.right <= window.innerWidth &&
+              rect.bottom <= window.innerHeight
+            );
+          }),
+          allButtonsTouch: buttons.every((button) => {
+            const rect = button.getBoundingClientRect();
+            return rect.width >= 44 && rect.height >= 44;
+          }),
+          footerBottom: Math.round(footerRect.bottom),
+          footerLeft: Math.round(footerRect.left),
+          footerRight: Math.round(footerRect.right),
+          inputLeft: Math.round(inputRect.left),
+          inputRight: Math.round(inputRect.right),
+          overflowX: document.documentElement.scrollWidth > window.innerWidth,
+          panelBottom: Math.round(panelRect.bottom),
+          panelLeft: Math.round(panelRect.left),
+          panelOverflowY: window.getComputedStyle(panel).overflowY,
+          panelPosition: window.getComputedStyle(panel).position,
+          panelRight: Math.round(panelRect.right),
+          panelTop: Math.round(panelRect.top),
+          viewportHeight: window.innerHeight,
+          viewportWidth: window.innerWidth
+        };
+      });
+
+      expect(searchLayout.panelPosition).toBe("fixed");
+      expect(searchLayout.panelOverflowY).toBe("auto");
+      expect(searchLayout.panelLeft).toBeGreaterThanOrEqual(0);
+      expect(searchLayout.panelRight).toBeLessThanOrEqual(searchLayout.viewportWidth);
+      expect(searchLayout.panelTop).toBeGreaterThanOrEqual(0);
+      expect(searchLayout.panelBottom).toBeLessThanOrEqual(searchLayout.viewportHeight);
+      expect(searchLayout.inputLeft).toBeGreaterThanOrEqual(searchLayout.panelLeft);
+      expect(searchLayout.inputRight).toBeLessThanOrEqual(searchLayout.panelRight);
+      expect(searchLayout.footerLeft).toBeGreaterThanOrEqual(searchLayout.panelLeft);
+      expect(searchLayout.footerRight).toBeLessThanOrEqual(searchLayout.panelRight);
+      expect(searchLayout.footerBottom).toBeLessThanOrEqual(searchLayout.panelBottom);
+      expect(searchLayout.allButtonsInsideViewport).toBe(true);
+      expect(searchLayout.allButtonsTouch).toBe(true);
+      expect(searchLayout.overflowX).toBe(false);
+
+      await mobilePage.getByLabel("搜索正文").fill("本地版本");
+      await searchPanel.getByRole("button", { name: "定位" }).tap();
+      await expect(mobilePage.locator(".local-reader-search-hit")).toContainText("本地版本");
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("触屏短视口下阅读工具浮层保持在视口内", async ({ browser }) => {
+    const context = await browser.newContext({
+      baseURL: LOCAL_READER_ORIGIN,
+      viewport: { width: 390, height: 360 },
+      hasTouch: true,
+      isMobile: true
+    });
+    const mobilePage = await context.newPage();
+
+    try {
+      await openPreviewLocalReader(mobilePage);
+
+      const toolbar = mobilePage.getByLabel("阅读工具");
+      await expect(toolbar).toBeVisible();
+
+      const cases = [
+        { buttonName: "目录", panelLabel: "本地图书目录", selector: ".local-reader-outline-popover" },
+        { buttonName: "字号", panelLabel: "字号设置", selector: ".local-reader-tool-popover" },
+        { buttonName: "行距", panelLabel: "行距设置", selector: ".local-reader-tool-popover" },
+        { buttonName: "主题", panelLabel: "主题设置", selector: ".local-reader-tool-popover" },
+        { buttonName: "导出", panelLabel: "导出设置", selector: ".local-reader-tool-popover" }
+      ];
+
+      for (const item of cases) {
+        await toolbar.getByRole("button", { name: item.buttonName, exact: true }).tap();
+        const panel = mobilePage.getByLabel(item.panelLabel);
+        await expect(panel).toBeVisible();
+
+        const layout = await panel.evaluate((element, selector) => {
+          if (!element.matches(selector)) {
+            throw new Error("阅读工具浮层选择器不匹配");
+          }
+
+          const rect = element.getBoundingClientRect();
+          const buttons = Array.from(element.querySelectorAll<HTMLElement>("button"));
+          return {
+            allButtonsInsideViewport: buttons.every((button) => {
+              const buttonRect = button.getBoundingClientRect();
+              return (
+                buttonRect.left >= 0 &&
+                buttonRect.top >= 0 &&
+                buttonRect.right <= window.innerWidth &&
+                buttonRect.bottom <= window.innerHeight
+              );
+            }),
+            allButtonsTouch: buttons.every((button) => {
+              const buttonRect = button.getBoundingClientRect();
+              return buttonRect.width >= 44 && buttonRect.height >= 44;
+            }),
+            bottom: Math.round(rect.bottom),
+            left: Math.round(rect.left),
+            overflowX: document.documentElement.scrollWidth > window.innerWidth,
+            overflowY: window.getComputedStyle(element).overflowY,
+            position: window.getComputedStyle(element).position,
+            right: Math.round(rect.right),
+            top: Math.round(rect.top),
+            viewportHeight: window.innerHeight,
+            viewportWidth: window.innerWidth
+          };
+        }, item.selector);
+
+        expect(layout.position).toBe("fixed");
+        expect(layout.overflowY).toBe("auto");
+        expect(layout.left).toBeGreaterThanOrEqual(0);
+        expect(layout.right).toBeLessThanOrEqual(layout.viewportWidth);
+        expect(layout.top).toBeGreaterThanOrEqual(0);
+        expect(layout.bottom).toBeLessThanOrEqual(layout.viewportHeight);
+        expect(layout.allButtonsInsideViewport).toBe(true);
+        expect(layout.allButtonsTouch).toBe(true);
+        expect(layout.overflowX).toBe(false);
+
+        await mobilePage.keyboard.press("Escape");
+        await expect(panel).toHaveCount(0);
+      }
+    } finally {
+      await context.close();
+    }
+  });
+
   test("Escape 可关闭阅读器临时浮层", async ({ page }) => {
     await seedLocalHighlight(page, SELECTED_TEXT);
     await openPreviewLocalReader(page);
@@ -301,6 +460,289 @@ test.describe("本地阅读器想法详情", () => {
     await page.keyboard.press("Escape");
     await expect(selectionToolbar).toHaveCount(0);
     await expect(page.getByLabel("小王子 正文")).toBeFocused();
+  });
+
+  test("触屏设备原生选区变化可唤起本地选区工具条", async ({ browser }) => {
+    const context = await browser.newContext({
+      baseURL: LOCAL_READER_ORIGIN,
+      viewport: { width: 390, height: 844 },
+      hasTouch: true,
+      isMobile: true
+    });
+    const mobilePage = await context.newPage();
+
+    try {
+      await openPreviewLocalReader(mobilePage);
+      await selectReaderTextInWithNativeEvent(
+        mobilePage,
+        "小王子 正文",
+        "清晨的第一缕阳光透过窗帘",
+        "selectionchange"
+      );
+
+      const selectionPopover = mobilePage.locator(".local-reader-selection-popover");
+      const selectionToolbar = mobilePage.getByRole("toolbar", { name: "本地选中文本操作" });
+      await expect(selectionToolbar.getByRole("button", { name: "划线" })).toBeFocused();
+      await expect(selectionToolbar.getByRole("button", { name: "写想法" })).toBeVisible();
+
+      const selectionLayout = await selectionPopover.evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        const statusbar = document.querySelector(".local-reader-statusbar");
+        if (!(statusbar instanceof HTMLElement)) {
+          throw new Error("阅读器状态栏缺失");
+        }
+
+        const statusbarRect = statusbar.getBoundingClientRect();
+        const buttons = Array.from(
+          element.querySelectorAll<HTMLButtonElement>(".local-reader-selection-menu button")
+        ).map((button) => {
+          const buttonRect = button.getBoundingClientRect();
+          return {
+            height: Math.round(buttonRect.height),
+            width: Math.round(buttonRect.width)
+          };
+        });
+
+        return {
+          bottom: Math.round(rect.bottom),
+          left: Math.round(rect.left),
+          right: Math.round(rect.right),
+          statusbarTop: Math.round(statusbarRect.top),
+          viewportWidth: window.innerWidth,
+          buttons
+        };
+      });
+
+      expect(selectionLayout.left).toBeGreaterThanOrEqual(0);
+      expect(selectionLayout.right).toBeLessThanOrEqual(selectionLayout.viewportWidth);
+      expect(selectionLayout.bottom).toBeLessThanOrEqual(selectionLayout.statusbarTop);
+      for (const button of selectionLayout.buttons) {
+        expect(button.width).toBeGreaterThanOrEqual(44);
+        expect(button.height).toBeGreaterThanOrEqual(44);
+      }
+
+      await selectionToolbar.getByRole("button", { name: "写想法" }).tap();
+      const thoughtComposer = mobilePage.locator(".local-reader-thought-composer--floating");
+      await expect(thoughtComposer).toBeVisible();
+      await mobilePage.getByPlaceholder("写下这段文字触发的想法").fill("触屏选区后可以继续写想法。");
+      await thoughtComposer.getByRole("button", { name: "保存想法" }).tap();
+      await expect(thoughtComposer).toHaveCount(0);
+      await expect(
+        mobilePage.getByLabel("通知").getByText("已保存本地想法")
+      ).toBeVisible();
+      await mobilePage.getByRole("tab", { name: "想法" }).tap();
+      await expect(mobilePage.getByRole("button", { name: /查看想法详情/ })).toContainText(
+        "触屏选区后可以继续写想法。"
+      );
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("触屏短视口下本地写想法和 AI 提问浮层保持可操作", async ({ browser }) => {
+    const context = await browser.newContext({
+      baseURL: LOCAL_READER_ORIGIN,
+      viewport: { width: 390, height: 360 },
+      hasTouch: true,
+      isMobile: true
+    });
+    const mobilePage = await context.newPage();
+
+    try {
+      await openPreviewLocalReader(mobilePage);
+      await selectReaderTextInWithNativeEvent(
+        mobilePage,
+        "小王子 正文",
+        "清晨的第一缕阳光透过窗帘",
+        "selectionchange"
+      );
+
+      const selectionToolbar = mobilePage.getByRole("toolbar", { name: "本地选中文本操作" });
+      await selectionToolbar.getByRole("button", { name: "写想法" }).tap();
+      const thoughtComposer = mobilePage.locator(".local-reader-thought-composer--floating");
+      await expect(thoughtComposer).toBeVisible();
+      const thoughtLayout = await readMobileLocalReaderFloatingComposerLayout(
+        mobilePage,
+        ".local-reader-thought-composer--floating"
+      );
+      expectMobileLocalReaderFloatingComposerLayout(thoughtLayout);
+      expect(thoughtLayout.undersizedTargets).toEqual([]);
+      await thoughtComposer.getByRole("button", { name: "取消" }).tap();
+      await expect(thoughtComposer).toHaveCount(0);
+
+      await selectReaderTextInWithNativeEvent(
+        mobilePage,
+        "小王子 正文",
+        "清晨的第一缕阳光透过窗帘",
+        "selectionchange"
+      );
+      await selectionToolbar.getByRole("button", { name: "问 AI" }).tap();
+      const aiComposer = mobilePage.getByRole("form", { name: "AI 提问面板" });
+      await expect(aiComposer).toBeVisible();
+      const aiLayout = await readMobileLocalReaderFloatingComposerLayout(
+        mobilePage,
+        ".local-reader-ai-composer--floating"
+      );
+      expectMobileLocalReaderFloatingComposerLayout(aiLayout);
+      expect(aiLayout.undersizedTargets).toEqual([]);
+      await aiComposer.getByRole("button", { name: "关闭 AI 提问面板" }).tap();
+      await expect(aiComposer).toHaveCount(0);
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("触屏设备本地阅读侧栏图标操作保留可点击热区", async ({ browser }) => {
+    const context = await browser.newContext({
+      baseURL: LOCAL_READER_ORIGIN,
+      viewport: { width: 390, height: 844 },
+      hasTouch: true,
+      isMobile: true
+    });
+    const mobilePage = await context.newPage();
+
+    try {
+      await seedLocalThought(mobilePage, LONG_THOUGHT);
+      await seedLocalAiQuestionRecord(mobilePage, LONG_AI_QUESTION);
+      await openPreviewLocalReader(mobilePage);
+
+      const highlightDelete = mobilePage.locator(".local-reader-highlight-delete");
+      await expect(highlightDelete).toBeVisible();
+      const highlightDeleteTouchTarget = await readTouchTargetSize(mobilePage, ".local-reader-highlight-delete");
+
+      await mobilePage.getByRole("tab", { name: "想法" }).tap();
+      const thoughtDelete = mobilePage.locator(".local-reader-thought-delete");
+      await expect(thoughtDelete).toBeVisible();
+      const thoughtDeleteTouchTarget = await readTouchTargetSize(mobilePage, ".local-reader-thought-delete");
+
+      await mobilePage.getByRole("tab", { name: "AI 提问" }).tap();
+      const aiActions = mobilePage.locator(".local-reader-ai-card-actions");
+      await expect(aiActions).toBeVisible();
+
+      const aiButtonTouchTargets = await mobilePage.evaluate(() =>
+        Array.from(
+          document.querySelectorAll<HTMLElement>(".local-reader-ai-card-actions button")
+        ).map((button) => {
+          const rect = button.getBoundingClientRect();
+          return {
+            height: Math.round(rect.height),
+            width: Math.round(rect.width)
+          };
+        })
+      );
+
+      expect(highlightDeleteTouchTarget.width).toBeGreaterThanOrEqual(44);
+      expect(highlightDeleteTouchTarget.height).toBeGreaterThanOrEqual(44);
+      expect(thoughtDeleteTouchTarget.width).toBeGreaterThanOrEqual(44);
+      expect(thoughtDeleteTouchTarget.height).toBeGreaterThanOrEqual(44);
+      expect(aiButtonTouchTargets.length).toBeGreaterThan(0);
+      for (const button of aiButtonTouchTargets) {
+        expect(button.width).toBeGreaterThanOrEqual(44);
+        expect(button.height).toBeGreaterThanOrEqual(44);
+      }
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("触屏短视口下选区浮层相关卡片保持可操作", async ({ browser }) => {
+    const context = await browser.newContext({
+      baseURL: LOCAL_READER_ORIGIN,
+      viewport: { width: 390, height: 360 },
+      hasTouch: true,
+      isMobile: true
+    });
+    const mobilePage = await context.newPage();
+
+    try {
+      await seedSelectionPopoverRelatedRecords(mobilePage);
+      await openPreviewLocalReader(mobilePage);
+      await selectReaderTextInWithNativeEvent(
+        mobilePage,
+        "小王子 正文",
+        SELECTED_TEXT,
+        "selectionchange"
+      );
+
+      const selectionPopover = mobilePage.locator(".local-reader-selection-popover");
+      await expect(selectionPopover).toBeVisible();
+      await expect(selectionPopover).toHaveClass(/has-thoughts/);
+
+      const selectionLayout = await readMobileSelectionPopoverLayout(mobilePage);
+      expectMobileSelectionPopoverLayout(selectionLayout);
+      expect(selectionLayout.undersizedTargets).toEqual([]);
+
+      const relatedThoughtButtons = selectionPopover.getByRole("button", { name: /查看选区想法详情/ });
+      await expect(relatedThoughtButtons).toHaveCount(2);
+      await relatedThoughtButtons.nth(0).tap();
+      await expect(mobilePage.locator(".local-reader-thought-modal-panel")).toBeVisible();
+      await mobilePage.getByRole("button", { name: "关闭想法详情" }).tap();
+      await expect(mobilePage.locator(".local-reader-thought-modal-panel")).toHaveCount(0);
+
+      await selectReaderTextInWithNativeEvent(
+        mobilePage,
+        "小王子 正文",
+        SELECTED_TEXT,
+        "selectionchange"
+      );
+      await expect(selectionPopover).toBeVisible();
+      await expect(selectionPopover).toHaveClass(/has-thoughts/);
+      const relatedAiButtons = selectionPopover.getByRole("button", { name: /查看选区 AI 提问详情/ });
+      await expect(relatedAiButtons).toHaveCount(2);
+      await relatedAiButtons.nth(0).tap();
+      await expect(mobilePage.locator(".local-reader-ai-modal-panel")).toBeVisible();
+      await mobilePage.getByRole("button", { name: "关闭 AI 提问详情" }).tap();
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("触屏短视口下本地详情弹窗保持可操作", async ({ browser }) => {
+    const context = await browser.newContext({
+      baseURL: LOCAL_READER_ORIGIN,
+      viewport: { width: 390, height: 360 },
+      hasTouch: true,
+      isMobile: true
+    });
+    const mobilePage = await context.newPage();
+
+    try {
+      await seedLocalThought(mobilePage, LONG_THOUGHT);
+      await seedLocalAiQuestionRecord(mobilePage, LONG_AI_QUESTION);
+      await openPreviewLocalReader(mobilePage);
+
+      await mobilePage.getByRole("tab", { name: "划线" }).tap();
+      await mobilePage.getByRole("button", { name: /查看划线详情/ }).tap();
+      const highlightLayout = await readMobileLocalReaderDetailModalLayout(
+        mobilePage,
+        ".local-reader-highlight-modal-panel"
+      );
+      expectMobileLocalReaderDetailModalLayout(highlightLayout);
+      expect(highlightLayout.undersizedTargets).toEqual([]);
+      await mobilePage.getByRole("button", { name: "关闭划线详情" }).tap();
+
+      await mobilePage.getByRole("tab", { name: "想法" }).tap();
+      await mobilePage.getByRole("button", { name: /查看想法详情/ }).tap();
+      const thoughtLayout = await readMobileLocalReaderDetailModalLayout(
+        mobilePage,
+        ".local-reader-thought-modal-panel:not(.local-reader-highlight-modal-panel):not(.local-reader-ai-modal-panel)"
+      );
+      expectMobileLocalReaderDetailModalLayout(thoughtLayout);
+      expect(thoughtLayout.undersizedTargets).toEqual([]);
+      await mobilePage.getByRole("button", { name: "关闭想法详情" }).tap();
+
+      await mobilePage.getByRole("tab", { name: "AI 提问" }).tap();
+      await mobilePage.getByRole("button", { name: /查看 AI 提问详情/ }).tap();
+      const aiLayout = await readMobileLocalReaderDetailModalLayout(
+        mobilePage,
+        ".local-reader-ai-modal-panel"
+      );
+      expectMobileLocalReaderDetailModalLayout(aiLayout);
+      expect(aiLayout.undersizedTargets).toEqual([]);
+      await mobilePage.getByRole("button", { name: "关闭 AI 提问详情" }).tap();
+    } finally {
+      await context.close();
+    }
   });
 
   test("点击关闭或取消临时浮层后恢复到阅读触发点", async ({ page }) => {
@@ -1285,6 +1727,243 @@ async function selectReaderTextIn(page: Page, readerLabel: string, text: string)
   }, text);
 }
 
+async function selectReaderTextInWithNativeEvent(
+  page: Page,
+  readerLabel: string,
+  text: string,
+  eventType: "selectionchange" | "touchend"
+) {
+  await page.getByLabel(readerLabel).evaluate(
+    (reader, { selectedText, triggerEventType }) => {
+      const contentRoot = reader.querySelector(".local-reader-content");
+      if (!contentRoot) {
+        throw new Error("阅读器正文节点不存在。");
+      }
+
+      const walker = document.createTreeWalker(contentRoot, NodeFilter.SHOW_TEXT);
+      let currentNode = walker.nextNode();
+      while (currentNode) {
+        const nodeText = currentNode.textContent ?? "";
+        const startIndex = nodeText.indexOf(selectedText);
+        if (startIndex >= 0) {
+          const range = document.createRange();
+          range.setStart(currentNode, startIndex);
+          range.setEnd(currentNode, startIndex + selectedText.length);
+          const selection = window.getSelection();
+          selection?.removeAllRanges();
+          selection?.addRange(range);
+
+          if (triggerEventType === "selectionchange") {
+            document.dispatchEvent(new Event("selectionchange", { bubbles: true }));
+          } else {
+            reader.dispatchEvent(new Event(triggerEventType, { bubbles: true, cancelable: true }));
+          }
+          return;
+        }
+
+        currentNode = walker.nextNode();
+      }
+
+      throw new Error(`阅读器正文缺少测试选区：${selectedText}`);
+    },
+    { selectedText: text, triggerEventType: eventType }
+  );
+}
+
+async function readTouchTargetSize(page: Page, selector: string) {
+  return page.evaluate((targetSelector) => {
+    const element = document.querySelector(targetSelector);
+    if (!(element instanceof HTMLElement)) {
+      throw new Error(`操作按钮缺失：${targetSelector}`);
+    }
+
+    const rect = element.getBoundingClientRect();
+    return {
+      height: Math.round(rect.height),
+      width: Math.round(rect.width)
+    };
+  }, selector);
+}
+
+async function readMobileLocalReaderDetailModalLayout(page: Page, panelSelector: string) {
+  return page.locator(panelSelector).evaluate((panel) => {
+    const modal = panel.closest<HTMLElement>(".local-reader-thought-modal");
+    const footer = panel.querySelector<HTMLElement>(".local-reader-thought-modal-actions");
+    if (!modal || !footer) {
+      throw new Error("本地阅读详情弹窗布局元素缺失");
+    }
+
+    const panelRect = panel.getBoundingClientRect();
+    const footerRect = footer.getBoundingClientRect();
+    const touchTargets = Array.from(panel.querySelectorAll<HTMLElement>("button:not([disabled]), textarea:not([disabled])"));
+    const undersizedTargets = touchTargets
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          className: String(element.getAttribute("class") ?? ""),
+          height: Math.round(rect.height),
+          label: String(element.getAttribute("aria-label") ?? element.textContent ?? "").trim().slice(0, 40),
+          tagName: element.tagName.toLowerCase(),
+          width: Math.round(rect.width)
+        };
+      })
+      .filter((target) => target.width > 0 && target.height > 0 && (target.width < 44 || target.height < 44));
+
+    return {
+      footerBottom: Math.round(footerRect.bottom),
+      footerTop: Math.round(footerRect.top),
+      modalZIndex: Number.parseInt(window.getComputedStyle(modal).zIndex || "0", 10),
+      overflowX: document.documentElement.scrollWidth > window.innerWidth,
+      panelBottom: Math.round(panelRect.bottom),
+      panelLeft: Math.round(panelRect.left),
+      panelOverflowY: window.getComputedStyle(panel).overflowY,
+      panelRight: Math.round(panelRect.right),
+      panelTop: Math.round(panelRect.top),
+      undersizedTargets,
+      viewportHeight: window.innerHeight,
+      viewportWidth: window.innerWidth
+    };
+  });
+}
+
+function expectMobileLocalReaderDetailModalLayout(
+  layout: Awaited<ReturnType<typeof readMobileLocalReaderDetailModalLayout>>
+) {
+  expect(layout.panelLeft).toBeGreaterThanOrEqual(0);
+  expect(layout.panelRight).toBeLessThanOrEqual(layout.viewportWidth);
+  expect(layout.panelTop).toBeGreaterThanOrEqual(0);
+  expect(layout.panelBottom).toBeLessThanOrEqual(layout.viewportHeight);
+  expect(layout.footerTop).toBeGreaterThanOrEqual(0);
+  expect(layout.footerBottom).toBeLessThanOrEqual(layout.viewportHeight);
+  expect(["auto", "scroll", "hidden", "visible"]).toContain(layout.panelOverflowY);
+  expect(layout.modalZIndex).toBeGreaterThanOrEqual(90);
+  expect(layout.overflowX).toBe(false);
+}
+
+async function readMobileLocalReaderFloatingComposerLayout(page: Page, composerSelector: string) {
+  return page.locator(composerSelector).evaluate((composer) => {
+    const footer = composer.querySelector<HTMLElement>("footer");
+    if (!footer) {
+      throw new Error("本地阅读浮层表单 footer 缺失");
+    }
+
+    const composerRect = composer.getBoundingClientRect();
+    const footerRect = footer.getBoundingClientRect();
+    const touchTargets = Array.from(composer.querySelectorAll<HTMLElement>("button:not([disabled]), textarea:not([disabled])"));
+    const undersizedTargets = touchTargets
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          className: String(element.getAttribute("class") ?? ""),
+          height: Math.round(rect.height),
+          label: String(element.getAttribute("aria-label") ?? element.textContent ?? "").trim().slice(0, 40),
+          tagName: element.tagName.toLowerCase(),
+          width: Math.round(rect.width)
+        };
+      })
+      .filter((target) => target.width > 0 && target.height > 0 && (target.width < 44 || target.height < 44));
+
+    return {
+      composerBottom: Math.round(composerRect.bottom),
+      composerLeft: Math.round(composerRect.left),
+      composerOverflowY: window.getComputedStyle(composer).overflowY,
+      composerPosition: window.getComputedStyle(composer).position,
+      composerRight: Math.round(composerRect.right),
+      composerTop: Math.round(composerRect.top),
+      footerBottom: Math.round(footerRect.bottom),
+      footerTop: Math.round(footerRect.top),
+      overflowX: document.documentElement.scrollWidth > window.innerWidth,
+      undersizedTargets,
+      viewportHeight: window.innerHeight,
+      viewportWidth: window.innerWidth
+    };
+  });
+}
+
+function expectMobileLocalReaderFloatingComposerLayout(
+  layout: Awaited<ReturnType<typeof readMobileLocalReaderFloatingComposerLayout>>
+) {
+  expect(layout.composerPosition).toBe("fixed");
+  expect(["auto", "scroll"]).toContain(layout.composerOverflowY);
+  expect(layout.composerLeft).toBeGreaterThanOrEqual(0);
+  expect(layout.composerRight).toBeLessThanOrEqual(layout.viewportWidth);
+  expect(layout.composerTop).toBeGreaterThanOrEqual(0);
+  expect(layout.composerBottom).toBeLessThanOrEqual(layout.viewportHeight);
+  expect(layout.footerTop).toBeGreaterThanOrEqual(layout.composerTop);
+  expect(layout.footerBottom).toBeLessThanOrEqual(layout.composerBottom);
+  expect(layout.overflowX).toBe(false);
+}
+
+async function readMobileSelectionPopoverLayout(page: Page) {
+  return page.locator(".local-reader-selection-popover").evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const statusbar = document.querySelector(".local-reader-statusbar");
+    if (!(statusbar instanceof HTMLElement)) {
+      throw new Error("阅读器状态栏缺失");
+    }
+
+    const statusbarRect = statusbar.getBoundingClientRect();
+    const bottomNav = document.querySelector(".bottom-nav");
+    const bottomNavTop = bottomNav instanceof HTMLElement
+      ? Math.round(bottomNav.getBoundingClientRect().top)
+      : window.innerHeight;
+    const touchTargets = Array.from(
+      element.querySelectorAll<HTMLButtonElement>(".local-reader-selection-menu button, .local-reader-selection-thought-card")
+    );
+    const buttons = touchTargets.map((button) => {
+      const buttonRect = button.getBoundingClientRect();
+      return {
+        height: Math.round(buttonRect.height),
+        width: Math.round(buttonRect.width)
+      };
+    });
+    const undersizedTargets = touchTargets
+      .map((button) => {
+        const buttonRect = button.getBoundingClientRect();
+        return {
+          className: String(button.getAttribute("class") ?? ""),
+          height: Math.round(buttonRect.height),
+          label: String(button.getAttribute("aria-label") ?? button.textContent ?? "").trim().slice(0, 40),
+          width: Math.round(buttonRect.width)
+        };
+      })
+      .filter((target) => target.width > 0 && target.height > 0 && (target.width < 44 || target.height < 44));
+
+    return {
+      bottom: Math.round(rect.bottom),
+      bottomNavTop,
+      height: Math.round(rect.height),
+      left: Math.round(rect.left),
+      overflowY: window.getComputedStyle(element).overflowY,
+      right: Math.round(rect.right),
+      statusbarTop: Math.round(statusbarRect.top),
+      top: Math.round(rect.top),
+      undersizedTargets,
+      viewportHeight: window.innerHeight,
+      viewportWidth: window.innerWidth,
+      buttons,
+      overflowX: document.documentElement.scrollWidth > window.innerWidth
+    };
+  });
+}
+
+function expectMobileSelectionPopoverLayout(
+  layout: Awaited<ReturnType<typeof readMobileSelectionPopoverLayout>>
+) {
+  expect(layout.left).toBeGreaterThanOrEqual(0);
+  expect(layout.right).toBeLessThanOrEqual(layout.viewportWidth);
+  expect(layout.bottom).toBeLessThanOrEqual(layout.statusbarTop);
+  expect(layout.bottom).toBeLessThanOrEqual(layout.bottomNavTop);
+  expect(layout.top).toBeGreaterThanOrEqual(0);
+  expect(layout.height).toBeGreaterThan(0);
+  expect(["auto", "scroll", "hidden"]).toContain(layout.overflowY);
+  expect(layout.overflowX).toBe(false);
+  for (const button of layout.buttons) {
+    expect(button.width).toBeGreaterThanOrEqual(44);
+    expect(button.height).toBeGreaterThanOrEqual(44);
+  }
+}
+
 async function seedSelectionPopoverRelatedRecords(page: Page) {
   const startOffset = PREVIEW_TEXT.indexOf(SELECTED_TEXT);
   if (startOffset < 0) {
@@ -1545,7 +2224,7 @@ async function openPreviewLocalLibrary(page: Page) {
 
   await page.locator(".sidebar").getByRole("button", { name: "书架", exact: true }).click();
   await page.getByLabel("书架子菜单").getByRole("button", { name: "本地书库" }).click();
-  await expect(page.getByRole("region", { name: "本地书库" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "本地书库", exact: true })).toBeVisible();
 }
 
 async function gotoLocalReaderPreview(page: Page) {
