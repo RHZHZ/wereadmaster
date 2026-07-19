@@ -159,7 +159,12 @@ jobs:
             throw "Could not find uploaded Windows installer asset '$expectedInstallerName' in the GitHub release."
           }
 
-          $notes = [string] $release.body
+          $notesPath = Join-Path $PWD "docs/release-notes-$env:RELEASE_TAG.json"
+          $releaseNotes = Get-Content -Path $notesPath -Raw | ConvertFrom-Json
+          $notes = [string] $releaseNotes.releaseNotesMarkdown
+          if ([string]::IsNullOrWhiteSpace($notes)) {
+            $notes = [string] $release.body
+          }
           if ([string]::IsNullOrWhiteSpace($notes)) {
             $notes = "详见 GitHub Release 页面。"
           }
