@@ -15,6 +15,7 @@
 
 - [查看最新发布](https://github.com/RHZHZ/wereadmaster/releases)
 - [查看一键更新说明](docs/github-release-updates.md)
+- [查看详细使用教程](docs/user-guide.md)
 - 当前版本：`v1.0.16`
 
 ## 最新版本（v1.0.16）
