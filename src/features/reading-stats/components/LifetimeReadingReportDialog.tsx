@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { CalendarDays, Download, Loader2, RefreshCw, X } from "lucide-react";
 import type { LifetimeReadingReportData } from "../lifetime-reading-report";
 import { LifetimeReadingReportWide } from "./LifetimeReadingReportWide";
+import { useImageArtifactCapabilities } from "../../../lib/use-image-artifact-capabilities";
 
 type LifetimeReadingReportDialogStep = "select" | "preview";
 
@@ -37,6 +38,12 @@ export function LifetimeReadingReportDialog({
   const canPreview = Boolean(data) && !isDataLoading && !reportUnavailableReason;
   const canSyncReport = !isDataLoading && !syncReportDisabled && !isSyncingReport;
   const canDownload = canPreview && !isDownloading;
+  const imageArtifactCapabilities = useImageArtifactCapabilities();
+  const previewPrimaryVerb = imageArtifactCapabilities.canSaveToAlbum
+    ? "保存"
+    : imageArtifactCapabilities.canExportFile
+      ? "导出"
+      : "下载";
 
   useEffect(() => {
     if (open) {
@@ -68,7 +75,7 @@ export function LifetimeReadingReportDialog({
             <p>
               {isSelectStep
                 ? "第一步确认范围是全部历史；下一步再读取总计统计并生成 16:9 分享图。"
-                : "第二步检查长期成果报告的预览效果，再导出横版 PNG。"}
+                : `第二步检查长期成果报告的预览效果，再${previewPrimaryVerb}横版 PNG。`}
             </p>
           </div>
         </div>
@@ -168,7 +175,7 @@ export function LifetimeReadingReportDialog({
               ) : (
                 <Download aria-hidden="true" size={18} />
               )}
-              {isDownloading ? "生成中" : "下载横版 PNG"}
+              {isDownloading ? "生成中" : `${previewPrimaryVerb}横版 PNG`}
             </button>
           ) : null}
         </div>

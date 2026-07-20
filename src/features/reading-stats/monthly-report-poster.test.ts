@@ -7,6 +7,7 @@ import {
   downloadMonthlyReportStoryPage,
   downloadMonthlyReportStoryPages,
   downloadMonthlyReportWideReport,
+  shareMonthlyReportPoster,
   splitMonthlyReportPosterTitle
 } from "./monthly-report-poster";
 
@@ -84,6 +85,7 @@ const mockCanvasContext = {
 
 const originalDocument = globalThis.document;
 const originalImage = globalThis.Image;
+const originalNavigator = globalThis.navigator;
 const originalCreateObjectURL = URL.createObjectURL;
 const originalRevokeObjectURL = URL.revokeObjectURL;
 
@@ -167,6 +169,13 @@ describe("buildMonthlyReportPosterData", () => {
 
     URL.createObjectURL = originalCreateObjectURL;
     URL.revokeObjectURL = originalRevokeObjectURL;
+
+    if (typeof originalNavigator === "undefined") {
+      Reflect.deleteProperty(globalThis, "navigator");
+    } else {
+      installNavigatorMock(originalNavigator);
+    }
+
     vi.restoreAllMocks();
   });
 
@@ -316,6 +325,23 @@ describe("buildMonthlyReportPosterData", () => {
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:poster");
   });
 
+  it("shares the poster when the environment supports image sharing", async () => {
+    installNavigatorMock({
+      share: vi.fn().mockResolvedValue(undefined),
+      canShare: vi.fn(() => true)
+    } as unknown as Navigator);
+
+    const data = buildMonthlyReportPosterData(stats, buildReadingStatsPeriod("monthly", stats.baseTime));
+    const result = await shareMonthlyReportPoster(data);
+
+    expect(result).toEqual({
+      fileName: `${data.fileName}.png`,
+      source: "shareSheet"
+    });
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+    expect(anchorClickSpy).not.toHaveBeenCalled();
+  });
+
   it("keeps long poster keywords inside compact chips", async () => {
     const data = buildMonthlyReportPosterData(stats, buildReadingStatsPeriod("monthly", stats.baseTime));
     const longKeyword = "《崔永元：名师作文课（2册）》占重点内容时长约 40%";
@@ -368,3 +394,16 @@ describe("buildMonthlyReportPosterData", () => {
     expect(createdAnchor.download).toContain("轮播报告-06-下期行动");
   });
 });
+
+function installNavigatorMock(nextNavigator?: Navigator) {
+  if (typeof nextNavigator === "undefined") {
+    Reflect.deleteProperty(globalThis, "navigator");
+    return;
+  }
+
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: nextNavigator,
+    writable: true
+  });
+}

@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReadingStats } from "../../lib/types";
 import {
   buildLifetimeReadingReportData,
-  downloadLifetimeReadingReportWide
+  downloadLifetimeReadingReportWide,
+  shareLifetimeReadingReportWide
 } from "./lifetime-reading-report";
 
 const stats: ReadingStats = {
@@ -87,6 +88,7 @@ const mockCanvasContext = {
 
 const originalDocument = globalThis.document;
 const originalImage = globalThis.Image;
+const originalNavigator = globalThis.navigator;
 const originalCreateObjectURL = URL.createObjectURL;
 const originalRevokeObjectURL = URL.revokeObjectURL;
 
@@ -170,6 +172,13 @@ describe("buildLifetimeReadingReportData", () => {
 
     URL.createObjectURL = originalCreateObjectURL;
     URL.revokeObjectURL = originalRevokeObjectURL;
+
+    if (typeof originalNavigator === "undefined") {
+      Reflect.deleteProperty(globalThis, "navigator");
+    } else {
+      installNavigatorMock(originalNavigator);
+    }
+
     vi.restoreAllMocks();
   });
 
@@ -243,6 +252,23 @@ describe("buildLifetimeReadingReportData", () => {
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:lifetime-report");
   });
 
+  it("shares the wide lifetime report when the environment supports image sharing", async () => {
+    installNavigatorMock({
+      share: vi.fn().mockResolvedValue(undefined),
+      canShare: vi.fn(() => true)
+    } as unknown as Navigator);
+
+    const data = buildLifetimeReadingReportData(stats);
+    const result = await shareLifetimeReadingReportWide(data);
+
+    expect(result).toEqual({
+      fileName: `${data.fileName}-16-9报告.png`,
+      source: "shareSheet"
+    });
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+    expect(anchorClickSpy).not.toHaveBeenCalled();
+  });
+
   it("keeps dense lifetime report copy in canvas-safe text bounds", async () => {
     const data = buildLifetimeReadingReportData(stats);
     const longSuggestion =
@@ -312,3 +338,16 @@ describe("buildLifetimeReadingReportData", () => {
     expect(renderedText).not.toContain(data.summary);
   });
 });
+
+function installNavigatorMock(nextNavigator?: Navigator) {
+  if (typeof nextNavigator === "undefined") {
+    Reflect.deleteProperty(globalThis, "navigator");
+    return;
+  }
+
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: nextNavigator,
+    writable: true
+  });
+}

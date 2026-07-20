@@ -7,6 +7,7 @@ type MockTauriOptions = {
   hasAiCredential?: boolean;
   longNoteCardContent?: boolean;
   longBulkExportList?: boolean;
+  longBookDetailChapters?: boolean;
   manyBookReviewSummaries?: boolean;
   bookReviewExportFailure?: boolean;
   bulkExportFailure?: boolean;
@@ -302,7 +303,7 @@ test.describe("个人阅读管理应用 smoke", () => {
       await expectReportPreviewModeCentered(mobileDialog, "cards");
       await mobileDialog.getByRole("tab", { name: "16:9 报告" }).tap();
       await expectReportPreviewModeCentered(mobileDialog, "wide");
-      await mobileDialog.getByRole("button", { name: "下载横版 PNG" }).tap();
+      await mobileDialog.getByRole("button", { name: "导出横版 PNG" }).tap();
       await expect(
         mobilePage.getByLabel("通知").getByText(/已导出：周期阅读报告/)
       ).toBeVisible();
@@ -490,6 +491,56 @@ test.describe("个人阅读管理应用 smoke", () => {
     expect(reportLayout.scrollTop).toBeGreaterThan(0);
     await reportDialog.getByRole("button", { name: /下一步：选择月报时间/ }).click();
     await expect(reportDialog.getByLabel("阅读报告周期选择")).toBeVisible();
+  });
+
+  test("设置页关于与支持展示赞赏码和联系方式", async ({ browser, page }) => {
+    await page.setViewportSize({ width: 1366, height: 768 });
+    await installTauriMock(page, { hasCredential: true });
+    await page.goto("/");
+
+    await openPrimaryNav(page, "设置");
+    const desktopDialog = page.getByRole("dialog", { name: "设置" });
+    await expect(desktopDialog).toBeVisible();
+    await openSettingsCategory(page, "关于与支持");
+
+    await expect(desktopDialog.getByRole("heading", { name: "开源项目，感谢支持" })).toBeVisible();
+    await expect(desktopDialog.getByLabel("赞赏作者").locator('img[alt="RHZ 的赞赏码"]')).toBeVisible();
+    await expect(desktopDialog.getByLabel("联系作者").locator('img[alt="RHZ 微信联系方式二维码"]')).toBeVisible();
+    await expect(desktopDialog.getByText("赞赏不会解锁功能")).toBeVisible();
+    await expect(desktopDialog.getByText("应用不会读取或上传联系人信息")).toBeVisible();
+
+    const desktopLayout = await readSettingsSupportLayout(desktopDialog);
+    expect(desktopLayout.gridColumnCount).toBe(2);
+    expect(desktopLayout.allImagesInsideHorizontalViewport).toBe(true);
+    expect(desktopLayout.allImagesLargeEnough).toBe(true);
+    await expectNoHorizontalOverflow(page);
+
+    const mobileContext = await browser.newContext({
+      baseURL: "http://127.0.0.1:5173",
+      viewport: { width: 390, height: 844 },
+      hasTouch: true,
+      isMobile: true
+    });
+    const mobilePage = await mobileContext.newPage();
+
+    try {
+      await installTauriMock(mobilePage, { hasCredential: true });
+      await mobilePage.goto("/");
+      await openPrimaryNav(mobilePage, "设置");
+      const mobileDialog = mobilePage.getByRole("dialog", { name: "设置" });
+      await expect(mobileDialog).toBeVisible();
+      await openSettingsCategory(mobilePage, "关于与支持");
+
+      await expect(mobileDialog.getByLabel("赞赏作者").locator('img[alt="RHZ 的赞赏码"]')).toBeVisible();
+      await expect(mobileDialog.getByLabel("联系作者").locator('img[alt="RHZ 微信联系方式二维码"]')).toBeVisible();
+      const mobileLayout = await readSettingsSupportLayout(mobileDialog);
+      expect(mobileLayout.gridColumnCount).toBe(1);
+      expect(mobileLayout.allImagesInsideHorizontalViewport).toBe(true);
+      expect(mobileLayout.allImagesLargeEnough).toBe(true);
+      await expectNoHorizontalOverflow(mobilePage);
+    } finally {
+      await mobileContext.close();
+    }
   });
 
   test("触屏设备可发现并使用推荐卡片更多操作", async ({ browser }) => {
@@ -4240,6 +4291,108 @@ test.describe("个人阅读管理应用 smoke", () => {
     });
   });
 
+  test("手机端书籍详情长目录默认折叠且展开后内部滚动", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await installTauriMock(page, { longBookDetailChapters: true });
+    await page.goto("/");
+
+    await openShelfSubNav(page, "微信书架");
+    await page.getByLabel("书架条目", { exact: true }).getByRole("button", { name: /深度工作/ }).click();
+    await expect(page.getByRole("heading", { name: "深度工作" })).toBeVisible();
+
+    const directory = page.getByRole("region", { name: "目录" });
+    const chapterList = directory.locator(".chapter-list");
+
+    await expect(directory).toContainText("55 个章节");
+    await expect(directory.getByRole("button", { name: "展开目录" })).toBeVisible();
+    await expect(chapterList).toHaveCount(0);
+
+    const collapsedLayout = await directory.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const toggle = element.querySelector<HTMLElement>(".chapter-toggle-button");
+      if (!toggle) {
+        throw new Error("目录展开按钮缺失");
+      }
+
+      return {
+        height: Math.round(rect.height),
+        toggleHeight: Math.round(toggle.getBoundingClientRect().height)
+      };
+    });
+    expect(collapsedLayout.height).toBeLessThan(200);
+    expect(collapsedLayout.toggleHeight).toBeGreaterThanOrEqual(44);
+
+    await directory.getByRole("button", { name: "展开目录" }).click();
+    await expect(directory.getByRole("button", { name: "收起目录" })).toBeVisible();
+    await expect(chapterList).toBeVisible();
+
+    await expect.poll(async () =>
+      chapterList.evaluate((element) => Math.round((element as HTMLElement).scrollTop))
+    ).toBeGreaterThan(0);
+
+    await directory.evaluate((element) => {
+      element.scrollIntoView({ block: "start", inline: "nearest" });
+    });
+
+    const expandedLayout = await directory.evaluate(() => {
+      const list = document.querySelector<HTMLElement>(".chapter-panel .chapter-list");
+      const current = document.querySelector<HTMLElement>(".chapter-panel li.is-current");
+      const bottomNav = document.querySelector<HTMLElement>(".bottom-nav");
+      if (!list || !current || !bottomNav) {
+        throw new Error("目录列表、当前章节或底部栏缺失");
+      }
+
+      const listRect = list.getBoundingClientRect();
+      const currentRect = current.getBoundingClientRect();
+      const navRect = bottomNav.getBoundingClientRect();
+      const styles = window.getComputedStyle(list);
+
+      return {
+        currentVisible: currentRect.top >= listRect.top && currentRect.bottom <= listRect.bottom,
+        listBottom: Math.round(listRect.bottom),
+        listHeight: Math.round(listRect.height),
+        listOverflowY: styles.overflowY,
+        listScrollTop: Math.round(list.scrollTop),
+        navTop: Math.round(navRect.top),
+        viewportHeight: window.innerHeight
+      };
+    });
+
+    expect(expandedLayout.listOverflowY).toMatch(/^(auto|scroll)$/);
+    expect(expandedLayout.listScrollTop).toBeGreaterThan(0);
+    expect(expandedLayout.currentVisible).toBe(true);
+    expect(expandedLayout.listHeight).toBeLessThan(expandedLayout.viewportHeight * 0.6);
+    expect(expandedLayout.listBottom).toBeLessThanOrEqual(expandedLayout.navTop);
+
+    await chapterList.evaluate((element) => {
+      element.scrollTop = element.scrollHeight;
+    });
+
+    const footerClearance = await page.evaluate(() => {
+      const lastItem = document.querySelector<HTMLElement>(".chapter-panel .chapter-list li:last-child");
+      const launcher = document.querySelector<HTMLElement>(".reading-assistant-launcher");
+      if (!lastItem || !launcher) {
+        throw new Error("目录末项或悬浮助手缺失");
+      }
+
+      const lastRect = lastItem.getBoundingClientRect();
+      const launcherRect = launcher.getBoundingClientRect();
+      return {
+        lastBottom: Math.round(lastRect.bottom),
+        launcherTop: Math.round(launcherRect.top),
+        overlapsLauncher: lastRect.bottom > launcherRect.top
+      };
+    });
+
+    expect(footerClearance.overlapsLauncher).toBe(false);
+    expect(footerClearance.lastBottom).toBeLessThanOrEqual(footerClearance.launcherTop);
+
+    await directory.getByRole("button", { name: "收起目录" }).click();
+    await expect(directory.getByRole("button", { name: "展开目录" })).toBeVisible();
+    await expect(chapterList).toHaveCount(0);
+    await expectNoHorizontalOverflow(page);
+  });
+
   test("已读完成书籍详情页不提供加入候选入口", async ({ page }) => {
     await installTauriMock(page);
     await page.goto("/");
@@ -4315,6 +4468,29 @@ async function readOverlayZIndexes(page: Page, backdropSelector: string) {
       bottomNav: readZIndex(".bottom-nav")
     };
   }, backdropSelector);
+}
+
+async function readSettingsSupportLayout(dialog: Locator) {
+  return dialog.evaluate((dialogElement) => {
+    const grid = dialogElement.querySelector<HTMLElement>(".settings-support-grid");
+    const images = Array.from(dialogElement.querySelectorAll<HTMLElement>(".settings-support-qr"));
+    if (!grid || images.length !== 2) {
+      throw new Error("关于与支持布局元素缺失");
+    }
+
+    const gridColumnCount = window.getComputedStyle(grid).gridTemplateColumns.split(" ").length;
+    return {
+      allImagesInsideHorizontalViewport: images.every((image) => {
+        const rect = image.getBoundingClientRect();
+        return rect.left >= 0 && rect.right <= window.innerWidth;
+      }),
+      allImagesLargeEnough: images.every((image) => {
+        const rect = image.getBoundingClientRect();
+        return rect.width >= 240 && rect.height >= 240;
+      }),
+      gridColumnCount
+    };
+  });
 }
 
 type ReportPreviewMode = "poster" | "cards" | "wide";
@@ -4581,6 +4757,7 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
       hasCredential,
       longNoteCardContent,
       longBulkExportList,
+      longBookDetailChapters,
       manyBookReviewSummaries,
       bookReviewExportFailure,
       bulkExportFailure,
@@ -5258,6 +5435,39 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
         const isCleanCode = bookId === "book-code-review";
         const isMoney = bookId === "book-money";
         const isLiuCixin = isThreeBody || isDarkForest;
+        const detailChapters = longBookDetailChapters
+          ? Array.from({ length: 55 }, (_, index) => {
+              const chapterNumber = index + 1;
+              return {
+                bookId,
+                chapterUid: chapterNumber,
+                chapterIdx: chapterNumber,
+                title: index === 0 ? "封面" : `第${chapterNumber}章 测试章节 ${chapterNumber}`,
+                wordCount: 600 + index * 17,
+                level: chapterNumber % 9 === 0 ? 2 : 1,
+                paid: true
+              };
+            })
+          : [
+              {
+                bookId,
+                chapterUid: 1,
+                chapterIdx: 1,
+                title: "第一章 专注力",
+                wordCount: 12_000,
+                level: 1,
+                paid: true
+              },
+              {
+                bookId,
+                chapterUid: 2,
+                chapterIdx: 2,
+                title: "第二章 深度习惯",
+                wordCount: 14_000,
+                level: 1,
+                paid: true
+              }
+            ];
         return {
           detail: {
             bookId,
@@ -5303,7 +5513,7 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
           },
           progress: {
             bookId,
-            chapterUid: 2,
+            chapterUid: longBookDetailChapters ? 34 : 2,
             chapterOffset: 120,
             progressPercent: isThreeBody || isMoney ? 100 : 42,
             updatedAt: nowSeconds - 86_400,
@@ -5312,26 +5522,7 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
             isStarted: true,
             isFinished: isThreeBody || isMoney
           },
-          chapters: [
-            {
-              bookId,
-              chapterUid: 1,
-              chapterIdx: 1,
-              title: "第一章 专注力",
-              wordCount: 12_000,
-              level: 1,
-              paid: true
-            },
-            {
-              bookId,
-              chapterUid: 2,
-              chapterIdx: 2,
-              title: "第二章 深度习惯",
-              wordCount: 14_000,
-              level: 1,
-              paid: true
-            }
-          ],
+          chapters: detailChapters,
           deepLink: `weread://reading?bId=${bookId}`
         };
       }
@@ -6861,6 +7052,7 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
       hasAiCredential: options.hasAiCredential,
       longNoteCardContent: options.longNoteCardContent ?? false,
       longBulkExportList: options.longBulkExportList ?? false,
+      longBookDetailChapters: options.longBookDetailChapters ?? false,
       manyBookReviewSummaries: options.manyBookReviewSummaries ?? false,
       bookReviewExportFailure: options.bookReviewExportFailure ?? false,
       bulkExportFailure: options.bulkExportFailure ?? false,

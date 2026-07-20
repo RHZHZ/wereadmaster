@@ -11,7 +11,9 @@ import {
   Eye,
   ExternalLink,
   FolderOpen,
+  Github,
   HardDrive,
+  HeartHandshake,
   Info,
   KeyRound,
   Loader2,
@@ -24,6 +26,8 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import onboardingLocalVault from "../assets/generated/onboarding-local-vault.png";
+import authorContactCode from "../assets/support/author-contact-code.jpg";
+import authorRewardCode from "../assets/support/author-reward-code.jpg";
 import { AppUpdateNotes } from "../components/AppUpdateNotes";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { useToast } from "../components/ToastProvider";
@@ -128,6 +132,7 @@ export type SettingsCategoryId =
   | "appearance"
   | "export"
   | "updates"
+  | "support"
   | "advanced";
 type SettingsCategory = {
   id: SettingsCategoryId;
@@ -177,6 +182,13 @@ const settingsCategories: SettingsCategory[] = [
     heroDescription:
       "集中查看版本、发布来源和更新摘要，让安装动作继续保持清晰、可验证和可回退。",
     icon: Sparkles,
+  },
+  {
+    id: "support",
+    label: "关于与支持",
+    description: "作者、反馈、赞赏",
+    heroDescription: "查看项目来源、联系作者或自愿赞赏维护工作。",
+    icon: HeartHandshake,
   },
   {
     id: "advanced",
@@ -2007,6 +2019,102 @@ export function SettingsPage({
                     </button>
                   </div>
                 </section>
+              </SettingsSection>
+            ) : null}
+
+            {activeCategory === "support" ? (
+              <SettingsSection title="关于与支持">
+                <section
+                  className="settings-card settings-panel settings-control-panel settings-support-intro-card"
+                  aria-label="关于与支持说明"
+                >
+                  <div className="settings-card-heading">
+                    <span className="settings-icon">
+                      <HeartHandshake aria-hidden="true" size={20} />
+                    </span>
+                    <div>
+                      <p className="section-kicker">开源项目</p>
+                      <h3>开源项目，感谢支持</h3>
+                    </div>
+                  </div>
+                  <p>
+                    这个工具会继续围绕本地阅读管理、复盘和导出体验迭代。赞赏完全自愿，不会解锁额外功能，也不会影响本地数据。
+                  </p>
+                  <p>
+                    项目代码和安装包仍以 GitHub Releases 为准；问题反馈建议优先走 GitHub Issue，私下交流可扫码联系作者。
+                  </p>
+                  <div className="settings-actions settings-card-actions">
+                    <button
+                      className="secondary-action"
+                      type="button"
+                      onClick={() =>
+                        void handleOpenExternalLink(
+                          APP_UPDATE_RELEASE_REPOSITORY_URL,
+                          "项目地址"
+                        )
+                      }
+                    >
+                      <Github aria-hidden="true" size={18} />
+                      访问 GitHub
+                    </button>
+                    <button
+                      className="sync-button"
+                      type="button"
+                      onClick={() => setActiveCategory("updates")}
+                    >
+                      <Sparkles aria-hidden="true" size={18} />
+                      查看更新
+                    </button>
+                  </div>
+                </section>
+
+                <div className="settings-support-grid">
+                  <section className="settings-card settings-support-card" aria-label="赞赏作者">
+                    <div className="settings-card-heading">
+                      <span className="settings-icon settings-support-icon">
+                        <HeartHandshake aria-hidden="true" size={20} />
+                      </span>
+                      <div>
+                        <p className="section-kicker">自愿支持</p>
+                        <h3>赞赏作者</h3>
+                      </div>
+                    </div>
+                    <p>如果这个工具节省了你的整理时间，可以扫码自愿支持维护。</p>
+                    <figure className="settings-support-qr-frame">
+                      <img
+                        className="settings-support-qr"
+                        src={authorRewardCode}
+                        alt="RHZ 的赞赏码"
+                      />
+                    </figure>
+                    <p className="settings-support-note">
+                      赞赏不会解锁功能，应用也不会记录或校验赞赏状态。
+                    </p>
+                  </section>
+
+                  <section className="settings-card settings-support-card" aria-label="联系作者">
+                    <div className="settings-card-heading">
+                      <span className="settings-icon">
+                        <MessageSquare aria-hidden="true" size={20} />
+                      </span>
+                      <div>
+                        <p className="section-kicker">反馈交流</p>
+                        <h3>联系作者</h3>
+                      </div>
+                    </div>
+                    <p>扫码添加作者，适合反馈使用问题、交流需求或提供复现信息。</p>
+                    <figure className="settings-support-qr-frame">
+                      <img
+                        className="settings-support-qr settings-support-qr--contact"
+                        src={authorContactCode}
+                        alt="RHZ 微信联系方式二维码"
+                      />
+                    </figure>
+                    <p className="settings-support-note">
+                      添加好友是你主动在微信中完成的操作，应用不会读取或上传联系人信息。
+                    </p>
+                  </section>
+                </div>
               </SettingsSection>
             ) : null}
           </div>

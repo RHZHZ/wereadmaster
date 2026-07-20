@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test } from "vitest";
-import { BookInsightSection } from "./BookInsightSection";
+import { BookInsightSection, buildInsightDraft, buildInsightQuestionDraft } from "./BookInsightSection";
 import type { BookAiSummary } from "../lib/types";
 
 describe("BookInsightSection", () => {
@@ -13,7 +13,57 @@ describe("BookInsightSection", () => {
     expect(markup).toContain("安排阅读时段");
     expect(markup).toContain("来源摘录");
     expect(markup).toContain("可继续追问");
-    expect(markup).toContain("追问");
+    expect(markup).toContain("围绕洞察追问");
+    expect(markup).toContain("问这个问题");
+  });
+
+  test("keeps insight actions hidden when handler is omitted", () => {
+    const markup = renderToStaticMarkup(<BookInsightSection summary={createSummary()} />);
+
+    expect(markup).toContain("可继续追问");
+    expect(markup).toContain("下周最容易失守的干扰是什么？");
+    expect(markup).not.toContain("围绕洞察追问");
+    expect(markup).not.toContain("问这个问题");
+  });
+
+  test("omits follow-up block when no reflection questions exist", () => {
+    const markup = renderToStaticMarkup(
+      <BookInsightSection
+        summary={{
+          ...createSummary(),
+          reflectionQuestions: []
+        }}
+        onAskInsight={() => undefined}
+      />
+    );
+
+    expect(markup).toContain("围绕洞察追问");
+    expect(markup).not.toContain("可继续追问");
+    expect(markup).not.toContain("问这个问题");
+  });
+
+  test("builds separated drafts for insight-level and question-level follow-ups", () => {
+    expect(buildInsightDraft("安排阅读时段", "专注需要环境约束")).toBe(
+      [
+        "围绕这条阅读洞察继续追问：「安排阅读时段」。",
+        "洞察说明：专注需要环境约束",
+        "请结合当前复盘和来源摘录，说明这条洞察最值得继续展开的方向，并给出 3 个后续问题。"
+      ].join("\n")
+    );
+
+    expect(
+      buildInsightQuestionDraft("下周最容易失守的干扰是什么？", "安排阅读时段", "专注需要环境约束")
+    ).toBe(
+      [
+        "围绕这个复盘问题继续追问：",
+        "「下周最容易失守的干扰是什么？」",
+        "",
+        "关联洞察：「安排阅读时段」",
+        "洞察说明：专注需要环境约束",
+        "",
+        "请结合当前复盘、阅读洞察和来源摘录回答，并给出 1 个最值得继续展开的方向。"
+      ].join("\n")
+    );
   });
 
   test("renders nothing when summary cannot form insights", () => {
@@ -60,4 +110,3 @@ function createSummary(): BookAiSummary {
     basisNotice: "基于本地笔记生成。"
   };
 }
-

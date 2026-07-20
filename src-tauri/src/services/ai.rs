@@ -9588,7 +9588,8 @@ fn is_reading_route_request(message: &str) -> bool {
 }
 
 fn is_note_summary_or_review_request(message: &str) -> bool {
-    if !is_explicit_formal_book_review_request(message) && is_direct_note_question_request(message) {
+    if !is_explicit_formal_book_review_request(message) && is_direct_note_question_request(message)
+    {
         return false;
     }
 
@@ -11838,7 +11839,7 @@ fn humanize_route_text(text: &str) -> String {
 
     normalized = remove_technical_parentheticals(&normalized);
     normalized = humanize_review_text(&normalized);
-    collapse_spaces(&normalized)
+    collapse_spaces_preserving_line_breaks(&normalized)
 }
 
 fn humanize_book_decision_action(text: &str, primary_title: Option<&str>) -> String {
@@ -11923,8 +11924,20 @@ fn looks_like_technical_fragment(text: &str) -> bool {
         || trimmed.contains(".")
 }
 
-fn collapse_spaces(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
+fn collapse_spaces_preserving_line_breaks(text: &str) -> String {
+    let mut normalized = text
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    while normalized.contains("\n\n\n") {
+        normalized = normalized.replace("\n\n\n", "\n\n");
+    }
+
+    normalized.trim().to_string()
 }
 
 fn replace_duration_seconds(text: &str) -> String {
@@ -16036,6 +16049,33 @@ mod tests {
     }
 
     #[test]
+    fn normalize_reading_assistant_output_preserves_markdown_lite_layout() {
+        let output = normalize_reading_assistant_output(json!({
+            "answer": "结论：\n\n1.   先看 **来源摘录**\n2. 再问 `复盘问题`\n\n下一步：\n- 记录一个疑问\n- 回到当前复盘",
+            "suggestions": [],
+            "basisNotice": "基于当前复盘。\n\n不读取整本书。",
+            "recommendedBooks": []
+        }))
+        .expect("assistant output should normalize");
+
+        assert_eq!(
+            output.answer,
+            [
+                "结论：",
+                "",
+                "1. 先看 **来源摘录**",
+                "2. 再问 `复盘问题`",
+                "",
+                "下一步：",
+                "- 记录一个疑问",
+                "- 回到当前复盘"
+            ]
+            .join("\n")
+        );
+        assert_eq!(output.basis_notice, "基于当前复盘。\n\n不读取整本书。");
+    }
+
+    #[test]
     fn normalize_reading_assistant_output_rewrites_suggestions_to_user_perspective() {
         let output = normalize_reading_assistant_output(json!({
             "answer": "可以从三本候选里继续做取舍。",
@@ -16521,6 +16561,33 @@ mod tests {
             &AssistantContextScope::AiAsset,
             Some("book_1"),
             "围绕这条阅读洞察继续追问：「《明朝那些事儿（全集）》里的气节选择」。请结合当前复盘和来源摘录，给出 3 个后续问题。",
+            ReadingAssistantIntent::General,
+        )
+        .expect("book review action should not fail");
+
+        assert!(action.is_none());
+    }
+
+    #[test]
+    fn reading_assistant_book_review_action_skips_insight_question_follow_up() {
+        let connection = Connection::open_in_memory().expect("in-memory db should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        connection
+            .execute(
+                "
+                INSERT INTO book_details (
+                    book_id, title, author, cover, category, intro, raw_json, updated_at
+                ) VALUES ('book_1', '深度工作', '卡尔·纽波特', NULL, '效率', NULL, '{}', '100')
+                ",
+                [],
+            )
+            .expect("book detail should insert");
+
+        let action = build_reading_assistant_book_review_action(
+            &connection,
+            &AssistantContextScope::AiAsset,
+            Some("book_1"),
+            "围绕这个复盘问题继续追问：\n「我每天是否保留了不被打断的深度时段？」\n\n关联洞察：「关注每日复盘和可执行习惯」\n洞察说明：深度工作需要长时间无干扰投入\n\n请结合当前复盘、阅读洞察和来源摘录回答，并给出 1 个最值得继续展开的方向。",
             ReadingAssistantIntent::General,
         )
         .expect("book review action should not fail");

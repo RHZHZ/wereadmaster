@@ -46,6 +46,20 @@ export function formatArtifactCopiedMessage(
   return formatArtifactMessage("已复制", kind, detail);
 }
 
+export function formatArtifactSharedMessage(
+  kind: ReadingArtifactKind,
+  detail?: ArtifactMessageDetail
+): string {
+  return formatArtifactMessage("已打开分享", kind, detail);
+}
+
+export function formatArtifactSavedMessage(
+  kind: ReadingArtifactKind,
+  detail?: ArtifactMessageDetail
+): string {
+  return formatArtifactMessage("已保存到相册", kind, detail);
+}
+
 export function formatArtifactExportedMessage(
   kind: ReadingArtifactKind,
   detail?: ArtifactMessageDetail

@@ -20,10 +20,17 @@ describe("AI provider presets", () => {
       defaultModel: "",
       responseFormatPolicy: "auto",
     });
+    expect(getAiProviderPreset("r-api")).toMatchObject({
+      label: "R-API",
+      defaultBaseUrl: "https://api.cccc.asia",
+      defaultModel: "gpt-4o-mini",
+      responseFormatPolicy: "auto",
+    });
   });
 
   it("normalizes unknown provider metadata safely", () => {
     expect(normalizeAiProviderPresetId("deepseek")).toBe("deepseek");
+    expect(normalizeAiProviderPresetId("r-api")).toBe("r-api");
     expect(normalizeAiProviderPresetId("unknown")).toBe("custom");
     expect(normalizeAiResponseFormatPolicy("jsonObjectFirst")).toBe(
       "jsonObjectFirst",

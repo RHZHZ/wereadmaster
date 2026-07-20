@@ -28,14 +28,23 @@ import { useToast } from "../components/ToastProvider";
 import { formatUnixDate } from "../lib/formatters";
 import {
   formatArtifactCreatedMessage,
-  formatArtifactExportedMessage
+  formatArtifactExportedMessage,
+  formatArtifactSavedMessage,
+  formatArtifactSharedMessage
 } from "../lib/reading-artifacts";
+import {
+  downloadCanvasAsPng,
+  saveCanvasAsPngToAlbum,
+  type ImageArtifactDeliveryResult,
+  shareCanvasAsPng
+} from "../lib/image-artifact-export";
 import type { DefaultNotesView } from "../lib/preferences";
 import type { BookNotes, ChapterNoteGroup, Highlight, NotebookBook, Thought } from "../lib/types";
 import {
   buildBookNotesReviewStatus,
   type BookNotesReviewStatus
 } from "./book-notes-review-status";
+import { useImageArtifactCapabilities } from "../lib/use-image-artifact-capabilities";
 
 type BookNotesPageProps = {
   book?: NotebookBook;
@@ -90,6 +99,7 @@ export function BookNotesPage({
   const [randomCardIds, setRandomCardIds] = useState<string[]>([]);
   const [sharingCardId, setSharingCardId] = useState<string>();
   const [isSharingGroup, setIsSharingGroup] = useState(false);
+  const imageArtifactCapabilities = useImageArtifactCapabilities();
   const [shareError, setShareError] = useState<string>();
   const { showToast } = useToast();
   const displayBook = notes?.book && notes.book.bookId === targetBookId ? notes.book : book ?? notes?.book;
@@ -147,13 +157,31 @@ export function BookNotesPage({
     setShareError(undefined);
 
     try {
-      const fileName = await exportNoteCardImage({
+      const delivery = imageArtifactCapabilities.canSaveToAlbum
+        ? "save"
+        : imageArtifactCapabilities.canShareImage
+          ? "share"
+          : "download";
+      const result = await exportNoteCardImage({
         card,
         bookTitle: displayBook?.title || notes?.bookId || targetBookId || "单本笔记",
-        author: displayBook?.author
+        author: displayBook?.author,
+        delivery
       });
+
+      if (result.cancelled) {
+        return;
+      }
+
       showToast({
-        message: formatArtifactCreatedMessage("note-card-image", { fileName }),
+        message:
+          result.source === "album"
+            ? formatArtifactSavedMessage("note-card-image", { fileName: result.fileName })
+            : result.source === "shareSheet"
+            ? formatArtifactSharedMessage("note-card-image", { fileName: result.fileName })
+            : imageArtifactCapabilities.canShareImage
+              ? formatArtifactExportedMessage("note-card-image", { fileName: result.fileName })
+              : formatArtifactCreatedMessage("note-card-image", { fileName: result.fileName }),
         tone: "success"
       });
     } catch (shareImageError) {
@@ -175,7 +203,12 @@ export function BookNotesPage({
     setShareError(undefined);
 
     try {
-      const fileName = await exportNoteGroupImage({
+      const delivery = imageArtifactCapabilities.canSaveToAlbum
+        ? "save"
+        : imageArtifactCapabilities.canShareImage
+          ? "share"
+          : "download";
+      const result = await exportNoteGroupImage({
         cards,
         bookTitle: displayBook?.title || notes?.bookId || targetBookId || "单本笔记",
         author: displayBook?.author,
@@ -185,10 +218,23 @@ export function BookNotesPage({
           isRandomGroup: randomCardIds.length > 0,
           totalCount: visibleCards.length,
           exportedCount: cards.length
-        })
+        }),
+        delivery
       });
+
+      if (result.cancelled) {
+        return;
+      }
+
       showToast({
-        message: formatArtifactCreatedMessage("note-card-image", { fileName }),
+        message:
+          result.source === "album"
+            ? formatArtifactSavedMessage("note-card-image", { fileName: result.fileName })
+            : result.source === "shareSheet"
+            ? formatArtifactSharedMessage("note-card-image", { fileName: result.fileName })
+            : imageArtifactCapabilities.canShareImage
+              ? formatArtifactExportedMessage("note-card-image", { fileName: result.fileName })
+              : formatArtifactCreatedMessage("note-card-image", { fileName: result.fileName }),
         tone: "success"
       });
     } catch (shareImageError) {
@@ -406,7 +452,7 @@ export function BookNotesPage({
                 ))}
               </div>
 
-              <div className="book-notes-card-actions" aria-label="当前组操作">
+          <div className="book-notes-card-actions" aria-label="当前组操作">
                 <button
                   className="sync-button"
                   type="button"
@@ -424,10 +470,20 @@ export function BookNotesPage({
                 >
                   {isSharingGroup ? (
                     <Loader2 aria-hidden="true" size={17} className="spin" />
-                  ) : (
+                  ) : imageArtifactCapabilities.canSaveToAlbum ? (
+                    <Download aria-hidden="true" size={17} />
+                  ) : imageArtifactCapabilities.canShareImage ? (
                     <Share2 aria-hidden="true" size={17} />
+                  ) : (
+                    <Download aria-hidden="true" size={17} />
                   )}
-                  {isSharingGroup ? "生成中" : "导出当前组"}
+                  {isSharingGroup
+                    ? "生成中"
+                    : imageArtifactCapabilities.canSaveToAlbum
+                      ? "保存当前组"
+                      : imageArtifactCapabilities.canShareImage
+                        ? "分享当前组"
+                      : "导出当前组"}
                 </button>
                 {randomCardIds.length > 0 ? (
                   <button className="text-button" type="button" onClick={() => setRandomCardIds([])}>
@@ -501,6 +557,8 @@ export function BookNotesPage({
       {notes && !isLoading && viewMode === "cards" ? (
         <NoteCardGrid
           cards={visibleCards}
+          canSaveToAlbum={imageArtifactCapabilities.canSaveToAlbum}
+          canShareImage={imageArtifactCapabilities.canShareImage}
           onShareCard={(card) => void handleShareCard(card)}
           onShowAll={handleShowAllCards}
           sharingCardId={sharingCardId}
@@ -550,12 +608,16 @@ function SummaryPill({ label, value }: { label: string; value: number }) {
 
 function NoteCardGrid({
   cards,
+  canSaveToAlbum,
+  canShareImage,
   onShareCard,
   onShowAll,
   sharingCardId,
   isGroupSharing
 }: {
   cards: NoteCardItem[];
+  canSaveToAlbum: boolean;
+  canShareImage: boolean;
   onShareCard: (card: NoteCardItem) => void;
   onShowAll: () => void;
   sharingCardId?: string;
@@ -606,10 +668,20 @@ function NoteCardGrid({
             >
               {sharingCardId === card.id ? (
                 <Loader2 aria-hidden="true" size={15} className="spin" />
-              ) : (
+              ) : canSaveToAlbum ? (
+                <Download aria-hidden="true" size={15} />
+              ) : canShareImage ? (
                 <Share2 aria-hidden="true" size={15} />
+              ) : (
+                <Download aria-hidden="true" size={15} />
               )}
-              {sharingCardId === card.id ? "生成中" : "导出图片"}
+              {sharingCardId === card.id
+                ? "生成中"
+                : canSaveToAlbum
+                  ? "保存图片"
+                  : canShareImage
+                    ? "分享"
+                  : "导出图片"}
             </button>
           </div>
         </article>
@@ -707,12 +779,14 @@ function formatPersonalStar(star: number): string {
 async function exportNoteCardImage({
   card,
   bookTitle,
-  author
+  author,
+  delivery
 }: {
   card: NoteCardItem;
   bookTitle: string;
   author?: string;
-}): Promise<string> {
+  delivery: "download" | "save" | "share";
+}): Promise<ImageArtifactDeliveryResult> {
   const canvas = document.createElement("canvas");
   const context = canvas.getContext("2d");
 
@@ -792,21 +866,34 @@ async function exportNoteCardImage({
   context.fillText("WxReadMaster · 本地生成", SHARE_CARD_PADDING, brandY);
 
   const fileName = `${sanitizeFileName(bookTitle)}-${card.type === "highlight" ? "划线" : "想法"}.png`;
-  await downloadCanvas(canvas, fileName);
-  return fileName;
+  if (delivery === "share") {
+    return shareCanvasAsPng(canvas, fileName, "生成分享图片失败。");
+  }
+
+  if (delivery === "save") {
+    return saveCanvasAsPngToAlbum(canvas, fileName, "生成分享图片失败。");
+  }
+
+  await downloadCanvasAsPng(canvas, fileName, "生成分享图片失败。");
+  return {
+    fileName,
+    source: "browserDownload"
+  };
 }
 
 async function exportNoteGroupImage({
   cards,
   bookTitle,
   author,
-  scopeLabel
+  scopeLabel,
+  delivery
 }: {
   cards: NoteCardItem[];
   bookTitle: string;
   author?: string;
   scopeLabel: string;
-}): Promise<string> {
+  delivery: "download" | "save" | "share";
+}): Promise<ImageArtifactDeliveryResult> {
   const canvas = document.createElement("canvas");
   const context = canvas.getContext("2d");
 
@@ -934,8 +1021,19 @@ async function exportNoteGroupImage({
   context.fillText("WxReadMaster · 本地生成", SHARE_CARD_PADDING, brandY);
 
   const fileName = `${sanitizeFileName(bookTitle)}-笔记组合.png`;
-  await downloadCanvas(canvas, fileName);
-  return fileName;
+  if (delivery === "share") {
+    return shareCanvasAsPng(canvas, fileName, "生成分享图片失败。");
+  }
+
+  if (delivery === "save") {
+    return saveCanvasAsPngToAlbum(canvas, fileName, "生成分享图片失败。");
+  }
+
+  await downloadCanvasAsPng(canvas, fileName, "生成分享图片失败。");
+  return {
+    fileName,
+    source: "browserDownload"
+  };
 }
 
 function drawShareCardBackground(context: CanvasRenderingContext2D, width: number, height: number) {
@@ -1054,28 +1152,6 @@ function wrapCanvasText(context: CanvasRenderingContext2D, text: string, maxWidt
   });
 
   return lines.length > 0 ? lines : [""];
-}
-
-async function downloadCanvas(canvas: HTMLCanvasElement, fileName: string) {
-  const blob = await new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob((nextBlob) => {
-      if (nextBlob) {
-        resolve(nextBlob);
-        return;
-      }
-
-      reject(new Error("生成分享图片失败。"));
-    }, "image/png");
-  });
-
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = fileName;
-  document.body.append(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
 }
 
 function sanitizeFileName(value: string): string {

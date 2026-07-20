@@ -3,11 +3,130 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>微信读书个人阅读管理 | 本地优先的阅读资产工作台</title>
+    <title>微信读书个人阅读管理 - 笔记整理、AI 读书复盘与 Markdown 导出工具</title>
     <meta
       name="description"
-      content="把微信读书记录变成本地的阅读资产。统一整理书架、笔记、统计与 AI 复盘，帮助重度读者沉淀可复盘、可导出、可长期积累的个人知识库。"
+      content="微信读书个人阅读管理是一款本地优先的开源阅读工作台，支持同步微信读书书架、整理划线和想法、生成 AI 读书复盘，并导出 Markdown。提供 Windows 桌面端与 Android 版。"
     />
+    <meta name="robots" content="index,follow" />
+    <meta name="author" content="RHZHZ" />
+    <meta name="theme-color" content="#0d8b72" />
+    <meta name="color-scheme" content="light" />
+    <link rel="canonical" href="https://read.rhzhz.cn/" />
+    <link rel="icon" href="./favicon.ico" sizes="any" />
+    <link rel="icon" href="./icon.png" type="image/png" />
+    <link rel="apple-touch-icon" href="./icon.png" />
+    <link rel="manifest" href="./site.webmanifest" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content="微信读书个人阅读管理" />
+    <meta property="og:title" content="微信读书个人阅读管理 - 笔记整理、AI 读书复盘与 Markdown 导出工具" />
+    <meta
+      property="og:description"
+      content="同步微信读书书架、笔记和统计，在本机整理复盘并导出 Markdown。开源透明，支持 Windows 桌面端与 Android 版。"
+    />
+    <meta property="og:url" content="https://read.rhzhz.cn/" />
+    <meta property="og:image" content="https://read.rhzhz.cn/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="微信读书个人阅读管理的书架与阅读资产工作台界面" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="微信读书个人阅读管理 - 笔记整理、AI 读书复盘与 Markdown 导出工具" />
+    <meta
+      name="twitter:description"
+      content="同步微信读书书架、笔记和统计，在本机整理复盘并导出 Markdown。开源透明，支持 Windows 桌面端与 Android 版。"
+    />
+    <meta name="twitter:image" content="https://read.rhzhz.cn/og-image.png" />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "WebSite",
+            "@id": "https://read.rhzhz.cn/#website",
+            "url": "https://read.rhzhz.cn/",
+            "name": "微信读书个人阅读管理",
+            "inLanguage": "zh-CN",
+            "description": "本地优先的微信读书书架、笔记、AI 复盘与 Markdown 导出工具。"
+          },
+          {
+            "@type": "SoftwareApplication",
+            "@id": "https://read.rhzhz.cn/#software",
+            "name": "微信读书个人阅读管理",
+            "alternateName": "Weread Master",
+            "applicationCategory": "ProductivityApplication",
+            "operatingSystem": "Windows, Android",
+            "url": "https://read.rhzhz.cn/",
+            "downloadUrl": "https://github.com/RHZHZ/wereadmaster/releases",
+            "codeRepository": "https://github.com/RHZHZ/wereadmaster",
+            "image": "https://read.rhzhz.cn/og-image.png",
+            "description": "同步微信读书书架、笔记和统计，在本机整理阅读复盘，并导出 Markdown。",
+            "offers": {
+              "@type": "Offer",
+              "price": "0",
+              "priceCurrency": "CNY"
+            }
+          },
+          {
+            "@type": "FAQPage",
+            "@id": "https://read.rhzhz.cn/#faq",
+            "mainEntity": [
+              {
+                "@type": "Question",
+                "name": "支持哪些平台？",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "当前提供 Windows 桌面端和 Android 签名 APK，安装包通过 GitHub Releases 分发。"
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "为什么不能直接在网页里使用？",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "应用需要管理本地数据库、导出目录和安全存储中的 Key。桌面端更适合长期保存阅读数据，也能减少把阅读内容交给网页服务托管。"
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "是否必须配置微信读书 API Key？",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "需要。同步书架、笔记和统计前，需要在设置里填入微信读书 Skill 页面提供的 API Key。"
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "是否必须配置 AI Provider？",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "不必须。书架、笔记、统计和导出可以先使用；AI 复盘、阅读助手等功能需要你在本机配置自己的 AI Provider 和 Key。"
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "我的阅读内容会自动上传吗？",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "不会。应用只在你主动同步或主动生成 AI 内容时执行对应动作。AI 调用也只在你点击生成时发送确认范围内的内容。"
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "下载是否免费？",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "项目当前开源发布，安装包在 GitHub Releases 获取。后续发布策略以项目说明为准。"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

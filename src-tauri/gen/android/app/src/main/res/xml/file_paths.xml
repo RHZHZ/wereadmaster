@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- image-artifact-mobile-file-paths. AUTO-GENERATED. DO NOT REMOVE. Source: tauri-plugin-image-artifact-mobile/build.rs -->
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
-  <external-path name="my_images" path="." />
-  <cache-path name="my_cache_images" path="." />
+  <cache-path name="image_artifacts" path="image-artifacts/" />
 </paths>

@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-share-image"
+description = "Enables the share_image command without any pre-configured scope."
+commands.allow = ["share_image"]
+
+[[permission]]
+identifier = "deny-share-image"
+description = "Denies the share_image command without any pre-configured scope."
+commands.deny = ["share_image"]

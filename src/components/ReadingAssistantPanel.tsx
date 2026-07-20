@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowLeft,
   BookOpen,
-  Bot,
   Check,
   ChevronDown,
   Database,
@@ -51,6 +50,7 @@ import {
   type ReadingAssistantMarkdownInline
 } from "../lib/reading-assistant-markdown-lite";
 import type {
+  AiProviderPresetId,
   AiResponseFormatPolicy,
   AiSettingsState,
   AssistantContextScope,
@@ -66,6 +66,8 @@ import type {
   SearchResult
 } from "../lib/types";
 
+export { ReadingAssistantLauncher } from "./ReadingAssistantLauncher";
+
 type ReadingAssistantPanelProps = {
   open: boolean;
   scope: AssistantContextScope;
@@ -79,10 +81,6 @@ type ReadingAssistantPanelProps = {
   canOpenBookDetail?: (bookId: string) => boolean;
   onOpenAiSettings?: () => void;
   onClose: () => void;
-};
-
-type ReadingAssistantLauncherProps = {
-  onOpen: () => void;
 };
 
 type ReadingAssistantPanelView = "chat" | "history" | "settings";
@@ -203,11 +201,12 @@ const HISTORY_SCOPE_FILTERS: Array<{
   { value: "localReaderSelection", label: "本地选区" }
 ];
 
-const PROVIDER_PRESET_LABELS: Record<string, string> = {
+const PROVIDER_PRESET_LABELS: Record<AiProviderPresetId, string> = {
   openai: "OpenAI",
   deepseek: "DeepSeek",
   dashscope: "DashScope",
   moonshot: "Moonshot",
+  "r-api": "R-API",
   custom: "自定义"
 };
 
@@ -224,20 +223,6 @@ const COMPACT_RESPONSE_FORMAT_POLICY_LABELS: Record<AiResponseFormatPolicy, stri
   jsonObjectFirst: "JSON",
   noResponseFormatFirst: "宽松"
 };
-
-export function ReadingAssistantLauncher({ onOpen }: ReadingAssistantLauncherProps) {
-  return (
-    <button
-      className="reading-assistant-launcher"
-      type="button"
-      onClick={onOpen}
-      aria-label="打开 AI 阅读助手"
-      title="AI 阅读助手"
-    >
-      <Bot aria-hidden="true" size={20} />
-    </button>
-  );
-}
 
 export function ReadingAssistantBookReviewAction({
   action,

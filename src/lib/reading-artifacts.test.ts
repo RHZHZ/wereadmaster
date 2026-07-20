@@ -3,6 +3,8 @@ import {
   formatArtifactCopiedMessage,
   formatArtifactCreatedMessage,
   formatArtifactExportedMessage,
+  formatArtifactSavedMessage,
+  formatArtifactSharedMessage,
   getReadingArtifactLabel
 } from "./reading-artifacts";
 
@@ -18,6 +20,12 @@ describe("reading artifacts", () => {
       "已生成：摘录卡片（card.png）"
     );
     expect(formatArtifactCopiedMessage("action-checklist")).toBe("已复制：行动清单");
+    expect(formatArtifactSharedMessage("note-card-image", { fileName: "card.png" })).toBe(
+      "已打开分享：摘录卡片（card.png）"
+    );
+    expect(formatArtifactSavedMessage("note-card-image", { fileName: "card.png" })).toBe(
+      "已保存到相册：摘录卡片（card.png）"
+    );
     expect(
       formatArtifactExportedMessage("book-review-markdown", {
         fileName: "summary.md",

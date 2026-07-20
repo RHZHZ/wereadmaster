@@ -15,6 +15,11 @@ import {
   exportCanvasAsReportImage,
   type ReportImageExportResult
 } from "./report-image-export";
+import {
+  saveCanvasAsPngToAlbum,
+  shareCanvasAsPng,
+  type ImageArtifactDeliveryResult
+} from "../../lib/image-artifact-export";
 
 export type LifetimeReadingReportCompleteness = "cached" | "empty" | "unsynced";
 
@@ -141,6 +146,27 @@ export function buildLifetimeReadingReportData(
 export async function downloadLifetimeReadingReportWide(
   data: LifetimeReadingReportData
 ): Promise<ReportImageExportResult> {
+  const canvas = await renderLifetimeReadingReportWideCanvas(data);
+  return exportCanvasAsReportImage(canvas, `${data.fileName}-16-9报告`, "生成长期复盘失败。");
+}
+
+export async function saveLifetimeReadingReportWide(
+  data: LifetimeReadingReportData
+): Promise<ImageArtifactDeliveryResult> {
+  const canvas = await renderLifetimeReadingReportWideCanvas(data);
+  return saveCanvasAsPngToAlbum(canvas, `${data.fileName}-16-9报告`, "生成长期复盘失败。");
+}
+
+export async function shareLifetimeReadingReportWide(
+  data: LifetimeReadingReportData
+): Promise<ImageArtifactDeliveryResult> {
+  const canvas = await renderLifetimeReadingReportWideCanvas(data);
+  return shareCanvasAsPng(canvas, `${data.fileName}-16-9报告`, "生成长期复盘失败。");
+}
+
+async function renderLifetimeReadingReportWideCanvas(
+  data: LifetimeReadingReportData
+): Promise<HTMLCanvasElement> {
   const canvas = document.createElement("canvas");
   const context = canvas.getContext("2d");
   if (!context) {
@@ -158,7 +184,7 @@ export async function downloadLifetimeReadingReportWide(
   ]);
 
   drawLifetimeReportCanvas(context, data, { archSceneImage, personaImage, propImage });
-  return exportCanvasAsReportImage(canvas, `${data.fileName}-16-9报告`, "生成长期复盘失败。");
+  return canvas;
 }
 
 type LifetimeReportCanvasImages = {

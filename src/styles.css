@@ -3554,6 +3554,20 @@ button:disabled {
   font-size: 13px;
 }
 
+.chapter-panel-actions {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.chapter-toggle-button {
+  max-width: 100%;
+  justify-content: center;
+}
+
 .chapter-list {
   display: grid;
   gap: 8px;
@@ -9147,6 +9161,59 @@ h6.local-reader-markdown-block--heading {
   background:
     radial-gradient(circle at top right, rgba(202, 163, 93, 0.12), transparent 28%),
     rgba(255, 253, 248, 0.78);
+}
+
+.settings-support-intro-card {
+  gap: 12px;
+  background:
+    radial-gradient(circle at top right, rgba(47, 111, 94, 0.10), transparent 28%),
+    rgba(255, 253, 248, 0.78);
+}
+
+.settings-support-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.settings-support-card {
+  gap: 12px;
+  background:
+    linear-gradient(180deg, rgba(255, 253, 248, 0.92), rgba(255, 253, 248, 0.78)),
+    rgba(255, 253, 248, 0.78);
+}
+
+.settings-support-card p {
+  margin: 0;
+}
+
+.settings-support-qr-frame {
+  display: grid;
+  justify-items: center;
+  min-width: 0;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid rgba(36, 49, 58, 0.10);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.settings-support-qr {
+  width: min(100%, 320px);
+  aspect-ratio: 1 / 1;
+  display: block;
+  object-fit: contain;
+}
+
+.settings-support-qr--contact {
+  width: min(100%, 280px);
+  aspect-ratio: 880 / 1131;
+}
+
+.settings-support-note {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 .settings-update-meta dd:last-child,
@@ -20823,6 +20890,7 @@ h6.local-reader-markdown-block--heading {
   .settings-modal,
   .settings-grid,
   .settings-diagnostics-grid,
+  .settings-support-grid,
   .settings-control-row,
   .settings-onboarding-card,
   .settings-form-grid,
@@ -21010,10 +21078,15 @@ h6.local-reader-markdown-block--heading {
     padding: 16px;
   }
 
-  .book-info-panel,
-  .chapter-panel {
+  .book-info-panel {
     max-height: none;
     overflow: visible;
+  }
+
+  .chapter-panel {
+    grid-template-rows: auto;
+    max-height: none;
+    overflow: hidden;
   }
 
   .book-source-boundary-card {
@@ -21033,6 +21106,22 @@ h6.local-reader-markdown-block--heading {
     background: transparent;
   }
 
+  .chapter-panel .panel-heading {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .chapter-panel-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .chapter-toggle-button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
   .chapter-panel .chapter-list {
     max-height: none;
     overflow: visible;
@@ -21046,6 +21135,18 @@ h6.local-reader-markdown-block--heading {
       "copy"
       "meta"
       "actions";
+  }
+
+  .settings-support-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-support-qr {
+    width: min(100%, 280px);
+  }
+
+  .settings-support-qr--contact {
+    width: min(100%, 260px);
   }
 
   .settings-card-actions,
@@ -21492,6 +21593,24 @@ h6.local-reader-markdown-block--heading {
     overflow-y: visible;
     padding-right: 0;
     scrollbar-gutter: auto;
+  }
+
+  .chapter-panel.is-expanded {
+    grid-template-rows: auto auto;
+  }
+
+  .chapter-panel .chapter-list {
+    max-height: min(52vh, 420px);
+    max-height: min(52dvh, 420px);
+    overflow-y: auto;
+    padding: 0 8px calc(84px + var(--mobile-safe-bottom)) 0;
+    scroll-padding-bottom: calc(84px + var(--mobile-safe-bottom));
+    scrollbar-gutter: stable;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .chapter-panel.is-collapsed .chapter-list {
+    display: none;
   }
 
   .review-cover-side {
@@ -24117,7 +24236,8 @@ h6.local-reader-markdown-block--heading {
   .reading-assistant-icon-button,
   .reading-assistant-model-chip,
   .reading-assistant-model-menu-actions button,
-  .reading-assistant-send-button {
+  .reading-assistant-send-button,
+  .chapter-toggle-button {
     min-width: 44px;
     min-height: 44px;
   }

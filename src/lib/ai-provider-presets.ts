@@ -53,6 +53,14 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
     responseFormatPolicy: "jsonObjectFirst",
   },
   {
+    id: "r-api",
+    label: "R-API",
+    description: "R-API 中转站",
+    defaultBaseUrl: "https://api.cccc.asia",
+    defaultModel: "gpt-4o-mini",
+    responseFormatPolicy: "auto",
+  },
+  {
     id: "custom",
     label: "自定义",
     description: "自定义 OpenAI-compatible Provider",

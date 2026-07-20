@@ -55,6 +55,7 @@ export type AiProviderPresetId =
   | "deepseek"
   | "dashscope"
   | "moonshot"
+  | "r-api"
   | "custom";
 
 export type AiResponseFormatPolicy =

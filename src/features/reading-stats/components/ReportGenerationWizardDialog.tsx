@@ -7,7 +7,7 @@ import {
   type CSSProperties,
   type ReactNode
 } from "react";
-import { CalendarDays, Download, Loader2, RefreshCw, X } from "lucide-react";
+import { CalendarDays, Download, Loader2, RefreshCw, Share2, X } from "lucide-react";
 import type { ReadingStatsMode } from "../../../lib/types";
 import {
   formatReadingStatsPeriodAnchor,
@@ -33,9 +33,11 @@ import type { PeriodReportPosterData } from "./PeriodReportPoster";
 import { PeriodReportCardSet } from "./PeriodReportCardSet";
 import { PeriodReportPoster } from "./PeriodReportPoster";
 import { PeriodReportWidePrototype } from "./PeriodReportWidePrototype";
+import { useImageArtifactCapabilities } from "../../../lib/use-image-artifact-capabilities";
 
 export type ReportGenerationPreviewMode = "poster" | "cards" | "wide";
 export type ReportGenerationDownloadMode = "poster" | "wide" | "cards-current" | "cards-all";
+export type ReportGenerationShareMode = "poster" | "wide" | "cards-current";
 type ReportGenerationDialogStep = "type" | "time" | "preview";
 
 const useBrowserLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
@@ -66,6 +68,8 @@ type ReportGenerationWizardDialogProps = {
   onDownload: (mode: ReportGenerationDownloadMode, storyPageIndex?: number) => void;
   onDownloadLifetime?: () => void;
   onGenerateReport: (period: ReadingStatsPeriod) => void;
+  onShare?: (mode: ReportGenerationShareMode, storyPageIndex?: number) => void;
+  onShareLifetime?: () => void;
   onSyncReportPeriod: () => void;
 };
 
@@ -84,6 +88,8 @@ export function ReportGenerationWizardDialog({
   onDownload,
   onDownloadLifetime,
   onGenerateReport,
+  onShare,
+  onShareLifetime,
   onSyncReportPeriod
 }: ReportGenerationWizardDialogProps) {
   const [dialogStep, setDialogStep] = useState<ReportGenerationDialogStep>("type");
@@ -94,6 +100,7 @@ export function ReportGenerationWizardDialog({
   const [posterScale, setPosterScale] = useState(1);
   const [wideScale, setWideScale] = useState(1);
   const [storyPageIndex, setStoryPageIndex] = useState(0);
+  const imageArtifactCapabilities = useImageArtifactCapabilities();
   const activeReportMode = draftPeriod.mode;
   const activePeriodReportMode: ReportGenerationPeriodMode =
     activeReportMode === "overall" ? "monthly" : activeReportMode;
@@ -127,6 +134,17 @@ export function ReportGenerationWizardDialog({
   const isTypeStep = dialogStep === "type";
   const isTimeStep = dialogStep === "time";
   const isPreviewStep = dialogStep === "preview";
+  const previewPrimaryVerb = imageArtifactCapabilities.canSaveToAlbum
+    ? "保存"
+    : imageArtifactCapabilities.canExportFile
+      ? "导出"
+      : "下载";
+  const shouldShowShareButton =
+    isPreviewStep &&
+    canPreview &&
+    imageArtifactCapabilities.canShareImage &&
+    (isLifetimeReportMode ? Boolean(onShareLifetime) : Boolean(onShare));
+  const canSharePreview = shouldShowShareButton && !isDownloading;
 
   useEffect(() => {
     if (!open) {
@@ -304,7 +322,7 @@ export function ReportGenerationWizardDialog({
                 ? "第一步先选择报告类型，周报、月报、年报和总计复盘会进入各自独立流程。"
                 : isTimeStep
                   ? `第二步${isLifetimeReportMode ? "确认长期复盘范围" : `选择${activeReportOption?.label ?? "报告"}时间`}；确认后再生成预览。`
-                  : "第三步检查预览效果，再选择竖版、轮播或横版导出。"}
+                : "第三步检查预览效果，再选择竖版、轮播或横版导出。"}
             </p>
           </div>
         </div>
@@ -587,6 +605,16 @@ export function ReportGenerationWizardDialog({
               {isLifetimeReportMode ? "重新确认范围" : "重新选择时间"}
             </button>
           ) : null}
+          {shouldShowShareButton ? (
+            <button className="secondary-action" type="button" onClick={handleShareReport} disabled={!canSharePreview}>
+              {isDownloading ? (
+                <Loader2 aria-hidden="true" size={18} className="spin" />
+              ) : (
+                <Share2 aria-hidden="true" size={18} />
+              )}
+              {isDownloading ? "生成中" : isCardsMode ? "分享当前页" : "分享"}
+            </button>
+          ) : null}
           {isPreviewStep && !canPreview ? (
             <button
               className="secondary-action"
@@ -613,7 +641,7 @@ export function ReportGenerationWizardDialog({
               ) : (
                 <Download aria-hidden="true" size={18} />
               )}
-              {isDownloading ? "生成中" : "下载横版 PNG"}
+              {isDownloading ? "生成中" : `${previewPrimaryVerb}横版 PNG`}
             </button>
           ) : isPreviewStep && isCardsMode ? (
             <>
@@ -628,7 +656,7 @@ export function ReportGenerationWizardDialog({
                 ) : (
                   <Download aria-hidden="true" size={18} />
                 )}
-                {isDownloading ? "生成中" : "下载当前页"}
+                {isDownloading ? "生成中" : `${previewPrimaryVerb}当前页`}
               </button>
               <button
                 className="secondary-action"
@@ -641,7 +669,7 @@ export function ReportGenerationWizardDialog({
                 ) : (
                   <Download aria-hidden="true" size={18} />
                 )}
-                {isDownloading ? "生成中" : "下载全部页"}
+                {isDownloading ? "生成中" : `${previewPrimaryVerb}全部页`}
               </button>
             </>
           ) : isPreviewStep ? (
@@ -659,8 +687,8 @@ export function ReportGenerationWizardDialog({
               {isDownloading
                 ? "生成中"
                 : previewMode === "wide"
-                  ? "下载横版 PNG"
-                  : "下载 PNG"}
+                  ? `${previewPrimaryVerb}横版 PNG`
+                : `${previewPrimaryVerb} PNG`}
             </button>
           ) : null}
         </div>
@@ -714,6 +742,24 @@ export function ReportGenerationWizardDialog({
   function handleGenerateReport() {
     onGenerateReport(draftPeriod);
     setDialogStep("preview");
+  }
+
+  function handleShareReport() {
+    if (isLifetimeReportMode) {
+      onShareLifetime?.();
+      return;
+    }
+
+    if (!onShare) {
+      return;
+    }
+
+    if (isCardsMode) {
+      onShare("cards-current", storyPageIndex);
+      return;
+    }
+
+    onShare(previewMode === "wide" ? "wide" : "poster");
   }
 
   function handleMonthSelect(option: ReadingStatsJumpMonthOption) {

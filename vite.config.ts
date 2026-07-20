@@ -8,6 +8,7 @@ const fromRoot = (...segments: string[]) => normalizePath(resolve(projectRoot, .
 
 export default defineConfig({
   root: projectRoot,
+  base: "./",
   plugins: [react()],
   clearScreen: false,
   build: {
@@ -16,6 +17,33 @@ export default defineConfig({
       input: {
         app: fromRoot("index.html"),
         website: fromRoot("website/index.html")
+      },
+      output: {
+        manualChunks(id) {
+          const normalizedId = normalizePath(id);
+
+          if (!normalizedId.includes("/node_modules/")) {
+            return undefined;
+          }
+
+          if (
+            normalizedId.includes("/node_modules/react/") ||
+            normalizedId.includes("/node_modules/react-dom/") ||
+            normalizedId.includes("/node_modules/scheduler/")
+          ) {
+            return "react-vendor";
+          }
+
+          if (normalizedId.includes("/node_modules/lucide-react/")) {
+            return "icons";
+          }
+
+          if (normalizedId.includes("/node_modules/@tauri-apps/")) {
+            return "tauri";
+          }
+
+          return "vendor";
+        }
       }
     }
   },

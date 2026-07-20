@@ -60,6 +60,31 @@ describe("settings page onboarding artwork", () => {
     expect(markup).toContain("版本、发布、安装");
   });
 
+  it("shows a dedicated support category with reward and contact qrs", () => {
+    const markup = renderToStaticMarkup(
+      <ToastProvider>
+        <SettingsPage
+          open
+          credentialStatus={{ hasCredential: true }}
+          onCredentialChange={() => undefined}
+          preferences={DEFAULT_USER_PREFERENCES}
+          onPreferencesChange={() => undefined}
+          onClose={() => undefined}
+          preferredCategory="support"
+        />
+      </ToastProvider>
+    );
+
+    expect(markup).toContain("关于与支持");
+    expect(markup).toContain("开源项目，感谢支持");
+    expect(markup).toContain("赞赏作者");
+    expect(markup).toContain("联系作者");
+    expect(markup).toContain("赞赏不会解锁功能");
+    expect(markup).toContain("应用不会读取或上传联系人信息");
+    expect(markup).toContain("RHZ 的赞赏码");
+    expect(markup).toContain("RHZ 微信联系方式二维码");
+  });
+
   it("keeps update destination metadata available for the updates category", () => {
     const markup = renderToStaticMarkup(
       <ToastProvider>
@@ -96,6 +121,7 @@ describe("settings page onboarding artwork", () => {
     expect(markup).toContain("Provider 预设");
     expect(markup).toContain("DeepSeek");
     expect(markup).toContain("通义千问");
+    expect(markup).toContain("R-API");
     expect(markup).toContain("兼容模式");
     expect(markup).toContain("宽松兼容");
     expect(markup).toContain("测试兼容性");

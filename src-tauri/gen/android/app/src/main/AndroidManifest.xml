@@ -24,6 +24,7 @@
             </intent-filter>
         </activity>
 
+        <!-- image-artifact-mobile-file-provider. AUTO-GENERATED. DO NOT REMOVE. -->
         <provider
           android:name="androidx.core.content.FileProvider"
           android:authorities="${applicationId}.fileprovider"
@@ -33,5 +34,6 @@
             android:name="android.support.FILE_PROVIDER_PATHS"
             android:resource="@xml/file_paths" />
         </provider>
+        <!-- image-artifact-mobile-file-provider. AUTO-GENERATED. DO NOT REMOVE. -->
     </application>
 </manifest>

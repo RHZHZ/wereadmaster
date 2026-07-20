@@ -24,6 +24,8 @@ import { ReportGenerationWizardDialog } from "../features/reading-stats/componen
 import {
   buildLifetimeReadingReportData,
   downloadLifetimeReadingReportWide,
+  saveLifetimeReadingReportWide,
+  shareLifetimeReadingReportWide,
   type LifetimeReadingReportCompleteness
 } from "../features/reading-stats/lifetime-reading-report";
 import {
@@ -32,6 +34,13 @@ import {
   downloadPeriodReportStoryPage,
   downloadPeriodReportStoryPages,
   downloadPeriodReportWideReport,
+  savePeriodReportPoster,
+  savePeriodReportStoryPage,
+  savePeriodReportStoryPages,
+  savePeriodReportWideReport,
+  sharePeriodReportPoster,
+  sharePeriodReportStoryPage,
+  sharePeriodReportWideReport,
   type PeriodReportCompleteness,
   type PeriodReportDownloadMode
 } from "../features/reading-stats/period-report";
@@ -49,8 +58,12 @@ import {
 import {
   formatArtifactCreatedMessage,
   formatArtifactExportedMessage,
+  formatArtifactSavedMessage,
+  formatArtifactSharedMessage,
   type ReadingArtifactKind
 } from "../lib/reading-artifacts";
+import type { ImageArtifactDeliveryResult } from "../lib/image-artifact-export";
+import { useImageArtifactCapabilities } from "../lib/use-image-artifact-capabilities";
 import type { CredentialStatus, ReadingStatsAiReviewResponse, ReadingStatsMode } from "../lib/types";
 import {
   buildReadingStatsPeriod,
@@ -75,6 +88,8 @@ const periodOptions: Array<{ mode: ReadingStatsMode; label: string; description:
   { mode: "overall", label: "总计", description: "全部历史" }
 ];
 
+type ReportImageActionResult = ReportImageExportResult | ImageArtifactDeliveryResult;
+
 export function ReadingReviewPage({
   credentialStatus,
   cache,
@@ -94,6 +109,7 @@ export function ReadingReviewPage({
   const [reportResponse, setReportResponse] = useState<ReadingStatsResponse>();
   const [reportReviewResponse, setReportReviewResponse] = useState<ReadingStatsAiReviewResponse>();
   const { showToast } = useToast();
+  const imageArtifactCapabilities = useImageArtifactCapabilities();
   const {
     activePeriod,
     canGenerate,
@@ -399,6 +415,8 @@ export function ReadingReviewPage({
           onDownload={(mode, storyPageIndex) => void handleReportDownload(mode, storyPageIndex)}
           onDownloadLifetime={() => void handleLifetimeReportDownload()}
           onGenerateReport={handleGeneratePeriodReport}
+          onShare={(mode, storyPageIndex) => void handleReportShare(mode, storyPageIndex)}
+          onShareLifetime={() => void handleLifetimeReportShare()}
           onSyncReportPeriod={() => void handleReportPeriodSync()}
         />
       ) : null}
@@ -541,13 +559,48 @@ export function ReadingReviewPage({
     setIsReportDownloading(true);
 
     try {
+      if (imageArtifactCapabilities.canSaveToAlbum) {
+        if (mode === "wide") {
+          showReportArtifactSuccess(
+            await savePeriodReportWideReport(periodReportData),
+            "period-report-image"
+          );
+          return;
+        }
+
+        if (mode === "cards-current") {
+          showReportArtifactSuccess(
+            await savePeriodReportStoryPage(periodReportData, storyPageIndex),
+            "period-report-image"
+          );
+          return;
+        }
+
+        if (mode === "cards-all") {
+          showReportArtifactSuccess(
+            await savePeriodReportStoryPages(periodReportData),
+            "period-report-image"
+          );
+          return;
+        }
+
+        showReportArtifactSuccess(
+          await savePeriodReportPoster(periodReportData),
+          "period-report-image"
+        );
+        return;
+      }
+
       if (mode === "wide") {
-        showReportExportSuccess(await downloadPeriodReportWideReport(periodReportData), "period-report-image");
+        showReportArtifactSuccess(
+          await downloadPeriodReportWideReport(periodReportData),
+          "period-report-image"
+        );
         return;
       }
 
       if (mode === "cards-current") {
-        showReportExportSuccess(
+        showReportArtifactSuccess(
           await downloadPeriodReportStoryPage(periodReportData, storyPageIndex),
           "period-report-image"
         );
@@ -555,11 +608,17 @@ export function ReadingReviewPage({
       }
 
       if (mode === "cards-all") {
-        showReportExportSuccess(await downloadPeriodReportStoryPages(periodReportData), "period-report-image");
+        showReportArtifactSuccess(
+          await downloadPeriodReportStoryPages(periodReportData),
+          "period-report-image"
+        );
         return;
       }
 
-      showReportExportSuccess(await downloadPeriodReportPoster(periodReportData), "period-report-image");
+      showReportArtifactSuccess(
+        await downloadPeriodReportPoster(periodReportData),
+        "period-report-image"
+      );
     } catch (posterError) {
       showToast({
         message: posterError instanceof Error ? posterError.message : "生成阅读报告图片失败。",
@@ -578,10 +637,75 @@ export function ReadingReviewPage({
     setIsReportDownloading(true);
 
     try {
-      showReportExportSuccess(await downloadLifetimeReadingReportWide(lifetimeReportData), "lifetime-report-image");
+      showReportArtifactSuccess(
+        imageArtifactCapabilities.canSaveToAlbum
+          ? await saveLifetimeReadingReportWide(lifetimeReportData)
+          : await downloadLifetimeReadingReportWide(lifetimeReportData),
+        "lifetime-report-image"
+      );
     } catch (posterError) {
       showToast({
         message: posterError instanceof Error ? posterError.message : "生成长期复盘图片失败。",
+        tone: "error"
+      });
+    } finally {
+      setIsReportDownloading(false);
+    }
+  }
+
+  async function handleReportShare(mode: PeriodReportDownloadMode, storyPageIndex = 0) {
+    if (!periodReportData) {
+      return;
+    }
+
+    setIsReportDownloading(true);
+
+    try {
+      if (mode === "wide") {
+        showReportArtifactSuccess(
+          await sharePeriodReportWideReport(periodReportData),
+          "period-report-image"
+        );
+        return;
+      }
+
+      if (mode === "cards-current" || mode === "cards-all") {
+        showReportArtifactSuccess(
+          await sharePeriodReportStoryPage(periodReportData, storyPageIndex),
+          "period-report-image"
+        );
+        return;
+      }
+
+      showReportArtifactSuccess(
+        await sharePeriodReportPoster(periodReportData),
+        "period-report-image"
+      );
+    } catch (posterError) {
+      showToast({
+        message: posterError instanceof Error ? posterError.message : "分享阅读报告图片失败。",
+        tone: "error"
+      });
+    } finally {
+      setIsReportDownloading(false);
+    }
+  }
+
+  async function handleLifetimeReportShare() {
+    if (!lifetimeReportData) {
+      return;
+    }
+
+    setIsReportDownloading(true);
+
+    try {
+      showReportArtifactSuccess(
+        await shareLifetimeReadingReportWide(lifetimeReportData),
+        "lifetime-report-image"
+      );
+    } catch (posterError) {
+      showToast({
+        message: posterError instanceof Error ? posterError.message : "分享长期复盘图片失败。",
         tone: "error"
       });
     } finally {
@@ -625,26 +749,65 @@ export function ReadingReviewPage({
     }
   }
 
-  function showReportExportSuccess(
-    result: ReportImageExportResult | ReportImageExportResult[],
+  function showReportArtifactSuccess(
+    result: ReportImageActionResult | ReportImageActionResult[],
     artifactKind: Extract<ReadingArtifactKind, "period-report-image" | "lifetime-report-image">
   ) {
-    const results = Array.isArray(result) ? result : [result];
-    const exportDirResult = results.find((item) => item.source === "exportDir");
-    if (exportDirResult?.path) {
+    const results = (Array.isArray(result) ? result : [result]).filter(
+      (item) => !("cancelled" in item && item.cancelled === true)
+    );
+    if (results.length === 0) {
+      return;
+    }
+
+    const firstResult = results[0];
+    const count = results.length > 1 ? results.length : undefined;
+
+    if (firstResult.source === "album") {
       showToast({
-        message: formatArtifactExportedMessage(
+        message: formatArtifactSavedMessage(
           artifactKind,
-          results.length > 1
-            ? { count: results.length, unit: "张图片", path: exportDirResult.path }
-            : { path: exportDirResult.path }
+          count ? { count, unit: "张图片" } : { fileName: firstResult.fileName }
         ),
         tone: "success"
       });
       return;
     }
 
-    showToast({ message: formatArtifactCreatedMessage(artifactKind), tone: "success" });
+    if (firstResult.source === "exportDir") {
+      const exportResult = results.find((item) => item.source === "exportDir") as
+        | ReportImageExportResult
+        | undefined;
+      showToast({
+        message: formatArtifactExportedMessage(
+          artifactKind,
+          count
+            ? { count, unit: "张图片", path: exportResult?.path }
+            : { fileName: firstResult.fileName, path: exportResult?.path }
+        ),
+        tone: "success"
+      });
+      return;
+    }
+
+    if (firstResult.source === "shareSheet") {
+      showToast({
+        message: formatArtifactSharedMessage(
+          artifactKind,
+          count ? { count, unit: "张图片" } : { fileName: firstResult.fileName }
+        ),
+        tone: "success"
+      });
+      return;
+    }
+
+    showToast({
+      message: formatArtifactCreatedMessage(
+        artifactKind,
+        count ? { count, unit: "张图片" } : { fileName: firstResult.fileName }
+      ),
+      tone: "success"
+    });
   }
 }
 

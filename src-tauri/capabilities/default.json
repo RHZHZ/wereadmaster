@@ -98,6 +98,9 @@
     "allow-reset-custom-export-directory",
     "allow-save-weread-proxy-url",
     "allow-reset-weread-proxy-url",
+    "image-artifact-mobile:allow-get-capabilities",
+    "image-artifact-mobile:allow-save-image-to-album",
+    "image-artifact-mobile:allow-share-image",
     "opener:allow-open-url",
     "opener:allow-default-urls",
     "dialog:allow-open"

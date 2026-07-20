@@ -21,6 +21,11 @@ import {
   exportCanvasAsReportImage,
   type ReportImageExportResult
 } from "./report-image-export";
+import {
+  saveCanvasAsPngToAlbum,
+  shareCanvasAsPng,
+  type ImageArtifactDeliveryResult
+} from "../../lib/image-artifact-export";
 
 export type PeriodReportCompleteness = "cached" | "empty" | "unsynced" | "future_blocked";
 
@@ -287,6 +292,122 @@ export function buildMonthlyReportPosterData(
 export async function downloadMonthlyReportPoster(
   data: MonthlyReportPosterData
 ): Promise<ReportImageExportResult> {
+  const canvas = await renderMonthlyReportPosterCanvas(data);
+  return exportCanvasAsReportImage(canvas, data.fileName, "生成阅读报告失败。");
+}
+
+export async function saveMonthlyReportPoster(
+  data: MonthlyReportPosterData
+): Promise<ImageArtifactDeliveryResult> {
+  const canvas = await renderMonthlyReportPosterCanvas(data);
+  return saveCanvasAsPngToAlbum(canvas, data.fileName, "生成阅读报告失败。");
+}
+
+export async function shareMonthlyReportPoster(
+  data: MonthlyReportPosterData
+): Promise<ImageArtifactDeliveryResult> {
+  const canvas = await renderMonthlyReportPosterCanvas(data);
+  return shareCanvasAsPng(canvas, data.fileName, "生成阅读报告失败。");
+}
+
+export async function downloadMonthlyReportWideReport(
+  data: MonthlyReportPosterData
+): Promise<ReportImageExportResult> {
+  const canvas = await renderMonthlyReportWideCanvas(data);
+  return exportCanvasAsReportImage(canvas, `${data.fileName}-16-9报告`, "生成横版报告失败。");
+}
+
+export async function saveMonthlyReportWideReport(
+  data: MonthlyReportPosterData
+): Promise<ImageArtifactDeliveryResult> {
+  const canvas = await renderMonthlyReportWideCanvas(data);
+  return saveCanvasAsPngToAlbum(canvas, `${data.fileName}-16-9报告`, "生成横版报告失败。");
+}
+
+export async function shareMonthlyReportWideReport(
+  data: MonthlyReportPosterData
+): Promise<ImageArtifactDeliveryResult> {
+  const canvas = await renderMonthlyReportWideCanvas(data);
+  return shareCanvasAsPng(canvas, `${data.fileName}-16-9报告`, "生成横版报告失败。");
+}
+
+export async function downloadMonthlyReportStoryPage(
+  data: MonthlyReportPosterData,
+  pageIndex: number
+): Promise<ReportImageExportResult> {
+  const { canvas, page } = await renderMonthlyReportStoryPageCanvas(data, pageIndex);
+  return exportCanvasAsReportImage(
+    canvas,
+    buildMonthlyReportStoryPageFileName(data, pageIndex, page),
+    "生成轮播报告失败。"
+  );
+}
+
+export async function saveMonthlyReportStoryPage(
+  data: MonthlyReportPosterData,
+  pageIndex: number
+): Promise<ImageArtifactDeliveryResult> {
+  const { canvas, page } = await renderMonthlyReportStoryPageCanvas(data, pageIndex);
+  return saveCanvasAsPngToAlbum(
+    canvas,
+    buildMonthlyReportStoryPageFileName(data, pageIndex, page),
+    "生成轮播报告失败。"
+  );
+}
+
+export async function shareMonthlyReportStoryPage(
+  data: MonthlyReportPosterData,
+  pageIndex: number
+): Promise<ImageArtifactDeliveryResult> {
+  const { canvas, page } = await renderMonthlyReportStoryPageCanvas(data, pageIndex);
+  return shareCanvasAsPng(
+    canvas,
+    buildMonthlyReportStoryPageFileName(data, pageIndex, page),
+    "生成轮播报告失败。"
+  );
+}
+
+export async function downloadMonthlyReportStoryPages(
+  data: MonthlyReportPosterData
+): Promise<ReportImageExportResult[]> {
+  const images = await loadMonthlyReportStoryImages(data);
+  const results: ReportImageExportResult[] = [];
+
+  for (let index = 0; index < MONTHLY_REPORT_STORY_PAGES.length; index += 1) {
+    const { canvas, page } = await renderMonthlyReportStoryPageCanvas(data, index, images);
+    results.push(
+      await exportCanvasAsReportImage(
+        canvas,
+        buildMonthlyReportStoryPageFileName(data, index, page),
+        "生成轮播报告失败。"
+      )
+    );
+  }
+
+  return results;
+}
+
+export async function saveMonthlyReportStoryPages(
+  data: MonthlyReportPosterData
+): Promise<ImageArtifactDeliveryResult[]> {
+  const images = await loadMonthlyReportStoryImages(data);
+  const results: ImageArtifactDeliveryResult[] = [];
+
+  for (let index = 0; index < MONTHLY_REPORT_STORY_PAGES.length; index += 1) {
+    const { canvas, page } = await renderMonthlyReportStoryPageCanvas(data, index, images);
+    results.push(
+      await saveCanvasAsPngToAlbum(
+        canvas,
+        buildMonthlyReportStoryPageFileName(data, index, page),
+        "生成轮播报告失败。"
+      )
+    );
+  }
+
+  return results;
+}
+
+async function renderMonthlyReportPosterCanvas(data: MonthlyReportPosterData): Promise<HTMLCanvasElement> {
   const canvas = document.createElement("canvas");
   const context = canvas.getContext("2d");
   if (!context) {
@@ -306,13 +427,10 @@ export async function downloadMonthlyReportPoster(
   drawPosterBackground(context, data);
   drawPosterText(context, data);
   drawPosterPersona(context, data, personaImage, archSceneImage, propImage);
-
-  return exportCanvasAsReportImage(canvas, data.fileName, "生成阅读报告失败。");
+  return canvas;
 }
 
-export async function downloadMonthlyReportWideReport(
-  data: MonthlyReportPosterData
-): Promise<ReportImageExportResult> {
+async function renderMonthlyReportWideCanvas(data: MonthlyReportPosterData): Promise<HTMLCanvasElement> {
   const canvas = document.createElement("canvas");
   const context = canvas.getContext("2d");
   if (!context) {
@@ -332,15 +450,19 @@ export async function downloadMonthlyReportWideReport(
   drawWideReportCover(context, data, personaImage, archSceneImage);
   drawWideReportAnalysis(context, data);
   drawWideReportSidebar(context, data);
-
-  return exportCanvasAsReportImage(canvas, `${data.fileName}-16-9报告`, "生成横版报告失败。");
+  return canvas;
 }
 
-export async function downloadMonthlyReportStoryPage(
+async function renderMonthlyReportStoryPageCanvas(
   data: MonthlyReportPosterData,
-  pageIndex: number
-): Promise<ReportImageExportResult> {
+  pageIndex: number,
+  images?: MonthlyReportStoryImages
+): Promise<{ canvas: HTMLCanvasElement; page: MonthlyReportStoryPage }> {
   const page = MONTHLY_REPORT_STORY_PAGES[pageIndex] ?? MONTHLY_REPORT_STORY_PAGES[0];
+  if (!page) {
+    throw new Error("当前环境不支持轮播报告绘制。");
+  }
+
   const canvas = document.createElement("canvas");
   const context = canvas.getContext("2d");
   if (!context) {
@@ -350,43 +472,18 @@ export async function downloadMonthlyReportStoryPage(
   canvas.width = STORY_REPORT_WIDTH;
   canvas.height = STORY_REPORT_HEIGHT;
 
-  const images = await loadMonthlyReportStoryImages(data);
-  drawMonthlyReportStoryPage(context, data, page, pageIndex, images);
+  const storyImages = images ?? (await loadMonthlyReportStoryImages(data));
+  drawMonthlyReportStoryPage(context, data, page, pageIndex, storyImages);
 
-  return exportCanvasAsReportImage(
-    canvas,
-    sanitizeFileName(`${data.fileName}-轮播报告-${String(pageIndex + 1).padStart(2, "0")}-${page.title}`),
-    "生成轮播报告失败。"
-  );
+  return { canvas, page };
 }
 
-export async function downloadMonthlyReportStoryPages(
-  data: MonthlyReportPosterData
-): Promise<ReportImageExportResult[]> {
-  const images = await loadMonthlyReportStoryImages(data);
-  const results: ReportImageExportResult[] = [];
-
-  for (let index = 0; index < MONTHLY_REPORT_STORY_PAGES.length; index += 1) {
-    const page = MONTHLY_REPORT_STORY_PAGES[index];
-    const canvas = document.createElement("canvas");
-    const context = canvas.getContext("2d");
-    if (!context) {
-      throw new Error("当前环境不支持轮播报告绘制。");
-    }
-
-    canvas.width = STORY_REPORT_WIDTH;
-    canvas.height = STORY_REPORT_HEIGHT;
-    drawMonthlyReportStoryPage(context, data, page, index, images);
-    results.push(
-      await exportCanvasAsReportImage(
-        canvas,
-        sanitizeFileName(`${data.fileName}-轮播报告-${String(index + 1).padStart(2, "0")}-${page.title}`),
-        "生成轮播报告失败。"
-      )
-    );
-  }
-
-  return results;
+function buildMonthlyReportStoryPageFileName(
+  data: MonthlyReportPosterData,
+  pageIndex: number,
+  page: MonthlyReportStoryPage
+): string {
+  return sanitizeFileName(`${data.fileName}-轮播报告-${String(pageIndex + 1).padStart(2, "0")}-${page.title}`);
 }
 
 type MonthlyReportStoryImages = {
