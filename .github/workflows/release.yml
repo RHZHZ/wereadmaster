@@ -95,7 +95,7 @@ jobs:
           releaseBody: ${{ steps.release_notes.outputs.body }}
           releaseDraft: false
           prerelease: false
-          uploadUpdaterJson: false
+          includeUpdaterJson: false
 
       - name: Upload normalized Windows installer asset
         env:
