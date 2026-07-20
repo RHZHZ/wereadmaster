@@ -113,7 +113,7 @@ Authorization: Bearer $WEREAD_API_KEY
 
 | 总览 | 书架 | 笔记 | 设置 |
 | --- | --- | --- | --- |
-| ![](src/assets/hero-reading-dashboard.jpg) | ![](src/assets/empty-shelf.png) | ![](src/assets/empty-notes.png) | ![](src/assets/generated/onboarding-local-vault.png) |
+| ![](src/assets/hero-reading-dashboard.jpg) | ![](src/assets/shelf.png) | ![](src/assets/notes.png) | ![](src/assets/generated/set.png) |
 
 ## 快速开始
 
