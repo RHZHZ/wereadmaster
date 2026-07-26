@@ -8,7 +8,7 @@ import {
   RefreshCw
 } from "lucide-react";
 import {
-  exportBookDecisionMarkdown,
+  exportBookDecisionTargets,
   getCommandErrorMessage,
   summarizeBookDecision,
   type BookshelfResponse,
@@ -16,7 +16,12 @@ import {
 } from "../lib/reading-api";
 import { useToast } from "../components/ToastProvider";
 import { formatAiResponseFormat, formatAiTimestamp } from "../lib/formatters";
-import { formatArtifactExportedMessage } from "../lib/reading-artifacts";
+import {
+  exportTargetLabel,
+  exportTargetsFromDestination,
+  formatMultiTargetExportToast,
+  type ExportDestination
+} from "../lib/export-targets";
 import {
   buildAiActionItemId,
   getAiActionItemStorage,
@@ -26,6 +31,7 @@ import {
 import type {
   BookDecisionGoal,
   BookDecisionResponse,
+  MultiTargetExportResponse,
   ReadingStatsMode,
   SearchResult
 } from "../lib/types";
@@ -57,7 +63,7 @@ type BookDecisionPageProps = {
 type ExportStatus =
   | { type: "idle" }
   | { type: "running" }
-  | { type: "success"; path: string; fileName: string }
+  | { type: "success"; result: MultiTargetExportResponse }
   | { type: "error"; message: string };
 
 const bookDecisionActionScope = "book-decision";
@@ -111,6 +117,7 @@ export function BookDecisionPage({
   const [isInputDialogOpen, setIsInputDialogOpen] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [exportStatus, setExportStatus] = useState<ExportStatus>({ type: "idle" });
+  const [exportDestination, setExportDestination] = useState<ExportDestination>("markdown");
   const [error, setError] = useState<string>();
   const candidateBooks = session?.candidateBooks ?? [];
   const decisionResponse = session?.response;
@@ -240,7 +247,7 @@ export function BookDecisionPage({
     }
   }
 
-  async function handleExportMarkdown() {
+  async function handleExport() {
     if (decisionCandidates.length === 0) {
       setExportStatus({ type: "error", message: "没有可导出的选书决策候选。" });
       return;
@@ -249,12 +256,11 @@ export function BookDecisionPage({
     setExportStatus({ type: "running" });
 
     try {
-      const result = await exportBookDecisionMarkdown(decisionCandidates, decisionGoal);
-      setExportStatus({ type: "success", path: result.path, fileName: result.fileName });
-      showToast({
-        message: formatArtifactExportedMessage("book-decision-markdown"),
-        tone: "success"
+      const result = await exportBookDecisionTargets(decisionCandidates, decisionGoal, {
+        targets: exportTargetsFromDestination(exportDestination)
       });
+      setExportStatus({ type: "success", result });
+      showToast(formatMultiTargetExportToast(result));
     } catch (exportError) {
       setExportStatus({ type: "error", message: getCommandErrorMessage(exportError) });
     }
@@ -307,15 +313,28 @@ export function BookDecisionPage({
             className="secondary-action"
             type="button"
             disabled={exportStatus.type === "running"}
-            onClick={() => void handleExportMarkdown()}
+            onClick={() => void handleExport()}
           >
             {exportStatus.type === "running" ? (
               <Loader2 aria-hidden="true" size={18} className="spin" />
             ) : (
               <BookOpen aria-hidden="true" size={18} />
             )}
-            {exportStatus.type === "running" ? "导出中" : "导出 Markdown"}
+            {exportStatus.type === "running" ? "导出中" : "一键导出"}
           </button>
+          <label className="compact-export-select">
+            <span>导出到</span>
+            <select
+              value={exportDestination}
+              onChange={(event) => setExportDestination(event.target.value as ExportDestination)}
+              disabled={exportStatus.type === "running"}
+            >
+              <option value="markdown">Markdown</option>
+              <option value="obsidian">Obsidian</option>
+              <option value="notion">Notion</option>
+              <option value="obsidianNotion">Obsidian + Notion</option>
+            </select>
+          </label>
           <button
             className="sync-button"
             type="button"
@@ -355,15 +374,34 @@ export function BookDecisionPage({
       ) : null}
 
       {exportStatus.type === "success" ? (
-        <div className="status-message status-message--success" aria-label="选书决策导出结果">
-          <CheckCircle2 aria-hidden="true" size={18} />
-          <span>
-            {formatArtifactExportedMessage("book-decision-markdown", {
-              fileName: exportStatus.fileName,
-              path: exportStatus.path
-            })}
-          </span>
-        </div>
+        <section className="export-result-list" aria-label="选书决策导出结果">
+          {exportStatus.result.results.map((result) => (
+            <div
+              className={`status-message ${
+                result.status === "failed" ? "status-message--error" : "status-message--neutral"
+              }`}
+              key={result.target}
+            >
+              {result.status === "failed" ? (
+                <AlertCircle aria-hidden="true" size={18} />
+              ) : (
+                <CheckCircle2 aria-hidden="true" size={18} />
+              )}
+              <span>
+                <strong>{exportTargetLabel(result.target)}：</strong>
+                {result.status === "succeeded"
+                  ? result.path || result.url || "导出成功"
+                  : result.error?.message || "导出失败"}
+                {result.warning ? `（${result.warning}）` : ""}
+              </span>
+              {result.url ? (
+                <a href={result.url} target="_blank" rel="noreferrer">
+                  打开
+                </a>
+              ) : null}
+            </div>
+          ))}
+        </section>
       ) : null}
 
       {exportStatus.type === "error" ? (

@@ -18,6 +18,22 @@ struct DataDirectoryConfig {
     custom_data_dir: Option<String>,
     custom_export_dir: Option<String>,
     weread_proxy_url: Option<String>,
+    obsidian_vault_dir: Option<String>,
+    obsidian_attachment_mode: Option<String>,
+    obsidian_open_after_export: Option<bool>,
+    notion_parent_id: Option<String>,
+    notion_parent_type: Option<String>,
+    notion_cover_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct IntegrationConfig {
+    pub obsidian_vault_dir: Option<String>,
+    pub obsidian_attachment_mode: Option<String>,
+    pub obsidian_open_after_export: bool,
+    pub notion_parent_id: Option<String>,
+    pub notion_parent_type: Option<String>,
+    pub notion_cover_mode: Option<String>,
 }
 
 pub fn default_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -118,6 +134,32 @@ pub fn write_weread_proxy_url_config(
     write_data_directory_config(config_dir, config)
 }
 
+pub fn read_integration_config(config_dir: &Path) -> Result<IntegrationConfig, String> {
+    let config = read_data_directory_config(config_dir)?;
+    Ok(IntegrationConfig {
+        obsidian_vault_dir: config.obsidian_vault_dir,
+        obsidian_attachment_mode: config.obsidian_attachment_mode,
+        obsidian_open_after_export: config.obsidian_open_after_export.unwrap_or(false),
+        notion_parent_id: config.notion_parent_id,
+        notion_parent_type: config.notion_parent_type,
+        notion_cover_mode: config.notion_cover_mode,
+    })
+}
+
+pub fn write_integration_config(
+    config_dir: &Path,
+    integration: &IntegrationConfig,
+) -> Result<(), String> {
+    let mut config = read_data_directory_config(config_dir)?;
+    config.obsidian_vault_dir = integration.obsidian_vault_dir.clone();
+    config.obsidian_attachment_mode = integration.obsidian_attachment_mode.clone();
+    config.obsidian_open_after_export = Some(integration.obsidian_open_after_export);
+    config.notion_parent_id = integration.notion_parent_id.clone();
+    config.notion_parent_type = integration.notion_parent_type.clone();
+    config.notion_cover_mode = integration.notion_cover_mode.clone();
+    write_data_directory_config(config_dir, config)
+}
+
 fn read_data_directory_config(config_dir: &Path) -> Result<DataDirectoryConfig, String> {
     let config_path = config_dir.join(DATA_DIRECTORY_CONFIG_FILE_NAME);
     if !config_path.is_file() {
@@ -138,6 +180,12 @@ fn write_data_directory_config(
     if config.custom_data_dir.is_none()
         && config.custom_export_dir.is_none()
         && config.weread_proxy_url.is_none()
+        && config.obsidian_vault_dir.is_none()
+        && config.obsidian_attachment_mode.is_none()
+        && config.obsidian_open_after_export.is_none()
+        && config.notion_parent_id.is_none()
+        && config.notion_parent_type.is_none()
+        && config.notion_cover_mode.is_none()
     {
         if config_path.exists() {
             fs::remove_file(config_path).map_err(|error| error.to_string())?;
@@ -418,6 +466,7 @@ pub fn initialize_schema(connection: &Connection) -> SqliteResult<()> {
     add_column_if_missing(connection, "ai_assistant_messages", "output_json", "TEXT")?;
     ensure_local_books_support_markdown(connection)?;
     ensure_local_reading_progress_schema(connection)?;
+    ensure_reading_item_dimensions(connection)?;
 
     Ok(())
 }
@@ -670,6 +719,223 @@ fn ensure_local_books_support_markdown(connection: &Connection) -> SqliteResult<
     Ok(())
 }
 
+pub(crate) struct ReadingItemDimensionBackfill {
+    pub item_kind: String,
+    pub is_candidate: bool,
+    pub candidate_source: Option<String>,
+    pub life_status: String,
+    pub organize_status: String,
+    pub user_note: Option<String>,
+    pub source_meta: Option<String>,
+}
+
+const AI_RECOMMENDATION_NOTE_MARKER: &str = "来自 AI 阅读助手推荐";
+const AI_CONFIRMED_NOTE_MARKER: &str = "已通过微信读书搜索确认";
+const ABSORBED_REVIEW_NOTE: &str = "用户已确认吸收本书复盘";
+
+pub(crate) fn derive_reading_item_dimensions(
+    item_id: &str,
+    item_type: &str,
+    status: &str,
+    note: Option<&str>,
+) -> ReadingItemDimensionBackfill {
+    let trimmed_note = note.map(str::trim).filter(|value| !value.is_empty());
+    let is_light = item_type == "album" || item_type == "mp";
+    let is_candidate_row = item_type == "candidate" && status == "toRead";
+    let is_light_candidate = is_light && status == "toRead";
+    let is_candidate = is_candidate_row || is_light_candidate;
+
+    let has_ai_marker =
+        trimmed_note.is_some_and(|value| value.contains(AI_RECOMMENDATION_NOTE_MARKER));
+    let has_confirmed_marker =
+        trimmed_note.is_some_and(|value| value.contains(AI_CONFIRMED_NOTE_MARKER));
+    let is_shelf_note = trimmed_note
+        .is_some_and(|value| value.starts_with("书架") && value.ends_with("保存的本地候选"));
+
+    let candidate_source = if !is_candidate {
+        None
+    } else if is_light_candidate {
+        Some("light".to_string())
+    } else if has_confirmed_marker {
+        Some("ai_confirmed".to_string())
+    } else if item_id.starts_with("ai-rec-") || has_ai_marker {
+        Some("ai_unconfirmed".to_string())
+    } else {
+        Some("weread".to_string())
+    };
+
+    let saved_from = match trimmed_note {
+        Some("发现页保存的本地候选") => Some("discovery"),
+        Some("书籍详情页保存的本地候选") => Some("detail"),
+        Some(_) if is_shelf_note => Some("shelf"),
+        Some(_) if has_ai_marker || has_confirmed_marker => Some("assistant"),
+        _ => None,
+    };
+
+    let ai_reason = if has_ai_marker || has_confirmed_marker {
+        trimmed_note.map(str::to_string)
+    } else {
+        None
+    };
+
+    let is_system_note = matches!(
+        trimmed_note,
+        Some("发现页保存的本地候选")
+            | Some("书籍详情页保存的本地候选")
+            | Some(ABSORBED_REVIEW_NOTE)
+    ) || is_shelf_note
+        || has_ai_marker
+        || has_confirmed_marker;
+
+    let user_note = match trimmed_note {
+        Some(value) if !is_system_note => Some(value.to_string()),
+        _ => None,
+    };
+
+    let source_meta = if saved_from.is_some() || ai_reason.is_some() {
+        let mut object = serde_json::Map::new();
+        if let Some(saved_from) = saved_from {
+            object.insert(
+                "savedFrom".to_string(),
+                serde_json::Value::String(saved_from.to_string()),
+            );
+        }
+        if let Some(ai_reason) = &ai_reason {
+            object.insert(
+                "aiReason".to_string(),
+                serde_json::Value::String(ai_reason.clone()),
+            );
+        }
+        serde_json::to_string(&serde_json::Value::Object(object)).ok()
+    } else {
+        None
+    };
+
+    ReadingItemDimensionBackfill {
+        item_kind: if item_type == "candidate" {
+            "book".to_string()
+        } else {
+            item_type.to_string()
+        },
+        is_candidate,
+        candidate_source,
+        life_status: if is_candidate_row {
+            "want".to_string()
+        } else {
+            "none".to_string()
+        },
+        organize_status: match status {
+            "reviewing" => "to_organize",
+            "organized" => "organized",
+            _ => "none",
+        }
+        .to_string(),
+        user_note,
+        source_meta,
+    }
+}
+
+fn ensure_reading_item_dimensions(connection: &Connection) -> SqliteResult<()> {
+    add_column_if_missing(connection, "reading_item_states", "item_kind", "TEXT")?;
+    add_column_if_missing(connection, "reading_item_states", "is_candidate", "INTEGER")?;
+    add_column_if_missing(connection, "reading_item_states", "candidate_source", "TEXT")?;
+    add_column_if_missing(connection, "reading_item_states", "life_status", "TEXT")?;
+    add_column_if_missing(connection, "reading_item_states", "finished_source", "TEXT")?;
+    add_column_if_missing(connection, "reading_item_states", "organize_status", "TEXT")?;
+    add_column_if_missing(connection, "reading_item_states", "user_note", "TEXT")?;
+    add_column_if_missing(connection, "reading_item_states", "source_meta", "TEXT")?;
+
+    let pending_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM reading_item_states WHERE life_status IS NULL",
+        [],
+        |row| row.get(0),
+    )?;
+
+    if pending_count == 0 {
+        return Ok(());
+    }
+
+    connection.execute_batch(
+        "CREATE TABLE IF NOT EXISTS reading_item_states_backup_v1 AS
+         SELECT * FROM reading_item_states WHERE 0",
+    )?;
+    let backup_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM reading_item_states_backup_v1",
+        [],
+        |row| row.get(0),
+    )?;
+    if backup_count == 0 {
+        connection.execute(
+            "INSERT INTO reading_item_states_backup_v1
+             SELECT * FROM reading_item_states WHERE life_status IS NULL",
+            [],
+        )?;
+    }
+
+    struct LegacyReadingItemRow {
+        item_id: String,
+        item_type: String,
+        status: String,
+        note: Option<String>,
+    }
+
+    let mut statement = connection.prepare(
+        "SELECT item_id, item_type, status, note FROM reading_item_states WHERE life_status IS NULL",
+    )?;
+    let legacy_rows = statement
+        .query_map([], |row| {
+            Ok(LegacyReadingItemRow {
+                item_id: row.get(0)?,
+                item_type: row.get(1)?,
+                status: row.get(2)?,
+                note: row.get(3)?,
+            })
+        })?
+        .collect::<SqliteResult<Vec<_>>>()?;
+    drop(statement);
+
+    let migration: SqliteResult<()> = (|| {
+        connection.execute_batch("BEGIN IMMEDIATE;")?;
+        for row in &legacy_rows {
+            let dimensions = derive_reading_item_dimensions(
+                &row.item_id,
+                &row.item_type,
+                &row.status,
+                row.note.as_deref(),
+            );
+            connection.execute(
+                "UPDATE reading_item_states SET
+                    item_kind = ?2,
+                    is_candidate = ?3,
+                    candidate_source = ?4,
+                    life_status = ?5,
+                    organize_status = ?6,
+                    user_note = ?7,
+                    source_meta = ?8
+                 WHERE item_id = ?1",
+                rusqlite::params![
+                    &row.item_id,
+                    &dimensions.item_kind,
+                    dimensions.is_candidate as i64,
+                    &dimensions.candidate_source,
+                    &dimensions.life_status,
+                    &dimensions.organize_status,
+                    &dimensions.user_note,
+                    &dimensions.source_meta
+                ],
+            )?;
+        }
+        connection.execute_batch("COMMIT;")?;
+        Ok(())
+    })();
+
+    if migration.is_err() {
+        let _ = connection.execute_batch("ROLLBACK;");
+    }
+
+    migration
+}
+
 fn add_column_if_missing(
     connection: &Connection,
     table_name: &str,
@@ -719,8 +985,9 @@ mod tests {
     use rusqlite::Connection;
 
     use super::{
-        initialize_schema, read_custom_export_directory_config, table_columns,
-        write_custom_export_directory_config, SQLITE_BUSY_TIMEOUT_MS,
+        derive_reading_item_dimensions, ensure_reading_item_dimensions, initialize_schema,
+        read_custom_export_directory_config, table_columns, write_custom_export_directory_config,
+        SQLITE_BUSY_TIMEOUT_MS,
     };
 
     #[test]
@@ -755,6 +1022,151 @@ mod tests {
             .expect("table count should be readable");
 
         assert_eq!(table_count, 16);
+    }
+
+    fn insert_legacy_reading_item(
+        connection: &Connection,
+        item_id: &str,
+        item_type: &str,
+        status: &str,
+        note: Option<&str>,
+    ) {
+        connection
+            .execute(
+                "INSERT INTO reading_item_states (
+                    item_id, item_type, status, title, note, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, '书', ?4, '100', '100')",
+                rusqlite::params![item_id, item_type, status, note],
+            )
+            .expect("legacy reading item should insert");
+    }
+
+    #[test]
+    fn reading_item_dimensions_backfill_maps_legacy_rows() {
+        let connection = Connection::open_in_memory().expect("in-memory database should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        insert_legacy_reading_item(
+            &connection,
+            "c1",
+            "candidate",
+            "toRead",
+            Some("发现页保存的本地候选"),
+        );
+        insert_legacy_reading_item(
+            &connection,
+            "a1",
+            "album",
+            "toRead",
+            Some("书架有声书保存的本地候选"),
+        );
+        insert_legacy_reading_item(&connection, "b1", "book", "reviewing", None);
+        insert_legacy_reading_item(
+            &connection,
+            "ai-rec-1",
+            "candidate",
+            "toRead",
+            Some("来自 AI 阅读助手推荐。理由：适合入门"),
+        );
+        insert_legacy_reading_item(&connection, "b2", "book", "organized", Some("我的私人备注"));
+
+        ensure_reading_item_dimensions(&connection).expect("backfill should run");
+
+        let (is_candidate, candidate_source, life_status, source_meta): (
+            i64,
+            Option<String>,
+            String,
+            Option<String>,
+        ) = connection
+            .query_row(
+                "SELECT is_candidate, candidate_source, life_status, source_meta
+                 FROM reading_item_states WHERE item_id = 'c1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("candidate row should read");
+        assert_eq!(is_candidate, 1);
+        assert_eq!(candidate_source.as_deref(), Some("weread"));
+        assert_eq!(life_status, "want");
+        assert!(source_meta.expect("source meta should exist").contains("discovery"));
+
+        let light_source: Option<String> = connection
+            .query_row(
+                "SELECT candidate_source FROM reading_item_states WHERE item_id = 'a1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("album row should read");
+        assert_eq!(light_source.as_deref(), Some("light"));
+
+        let organize_status: String = connection
+            .query_row(
+                "SELECT organize_status FROM reading_item_states WHERE item_id = 'b1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("reviewing row should read");
+        assert_eq!(organize_status, "to_organize");
+
+        let ai_source: Option<String> = connection
+            .query_row(
+                "SELECT candidate_source FROM reading_item_states WHERE item_id = 'ai-rec-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("ai row should read");
+        assert_eq!(ai_source.as_deref(), Some("ai_unconfirmed"));
+
+        let user_note: Option<String> = connection
+            .query_row(
+                "SELECT user_note FROM reading_item_states WHERE item_id = 'b2'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("noted row should read");
+        assert_eq!(user_note.as_deref(), Some("我的私人备注"));
+
+        let dimensions = derive_reading_item_dimensions(
+            "c9",
+            "candidate",
+            "toRead",
+            Some("来自 AI 阅读助手推荐。已通过微信读书搜索确认。"),
+        );
+        assert_eq!(dimensions.candidate_source.as_deref(), Some("ai_confirmed"));
+    }
+
+    #[test]
+    fn reading_item_dimensions_backfill_is_idempotent_and_backs_up_once() {
+        let connection = Connection::open_in_memory().expect("in-memory database should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        insert_legacy_reading_item(&connection, "c1", "candidate", "toRead", None);
+
+        ensure_reading_item_dimensions(&connection).expect("first backfill should run");
+        connection
+            .execute(
+                "UPDATE reading_item_states SET organize_status = 'organized' WHERE item_id = 'c1'",
+                [],
+            )
+            .expect("manual update should apply");
+
+        ensure_reading_item_dimensions(&connection).expect("second run should be a no-op");
+
+        let organize_status: String = connection
+            .query_row(
+                "SELECT organize_status FROM reading_item_states WHERE item_id = 'c1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("row should read");
+        assert_eq!(organize_status, "organized");
+
+        let backup_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM reading_item_states_backup_v1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("backup table should read");
+        assert_eq!(backup_count, 1);
     }
 
     #[test]

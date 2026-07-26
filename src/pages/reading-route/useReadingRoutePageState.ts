@@ -1,17 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  exportReadingRouteMarkdown,
+  exportReadingRouteTargets,
   getAiSettingsState,
   getCommandErrorMessage,
   getLatestReadingRoute,
   listReadingItemStates,
   summarizeReadingRoute
 } from "../../lib/reading-api";
+import {
+  exportTargetsFromDestination,
+  type ExportDestination
+} from "../../lib/export-targets";
 import type {
   AiSettingsState,
   BookDetail,
   BookAiSummarySource,
-  ExportAiMarkdownResponse,
+  MultiTargetExportResponse,
   ReadingItemState,
   ReadingProgress,
   PreparedAssetUpdate,
@@ -48,7 +52,8 @@ export function useReadingRoutePageState({ shelfEntry, detail, progress, prepare
   const [isLoadingInputs, setIsLoadingInputs] = useState(false);
   const [isLoadingCache, setIsLoadingCache] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
-  const [exportResult, setExportResult] = useState<ExportAiMarkdownResponse>();
+  const [exportResult, setExportResult] = useState<MultiTargetExportResponse>();
+  const [exportDestination, setExportDestination] = useState<ExportDestination>("markdown");
   const [error, setError] = useState<string>();
   const aiStateRef = useRef<AiSettingsState>();
 
@@ -235,7 +240,9 @@ export function useReadingRoutePageState({ shelfEntry, detail, progress, prepare
     setExportResult(undefined);
 
     try {
-      const response = await exportReadingRouteMarkdown(request);
+      const response = await exportReadingRouteTargets(request, {
+        targets: exportTargetsFromDestination(exportDestination)
+      });
       setExportResult(response);
     } catch (exportError) {
       setError(getCommandErrorMessage(exportError));
@@ -256,6 +263,7 @@ export function useReadingRoutePageState({ shelfEntry, detail, progress, prepare
     isLoadingInputs,
     isLoadingCache,
     isExporting,
+    exportDestination,
     exportResult,
     error,
     hasCandidateSelection,
@@ -272,7 +280,8 @@ export function useReadingRoutePageState({ shelfEntry, detail, progress, prepare
     handleSelectAllCandidates,
     handleClearCandidates,
     handleGenerate,
-    handleExport
+    handleExport,
+    setExportDestination
   };
 }
 

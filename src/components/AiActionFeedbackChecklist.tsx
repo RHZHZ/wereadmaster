@@ -8,6 +8,7 @@ import {
   type AiActionFeedbackRecord,
   type AiActionFeedbackStatus
 } from "../lib/ai-action-items";
+import { useConfirm } from "./ConfirmProvider";
 import { useToast } from "./ToastProvider";
 
 export type AiActionFeedbackChecklistItem = {
@@ -226,6 +227,7 @@ function FeedbackEditDialog({
 }) {
   const titleId = useId();
   const { showToast } = useToast();
+  const requestConfirm = useConfirm();
   const [draftStatus, setDraftStatus] = useState<AiActionFeedbackStatus>(feedback?.status ?? "todo");
   const [draftNote, setDraftNote] = useState(feedback?.note ?? "");
   const normalizedNote = normalizeAiActionFeedbackNote(draftNote);
@@ -234,7 +236,7 @@ function FeedbackEditDialog({
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
-        requestClose();
+        void requestClose();
       }
     }
 
@@ -242,9 +244,17 @@ function FeedbackEditDialog({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [hasUnsavedChanges, onCancel]);
 
-  function requestClose() {
-    if (hasUnsavedChanges && !window.confirm("反馈记录尚未保存，确定关闭吗？")) {
-      return;
+  async function requestClose() {
+    if (hasUnsavedChanges) {
+      const confirmed = await requestConfirm({
+        title: "反馈尚未保存",
+        description: "关闭后本次修改将丢失。",
+        confirmLabel: "仍然关闭",
+        isDanger: true
+      });
+      if (!confirmed) {
+        return;
+      }
     }
 
     onCancel();

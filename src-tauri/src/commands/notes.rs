@@ -3,7 +3,10 @@ use tauri::AppHandle;
 
 use crate::{
     errors::AppError,
-    export::bulk::BulkExportPreflight,
+    export::{
+        bulk::BulkExportPreflight,
+        targets::{MultiTargetExportRequest, MultiTargetExportResponse},
+    },
     mappers::notes::BookNotesRecord,
     services::notes::{
         BulkExportRequest, BulkExportResponse, ExportBookNotesMarkdownResponse,
@@ -58,6 +61,18 @@ pub async fn export_book_notes_markdown(
 ) -> Result<ExportBookNotesMarkdownResponse, AppCommandError> {
     NotesService::new(app)
         .export_book_notes_markdown(book_id)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn export_book_notes_targets(
+    app: AppHandle,
+    book_id: String,
+    request: MultiTargetExportRequest,
+) -> Result<MultiTargetExportResponse, AppCommandError> {
+    NotesService::new(app)
+        .export_book_notes_targets(book_id, request)
         .await
         .map_err(Into::into)
 }

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-save-obsidian-export-settings"
+description = "Enables the save_obsidian_export_settings command without any pre-configured scope."
+commands.allow = ["save_obsidian_export_settings"]
+
+[[permission]]
+identifier = "deny-save-obsidian-export-settings"
+description = "Denies the save_obsidian_export_settings command without any pre-configured scope."
+commands.deny = ["save_obsidian_export_settings"]

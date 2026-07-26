@@ -1,0 +1,17 @@
+{
+  "name": "微信读书个人阅读管理",
+  "short_name": "阅读管理",
+  "description": "本地优先的微信读书书架、笔记、AI 复盘与 Markdown 导出工具。",
+  "start_url": ".",
+  "scope": ".",
+  "display": "browser",
+  "background_color": "#fbf8f1",
+  "theme_color": "#0d8b72",
+  "icons": [
+    {
+      "src": "./icon.png",
+      "sizes": "256x256",
+      "type": "image/png"
+    }
+  ]
+}

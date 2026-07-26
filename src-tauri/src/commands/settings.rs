@@ -3,13 +3,16 @@ use tauri::AppHandle;
 
 use crate::{
     errors::AppError,
+    export::targets::NotionParentType,
     services::settings::{
-        ChooseDataDirectoryResponse, ChooseExportDirectoryResponse, ClearAiOutputCacheResponse,
-        ClearLocalCacheResponse, ExportBackupResponse, ExportDiagnosticsResponse,
-        ExportImageResponse, MigrateDataDirectoryResponse, RemoteAppUpdateManifestResponse,
-        ResetExportDirectoryResponse, ResetWereadProxyResponse, RestoreBackupResponse,
-        SaveExportDirectoryResponse, SaveWereadProxyResponse, SettingsService,
-        SettingsStateResponse,
+        ChooseDataDirectoryResponse, ChooseExportDirectoryResponse,
+        ChooseObsidianVaultDirectoryResponse, ClearAiOutputCacheResponse, ClearLocalCacheResponse,
+        CreateNotionReadingLibraryTemplateResponse, CreateNotionReadingWorkspaceTemplateResponse,
+        ExportBackupResponse, ExportDiagnosticsResponse, ExportImageResponse,
+        MigrateDataDirectoryResponse, NotionCoverMode, ObsidianAttachmentMode,
+        RemoteAppUpdateManifestResponse, ResetExportDirectoryResponse, ResetWereadProxyResponse,
+        RestoreBackupResponse, SaveExportDirectoryResponse, SaveWereadProxyResponse,
+        SettingsService, SettingsStateResponse,
     },
 };
 
@@ -158,6 +161,67 @@ pub async fn reset_weread_proxy_url(
     app: AppHandle,
 ) -> Result<ResetWereadProxyResponse, AppCommandError> {
     run_blocking(move || SettingsService::new(app).reset_weread_proxy_url()).await
+}
+
+#[tauri::command]
+pub fn choose_obsidian_vault_directory(
+    app: AppHandle,
+) -> Result<ChooseObsidianVaultDirectoryResponse, AppCommandError> {
+    SettingsService::new(app)
+        .choose_obsidian_vault_directory()
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn save_obsidian_export_settings(
+    app: AppHandle,
+    vault_dir: String,
+    attachment_mode: ObsidianAttachmentMode,
+    open_after_export: bool,
+) -> Result<SettingsStateResponse, AppCommandError> {
+    run_blocking(move || {
+        SettingsService::new(app).save_obsidian_export_settings(
+            vault_dir,
+            attachment_mode,
+            open_after_export,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn save_notion_export_settings(
+    app: AppHandle,
+    parent_id: Option<String>,
+    parent_type: Option<NotionParentType>,
+    cover_mode: NotionCoverMode,
+) -> Result<SettingsStateResponse, AppCommandError> {
+    run_blocking(move || {
+        SettingsService::new(app).save_notion_export_settings(parent_id, parent_type, cover_mode)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn create_notion_reading_library_template(
+    app: AppHandle,
+    parent_page_id: String,
+) -> Result<CreateNotionReadingLibraryTemplateResponse, AppCommandError> {
+    SettingsService::new(app)
+        .create_notion_reading_library_template(parent_page_id)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn create_notion_reading_workspace_template(
+    app: AppHandle,
+    parent_page_id: String,
+) -> Result<CreateNotionReadingWorkspaceTemplateResponse, AppCommandError> {
+    SettingsService::new(app)
+        .create_notion_reading_workspace_template(parent_page_id)
+        .await
+        .map_err(Into::into)
 }
 
 async fn run_blocking<T>(

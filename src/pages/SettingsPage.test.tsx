@@ -150,4 +150,26 @@ describe("settings page onboarding artwork", () => {
     expect(markup).toContain("保存对话历史");
     expect(markup).toContain("清空对话历史");
   });
+
+  it("defaults Notion setup to connecting an existing template", () => {
+    const markup = renderToStaticMarkup(
+      <ToastProvider>
+        <SettingsPage
+          open
+          credentialStatus={{ hasCredential: true }}
+          onCredentialChange={() => undefined}
+          preferences={DEFAULT_USER_PREFERENCES}
+          onPreferencesChange={() => undefined}
+          onClose={() => undefined}
+          preferredCategory="export"
+        />
+      </ToastProvider>
+    );
+
+    expect(markup).toContain("Books Tracker + 阅读成果库");
+    expect(markup).toContain("接入现有模板");
+    expect(markup).toContain("创建基础工作台");
+    expect(markup).toContain("父页面链接或 ID");
+    expect(markup).toContain('aria-pressed="true"');
+  });
 });

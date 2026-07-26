@@ -73,6 +73,13 @@ impl BookService {
         let transaction = connection.transaction().map_err(AppError::from)?;
         upsert_book_detail(&transaction, &detail, &updated_at)?;
         upsert_book_progress(&transaction, &progress, &updated_at)?;
+        if progress.is_finished {
+            crate::services::reading_state::maybe_mark_weread_finished(
+                &transaction,
+                &normalized_book_id,
+                &updated_at,
+            )?;
+        }
         replace_chapters(&transaction, &normalized_book_id, &chapters)?;
         RawCacheRepository::new(&transaction)
             .put_json(

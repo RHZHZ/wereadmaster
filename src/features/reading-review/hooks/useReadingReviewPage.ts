@@ -1,6 +1,6 @@
 import { startTransition, useEffect, useState } from "react";
 import {
-  exportReadingStatsReviewMarkdown,
+  exportReadingStatsReviewTargets,
   getAiSettingsState,
   getCommandErrorInfo,
   getLatestReadingStatsReview,
@@ -11,6 +11,12 @@ import {
   type ReadingStatsResponse
 } from "../../../lib/reading-api";
 import {
+  exportTargetsFromDestination,
+  formatMultiTargetExportToast,
+  type ExportDestination
+} from "../../../lib/export-targets";
+import { useToast } from "../../../components/ToastProvider";
+import {
   buildReadingPersona,
   extractRepresentativeThemes,
   resolveReadingPersona
@@ -18,7 +24,7 @@ import {
 import type {
   AiSettingsState,
   CredentialStatus,
-  ExportAiMarkdownResponse,
+  MultiTargetExportResponse,
   ReadingStatsAiReviewResponse,
   ReadingStatsMode
 } from "../../../lib/types";
@@ -67,8 +73,10 @@ export function useReadingReviewPage({
   const [isLoadingReviewCache, setIsLoadingReviewCache] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
-  const [exportResult, setExportResult] = useState<ExportAiMarkdownResponse>();
+  const [exportResult, setExportResult] = useState<MultiTargetExportResponse>();
+  const [exportDestination, setExportDestination] = useState<ExportDestination>("markdown");
   const [error, setError] = useState<CommandErrorInfo>();
+  const { showToast } = useToast();
   const hasCredential = credentialStatus?.hasCredential === true;
   const stats = getReadingStatsResponse(cache, period)?.stats;
   const activePeriod = stats ? buildReadingStatsPeriod(stats.mode, stats.baseTime) : period;
@@ -299,11 +307,15 @@ export function useReadingReviewPage({
     setExportResult(undefined);
 
     try {
-      const response = await exportReadingStatsReviewMarkdown({
+      const response = await exportReadingStatsReviewTargets({
         mode: stats.mode,
-        baseTime: stats.baseTime
+        baseTime: stats.baseTime,
+        request: {
+          targets: exportTargetsFromDestination(exportDestination)
+        }
       });
       setExportResult(response);
+      showToast(formatMultiTargetExportToast(response));
     } catch (exportError) {
       setError(getCommandErrorInfo(exportError));
     } finally {
@@ -336,6 +348,7 @@ export function useReadingReviewPage({
     canStepForward,
     drillPeriods,
     error,
+    exportDestination,
     exportResult,
     handleDrillPeriod,
     handleExport,
@@ -362,6 +375,7 @@ export function useReadingReviewPage({
     statusMeta,
     timeSegments,
     timelineInsights,
-    topCategory
+    topCategory,
+    setExportDestination
   };
 }

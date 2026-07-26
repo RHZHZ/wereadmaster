@@ -356,19 +356,19 @@ a {
   display: block;
   justify-self: end;
   width: min(100%, 620px);
-  aspect-ratio: 1 / 0.96;
+  aspect-ratio: 16 / 10;
   overflow: hidden;
   border: 1px solid rgba(19, 54, 79, 0.1);
   border-radius: 28px;
-  background: rgba(255, 255, 255, 0.78);
+  background: rgba(255, 253, 248, 0.92);
   box-shadow: 0 28px 72px rgba(26, 52, 70, 0.12);
 }
 
 .hero-product-preview img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
-  object-position: center top;
+  object-fit: contain;
+  object-position: center;
 }
 
 .hero-copy h1,
@@ -1273,7 +1273,8 @@ a {
     display: block;
     margin-top: 4px;
     width: 100%;
-    height: clamp(270px, calc((100vw - 32px) * 0.78), 330px);
+    height: auto;
+    aspect-ratio: 16 / 10;
     overflow: hidden;
     border: 1px solid rgba(19, 54, 79, 0.12);
     border-radius: 16px;
@@ -1284,8 +1285,8 @@ a {
   .hero-product-preview img {
     width: 100%;
     height: 100%;
-    object-fit: cover;
-    object-position: 18% 0%;
+    object-fit: contain;
+    object-position: center;
   }
 
   .hero-actions {
@@ -1659,11 +1660,8 @@ a {
   }
 
   .hero-product-preview {
-    height: clamp(252px, calc((100vw - 32px) * 0.74), 300px);
-  }
-
-  .hero-product-preview img {
-    object-position: 18% 0%;
+    height: auto;
+    aspect-ratio: 16 / 10;
   }
 
   .screenshots-gallery-frame {

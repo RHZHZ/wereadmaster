@@ -13,11 +13,14 @@ import {
   Sparkles,
   X
 } from "lucide-react";
+import readmeHero from "../src/assets/generated/readme-hero.png";
 import shelfView from "../src/assets/shelf.png";
 import notesView from "../src/assets/notes.png";
 import settingsView from "../src/assets/generated/set.png";
-const heroDeskScene = shelfView;
-const downloadDeskScene = settingsView;
+import websiteDownloadDesk from "../src/assets/generated/website-download-desk.png";
+
+const heroDeskScene = readmeHero;
+const downloadDeskScene = websiteDownloadDesk;
 
 const repositoryUrl = "https://github.com/RHZHZ/wereadmaster";
 const releaseUrl = "https://github.com/RHZHZ/wereadmaster/releases";

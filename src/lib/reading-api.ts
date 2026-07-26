@@ -35,11 +35,14 @@ import type {
   BulkExportResultItem,
   BulkExportStrategy,
   ChooseDataDirectoryResult,
+  ChooseObsidianVaultDirectoryResult,
   BookDetail,
   BookNotes,
   BookshelfSummary,
   ChapterNoteGroup,
   Chapter,
+  CreateNotionReadingLibraryTemplateResult,
+  CreateNotionReadingWorkspaceTemplateResult,
   CredentialStatus,
   CredentialValidationResult,
   ClearAiOutputCacheResult,
@@ -50,9 +53,15 @@ import type {
   ExportImageResult,
   ExportAiBulkMarkdownResponse,
   ExportAiMarkdownResponse,
+  ExportTargetResult,
   Highlight,
   LocalDataState,
+  NotionCoverMode,
+  NotionParentType,
+  ObsidianAttachmentMode,
   MigrateDataDirectoryResult,
+  MultiTargetExportRequest,
+  MultiTargetExportResponse,
   NotebookBook,
   PublicReview,
   PublicReviewAuthor,
@@ -312,6 +321,7 @@ type BulkExportResultItemRecord = {
   status?: unknown;
   notesFile?: unknown;
   aiReviewFile?: unknown;
+  targets?: unknown;
   reason?: unknown;
 };
 
@@ -563,6 +573,20 @@ type SettingsStateResponseRecord = {
     exportDir?: unknown;
     defaultExportDir?: unknown;
     isCustomExportDir?: unknown;
+  };
+  integrationData?: {
+    obsidian?: {
+      vaultDir?: unknown;
+      hasConfiguredVault?: unknown;
+      attachmentMode?: unknown;
+      openAfterExport?: unknown;
+    };
+    notion?: {
+      credential?: CredentialStatus;
+      parentId?: unknown;
+      parentType?: unknown;
+      coverMode?: unknown;
+    };
   };
   network?: {
     wereadProxyUrl?: unknown;
@@ -1155,6 +1179,21 @@ export async function exportBookNotesSummaryMarkdown(
   return invoke<ExportAiMarkdownResponse>("export_book_notes_summary_markdown", { bookId, reviewFeedback });
 }
 
+export async function exportBookNotesSummaryTargets(
+  bookId: string,
+  reviewFeedback: AiReviewFeedbackExport | undefined,
+  request: MultiTargetExportRequest
+): Promise<MultiTargetExportResponse> {
+  if (!hasTauriRuntime()) {
+    throw new Error("外部知识库导出需要在桌面应用中使用。");
+  }
+  return invoke<MultiTargetExportResponse>("export_book_notes_summary_targets", {
+    bookId,
+    reviewFeedback,
+    request
+  });
+}
+
 export async function getAiReviewFeedback({
   feature,
   scopeId,
@@ -1306,6 +1345,26 @@ export async function exportReadingStatsReviewMarkdown({
   });
 }
 
+export async function exportReadingStatsReviewTargets({
+  mode,
+  baseTime,
+  request
+}: {
+  mode: ReadingStatsMode;
+  baseTime?: number;
+  request: MultiTargetExportRequest;
+}): Promise<MultiTargetExportResponse> {
+  if (await loadWebReadingPreviewData()) {
+    throw new Error("Web 预览只支持查看已缓存复盘，导出请在桌面应用中执行。");
+  }
+
+  return invoke<MultiTargetExportResponse>("export_reading_stats_review_targets", {
+    mode,
+    baseTime,
+    request
+  });
+}
+
 export async function summarizeReadingRoute({
   request,
   regenerate = false,
@@ -1332,6 +1391,16 @@ export async function exportReadingRouteMarkdown(
   request: ReadingRouteRequest
 ): Promise<ExportAiMarkdownResponse> {
   return invoke<ExportAiMarkdownResponse>("export_reading_route_markdown", { request });
+}
+
+export async function exportReadingRouteTargets(
+  routeRequest: ReadingRouteRequest,
+  targetRequest: MultiTargetExportRequest
+): Promise<MultiTargetExportResponse> {
+  return invoke<MultiTargetExportResponse>("export_reading_route_targets", {
+    request: routeRequest,
+    targetRequest
+  });
 }
 
 export async function summarizeBookDecision({
@@ -1365,6 +1434,18 @@ export async function exportBookDecisionMarkdown(
   return invoke<ExportAiMarkdownResponse>("export_book_decision_markdown", {
     candidates,
     goal
+  });
+}
+
+export async function exportBookDecisionTargets(
+  candidates: BookDecisionCandidateInput[],
+  goal: string | undefined,
+  request: MultiTargetExportRequest
+): Promise<MultiTargetExportResponse> {
+  return invoke<MultiTargetExportResponse>("export_book_decision_targets", {
+    candidates,
+    goal,
+    request
   });
 }
 
@@ -1512,6 +1593,16 @@ export async function exportBookNotesMarkdown(
   bookId: string
 ): Promise<ExportBookNotesMarkdownResponse> {
   return invoke<ExportBookNotesMarkdownResponse>("export_book_notes_markdown", { bookId });
+}
+
+export async function exportBookNotesTargets(
+  bookId: string,
+  request: MultiTargetExportRequest
+): Promise<MultiTargetExportResponse> {
+  if (!hasTauriRuntime()) {
+    throw new Error("外部知识库导出需要在桌面应用中使用。");
+  }
+  return invoke<MultiTargetExportResponse>("export_book_notes_targets", { bookId, request });
 }
 
 export async function preflightBulkExport(
@@ -1728,6 +1819,100 @@ export async function getReadReviews({
 export async function getSettingsState(): Promise<SettingsState> {
   const response = await invokeSettingsCommand<SettingsStateResponseRecord>("get_settings_state");
   return mapSettingsState(response);
+}
+
+export async function chooseObsidianVaultDirectory(): Promise<ChooseObsidianVaultDirectoryResult> {
+  return invokeSettingsCommand<ChooseObsidianVaultDirectoryResult>(
+    "choose_obsidian_vault_directory"
+  );
+}
+
+export async function saveObsidianExportSettings({
+  vaultDir,
+  attachmentMode,
+  openAfterExport
+}: {
+  vaultDir: string;
+  attachmentMode: ObsidianAttachmentMode;
+  openAfterExport: boolean;
+}): Promise<SettingsState> {
+  const response = await invokeSettingsCommand<SettingsStateResponseRecord>(
+    "save_obsidian_export_settings",
+    { vaultDir, attachmentMode, openAfterExport }
+  );
+  return mapSettingsState(response);
+}
+
+export async function saveNotionExportSettings({
+  parentId,
+  parentType,
+  coverMode
+}: {
+  parentId?: string;
+  parentType?: NotionParentType;
+  coverMode: NotionCoverMode;
+}): Promise<SettingsState> {
+  const response = await invokeSettingsCommand<SettingsStateResponseRecord>(
+    "save_notion_export_settings",
+    { parentId, parentType, coverMode }
+  );
+  return mapSettingsState(response);
+}
+
+export async function createNotionReadingLibraryTemplate(
+  parentPageId: string
+): Promise<CreateNotionReadingLibraryTemplateResult> {
+  const response = await invokeSettingsCommand<{
+    databaseId: string;
+    url: string;
+    title: string;
+    state: SettingsStateResponseRecord;
+  }>("create_notion_reading_library_template", { parentPageId });
+  return {
+    databaseId: response.databaseId,
+    url: response.url,
+    title: response.title,
+    state: mapSettingsState(response.state)
+  };
+}
+
+export async function createNotionReadingWorkspaceTemplate(
+  parentPageId: string
+): Promise<CreateNotionReadingWorkspaceTemplateResult> {
+  const response = await invokeSettingsCommand<{
+    homePageId: string;
+    homePageUrl: string;
+    databaseId: string;
+    databaseUrl: string;
+    title: string;
+    warning?: string;
+    state: SettingsStateResponseRecord;
+  }>("create_notion_reading_workspace_template", { parentPageId });
+  return {
+    homePageId: response.homePageId,
+    homePageUrl: response.homePageUrl,
+    databaseId: response.databaseId,
+    databaseUrl: response.databaseUrl,
+    title: response.title,
+    warning: stringValue(response.warning),
+    state: mapSettingsState(response.state)
+  };
+}
+
+export async function getNotionCredentialStatus(): Promise<CredentialStatus> {
+  return invokeSettingsCommand<CredentialStatus>("get_notion_credential_status");
+}
+
+export async function saveNotionCredential(token: string): Promise<CredentialStatus> {
+  return invokeSettingsCommand<CredentialStatus>("save_notion_credential", { token });
+}
+
+export async function removeNotionCredential(confirm: boolean): Promise<CredentialStatus> {
+  return invokeSettingsCommand<CredentialStatus>("remove_notion_credential", { confirm });
+}
+
+export async function validateNotionCredential(): Promise<CredentialStatus> {
+  return invokeSettingsCommand<CredentialStatus>("validate_notion_credential");
 }
 
 export async function getAppUpdateRuntime(): Promise<AppUpdateRuntime> {
@@ -3324,6 +3509,7 @@ function mapBulkExportResultItem(record: BulkExportResultItemRecord): BulkExport
     status: normalizeBulkExportItemStatus(record.status),
     notesFile: stringValue(record.notesFile),
     aiReviewFile: stringValue(record.aiReviewFile),
+    targets: Array.isArray(record.targets) ? (record.targets as ExportTargetResult[]) : [],
     reason: stringValue(record.reason) || "已记录导出结果。"
   };
 }
@@ -3525,6 +3711,35 @@ function mapSettingsState(response: SettingsStateResponseRecord): SettingsState 
       exportDir: stringValue(response.exportData?.exportDir) || "",
       defaultExportDir: stringValue(response.exportData?.defaultExportDir) || "",
       isCustomExportDir: booleanValue(response.exportData?.isCustomExportDir)
+    },
+    integrationData: {
+      obsidian: {
+        vaultDir: stringValue(response.integrationData?.obsidian?.vaultDir),
+        hasConfiguredVault: booleanValue(
+          response.integrationData?.obsidian?.hasConfiguredVault
+        ),
+        attachmentMode:
+          response.integrationData?.obsidian?.attachmentMode === "centralAssets"
+            ? "centralAssets"
+            : "siblingAssets",
+        openAfterExport: booleanValue(response.integrationData?.obsidian?.openAfterExport)
+      },
+      notion: {
+        credential: response.integrationData?.notion?.credential ?? {
+          hasCredential: false
+        },
+        parentId: stringValue(response.integrationData?.notion?.parentId),
+        parentType:
+          response.integrationData?.notion?.parentType === "database"
+            ? "database"
+            : response.integrationData?.notion?.parentType === "page"
+              ? "page"
+              : undefined,
+        coverMode:
+          response.integrationData?.notion?.coverMode === "contentImageOnly"
+            ? "contentImageOnly"
+            : "pageCover"
+      }
     },
     network: {
       wereadProxyUrl: stringValue(response.network?.wereadProxyUrl),

@@ -4,6 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::mappers::notes::{BookNotesRecord, NotebookBookRecord};
 
+use super::targets::{
+    ExportTargetResult, ExportTargetStatus, ExternalExportTarget, MultiTargetExportRequest,
+};
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum BulkExportStrategy {
@@ -57,6 +61,10 @@ pub struct BulkExportResultItem {
     pub status: BulkExportItemStatus,
     pub notes_file: Option<String>,
     pub ai_review_file: Option<String>,
+    /// 目标级结果（Obsidian / Notion）。仅当批量请求选择了外部目标时非空；
+    /// Markdown 始终写入批量目录，不在此列表中重复。
+    #[serde(default)]
+    pub targets: Vec<ExportTargetResult>,
     pub reason: String,
 }
 
@@ -200,6 +208,59 @@ pub fn build_bulk_export_preflight(
     }
 }
 
+/// 提取批量请求中需要额外写出的外部目标（Obsidian / Notion），保序去重。
+/// Markdown 不在其中：批量导出始终把 Markdown 写入本次批量目录作为兜底。
+pub fn bulk_external_targets(
+    request: Option<&MultiTargetExportRequest>,
+) -> Vec<ExternalExportTarget> {
+    let Some(request) = request else {
+        return Vec::new();
+    };
+    let mut targets = Vec::new();
+    for target in &request.targets {
+        if *target != ExternalExportTarget::Markdown && !targets.contains(target) {
+            targets.push(*target);
+        }
+    }
+    targets
+}
+
+fn external_target_label(target: ExternalExportTarget) -> &'static str {
+    match target {
+        ExternalExportTarget::Markdown => "Markdown",
+        ExternalExportTarget::Obsidian => "Obsidian",
+        ExternalExportTarget::Notion => "Notion",
+    }
+}
+
+fn write_bulk_export_target_line(markdown: &mut String, target: &ExportTargetResult) {
+    let label = external_target_label(target.target);
+    match target.status {
+        ExportTargetStatus::Succeeded => {
+            let location = target
+                .url
+                .as_deref()
+                .or(target.path.as_deref())
+                .unwrap_or("已完成");
+            let _ = writeln!(markdown, "- {label}：{location}");
+            if let Some(warning) = target.warning.as_deref() {
+                let _ = writeln!(markdown, "- {label} 警告：{warning}");
+            }
+        }
+        ExportTargetStatus::Failed => {
+            let reason = target
+                .error
+                .as_ref()
+                .map(|error| error.message.as_str())
+                .unwrap_or("未知原因");
+            let _ = writeln!(markdown, "- {label}：失败（{reason}）");
+        }
+        ExportTargetStatus::Skipped => {
+            let _ = writeln!(markdown, "- {label}：已跳过");
+        }
+    }
+}
+
 pub fn normalize_bulk_export_concurrency(value: Option<usize>) -> usize {
     value.unwrap_or(2).clamp(1, 3)
 }
@@ -230,11 +291,24 @@ pub fn serialize_bulk_export_index(report: &BulkExportReport) -> String {
             .as_deref()
             .or(item.ai_review_file.as_deref())
             .unwrap_or("export-report.md");
-        let _ = writeln!(
-            markdown,
-            "- [{}]({}) - {:?}",
-            item.title, target, item.status
-        );
+        let mut line = format!("- [{}]({}) - {:?}", item.title, target, item.status);
+        for target_result in &item.targets {
+            if target_result.status != ExportTargetStatus::Succeeded {
+                continue;
+            }
+            match target_result.target {
+                ExternalExportTarget::Notion => {
+                    if let Some(url) = target_result.url.as_deref() {
+                        line.push_str(&format!(" · [Notion]({url})"));
+                    }
+                }
+                ExternalExportTarget::Obsidian => {
+                    line.push_str(" · Obsidian ✓");
+                }
+                ExternalExportTarget::Markdown => {}
+            }
+        }
+        let _ = writeln!(markdown, "{line}");
     }
 
     markdown
@@ -260,6 +334,9 @@ pub fn serialize_bulk_export_report(report: &BulkExportReport) -> String {
         }
         if let Some(ai_review_file) = item.ai_review_file.as_deref() {
             let _ = writeln!(markdown, "- 已生成复盘：{}", ai_review_file);
+        }
+        for target in &item.targets {
+            write_bulk_export_target_line(&mut markdown, target);
         }
         let _ = writeln!(markdown);
     }
@@ -293,8 +370,14 @@ fn write_bulk_export_boundary_section(markdown: &mut String) {
 mod tests {
     use crate::mappers::notes::{BookNotesRecord, NotebookBookRecord};
 
+    use crate::export::targets::{
+        ExportTargetError, ExportTargetResult, ExportTargetStatus, ExternalExportTarget,
+        MultiTargetExportRequest,
+    };
+
     use super::{
-        build_bulk_export_preflight, chunk_bulk_export_jobs, normalize_bulk_export_concurrency,
+        build_bulk_export_preflight, bulk_external_targets, chunk_bulk_export_jobs,
+        normalize_bulk_export_concurrency, serialize_bulk_export_index,
         serialize_bulk_export_report, BulkExportItemStatus, BulkExportReport, BulkExportResultItem,
         BulkExportStrategy,
     };
@@ -411,6 +494,7 @@ mod tests {
                 status: BulkExportItemStatus::Skipped,
                 notes_file: None,
                 ai_review_file: Some("reviews/missing-ai-summary.md".to_string()),
+                targets: Vec::new(),
                 reason: "需要同步/读取后才能导出。".to_string(),
             }],
         };
@@ -437,6 +521,7 @@ mod tests {
                 status: BulkExportItemStatus::Canceled,
                 notes_file: None,
                 ai_review_file: None,
+                targets: Vec::new(),
                 reason: "用户已取消，未开始同步。".to_string(),
             }],
         };
@@ -459,6 +544,7 @@ mod tests {
                 status: BulkExportItemStatus::Failed,
                 notes_file: None,
                 ai_review_file: None,
+                targets: Vec::new(),
                 reason: "微信读书接口暂时无法连接，请稍后重试。".to_string(),
             }],
         };
@@ -470,6 +556,114 @@ mod tests {
         assert!(!markdown.contains("sk-"));
         assert!(!markdown.contains("reading-cache.sqlite3"));
         assert!(!markdown.contains("AppData"));
+    }
+
+    #[test]
+    fn external_targets_are_deduped_and_exclude_markdown() {
+        assert!(bulk_external_targets(None).is_empty());
+
+        let markdown_only = MultiTargetExportRequest {
+            targets: vec![ExternalExportTarget::Markdown],
+            obsidian: None,
+            notion: None,
+        };
+        assert!(bulk_external_targets(Some(&markdown_only)).is_empty());
+
+        let mixed = MultiTargetExportRequest {
+            targets: vec![
+                ExternalExportTarget::Markdown,
+                ExternalExportTarget::Obsidian,
+                ExternalExportTarget::Notion,
+                ExternalExportTarget::Notion,
+            ],
+            obsidian: None,
+            notion: None,
+        };
+        assert_eq!(
+            bulk_external_targets(Some(&mixed)),
+            vec![ExternalExportTarget::Obsidian, ExternalExportTarget::Notion]
+        );
+    }
+
+    #[test]
+    fn report_and_index_render_external_target_results() {
+        let report = BulkExportReport {
+            exported_at: "100".to_string(),
+            strategy: BulkExportStrategy::LocalCachedOnly,
+            concurrency: 1,
+            items: vec![
+                BulkExportResultItem {
+                    book_id: "book-1".to_string(),
+                    title: "深度工作".to_string(),
+                    status: BulkExportItemStatus::Exported,
+                    notes_file: Some("notes/深度工作-100.md".to_string()),
+                    ai_review_file: None,
+                    targets: vec![
+                        ExportTargetResult {
+                            target: ExternalExportTarget::Obsidian,
+                            status: ExportTargetStatus::Succeeded,
+                            title: Some("深度工作".to_string()),
+                            path: Some(
+                                "C:/vault/wxreadmaster/书籍笔记/深度工作-100.md".to_string(),
+                            ),
+                            url: None,
+                            page_id: None,
+                            file_count: Some(1),
+                            warning: None,
+                            error: None,
+                        },
+                        ExportTargetResult {
+                            target: ExternalExportTarget::Notion,
+                            status: ExportTargetStatus::Succeeded,
+                            title: Some("深度工作".to_string()),
+                            path: None,
+                            url: Some("https://www.notion.so/page-1".to_string()),
+                            page_id: Some("page-1".to_string()),
+                            file_count: None,
+                            warning: Some("封面写入失败，正文已导入。".to_string()),
+                            error: None,
+                        },
+                    ],
+                    reason: "已导出本地笔记 Markdown；外部目标已完成 2 个。".to_string(),
+                },
+                BulkExportResultItem {
+                    book_id: "book-2".to_string(),
+                    title: "另一本".to_string(),
+                    status: BulkExportItemStatus::Exported,
+                    notes_file: Some("notes/另一本-100.md".to_string()),
+                    ai_review_file: None,
+                    targets: vec![ExportTargetResult {
+                        target: ExternalExportTarget::Notion,
+                        status: ExportTargetStatus::Failed,
+                        title: None,
+                        path: None,
+                        url: None,
+                        page_id: None,
+                        file_count: None,
+                        warning: None,
+                        error: Some(ExportTargetError {
+                            code: "notion_export_failed".to_string(),
+                            message: "导入到 Notion 失败。".to_string(),
+                            detail: None,
+                        }),
+                    }],
+                    reason: "已导出本地笔记 Markdown；外部目标完成 0/1 个，失败 1 个。".to_string(),
+                },
+            ],
+        };
+
+        let report_markdown = serialize_bulk_export_report(&report);
+        assert!(
+            report_markdown.contains("- Obsidian：C:/vault/wxreadmaster/书籍笔记/深度工作-100.md")
+        );
+        assert!(report_markdown.contains("- Notion：https://www.notion.so/page-1"));
+        assert!(report_markdown.contains("- Notion 警告：封面写入失败，正文已导入。"));
+        assert!(report_markdown.contains("- Notion：失败（导入到 Notion 失败。）"));
+
+        let index_markdown = serialize_bulk_export_index(&report);
+        assert!(index_markdown.contains(" · [Notion](https://www.notion.so/page-1)"));
+        assert!(index_markdown.contains(" · Obsidian ✓"));
+        assert!(!index_markdown.contains("另一本-100.md) - Exported · [Notion]"));
     }
 
     fn notebook_book(book_id: &str, title: &str, total_note_count: i64) -> NotebookBookRecord {

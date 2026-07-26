@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-create-notion-reading-library-template"
+description = "Enables the create_notion_reading_library_template command without any pre-configured scope."
+commands.allow = ["create_notion_reading_library_template"]
+
+[[permission]]
+identifier = "deny-create-notion-reading-library-template"
+description = "Denies the create_notion_reading_library_template command without any pre-configured scope."
+commands.deny = ["create_notion_reading_library_template"]

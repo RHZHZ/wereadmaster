@@ -62,6 +62,7 @@ import {
   formatArtifactSharedMessage,
   type ReadingArtifactKind
 } from "../lib/reading-artifacts";
+import { exportTargetLabel } from "../lib/export-targets";
 import type { ImageArtifactDeliveryResult } from "../lib/image-artifact-export";
 import { useImageArtifactCapabilities } from "../lib/use-image-artifact-capabilities";
 import type { CredentialStatus, ReadingStatsAiReviewResponse, ReadingStatsMode } from "../lib/types";
@@ -116,6 +117,7 @@ export function ReadingReviewPage({
     canStepForward,
     drillPeriods,
     error,
+    exportDestination,
     exportResult,
     handleDrillPeriod,
     handleExport,
@@ -140,7 +142,8 @@ export function ReadingReviewPage({
     status,
     statusMeta,
     timelineInsights,
-    topCategory
+    topCategory,
+    setExportDestination
   } = useReadingReviewPage({
     credentialStatus,
     cache,
@@ -358,6 +361,7 @@ export function ReadingReviewPage({
         exportDisabled={
           isPreviewReadonly || !review || isExporting || isLoadingReviewCache || status === "generating"
         }
+        exportDestination={exportDestination}
         hasReview={Boolean(review)}
         isExporting={isExporting}
         isLoadingReviewCache={isLoadingReviewCache}
@@ -370,6 +374,7 @@ export function ReadingReviewPage({
         status={status}
         statusMeta={statusMeta}
         syncDisabled={!hasCredential || isSyncing}
+        onExportDestinationChange={setExportDestination}
         onExport={() => void handleExport()}
         onGenerate={() => void handleGenerate(false)}
         onOpenReport={handleOpenReport}
@@ -451,15 +456,34 @@ export function ReadingReviewPage({
       ) : null}
 
       {exportResult ? (
-        <div className="status-message status-message--neutral">
-          <Download aria-hidden="true" size={18} />
-          <span>
-            {formatArtifactExportedMessage("period-report-image", {
-              fileName: exportResult.fileName,
-              path: exportResult.path
-            })}
-          </span>
-        </div>
+        <section className="export-result-list" aria-label="阅读复盘导出结果">
+          {exportResult.results.map((result) => (
+            <div
+              className={`status-message ${
+                result.status === "failed" ? "status-message--error" : "status-message--neutral"
+              }`}
+              key={result.target}
+            >
+              {result.status === "failed" ? (
+                <AlertCircle aria-hidden="true" size={18} />
+              ) : (
+                <Download aria-hidden="true" size={18} />
+              )}
+              <span>
+                <strong>{exportTargetLabel(result.target)}：</strong>
+                {result.status === "succeeded"
+                  ? result.path || result.url || "导出成功"
+                  : result.error?.message || "导出失败"}
+                {result.warning ? `（${result.warning}）` : ""}
+              </span>
+              {result.url ? (
+                <a href={result.url} target="_blank" rel="noreferrer">
+                  打开
+                </a>
+              ) : null}
+            </div>
+          ))}
+        </section>
       ) : null}
 
       {isStaleCache && !error ? (

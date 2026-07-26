@@ -3,10 +3,14 @@ Generated and project-local visual assets used by the React application shell.
 ## Current Assets
 
 - `hero-reading-dashboard.png`: dashboard hero atmosphere image.
+- `shelf.png`: website bookshelf screenshot used in official-site hero preview and screenshot section.
+- `notes.png`: website notes screenshot used in official-site screenshot section.
 - `empty-shelf.png`: bookshelf empty-state illustration.
 - `empty-notes.png`: notes empty-state illustration.
 - `report-card-bg.png`: statistics report background.
+- `generated/readme-hero.png`: README and social-share main visual for the local-first reading workbench.
 - `generated/onboarding-local-vault.png`: first-run local credential/data safety illustration.
+- `generated/website-download-desk.png`: official-site download section visual promoted from validated candidate art.
 - `generated/app-icon-master.png`: generated high-detail app icon source kept as a visual reference.
 - `generated/app-icon-v3.png`: simplified app icon source optimized for 16-32px taskbar and window usage.
 - `generated/release-cover.png`: release/download cover candidate; not imported by the app runtime.

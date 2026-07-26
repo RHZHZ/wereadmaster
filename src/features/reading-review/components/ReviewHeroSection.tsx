@@ -1,5 +1,6 @@
 import { Database, Download, Loader2, RefreshCw, Share2 } from "lucide-react";
 import { formatDuration } from "../../../lib/formatters";
+import type { ExportDestination } from "../../../lib/export-targets";
 import type { ReadingStatsAiReview, ReadingStats } from "../../../lib/types";
 import {
   formatReadingStatsPeriodMetricLabel,
@@ -12,6 +13,7 @@ type ReviewHeroSectionProps = {
   activePeriod: ReadingStatsPeriod;
   canGenerate: boolean;
   exportDisabled: boolean;
+  exportDestination: ExportDestination;
   hasReview: boolean;
   isExporting: boolean;
   isLoadingReviewCache: boolean;
@@ -24,6 +26,7 @@ type ReviewHeroSectionProps = {
   reportDisabled: boolean;
   reportDisabledReason?: string;
   syncDisabled: boolean;
+  onExportDestinationChange: (destination: ExportDestination) => void;
   onExport: () => void;
   onGenerate: () => void;
   onOpenReport: () => void;
@@ -35,6 +38,7 @@ export function ReviewHeroSection({
   activePeriod,
   canGenerate,
   exportDisabled,
+  exportDestination,
   hasReview,
   isExporting,
   isLoadingReviewCache,
@@ -47,6 +51,7 @@ export function ReviewHeroSection({
   reportDisabled,
   reportDisabledReason,
   syncDisabled,
+  onExportDestinationChange,
   onExport,
   onGenerate,
   onOpenReport,
@@ -126,8 +131,21 @@ export function ReviewHeroSection({
               ) : (
                 <Download aria-hidden="true" size={18} />
               )}
-              {isExporting ? "导出中" : "导出 Markdown"}
+              {isExporting ? "导出中" : "一键导出"}
             </button>
+            <label className="compact-export-select">
+              <span>导出到</span>
+              <select
+                value={exportDestination}
+                onChange={(event) => onExportDestinationChange(event.target.value as ExportDestination)}
+                disabled={exportDisabled}
+              >
+                <option value="markdown">Markdown</option>
+                <option value="obsidian">Obsidian</option>
+                <option value="notion">Notion</option>
+                <option value="obsidianNotion">Obsidian + Notion</option>
+              </select>
+            </label>
           </div>
         </div>
       </div>

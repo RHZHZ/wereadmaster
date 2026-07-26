@@ -1,4 +1,5 @@
 import { Download, Info, Sparkles, X } from "lucide-react";
+import { AppDialog } from "./AppDialog";
 import { AppUpdateNotes } from "./AppUpdateNotes";
 import type { AppUpdateStatus } from "../lib/types";
 
@@ -43,13 +44,15 @@ export function AppUpdateDialog({
       : "前往下载";
 
   return (
-    <div className="update-dialog-backdrop" role="presentation">
-      <section
-        className="update-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="update-dialog-title"
-      >
+    <AppDialog
+      open
+      onClose={onClose}
+      className="update-dialog"
+      backdropClassName="update-dialog-backdrop"
+      labelledBy="update-dialog-title"
+      disableEscape={isInstalling}
+      disableBackdropClose={isInstalling}
+    >
         <button
           className="dialog-close"
           type="button"
@@ -129,8 +132,7 @@ export function AppUpdateDialog({
             {primaryActionLabel}
           </button>
         </div>
-      </section>
-    </div>
+    </AppDialog>
   );
 }
 

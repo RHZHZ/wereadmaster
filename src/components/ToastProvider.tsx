@@ -17,15 +17,21 @@ type ToastContextValue = {
   showToast: (toast: ToastInput) => void;
 };
 
-const DEFAULT_TOAST_DURATION_MS = 2600;
+const TOAST_DURATION_BY_TONE_MS: Record<ToastTone, number> = {
+  success: 3000,
+  neutral: 3000,
+  warning: 5000,
+  error: 8000
+};
 const ToastContext = createContext<ToastContextValue | undefined>(undefined);
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
 
-  function showToast({ message, tone = "neutral", durationMs = DEFAULT_TOAST_DURATION_MS }: ToastInput) {
+  function showToast({ message, tone = "neutral", durationMs }: ToastInput) {
     const id = Date.now() + Math.random();
-    setToasts((current) => [...current, { id, message, tone, durationMs }]);
+    const resolvedDurationMs = durationMs ?? TOAST_DURATION_BY_TONE_MS[tone];
+    setToasts((current) => [...current, { id, message, tone, durationMs: resolvedDurationMs }]);
   }
 
   const dismissToast = useCallback((id: number) => {

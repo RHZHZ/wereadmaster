@@ -14,15 +14,16 @@ import {
   Shuffle,
   Sparkles
 } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { NoteList } from "../components/NoteList";
 import { SkillUpgradeNotice } from "../components/SkillUpgradeNotice";
+import { copyTextToClipboard } from "../lib/clipboard";
 import {
-  exportBookNotesMarkdown,
+  exportBookNotesTargets,
   getBookNotes,
   getCommandErrorInfo,
   getCommandErrorMessage,
   type CommandErrorInfo,
-  type ExportBookNotesMarkdownResponse
 } from "../lib/reading-api";
 import { useToast } from "../components/ToastProvider";
 import { formatUnixDate } from "../lib/formatters";
@@ -39,7 +40,14 @@ import {
   shareCanvasAsPng
 } from "../lib/image-artifact-export";
 import type { DefaultNotesView } from "../lib/preferences";
-import type { BookNotes, ChapterNoteGroup, Highlight, NotebookBook, Thought } from "../lib/types";
+import type {
+  BookNotes,
+  ChapterNoteGroup,
+  Highlight,
+  MultiTargetExportResponse,
+  NotebookBook,
+  Thought
+} from "../lib/types";
 import {
   buildBookNotesReviewStatus,
   type BookNotesReviewStatus
@@ -60,6 +68,7 @@ type BookNotesPageProps = {
 type NoteViewMode = "list" | "cards";
 type NoteCardFilter = "all" | "highlight" | "thought";
 type NoteCardSort = "chapter" | "latest";
+type ExportDestination = "markdown" | "obsidian" | "notion" | "obsidianNotion";
 
 type NoteCardItem = {
   id: string;
@@ -77,6 +86,12 @@ const SHARE_GROUP_LIMIT = 6;
 const SHARE_CARD_WIDTH = 900;
 const SHARE_CARD_PADDING = 64;
 
+function exportTargetLabel(target: "markdown" | "obsidian" | "notion") {
+  if (target === "obsidian") return "Obsidian";
+  if (target === "notion") return "Notion";
+  return "Markdown";
+}
+
 export function BookNotesPage({
   book,
   bookId,
@@ -92,7 +107,8 @@ export function BookNotesPage({
   const [isLoading, setIsLoading] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [error, setError] = useState<CommandErrorInfo>();
-  const [exportResult, setExportResult] = useState<ExportBookNotesMarkdownResponse>();
+  const [exportResult, setExportResult] = useState<MultiTargetExportResponse>();
+  const [exportDestination, setExportDestination] = useState<ExportDestination>("markdown");
   const [viewMode, setViewMode] = useState<NoteViewMode>(defaultViewMode);
   const [cardFilter, setCardFilter] = useState<NoteCardFilter>("all");
   const [cardSort, setCardSort] = useState<NoteCardSort>("chapter");
@@ -256,16 +272,37 @@ export function BookNotesPage({
     setExportResult(undefined);
 
     try {
-      const response = await exportBookNotesMarkdown(targetBookId);
+      const targets =
+        exportDestination === "obsidianNotion"
+          ? (["obsidian", "notion"] as const)
+          : ([exportDestination] as const);
+      const response = await exportBookNotesTargets(targetBookId, { targets: [...targets] });
       setExportResult(response);
+      const succeeded = response.results.filter((result) => result.status === "succeeded").length;
       showToast({
-        message: formatArtifactExportedMessage("notes-markdown"),
-        tone: "success"
+        message:
+          succeeded === response.results.length
+            ? `已完成 ${succeeded} 个导出目标。`
+            : `已完成 ${succeeded}/${response.results.length} 个导出目标，请查看结果。`,
+        tone: succeeded > 0 ? "success" : "error"
       });
     } catch (exportError) {
       setError(getCommandErrorInfo(exportError));
     } finally {
       setIsExporting(false);
+    }
+  }
+
+  async function handleOpenExportResultLink(url: string) {
+    try {
+      await openUrl(url);
+    } catch {
+      try {
+        await copyTextToClipboard(url);
+        showToast({ message: "外部浏览器打开失败，已复制页面链接。", tone: "warning" });
+      } catch {
+        showToast({ message: "外部浏览器打开失败，请手动访问页面链接。", tone: "error" });
+      }
     }
   }
 
@@ -331,6 +368,21 @@ export function BookNotesPage({
               : "划线和想法会按章节分组展示，可导出 Markdown，也可手动整理成复盘。"}
           </p>
           <div className="book-notes-actions">
+            <label className="book-notes-export-target">
+              <span className="sr-only">导出目标</span>
+              <select
+                value={exportDestination}
+                onChange={(event) =>
+                  setExportDestination(event.target.value as ExportDestination)
+                }
+                disabled={isLoading || isExporting}
+              >
+                <option value="markdown">Markdown</option>
+                <option value="obsidian">Obsidian</option>
+                <option value="notion">Notion</option>
+                <option value="obsidianNotion">Obsidian + Notion</option>
+              </select>
+            </label>
             <button
               className="secondary-action"
               type="button"
@@ -342,7 +394,7 @@ export function BookNotesPage({
               ) : (
                 <Download aria-hidden="true" size={18} />
               )}
-              {isExporting ? "导出中" : "导出 Markdown"}
+              {isExporting ? "导出中" : "一键导出"}
             </button>
             <button
               className="sync-button"
@@ -510,15 +562,40 @@ export function BookNotesPage({
       ) : null}
 
       {exportResult ? (
-        <div className="status-message status-message--neutral">
-          <Download aria-hidden="true" size={18} />
-          <span>
-            {formatArtifactExportedMessage("notes-markdown", {
-              fileName: exportResult.fileName,
-              path: exportResult.path
-            })}
-          </span>
-        </div>
+        <section className="book-notes-export-results" aria-label="导出结果">
+          {exportResult.results.map((result) => (
+            <div
+              className={`status-message ${
+                result.status === "failed"
+                  ? "status-message--error"
+                  : "status-message--neutral"
+              }`}
+              key={result.target}
+            >
+              {result.status === "failed" ? (
+                <AlertCircle aria-hidden="true" size={18} />
+              ) : (
+                <Download aria-hidden="true" size={18} />
+              )}
+              <span>
+                <strong>{exportTargetLabel(result.target)}：</strong>
+                {result.status === "succeeded"
+                  ? result.path || result.url || "导出成功"
+                  : result.error?.message || "导出失败"}
+                {result.warning ? `（${result.warning}）` : ""}
+              </span>
+              {result.url ? (
+                <button
+                  className="text-button"
+                  type="button"
+                  onClick={() => void handleOpenExportResultLink(result.url!)}
+                >
+                  打开 Notion 页面
+                </button>
+              ) : null}
+            </div>
+          ))}
+        </section>
       ) : null}
 
       {shareError ? (

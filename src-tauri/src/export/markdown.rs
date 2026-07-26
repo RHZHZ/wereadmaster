@@ -137,11 +137,15 @@ pub fn serialize_book_ai_summary_markdown_with_options(
         "- 作者：{}",
         inline_text(author.unwrap_or("未知作者"))
     );
-    let _ = writeln!(markdown, "- 导出时间：{exported_at}");
+    let _ = writeln!(
+        markdown,
+        "- 导出时间：{}",
+        unix_seconds_string_label(exported_at)
+    );
     let _ = writeln!(
         markdown,
         "- 生成时间：{}",
-        inline_text(&summary.generated_at)
+        unix_seconds_string_label(&summary.generated_at)
     );
     let _ = writeln!(
         markdown,
@@ -153,7 +157,11 @@ pub fn serialize_book_ai_summary_markdown_with_options(
         let _ = writeln!(markdown, "- 模型：{}", inline_text(provider_model));
     }
     if let Some(cached_updated_at) = response.cached_updated_at.as_deref() {
-        let _ = writeln!(markdown, "- 缓存更新：{}", inline_text(cached_updated_at));
+        let _ = writeln!(
+            markdown,
+            "- 缓存更新：{}",
+            unix_seconds_string_label(cached_updated_at)
+        );
     }
     let _ = writeln!(markdown);
     let _ = writeln!(markdown, "> {}", inline_text(&summary.basis_notice));
@@ -317,11 +325,15 @@ pub fn serialize_reading_stats_review_markdown(
             response.base_time
         ))
     );
-    let _ = writeln!(markdown, "- 导出时间：{exported_at}");
+    let _ = writeln!(
+        markdown,
+        "- 导出时间：{}",
+        unix_seconds_string_label(exported_at)
+    );
     let _ = writeln!(
         markdown,
         "- 生成时间：{}",
-        inline_text(&review.generated_at)
+        unix_seconds_string_label(&review.generated_at)
     );
     let _ = writeln!(
         markdown,
@@ -333,7 +345,11 @@ pub fn serialize_reading_stats_review_markdown(
         let _ = writeln!(markdown, "- 模型：{}", inline_text(provider_model));
     }
     if let Some(cached_updated_at) = response.cached_updated_at.as_deref() {
-        let _ = writeln!(markdown, "- 缓存更新：{}", inline_text(cached_updated_at));
+        let _ = writeln!(
+            markdown,
+            "- 缓存更新：{}",
+            unix_seconds_string_label(cached_updated_at)
+        );
     }
     let _ = writeln!(markdown);
     let _ = writeln!(markdown, "> {}", inline_text(&review.basis_notice));
@@ -519,8 +535,16 @@ pub fn serialize_reading_route_markdown(
     let _ = writeln!(markdown);
     let _ = writeln!(markdown, "- 书籍 ID：{}", inline_text(&response.book_id));
     let _ = writeln!(markdown, "- Scope：{}", inline_text(&response.scope_id));
-    let _ = writeln!(markdown, "- 导出时间：{exported_at}");
-    let _ = writeln!(markdown, "- 生成时间：{}", inline_text(&route.generated_at));
+    let _ = writeln!(
+        markdown,
+        "- 导出时间：{}",
+        unix_seconds_string_label(exported_at)
+    );
+    let _ = writeln!(
+        markdown,
+        "- 生成时间：{}",
+        unix_seconds_string_label(&route.generated_at)
+    );
     let _ = writeln!(
         markdown,
         "- Prompt 版本：{}",
@@ -531,7 +555,11 @@ pub fn serialize_reading_route_markdown(
         let _ = writeln!(markdown, "- 模型：{}", inline_text(provider_model));
     }
     if let Some(cached_updated_at) = response.cached_updated_at.as_deref() {
-        let _ = writeln!(markdown, "- 缓存更新：{}", inline_text(cached_updated_at));
+        let _ = writeln!(
+            markdown,
+            "- 缓存更新：{}",
+            unix_seconds_string_label(cached_updated_at)
+        );
     }
     let _ = writeln!(markdown);
     let _ = writeln!(markdown, "> {}", inline_text(&route.basis_notice));
@@ -677,11 +705,15 @@ pub fn serialize_book_decision_markdown(
     let _ = writeln!(markdown, "# {} 选书决策", heading_text(title));
     let _ = writeln!(markdown);
     let _ = writeln!(markdown, "- Scope：{}", inline_text(&response.scope_id));
-    let _ = writeln!(markdown, "- 导出时间：{exported_at}");
+    let _ = writeln!(
+        markdown,
+        "- 导出时间：{}",
+        unix_seconds_string_label(exported_at)
+    );
     let _ = writeln!(
         markdown,
         "- 生成时间：{}",
-        inline_text(&decision.generated_at)
+        unix_seconds_string_label(&decision.generated_at)
     );
     let _ = writeln!(
         markdown,
@@ -693,7 +725,11 @@ pub fn serialize_book_decision_markdown(
         let _ = writeln!(markdown, "- 模型：{}", inline_text(provider_model));
     }
     if let Some(cached_updated_at) = response.cached_updated_at.as_deref() {
-        let _ = writeln!(markdown, "- 缓存更新：{}", inline_text(cached_updated_at));
+        let _ = writeln!(
+            markdown,
+            "- 缓存更新：{}",
+            unix_seconds_string_label(cached_updated_at)
+        );
     }
     let _ = writeln!(markdown);
     let _ = writeln!(markdown, "> {}", inline_text(&decision.basis_notice));
@@ -1554,7 +1590,7 @@ fn sanitize_block_id(value: &str) -> String {
     }
 }
 
-fn reading_review_title(mode: &str, base_time: i64) -> String {
+pub(crate) fn reading_review_title(mode: &str, base_time: i64) -> String {
     if mode == "overall" || base_time <= 0 {
         return "长期阅读画像".to_string();
     }

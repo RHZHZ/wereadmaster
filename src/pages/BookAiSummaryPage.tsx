@@ -39,7 +39,7 @@ import { buildBookInsightViewModels } from "../lib/book-insights";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { buildFeedbackOutcomeAssistantDraft } from "../lib/feedback-outcome-drafts";
 import {
-  exportBookNotesSummaryMarkdown,
+  exportBookNotesSummaryTargets,
   getReadingItemState,
   getAiReviewFeedback,
   getAiSettingsState,
@@ -54,9 +54,14 @@ import {
 import { formatAiResponseFormat, formatAiTimestamp } from "../lib/formatters";
 import {
   formatArtifactCopiedMessage,
-  formatArtifactExportedMessage,
   type ReadingArtifactKind
 } from "../lib/reading-artifacts";
+import {
+  exportTargetLabel,
+  exportTargetsFromDestination,
+  formatMultiTargetExportToast,
+  type ExportDestination
+} from "../lib/export-targets";
 import type {
   AiSettingsState,
   BookAiRepresentativeQuote,
@@ -64,8 +69,8 @@ import type {
   BookAiSummaryResponse,
   BookAiSummarySourceStats,
   BookNotes,
-  ExportAiMarkdownResponse,
   FeedbackOutcomeSummary,
+  MultiTargetExportResponse,
   NotebookBook,
   AiReviewFeedbackExport,
   PreparedAssetUpdate,
@@ -111,7 +116,8 @@ export function BookAiSummaryPage({
   const [isLoadingSummaryCache, setIsLoadingSummaryCache] = useState(false);
   const [isLoadingReadingState, setIsLoadingReadingState] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
-  const [exportResult, setExportResult] = useState<ExportAiMarkdownResponse>();
+  const [exportResult, setExportResult] = useState<MultiTargetExportResponse>();
+  const [exportDestination, setExportDestination] = useState<ExportDestination>("markdown");
   const [reviewFeedback, setReviewFeedback] = useState<AiReviewFeedbackState>(createEmptyReviewFeedback);
   const [readingState, setReadingState] = useState<ReadingItemState>();
   const [readingStateError, setReadingStateError] = useState<string>();
@@ -355,12 +361,12 @@ export function BookAiSummaryPage({
     setExportResult(undefined);
 
     try {
-      const response = await exportBookNotesSummaryMarkdown(targetBookId, reviewFeedback);
-      setExportResult(response);
-      showToast({
-        message: formatArtifactExportedMessage("book-review-markdown"),
-        tone: "success"
+      const targets = exportTargetsFromDestination(exportDestination);
+      const response = await exportBookNotesSummaryTargets(targetBookId, reviewFeedback, {
+        targets: [...targets]
       });
+      setExportResult(response);
+      showToast(formatMultiTargetExportToast(response));
     } catch (exportError) {
       setError(getCommandErrorInfo(exportError));
     } finally {
@@ -555,6 +561,19 @@ export function BookAiSummaryPage({
               <Copy aria-hidden="true" size={18} />
               复制完整复盘
             </button>
+            <label className="compact-export-select">
+              <span>导出到</span>
+              <select
+                value={exportDestination}
+                onChange={(event) => setExportDestination(event.target.value as ExportDestination)}
+                disabled={!hasSummary || isExporting || isLoadingSummaryCache || status === "generating"}
+              >
+                <option value="markdown">Markdown</option>
+                <option value="obsidian">Obsidian</option>
+                <option value="notion">Notion</option>
+                <option value="obsidianNotion">Obsidian + Notion</option>
+              </select>
+            </label>
             <button
               className="secondary-action"
               type="button"
@@ -566,7 +585,7 @@ export function BookAiSummaryPage({
               ) : (
                 <Download aria-hidden="true" size={18} />
               )}
-              {isExporting ? "导出中" : "导出 Markdown"}
+              {isExporting ? "导出中" : "一键导出"}
             </button>
           </div>
         </div>
@@ -636,15 +655,34 @@ export function BookAiSummaryPage({
       ) : null}
 
       {exportResult ? (
-        <div className="status-message status-message--neutral">
-          <Download aria-hidden="true" size={18} />
-          <span>
-            {formatArtifactExportedMessage("book-review-markdown", {
-              fileName: exportResult.fileName,
-              path: exportResult.path
-            })}
-          </span>
-        </div>
+        <section className="export-result-list" aria-label="AI 复盘导出结果">
+          {exportResult.results.map((result) => (
+            <div
+              className={`status-message ${
+                result.status === "failed" ? "status-message--error" : "status-message--neutral"
+              }`}
+              key={result.target}
+            >
+              {result.status === "failed" ? (
+                <AlertCircle aria-hidden="true" size={18} />
+              ) : (
+                <Download aria-hidden="true" size={18} />
+              )}
+              <span>
+                <strong>{exportTargetLabel(result.target)}：</strong>
+                {result.status === "succeeded"
+                  ? result.path || result.url || "导出成功"
+                  : result.error?.message || "导出失败"}
+                {result.warning ? `（${result.warning}）` : ""}
+              </span>
+              {result.url ? (
+                <a href={result.url} target="_blank" rel="noreferrer">
+                  打开
+                </a>
+              ) : null}
+            </div>
+          ))}
+        </section>
       ) : null}
 
       {isLoadingSettings ? (

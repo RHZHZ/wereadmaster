@@ -9,7 +9,7 @@ import {
   Sparkles
 } from "lucide-react";
 import type { BookDetail, PreparedAssetUpdate, ReadingProgress, ShelfEntry } from "../lib/types";
-import { formatArtifactExportedMessage } from "../lib/reading-artifacts";
+import { exportTargetLabel, type ExportDestination } from "../lib/export-targets";
 import { ReadingRouteInputPanel } from "./reading-route/ReadingRouteInputPanel";
 import { ReadingRouteResultPanel } from "./reading-route/ReadingRouteResultPanel";
 import { useReadingRoutePageState } from "./reading-route/useReadingRoutePageState";
@@ -91,8 +91,21 @@ export function ReadingRoutePage({
               disabled={!state.hasRoute || state.isExporting || state.status === "generating" || state.isLoadingCache}
             >
               {state.isExporting ? <Loader2 aria-hidden="true" size={18} className="spin" /> : <Download aria-hidden="true" size={18} />}
-              {state.isExporting ? "导出中" : "导出 Markdown"}
+              {state.isExporting ? "导出中" : "一键导出"}
             </button>
+            <label className="compact-export-select">
+              <span>导出到</span>
+              <select
+                value={state.exportDestination}
+                onChange={(event) => state.setExportDestination(event.target.value as ExportDestination)}
+                disabled={!state.hasRoute || state.isExporting || state.status === "generating" || state.isLoadingCache}
+              >
+                <option value="markdown">Markdown</option>
+                <option value="obsidian">Obsidian</option>
+                <option value="notion">Notion</option>
+                <option value="obsidianNotion">Obsidian + Notion</option>
+              </select>
+            </label>
           </div>
         </div>
       </section>
@@ -145,15 +158,34 @@ export function ReadingRoutePage({
       ) : null}
 
       {state.exportResult ? (
-        <div className="status-message status-message--neutral">
-          <Download aria-hidden="true" size={18} />
-          <span>
-            {formatArtifactExportedMessage("reading-route-markdown", {
-              fileName: state.exportResult.fileName,
-              path: state.exportResult.path
-            })}
-          </span>
-        </div>
+        <section className="export-result-list" aria-label="阅读指南导出结果">
+          {state.exportResult.results.map((result) => (
+            <div
+              className={`status-message ${
+                result.status === "failed" ? "status-message--error" : "status-message--neutral"
+              }`}
+              key={result.target}
+            >
+              {result.status === "failed" ? (
+                <AlertCircle aria-hidden="true" size={18} />
+              ) : (
+                <Download aria-hidden="true" size={18} />
+              )}
+              <span>
+                <strong>{exportTargetLabel(result.target)}：</strong>
+                {result.status === "succeeded"
+                  ? result.path || result.url || "导出成功"
+                  : result.error?.message || "导出失败"}
+                {result.warning ? `（${result.warning}）` : ""}
+              </span>
+              {result.url ? (
+                <a href={result.url} target="_blank" rel="noreferrer">
+                  打开
+                </a>
+              ) : null}
+            </div>
+          ))}
+        </section>
       ) : null}
 
       <ReadingRouteInputPanel

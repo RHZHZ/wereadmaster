@@ -34,6 +34,7 @@ import {
   searchBooks,
   upsertReadingItemState
 } from "../lib/reading-api";
+import { useConfirm } from "./ConfirmProvider";
 import {
   buildAiRecommendationCandidateNote,
   buildAiRecommendedCandidateId,
@@ -499,6 +500,7 @@ export function ReadingAssistantPanel({
   onOpenAiSettings,
   onClose
 }: ReadingAssistantPanelProps) {
+  const requestConfirm = useConfirm();
   const [threadId, setThreadId] = useState<string>();
   const [messages, setMessages] = useState<LocalAssistantMessage[]>([]);
   const [input, setInput] = useState("");
@@ -789,9 +791,12 @@ export function ReadingAssistantPanel({
   }
 
   async function handleClearHistory() {
-    const confirmed =
-      typeof window === "undefined" ||
-      window.confirm("清空 AI 阅读助手的本地对话历史？");
+    const confirmed = await requestConfirm({
+      title: "清空对话历史",
+      description: "将删除 AI 阅读助手保存在本机的全部对话记录，此操作无法撤销。",
+      confirmLabel: "清空",
+      isDanger: true
+    });
     if (!confirmed) {
       return;
     }
@@ -1020,11 +1025,11 @@ export function ReadingAssistantPanel({
         return;
       }
 
-      const confirmed =
-        typeof window === "undefined" ||
-        window.confirm(
-          `加入本地候选书架？\n\n《${book.title}》会保存到本地候选书架，用于后续选书决策和阅读路线。\n这不会写入微信读书，也不代表已确认微信读书可用。`
-        );
+      const confirmed = await requestConfirm({
+        title: "加入本地候选书架？",
+        description: `《${book.title}》会保存到本地候选书架，用于后续选书决策和阅读路线。\n这不会写入微信读书，也不代表已确认微信读书可用。`,
+        confirmLabel: "加入候选"
+      });
       if (!confirmed) {
         setCandidateBookStates((current) => ({ ...current, [bookKey]: "available" }));
         return;
@@ -1109,11 +1114,11 @@ export function ReadingAssistantPanel({
         return;
       }
 
-      const confirmed =
-        typeof window === "undefined" ||
-        window.confirm(
-          `使用微信读书搜索结果加入候选？\n\n《${result.title}》会保存到本地候选书架，用于后续选书决策和阅读路线。\n这不会写入微信读书远端书架。`
-        );
+      const confirmed = await requestConfirm({
+        title: "使用微信读书搜索结果加入候选？",
+        description: `《${result.title}》会保存到本地候选书架，用于后续选书决策和阅读路线。\n这不会写入微信读书远端书架。`,
+        confirmLabel: "加入候选"
+      });
       if (!confirmed) {
         setCandidateBookStates((current) => ({ ...current, [bookKey]: "available" }));
         return;
@@ -1151,11 +1156,11 @@ export function ReadingAssistantPanel({
     setErrorMessage(undefined);
 
     try {
-      const confirmed =
-        typeof window === "undefined" ||
-        window.confirm(
-          `加入本地候选书架？\n\n《${result.title}》会保存到本地候选书架，用于后续选书决策和阅读路线。\n这不会写入微信读书远端书架。`
-        );
+      const confirmed = await requestConfirm({
+        title: "加入本地候选书架？",
+        description: `《${result.title}》会保存到本地候选书架，用于后续选书决策和阅读路线。\n这不会写入微信读书远端书架。`,
+        confirmLabel: "加入候选"
+      });
       if (!confirmed) {
         setActionSearchResultStates((current) => ({ ...current, [resultKey]: "available" }));
         return;

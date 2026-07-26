@@ -11,6 +11,7 @@ import {
   Trash2,
   X
 } from "lucide-react";
+import { useConfirm } from "../components/ConfirmProvider";
 import { CredentialSetupCard } from "../components/CredentialSetupCard";
 import { useToast } from "../components/ToastProvider";
 import {
@@ -94,6 +95,7 @@ export function CandidateBookshelfPage({
   onOpenBookDetail,
   onBookDecisionGenerated
 }: CandidateBookshelfPageProps) {
+  const requestConfirm = useConfirm();
   const [candidateMap, setCandidateMap] = useState<Map<string, LocalCandidateBook>>(() => new Map());
   const [isLoading, setIsLoading] = useState(true);
   const [removingIds, setRemovingIds] = useState<Set<string>>(() => new Set());
@@ -346,11 +348,11 @@ export function CandidateBookshelfPage({
         return;
       }
 
-      const confirmed =
-        typeof window === "undefined" ||
-        window.confirm(
-          `替换未确认候选？\n\n将《${book.title}》替换为微信读书搜索结果《${result.title}》。\n这只更新本地候选，不会写入微信读书远端书架。`
-        );
+      const confirmed = await requestConfirm({
+        title: "替换未确认候选？",
+        description: `将《${book.title}》替换为微信读书搜索结果《${result.title}》。\n这只更新本地候选，不会写入微信读书远端书架。`,
+        confirmLabel: "替换"
+      });
       if (!confirmed) {
         return;
       }

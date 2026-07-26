@@ -1,18 +1,21 @@
 use serde::Serialize;
 use tauri::AppHandle;
 
-use crate::services::ai::{
-    AiAssetDetail, AiAssetSummary, AiAssetVersionDetail, AiAssetVersionSummary,
-    AiCachedOutputRecord, AiCredentialValidationResult, AiProviderCapabilityProbe,
-    AiProviderModelListResponse, AiResponseFormatPolicy, AiReviewFeedbackExport,
-    AiReviewFeedbackState, AiService, AiServiceError, AiSettingsState, BookAiSummaryListItem,
-    BookAiSummaryResponse, BookAiSummaryUpdateContext, BookDecisionCandidateInput,
-    BookDecisionResponse, BookNotesSummariesExportOptions, ExportAiBulkMarkdownResponse,
-    ExportAiMarkdownResponse, LocalReaderSelectionQuestionInput,
-    LocalReaderSelectionQuestionResponse, ReadingAssistantAnswer, ReadingAssistantPreferences,
-    ReadingAssistantRequest, ReadingAssistantStreamRequest, ReadingAssistantThreadDetail,
-    ReadingAssistantThreadSummary, ReadingRouteRequest, ReadingRouteResponse,
-    ReadingRouteUpdateContext, ReadingStatsAiReviewResponse,
+use crate::{
+    export::targets::{MultiTargetExportRequest, MultiTargetExportResponse},
+    services::ai::{
+        AiAssetDetail, AiAssetSummary, AiAssetVersionDetail, AiAssetVersionSummary,
+        AiCachedOutputRecord, AiCredentialValidationResult, AiProviderCapabilityProbe,
+        AiProviderModelListResponse, AiResponseFormatPolicy, AiReviewFeedbackExport,
+        AiReviewFeedbackState, AiService, AiServiceError, AiSettingsState, BookAiSummaryListItem,
+        BookAiSummaryResponse, BookAiSummaryUpdateContext, BookDecisionCandidateInput,
+        BookDecisionResponse, BookNotesSummariesExportOptions, ExportAiBulkMarkdownResponse,
+        ExportAiMarkdownResponse, LocalReaderSelectionQuestionInput,
+        LocalReaderSelectionQuestionResponse, ReadingAssistantAnswer, ReadingAssistantPreferences,
+        ReadingAssistantRequest, ReadingAssistantStreamRequest, ReadingAssistantThreadDetail,
+        ReadingAssistantThreadSummary, ReadingRouteRequest, ReadingRouteResponse,
+        ReadingRouteUpdateContext, ReadingStatsAiReviewResponse,
+    },
 };
 
 #[derive(Debug, Serialize)]
@@ -307,6 +310,19 @@ pub fn export_book_notes_summary_markdown(
 }
 
 #[tauri::command]
+pub async fn export_book_notes_summary_targets(
+    app: AppHandle,
+    book_id: String,
+    review_feedback: Option<AiReviewFeedbackExport>,
+    request: MultiTargetExportRequest,
+) -> Result<MultiTargetExportResponse, AiCommandError> {
+    AiService::new(app)
+        .export_book_notes_summary_targets(book_id, review_feedback, request)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
 pub fn export_book_notes_summaries_markdown(
     app: AppHandle,
     book_ids: Option<Vec<String>>,
@@ -429,6 +445,19 @@ pub async fn export_reading_stats_review_markdown(
 }
 
 #[tauri::command]
+pub async fn export_reading_stats_review_targets(
+    app: AppHandle,
+    mode: Option<String>,
+    base_time: Option<i64>,
+    request: MultiTargetExportRequest,
+) -> Result<MultiTargetExportResponse, AiCommandError> {
+    AiService::new(app)
+        .export_reading_stats_review_targets(mode, base_time, request)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
 pub async fn summarize_reading_route(
     app: AppHandle,
     request: ReadingRouteRequest,
@@ -458,6 +487,18 @@ pub fn export_reading_route_markdown(
 ) -> Result<ExportAiMarkdownResponse, AiCommandError> {
     AiService::new(app)
         .export_reading_route_markdown(request)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn export_reading_route_targets(
+    app: AppHandle,
+    request: ReadingRouteRequest,
+    target_request: MultiTargetExportRequest,
+) -> Result<MultiTargetExportResponse, AiCommandError> {
+    AiService::new(app)
+        .export_reading_route_targets(request, target_request)
+        .await
         .map_err(Into::into)
 }
 
@@ -493,6 +534,19 @@ pub fn export_book_decision_markdown(
 ) -> Result<ExportAiMarkdownResponse, AiCommandError> {
     AiService::new(app)
         .export_book_decision_markdown(candidates, goal)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn export_book_decision_targets(
+    app: AppHandle,
+    candidates: Vec<BookDecisionCandidateInput>,
+    goal: Option<String>,
+    request: MultiTargetExportRequest,
+) -> Result<MultiTargetExportResponse, AiCommandError> {
+    AiService::new(app)
+        .export_book_decision_targets(candidates, goal, request)
+        .await
         .map_err(Into::into)
 }
 

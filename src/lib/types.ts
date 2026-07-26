@@ -1017,6 +1017,8 @@ export type BulkExportRequest = {
   selectedBookIds?: string[];
   concurrency?: number;
   excludeWithoutExportableNotes?: boolean;
+  /** 外部目标选择；缺省等价于仅 Markdown。Markdown 始终写入批量目录作为兜底。 */
+  targets?: MultiTargetExportRequest;
 };
 
 export type BulkExportResultItem = {
@@ -1025,6 +1027,8 @@ export type BulkExportResultItem = {
   status: BulkExportItemStatus;
   notesFile?: string;
   aiReviewFile?: string;
+  /** 目标级结果（Obsidian / Notion）；仅当批量请求选择了外部目标时非空。 */
+  targets?: ExportTargetResult[];
   reason: string;
 };
 
@@ -1168,6 +1172,7 @@ export type SettingsState = {
   syncStates: SyncState[];
   localData: LocalDataState;
   exportData: ExportDataState;
+  integrationData: IntegrationDataState;
   network: NetworkState;
   appVersion: string;
   supportsNativeUpdater: boolean;
@@ -1208,6 +1213,91 @@ export type ExportDataState = {
   exportDir: string;
   defaultExportDir: string;
   isCustomExportDir: boolean;
+};
+
+export type ExternalExportTarget = "markdown" | "obsidian" | "notion";
+
+export type ObsidianAttachmentMode = "siblingAssets" | "centralAssets";
+
+export type NotionParentType = "page" | "database";
+
+export type NotionCoverMode = "pageCover" | "contentImageOnly";
+
+export type IntegrationDataState = {
+  obsidian: {
+    vaultDir?: string;
+    hasConfiguredVault: boolean;
+    attachmentMode: ObsidianAttachmentMode;
+    openAfterExport: boolean;
+  };
+  notion: {
+    credential: CredentialStatus;
+    parentId?: string;
+    parentType?: NotionParentType;
+    coverMode: NotionCoverMode;
+  };
+};
+
+export type MultiTargetExportRequest = {
+  targets: ExternalExportTarget[];
+  obsidian?: {
+    vaultDir?: string;
+    openAfterExport?: boolean;
+  };
+  notion?: {
+    parentId?: string;
+    parentType?: NotionParentType;
+  };
+};
+
+export type ExportSourceKind =
+  | "bookNotes"
+  | "bookReview"
+  | "readingStatsReview"
+  | "readingRoute"
+  | "bookDecision";
+
+export type ExportTargetStatus = "succeeded" | "failed" | "skipped";
+
+export type ExportTargetResult = {
+  target: ExternalExportTarget;
+  status: ExportTargetStatus;
+  title?: string;
+  path?: string;
+  url?: string;
+  pageId?: string;
+  fileCount?: number;
+  warning?: string;
+  error?: SettingsCredentialError;
+};
+
+export type MultiTargetExportResponse = {
+  exportId: string;
+  sourceKind: ExportSourceKind;
+  sourceId: string;
+  exportedAt: string;
+  results: ExportTargetResult[];
+};
+
+export type CreateNotionReadingLibraryTemplateResult = {
+  databaseId: string;
+  url: string;
+  title: string;
+  state: SettingsState;
+};
+
+export type CreateNotionReadingWorkspaceTemplateResult = {
+  homePageId: string;
+  homePageUrl: string;
+  databaseId: string;
+  databaseUrl: string;
+  title: string;
+  warning?: string;
+  state: SettingsState;
+};
+
+export type ChooseObsidianVaultDirectoryResult = {
+  path?: string;
 };
 
 export type NetworkState = {

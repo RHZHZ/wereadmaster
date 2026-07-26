@@ -17,10 +17,17 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::{
     db,
     errors::AppError,
-    export::markdown::{
-        serialize_book_ai_summary_markdown, serialize_book_ai_summary_markdown_with_options,
-        serialize_book_decision_markdown, serialize_reading_route_markdown,
-        serialize_reading_stats_review_markdown, BookAiSummaryMarkdownOptions,
+    export::{
+        assets::{ExportAsset, ExportAssetKind},
+        dispatcher::{export_document_targets, export_document_targets_with_notion_blocks},
+        document::{ExportDocument, ExportMetaField, ExportSourceKind},
+        markdown::{
+            serialize_book_ai_summary_markdown, serialize_book_ai_summary_markdown_with_options,
+            serialize_book_decision_markdown, serialize_reading_route_markdown,
+            serialize_reading_stats_review_markdown, BookAiSummaryMarkdownOptions,
+        },
+        notion_blocks::{build_book_review_blocks, BookReviewBlocksInput, ReviewQuoteBlocksInput},
+        targets::{MultiTargetExportRequest, MultiTargetExportResponse},
     },
     mappers::{
         discovery::DiscoveryBookRecord,
@@ -1185,6 +1192,20 @@ pub struct ExportAiMarkdownResponse {
     pub file_name: String,
     pub path: String,
     pub exported_at: String,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedExportDocument {
+    document: ExportDocument,
+    markdown: String,
+    file_stem: String,
+    exported_at: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct BookExportMeta {
+    author: Option<String>,
+    cover: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2575,6 +2596,85 @@ impl AiService {
         book_id: String,
         review_feedback: Option<AiReviewFeedbackExport>,
     ) -> Result<ExportAiMarkdownResponse, AiServiceError> {
+        let (prepared, _response) =
+            self.prepare_book_notes_summary_export(book_id, review_feedback)?;
+
+        self.write_ai_markdown_export(
+            &prepared.file_stem,
+            &prepared.exported_at,
+            prepared.markdown,
+        )
+    }
+
+    pub async fn export_book_notes_summary_targets(
+        &self,
+        book_id: String,
+        review_feedback: Option<AiReviewFeedbackExport>,
+        request: MultiTargetExportRequest,
+    ) -> Result<MultiTargetExportResponse, AiServiceError> {
+        request
+            .validate()
+            .map_err(AiServiceError::InvalidProviderOutput)?;
+        let (prepared, response) =
+            self.prepare_book_notes_summary_export(book_id, review_feedback)?;
+        let summary = &response.summary;
+        let quotes = summary
+            .representative_quotes
+            .iter()
+            .map(|quote| ReviewQuoteBlocksInput {
+                quote: &quote.quote,
+                reason: &quote.reason,
+                chapter: quote.chapter.as_deref(),
+                note_type: &quote.note_type,
+            })
+            .collect::<Vec<_>>();
+        let review_blocks = build_book_review_blocks(&BookReviewBlocksInput {
+            author: prepared.document.author.as_deref(),
+            overview: &summary.overview,
+            theme_tags: &summary.theme_tags,
+            key_ideas: &summary.key_ideas,
+            my_focus: &summary.my_focus,
+            action_items: &summary.action_items,
+            reflection_questions: &summary.reflection_questions,
+            quotes,
+            basis_notice: &summary.basis_notice,
+            error_message: response.error_message.as_deref(),
+            generated_at: &summary.generated_at,
+            exported_at: &prepared.exported_at,
+            provider_model: response.provider_model.as_deref(),
+            prompt_version: &summary.prompt_version,
+            highlight_count: summary.source_stats.highlight_count,
+            included_highlight_count: summary.source_stats.included_highlight_count,
+            thought_count: summary.source_stats.thought_count,
+            included_thought_count: summary.source_stats.included_thought_count,
+        });
+        let results = export_document_targets_with_notion_blocks(
+            &self.app,
+            &prepared.document,
+            &prepared.markdown,
+            &prepared.file_stem,
+            &request,
+            Some(&review_blocks),
+        )
+        .await;
+
+        Ok(MultiTargetExportResponse {
+            export_id: format!(
+                "book-review-{}-{}",
+                prepared.document.source_id, prepared.exported_at
+            ),
+            source_kind: prepared.document.source_kind,
+            source_id: prepared.document.source_id,
+            exported_at: prepared.exported_at,
+            results,
+        })
+    }
+
+    fn prepare_book_notes_summary_export(
+        &self,
+        book_id: String,
+        review_feedback: Option<AiReviewFeedbackExport>,
+    ) -> Result<(PreparedExportDocument, BookAiSummaryResponse), AiServiceError> {
         let response = self
             .get_latest_book_notes_summary(book_id.clone())?
             .ok_or_else(|| {
@@ -2608,12 +2708,64 @@ impl AiService {
             &exported_at,
             Some(&merged_feedback),
         );
+        let file_stem = format!("{}-ai-summary", sanitize_file_stem(title, &notes.book_id));
+        let cover = notes
+            .book
+            .as_ref()
+            .and_then(|book| book.cover.as_ref())
+            .map(|url| ExportAsset {
+                kind: ExportAssetKind::Cover,
+                remote_url: Some(url.clone()),
+                local_path: None,
+                file_name: None,
+                mime_type: None,
+            });
+        let mut document = ExportDocument {
+            source_kind: ExportSourceKind::BookReview,
+            source_id: notes.book_id.clone(),
+            title: format!("{title} AI 复盘"),
+            author: notes.book.as_ref().and_then(|book| book.author.clone()),
+            cover,
+            front_matter: vec![
+                ExportMetaField {
+                    key: "bookId".to_string(),
+                    value: notes.book_id.clone(),
+                },
+                ExportMetaField {
+                    key: "promptVersion".to_string(),
+                    value: response.prompt_version.clone(),
+                },
+                ExportMetaField {
+                    key: "inputHash".to_string(),
+                    value: response.input_hash.clone(),
+                },
+                ExportMetaField {
+                    key: "tagList".to_string(),
+                    value: response.summary.theme_tags.join(","),
+                },
+                ExportMetaField {
+                    key: "actionCount".to_string(),
+                    value: response.summary.action_items.len().to_string(),
+                },
+            ],
+            sections: Vec::new(),
+            exported_at: exported_at.clone(),
+            basis_notice: Some(response.summary.basis_notice.clone()),
+        };
+        append_reading_stage_front_matter(
+            &mut document.front_matter,
+            response.summary.reading_stage.as_ref(),
+        );
 
-        self.write_ai_markdown_export(
-            &format!("{}-ai-summary", sanitize_file_stem(title, &notes.book_id)),
-            &exported_at,
-            markdown,
-        )
+        Ok((
+            PreparedExportDocument {
+                document,
+                markdown,
+                file_stem,
+                exported_at,
+            },
+            response,
+        ))
     }
 
     pub fn export_book_notes_summaries_markdown(
@@ -2854,6 +3006,55 @@ impl AiService {
         mode: Option<String>,
         base_time: Option<i64>,
     ) -> Result<ExportAiMarkdownResponse, AiServiceError> {
+        let prepared = self
+            .prepare_reading_stats_review_export(mode, base_time)
+            .await?;
+
+        self.write_ai_markdown_export(
+            &prepared.file_stem,
+            &prepared.exported_at,
+            prepared.markdown,
+        )
+    }
+
+    pub async fn export_reading_stats_review_targets(
+        &self,
+        mode: Option<String>,
+        base_time: Option<i64>,
+        request: MultiTargetExportRequest,
+    ) -> Result<MultiTargetExportResponse, AiServiceError> {
+        request
+            .validate()
+            .map_err(AiServiceError::InvalidProviderOutput)?;
+        let prepared = self
+            .prepare_reading_stats_review_export(mode, base_time)
+            .await?;
+        let results = export_document_targets(
+            &self.app,
+            &prepared.document,
+            &prepared.markdown,
+            &prepared.file_stem,
+            &request,
+        )
+        .await;
+
+        Ok(MultiTargetExportResponse {
+            export_id: format!(
+                "reading-stats-review-{}-{}",
+                prepared.document.source_id, prepared.exported_at
+            ),
+            source_kind: prepared.document.source_kind,
+            source_id: prepared.document.source_id,
+            exported_at: prepared.exported_at,
+            results,
+        })
+    }
+
+    async fn prepare_reading_stats_review_export(
+        &self,
+        mode: Option<String>,
+        base_time: Option<i64>,
+    ) -> Result<PreparedExportDocument, AiServiceError> {
         let response = self
             .get_latest_reading_stats_review(mode, base_time)
             .await?
@@ -2882,8 +3083,51 @@ impl AiService {
             "overall" => "overall-reading-review",
             _ => "monthly-reading-review",
         };
+        let title =
+            crate::export::markdown::reading_review_title(&response.mode, response.base_time);
+        let document = ExportDocument {
+            source_kind: ExportSourceKind::ReadingStatsReview,
+            source_id: format!("{}-{}", response.mode, response.base_time),
+            title,
+            author: None,
+            cover: None,
+            front_matter: vec![
+                ExportMetaField {
+                    key: "mode".to_string(),
+                    value: response.mode.clone(),
+                },
+                ExportMetaField {
+                    key: "baseTime".to_string(),
+                    value: response.base_time.to_string(),
+                },
+                ExportMetaField {
+                    key: "promptVersion".to_string(),
+                    value: response.prompt_version.clone(),
+                },
+                ExportMetaField {
+                    key: "inputHash".to_string(),
+                    value: response.input_hash.clone(),
+                },
+                ExportMetaField {
+                    key: "period".to_string(),
+                    value: response.mode.clone(),
+                },
+                ExportMetaField {
+                    key: "actionCount".to_string(),
+                    value: response.review.next_actions.len().to_string(),
+                },
+            ],
+            sections: Vec::new(),
+            exported_at: exported_at.clone(),
+            basis_notice: Some(response.review.basis_notice.clone()),
+        };
 
-        self.write_ai_markdown_export(period_label, &exported_at, markdown)
+        Ok(PreparedExportDocument {
+            document,
+            markdown,
+            file_stem: period_label.to_string(),
+            exported_at,
+        })
     }
 
     pub async fn summarize_reading_route(
@@ -3053,6 +3297,49 @@ impl AiService {
         &self,
         request: ReadingRouteRequest,
     ) -> Result<ExportAiMarkdownResponse, AiServiceError> {
+        let prepared = self.prepare_reading_route_export(request)?;
+
+        self.write_ai_markdown_export(
+            &prepared.file_stem,
+            &prepared.exported_at,
+            prepared.markdown,
+        )
+    }
+
+    pub async fn export_reading_route_targets(
+        &self,
+        request: ReadingRouteRequest,
+        target_request: MultiTargetExportRequest,
+    ) -> Result<MultiTargetExportResponse, AiServiceError> {
+        target_request
+            .validate()
+            .map_err(AiServiceError::InvalidProviderOutput)?;
+        let prepared = self.prepare_reading_route_export(request)?;
+        let results = export_document_targets(
+            &self.app,
+            &prepared.document,
+            &prepared.markdown,
+            &prepared.file_stem,
+            &target_request,
+        )
+        .await;
+
+        Ok(MultiTargetExportResponse {
+            export_id: format!(
+                "reading-route-{}-{}",
+                prepared.document.source_id, prepared.exported_at
+            ),
+            source_kind: prepared.document.source_kind,
+            source_id: prepared.document.source_id,
+            exported_at: prepared.exported_at,
+            results,
+        })
+    }
+
+    fn prepare_reading_route_export(
+        &self,
+        request: ReadingRouteRequest,
+    ) -> Result<PreparedExportDocument, AiServiceError> {
         let response = self.get_latest_reading_route(request)?.ok_or_else(|| {
             AiServiceError::InvalidProviderOutput(
                 "当前书还没有可导出的 AI 阅读指南缓存，请先生成或读取缓存。".to_string(),
@@ -3066,15 +3353,57 @@ impl AiService {
             .map(|book| book.title.as_str())
             .unwrap_or(response.book_id.as_str());
         let markdown = serialize_reading_route_markdown(&response, &exported_at);
+        let book_meta = read_export_book_meta(&self.open_connection()?, &response.book_id)?;
+        let mut document = ExportDocument {
+            source_kind: ExportSourceKind::ReadingRoute,
+            source_id: response.scope_id.clone(),
+            title: format!("{title} 阅读指南"),
+            author: book_meta.author,
+            cover: export_cover_asset(book_meta.cover),
+            front_matter: vec![
+                ExportMetaField {
+                    key: "bookId".to_string(),
+                    value: response.book_id.clone(),
+                },
+                ExportMetaField {
+                    key: "scope".to_string(),
+                    value: response.scope_id.clone(),
+                },
+                ExportMetaField {
+                    key: "promptVersion".to_string(),
+                    value: response.prompt_version.clone(),
+                },
+                ExportMetaField {
+                    key: "inputHash".to_string(),
+                    value: response.input_hash.clone(),
+                },
+                ExportMetaField {
+                    key: "candidateCount".to_string(),
+                    value: response.route.source_stats.candidate_count.to_string(),
+                },
+                ExportMetaField {
+                    key: "actionCount".to_string(),
+                    value: response.route.next_actions.len().to_string(),
+                },
+            ],
+            sections: Vec::new(),
+            exported_at: exported_at.clone(),
+            basis_notice: Some(response.route.basis_notice.clone()),
+        };
+        append_reading_stage_front_matter(
+            &mut document.front_matter,
+            response.route.reading_stage.as_ref(),
+        );
 
-        self.write_ai_markdown_export(
-            &format!(
+        Ok(PreparedExportDocument {
+            document,
+            markdown,
+            file_stem: format!(
                 "{}-reading-route",
                 sanitize_file_stem(title, &response.book_id)
             ),
-            &exported_at,
-            markdown,
-        )
+            exported_at,
+        })
     }
 
     pub async fn summarize_book_decision(
@@ -3217,6 +3546,51 @@ impl AiService {
         candidates: Vec<BookDecisionCandidateInput>,
         goal: Option<String>,
     ) -> Result<ExportAiMarkdownResponse, AiServiceError> {
+        let prepared = self.prepare_book_decision_export(candidates, goal)?;
+
+        self.write_ai_markdown_export(
+            &prepared.file_stem,
+            &prepared.exported_at,
+            prepared.markdown,
+        )
+    }
+
+    pub async fn export_book_decision_targets(
+        &self,
+        candidates: Vec<BookDecisionCandidateInput>,
+        goal: Option<String>,
+        request: MultiTargetExportRequest,
+    ) -> Result<MultiTargetExportResponse, AiServiceError> {
+        request
+            .validate()
+            .map_err(AiServiceError::InvalidProviderOutput)?;
+        let prepared = self.prepare_book_decision_export(candidates, goal)?;
+        let results = export_document_targets(
+            &self.app,
+            &prepared.document,
+            &prepared.markdown,
+            &prepared.file_stem,
+            &request,
+        )
+        .await;
+
+        Ok(MultiTargetExportResponse {
+            export_id: format!(
+                "book-decision-{}-{}",
+                prepared.document.source_id, prepared.exported_at
+            ),
+            source_kind: prepared.document.source_kind,
+            source_id: prepared.document.source_id,
+            exported_at: prepared.exported_at,
+            results,
+        })
+    }
+
+    fn prepare_book_decision_export(
+        &self,
+        candidates: Vec<BookDecisionCandidateInput>,
+        goal: Option<String>,
+    ) -> Result<PreparedExportDocument, AiServiceError> {
         let response = self
             .get_latest_book_decision(candidates, goal)?
             .ok_or_else(|| {
@@ -3232,15 +3606,60 @@ impl AiService {
             .map(|book| book.title.as_str())
             .unwrap_or("下一本书取舍");
         let markdown = serialize_book_decision_markdown(&response, &exported_at);
+        let top_book = response.decision.top_candidates.first();
+        let fallback_id = response.scope_id.clone();
+        let source_id = top_book
+            .map(|book| book.book_id.clone())
+            .unwrap_or_else(|| fallback_id.clone());
+        let book_meta = read_export_book_meta(&self.open_connection()?, &source_id)?;
+        let document = ExportDocument {
+            source_kind: ExportSourceKind::BookDecision,
+            source_id: response.scope_id.clone(),
+            title: format!("{title} 选书决策"),
+            author: top_book
+                .and_then(|book| book.author.clone())
+                .or(book_meta.author),
+            cover: export_cover_asset(book_meta.cover),
+            front_matter: vec![
+                ExportMetaField {
+                    key: "bookId".to_string(),
+                    value: source_id,
+                },
+                ExportMetaField {
+                    key: "scope".to_string(),
+                    value: response.scope_id.clone(),
+                },
+                ExportMetaField {
+                    key: "promptVersion".to_string(),
+                    value: response.prompt_version.clone(),
+                },
+                ExportMetaField {
+                    key: "inputHash".to_string(),
+                    value: response.input_hash.clone(),
+                },
+                ExportMetaField {
+                    key: "candidateCount".to_string(),
+                    value: response.decision.source_stats.candidate_count.to_string(),
+                },
+                ExportMetaField {
+                    key: "actionCount".to_string(),
+                    value: response.decision.next_actions.len().to_string(),
+                },
+            ],
+            sections: Vec::new(),
+            exported_at: exported_at.clone(),
+            basis_notice: Some(response.decision.basis_notice.clone()),
+        };
 
-        self.write_ai_markdown_export(
-            &format!(
+        Ok(PreparedExportDocument {
+            document,
+            markdown,
+            file_stem: format!(
                 "{}-book-decision",
                 sanitize_file_stem(title, &response.scope_id)
             ),
-            &exported_at,
-            markdown,
-        )
+            exported_at,
+        })
     }
 
     pub async fn ask_local_reader_selection_question(
@@ -10638,6 +11057,87 @@ fn read_local_book_notes(
         thoughts,
         Vec::new(),
     ))
+}
+
+fn read_export_book_meta(
+    connection: &rusqlite::Connection,
+    book_id: &str,
+) -> Result<BookExportMeta, AiServiceError> {
+    let normalized_book_id = book_id.trim();
+    if normalized_book_id.is_empty() {
+        return Ok(BookExportMeta::default());
+    }
+
+    let notebook_meta = connection
+        .query_row(
+            "
+            SELECT author, cover
+            FROM notebook_books
+            WHERE book_id = ?1
+            ",
+            [normalized_book_id],
+            |row| {
+                Ok(BookExportMeta {
+                    author: row.get(0)?,
+                    cover: row.get(1)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(AiServiceError::storage)?;
+    if let Some(meta) = notebook_meta {
+        return Ok(meta);
+    }
+
+    connection
+        .query_row(
+            "
+            SELECT author, cover
+            FROM book_details
+            WHERE book_id = ?1
+            ",
+            [normalized_book_id],
+            |row| {
+                Ok(BookExportMeta {
+                    author: row.get(0)?,
+                    cover: row.get(1)?,
+                })
+            },
+        )
+        .optional()
+        .map(|value| value.unwrap_or_default())
+        .map_err(AiServiceError::storage)
+}
+
+fn export_cover_asset(cover: Option<String>) -> Option<ExportAsset> {
+    cover.map(|url| ExportAsset {
+        kind: ExportAssetKind::Cover,
+        remote_url: Some(url),
+        local_path: None,
+        file_name: None,
+        mime_type: None,
+    })
+}
+
+fn append_reading_stage_front_matter(
+    front_matter: &mut Vec<ExportMetaField>,
+    stage: Option<&ReadingStageSignal>,
+) {
+    let Some(stage) = stage else {
+        return;
+    };
+    front_matter.push(ExportMetaField {
+        key: "readingStage".to_string(),
+        value: stage.stage.clone(),
+    });
+    front_matter.push(ExportMetaField {
+        key: "readingStageLabel".to_string(),
+        value: stage.label.clone(),
+    });
+    front_matter.push(ExportMetaField {
+        key: "progress".to_string(),
+        value: stage.progress_percent.clamp(0, 100).to_string(),
+    });
 }
 
 fn read_local_highlights(

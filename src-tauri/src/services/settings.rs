@@ -13,9 +13,14 @@ use tauri::AppHandle;
 use crate::{
     db::{self, DATABASE_FILE_NAME},
     errors::AppError,
+    export::{
+        notion::{create_reading_library_template, create_reading_workspace_template},
+        targets::NotionParentType,
+    },
     repositories::sync_state::{SyncStateRecord, SyncStateRepository},
     services::{
         credentials::{CredentialService, CredentialServiceError, CredentialStatus},
+        notion_credentials::{NotionCredentialService, NotionCredentialStatus},
         weread_gateway::normalize_weread_proxy_url,
     },
 };
@@ -74,6 +79,7 @@ pub struct SettingsStateResponse {
     pub sync_states: Vec<SyncStateRecord>,
     pub local_data: LocalDataState,
     pub export_data: ExportDataState,
+    pub integration_data: IntegrationDataState,
     pub network: NetworkState,
     pub app_version: String,
     pub supports_native_updater: bool,
@@ -106,6 +112,51 @@ pub struct ExportDataState {
     pub export_dir: String,
     pub default_export_dir: String,
     pub is_custom_export_dir: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntegrationDataState {
+    pub obsidian: ObsidianIntegrationState,
+    pub notion: NotionIntegrationState,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObsidianIntegrationState {
+    pub vault_dir: Option<String>,
+    pub has_configured_vault: bool,
+    pub attachment_mode: ObsidianAttachmentMode,
+    pub open_after_export: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ObsidianAttachmentMode {
+    SiblingAssets,
+    CentralAssets,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotionIntegrationState {
+    pub credential: NotionCredentialStatus,
+    pub parent_id: Option<String>,
+    pub parent_type: Option<NotionParentType>,
+    pub cover_mode: NotionCoverMode,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum NotionCoverMode {
+    PageCover,
+    ContentImageOnly,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChooseObsidianVaultDirectoryResponse {
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -202,6 +253,27 @@ pub struct SaveExportDirectoryResponse {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CreateNotionReadingLibraryTemplateResponse {
+    pub database_id: String,
+    pub url: String,
+    pub title: String,
+    pub state: SettingsStateResponse,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateNotionReadingWorkspaceTemplateResponse {
+    pub home_page_id: String,
+    pub home_page_url: String,
+    pub database_id: String,
+    pub database_url: String,
+    pub title: String,
+    pub warning: Option<String>,
+    pub state: SettingsStateResponse,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ResetExportDirectoryResponse {
     pub state: SettingsStateResponse,
 }
@@ -283,6 +355,7 @@ impl SettingsService {
             sync_states,
             local_data: self.local_data_state(&connection)?,
             export_data: self.export_data_state()?,
+            integration_data: self.integration_data_state()?,
             network: self.network_state()?,
             app_version: env!("CARGO_PKG_VERSION").to_string(),
             supports_native_updater: cfg!(desktop),
@@ -627,6 +700,138 @@ impl SettingsService {
         })
     }
 
+    pub fn choose_obsidian_vault_directory(
+        &self,
+    ) -> Result<ChooseObsidianVaultDirectoryResponse, AppError> {
+        let selected_dir = pick_folder(&self.app, "选择 Obsidian Vault");
+        let Some(path) = selected_dir else {
+            return Ok(ChooseObsidianVaultDirectoryResponse { path: None });
+        };
+        validate_export_directory(&path)?;
+        validate_writable_directory(&path, "Obsidian Vault 不可写，已取消设置。")?;
+        Ok(ChooseObsidianVaultDirectoryResponse {
+            path: Some(path.display().to_string()),
+        })
+    }
+
+    pub fn save_obsidian_export_settings(
+        &self,
+        vault_dir: String,
+        attachment_mode: ObsidianAttachmentMode,
+        open_after_export: bool,
+    ) -> Result<SettingsStateResponse, AppError> {
+        let vault_dir = vault_dir.trim();
+        if vault_dir.is_empty() {
+            return Err(AppError::InvalidPayload(
+                "请先选择 Obsidian Vault。".to_string(),
+            ));
+        }
+        let vault_path = PathBuf::from(vault_dir);
+        validate_export_directory(&vault_path)?;
+        validate_writable_directory(&vault_path, "Obsidian Vault 不可写，已取消设置。")?;
+
+        let config_dir = db::default_data_dir(&self.app).map_err(AppError::Storage)?;
+        let mut integration =
+            db::read_integration_config(&config_dir).map_err(AppError::Storage)?;
+        integration.obsidian_vault_dir = Some(vault_path.display().to_string());
+        integration.obsidian_attachment_mode = Some(attachment_mode.as_config_value().to_string());
+        integration.obsidian_open_after_export = open_after_export;
+        db::write_integration_config(&config_dir, &integration).map_err(AppError::Storage)?;
+        self.settings_state()
+    }
+
+    pub fn save_notion_export_settings(
+        &self,
+        parent_id: Option<String>,
+        parent_type: Option<NotionParentType>,
+        cover_mode: NotionCoverMode,
+    ) -> Result<SettingsStateResponse, AppError> {
+        let parent_id = normalize_optional_string(parent_id);
+        if parent_id.is_some() != parent_type.is_some() {
+            return Err(AppError::InvalidPayload(
+                "Notion 目标 ID 与目标类型必须同时设置。".to_string(),
+            ));
+        }
+
+        let config_dir = db::default_data_dir(&self.app).map_err(AppError::Storage)?;
+        let mut integration =
+            db::read_integration_config(&config_dir).map_err(AppError::Storage)?;
+        integration.notion_parent_id = parent_id;
+        integration.notion_parent_type = parent_type
+            .map(NotionParentType::as_config_value)
+            .map(str::to_string);
+        integration.notion_cover_mode = Some(cover_mode.as_config_value().to_string());
+        db::write_integration_config(&config_dir, &integration).map_err(AppError::Storage)?;
+        self.settings_state()
+    }
+
+    pub async fn create_notion_reading_library_template(
+        &self,
+        parent_page_id: String,
+    ) -> Result<CreateNotionReadingLibraryTemplateResponse, AppError> {
+        let parent_page_id = normalize_optional_string(Some(parent_page_id)).ok_or_else(|| {
+            AppError::InvalidPayload(
+                "请先填写已共享给 Integration 的 Notion 父页面 ID。".to_string(),
+            )
+        })?;
+        let token = NotionCredentialService::new(self.app.clone())
+            .read_token()
+            .map_err(|error| AppError::Authentication(error.user_message()))?;
+        let output = create_reading_library_template(&token, &parent_page_id)
+            .await
+            .map_err(|error| AppError::Gateway(format!("创建 Notion 阅读库数据库失败：{error}")))?;
+
+        let config_dir = db::default_data_dir(&self.app).map_err(AppError::Storage)?;
+        let mut integration =
+            db::read_integration_config(&config_dir).map_err(AppError::Storage)?;
+        integration.notion_parent_id = Some(output.database_id.clone());
+        integration.notion_parent_type =
+            Some(NotionParentType::Database.as_config_value().to_string());
+        db::write_integration_config(&config_dir, &integration).map_err(AppError::Storage)?;
+
+        Ok(CreateNotionReadingLibraryTemplateResponse {
+            database_id: output.database_id,
+            url: output.url,
+            title: output.title,
+            state: self.settings_state()?,
+        })
+    }
+
+    pub async fn create_notion_reading_workspace_template(
+        &self,
+        parent_page_id: String,
+    ) -> Result<CreateNotionReadingWorkspaceTemplateResponse, AppError> {
+        let parent_page_id = normalize_optional_string(Some(parent_page_id)).ok_or_else(|| {
+            AppError::InvalidPayload(
+                "请先填写已共享给 Integration 的 Notion 父页面 ID。".to_string(),
+            )
+        })?;
+        let token = NotionCredentialService::new(self.app.clone())
+            .read_token()
+            .map_err(|error| AppError::Authentication(error.user_message()))?;
+        let output = create_reading_workspace_template(&token, &parent_page_id)
+            .await
+            .map_err(|error| AppError::Gateway(format!("创建 Notion 阅读工作台失败：{error}")))?;
+
+        let config_dir = db::default_data_dir(&self.app).map_err(AppError::Storage)?;
+        let mut integration =
+            db::read_integration_config(&config_dir).map_err(AppError::Storage)?;
+        integration.notion_parent_id = Some(output.database_id.clone());
+        integration.notion_parent_type =
+            Some(NotionParentType::Database.as_config_value().to_string());
+        db::write_integration_config(&config_dir, &integration).map_err(AppError::Storage)?;
+
+        Ok(CreateNotionReadingWorkspaceTemplateResponse {
+            home_page_id: output.home_page_id,
+            home_page_url: output.home_page_url,
+            database_id: output.database_id,
+            database_url: output.database_url,
+            title: output.title,
+            warning: output.warning,
+            state: self.settings_state()?,
+        })
+    }
+
     pub async fn remote_app_update_manifest() -> Result<RemoteAppUpdateManifestResponse, AppError> {
         let response = HttpClient::new()
             .get(APP_UPDATE_RELEASE_FEED_URL)
@@ -727,8 +932,73 @@ impl SettingsService {
         })
     }
 
+    fn integration_data_state(&self) -> Result<IntegrationDataState, AppError> {
+        let config_dir = db::default_data_dir(&self.app).map_err(AppError::Storage)?;
+        let integration = db::read_integration_config(&config_dir).map_err(AppError::Storage)?;
+        let vault_dir = normalize_optional_string(integration.obsidian_vault_dir);
+
+        Ok(IntegrationDataState {
+            obsidian: ObsidianIntegrationState {
+                has_configured_vault: vault_dir.is_some(),
+                vault_dir,
+                attachment_mode: ObsidianAttachmentMode::from_config_value(
+                    integration.obsidian_attachment_mode.as_deref(),
+                ),
+                open_after_export: integration.obsidian_open_after_export,
+            },
+            notion: NotionIntegrationState {
+                credential: NotionCredentialService::new(self.app.clone())
+                    .credential_status()
+                    .unwrap_or(NotionCredentialStatus {
+                        has_credential: false,
+                        last_validated_at: None,
+                        last_validation_error: Some("Notion 凭据存储暂时不可用。".to_string()),
+                    }),
+                parent_id: normalize_optional_string(integration.notion_parent_id),
+                parent_type: NotionParentType::from_config_value(
+                    integration.notion_parent_type.as_deref(),
+                ),
+                cover_mode: NotionCoverMode::from_config_value(
+                    integration.notion_cover_mode.as_deref(),
+                ),
+            },
+        })
+    }
+
     fn open_connection(&self) -> Result<rusqlite::Connection, AppError> {
         db::open_connection(&self.app).map_err(AppError::Storage)
+    }
+}
+
+impl ObsidianAttachmentMode {
+    fn as_config_value(self) -> &'static str {
+        match self {
+            Self::SiblingAssets => "siblingAssets",
+            Self::CentralAssets => "centralAssets",
+        }
+    }
+
+    pub(crate) fn from_config_value(value: Option<&str>) -> Self {
+        match value {
+            Some("centralAssets") => Self::CentralAssets,
+            _ => Self::SiblingAssets,
+        }
+    }
+}
+
+impl NotionCoverMode {
+    fn as_config_value(self) -> &'static str {
+        match self {
+            Self::PageCover => "pageCover",
+            Self::ContentImageOnly => "contentImageOnly",
+        }
+    }
+
+    fn from_config_value(value: Option<&str>) -> Self {
+        match value {
+            Some("contentImageOnly") => Self::ContentImageOnly,
+            _ => Self::PageCover,
+        }
     }
 }
 
@@ -1444,8 +1714,10 @@ mod tests {
         next_available_export_path, read_data_operation_state, sanitize_diagnostic_text,
         sanitize_png_file_name, select_custom_data_directory, serialize_diagnostics_markdown,
         table_count, validate_backup_manifest, validate_custom_data_directory,
-        write_data_operation_state, DataOperationState, ExportDataState, LocalDataState,
-        NetworkState, SettingsStateResponse, TableCountRecord,
+        write_data_operation_state, DataOperationState, ExportDataState, IntegrationDataState,
+        LocalDataState, NetworkState, NotionCoverMode, NotionCredentialStatus,
+        NotionIntegrationState, ObsidianAttachmentMode, ObsidianIntegrationState,
+        SettingsStateResponse, TableCountRecord,
     };
 
     #[test]
@@ -1711,6 +1983,24 @@ mod tests {
                 export_dir: "C:/Users/RHZ/Exports".to_string(),
                 default_export_dir: "C:/Users/RHZ/AppData/Roaming/wxreadmaster/exports".to_string(),
                 is_custom_export_dir: true,
+            },
+            integration_data: IntegrationDataState {
+                obsidian: ObsidianIntegrationState {
+                    vault_dir: None,
+                    has_configured_vault: false,
+                    attachment_mode: ObsidianAttachmentMode::SiblingAssets,
+                    open_after_export: false,
+                },
+                notion: NotionIntegrationState {
+                    credential: NotionCredentialStatus {
+                        has_credential: false,
+                        last_validated_at: None,
+                        last_validation_error: None,
+                    },
+                    parent_id: None,
+                    parent_type: None,
+                    cover_mode: NotionCoverMode::PageCover,
+                },
             },
             network: NetworkState {
                 weread_proxy_url: Some("http://127.0.0.1:7890".to_string()),

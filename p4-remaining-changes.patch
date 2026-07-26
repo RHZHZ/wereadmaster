@@ -1,0 +1,377 @@
+--- a/src/pages/NotesPage.tsx	2026-07-26 15:25:04.457210290 +0000
++++ b/src/pages/NotesPage.tsx	2026-07-26 15:25:04.463355792 +0000
+@@ -20,12 +20,19 @@
+   Sparkles,
+   X
+ } from "lucide-react";
++import { openUrl } from "@tauri-apps/plugin-opener";
+ import emptyNotes from "../assets/empty-notes.png";
+ import { CredentialSetupCard } from "../components/CredentialSetupCard";
+ import { ExportFailurePanel } from "../components/ExportFailurePanel";
+ import { SkillUpgradeNotice } from "../components/SkillUpgradeNotice";
+ import { calculateTotalNotes } from "../lib/business-rules";
++import { copyTextToClipboard } from "../lib/clipboard";
+ import { getExportAssetBoundary } from "../lib/export-asset-boundaries";
++import {
++  exportTargetLabel,
++  exportTargetsFromDestination,
++  type ExportDestination
++} from "../lib/export-targets";
+ import { formatProgress } from "../lib/formatters";
+ import {
+   cancelBulkExport,
+@@ -47,6 +54,8 @@
+   BulkExportResponse,
+   BulkExportStrategy,
+   CredentialStatus,
++  ExportTargetResult,
++  MultiTargetExportRequest,
+   NotebookBook
+ } from "../lib/types";
+ import { useToast } from "../components/ToastProvider";
+@@ -79,6 +88,7 @@
+   const [bulkResult, setBulkResult] = useState<BulkExportResponse>();
+   const [bulkExportError, setBulkExportError] = useState<string>();
+   const [bulkStrategy, setBulkStrategy] = useState<BulkExportStrategy>("localCachedOnly");
++  const [bulkDestination, setBulkDestination] = useState<ExportDestination>("markdown");
+   const [bulkConcurrency, setBulkConcurrency] = useState(2);
+   const [selectedBookIds, setSelectedBookIds] = useState<string[]>([]);
+   const [bulkSearchQuery, setBulkSearchQuery] = useState("");
+@@ -270,7 +280,8 @@
+         strategy: bulkStrategy,
+         selectedBookIds: selectedIds,
+         concurrency: bulkStrategy === "syncMissingNotes" ? bulkConcurrency : 2,
+-        excludeWithoutExportableNotes
++        excludeWithoutExportableNotes,
++        targets: bulkTargetsRequest(bulkDestination)
+       });
+       setBulkResult(response);
+       showToast({
+@@ -301,7 +312,8 @@
+         strategy: "syncMissingNotes",
+         selectedBookIds: [bookId],
+         concurrency: 1,
+-        excludeWithoutExportableNotes
++        excludeWithoutExportableNotes,
++        targets: bulkTargetsRequest(bulkDestination)
+       });
+       setBulkResult(response);
+       showToast({
+@@ -331,6 +343,25 @@
+     setBulkResult(undefined);
+   }
+ 
++  async function handleOpenBulkTargetLink(url: string, fallbackLabel: string) {
++    try {
++      await openUrl(url);
++    } catch {
++      try {
++        await copyTextToClipboard(url);
++        showToast({
++          message: `外部浏览器打开失败，已复制${fallbackLabel}链接。`,
++          tone: "warning"
++        });
++      } catch {
++        showToast({
++          message: `外部浏览器打开失败，请手动访问${fallbackLabel}链接。`,
++          tone: "error"
++        });
++      }
++    }
++  }
++
+   function toggleSelectedBook(bookId: string) {
+     setSelectedBookIds((current) =>
+       current.includes(bookId) ? current.filter((id) => id !== bookId) : [...current, bookId]
+@@ -487,6 +518,7 @@
+           exportError={bulkExportError}
+           progress={bulkProgress}
+           strategy={bulkStrategy}
++          destination={bulkDestination}
+           concurrency={bulkConcurrency}
+           excludeWithoutExportableNotes={excludeWithoutExportableNotes}
+           selectedBookIds={selectedBookIds}
+@@ -494,6 +526,8 @@
+           isPreflighting={isBulkPreflighting}
+           isExporting={isBulkExporting}
+           onStrategyChange={handleBulkStrategyChange}
++          onDestinationChange={setBulkDestination}
++          onOpenTargetLink={(url, label) => void handleOpenBulkTargetLink(url, label)}
+           onConcurrencyChange={setBulkConcurrency}
+           onExcludeWithoutExportableNotesChange={handleExcludeWithoutExportableNotesChange}
+           onSearchQueryChange={setBulkSearchQuery}
+@@ -516,6 +550,7 @@
+   exportError,
+   progress,
+   strategy,
++  destination,
+   concurrency,
+   excludeWithoutExportableNotes,
+   selectedBookIds,
+@@ -523,6 +558,8 @@
+   isPreflighting,
+   isExporting,
+   onStrategyChange,
++  onDestinationChange,
++  onOpenTargetLink,
+   onConcurrencyChange,
+   onExcludeWithoutExportableNotesChange,
+   onSearchQueryChange,
+@@ -539,6 +576,7 @@
+   exportError?: string;
+   progress?: BulkExportProgress;
+   strategy: BulkExportStrategy;
++  destination: ExportDestination;
+   concurrency: number;
+   excludeWithoutExportableNotes: boolean;
+   selectedBookIds: string[];
+@@ -546,6 +584,8 @@
+   isPreflighting: boolean;
+   isExporting: boolean;
+   onStrategyChange: (strategy: BulkExportStrategy) => void;
++  onDestinationChange: (destination: ExportDestination) => void;
++  onOpenTargetLink: (url: string, fallbackLabel: string) => void;
+   onConcurrencyChange: (concurrency: number) => void;
+   onExcludeWithoutExportableNotesChange: (checked: boolean) => void;
+   onSearchQueryChange: (query: string) => void;
+@@ -699,6 +739,20 @@
+               </section>
+ 
+               <div className="bulk-export-toolbar">
++                <label className="bulk-export-concurrency bulk-export-target-select">
++                  <span>导出到</span>
++                  <select
++                    value={destination}
++                    onChange={(event) => onDestinationChange(event.target.value as ExportDestination)}
++                    disabled={isExporting}
++                  >
++                    <option value="markdown">仅 Markdown</option>
++                    <option value="obsidian">Markdown + Obsidian</option>
++                    <option value="notion">Markdown + Notion</option>
++                    <option value="obsidianNotion">Markdown + Obsidian + Notion</option>
++                  </select>
++                </label>
++
+                 {strategy === "syncMissingNotes" ? (
+                   <label className="bulk-export-concurrency">
+                     <span>同步并发</span>
+@@ -742,6 +796,12 @@
+                   <p className="bulk-export-selection-summary">已选择 {selectedCount} 本</p>
+                 ) : null}
+               </div>
++
++              {destination === "notion" || destination === "obsidianNotion" ? (
++                <p className="bulk-export-selection-summary">
++                  Notion 批量导入按书串行，可能较慢；单本失败不影响其他书，Markdown 始终保留在批量目录。
++                </p>
++              ) : null}
+             </section>
+ 
+             <section className="bulk-export-list" aria-label="批量导出书籍预检">
+@@ -770,13 +830,21 @@
+             </div>
+             <span>{result.files.length} 个文件</span>
+             <div className="bulk-export-result-list">
+-              {result.report.items.slice(0, 6).map((item) => (
++              {sortBulkResultItemsFailedFirst(result.report.items).slice(0, 6).map((item) => (
+                 <article className="bulk-export-result-item" key={item.bookId}>
+                   <p>
+                     <strong>{item.title}</strong>
+                     <span>{bulkStatusLabel(item.status)} · {item.reason}</span>
+                   </p>
+-                  {item.status === "failed" ? (
++                  {(item.targets ?? []).map((target) => (
++                    <BulkExportTargetLine
++                      key={`${item.bookId}-${target.target}`}
++                      target={target}
++                      onOpenLink={onOpenTargetLink}
++                    />
++                  ))}
++                  {item.status === "failed" ||
++                  (item.targets ?? []).some((target) => target.status === "failed") ? (
+                     <button
+                       className="text-button"
+                       type="button"
+@@ -838,6 +906,57 @@
+   );
+ }
+ 
++function bulkTargetsRequest(destination: ExportDestination): MultiTargetExportRequest | undefined {
++  if (destination === "markdown") {
++    return undefined;
++  }
++  return { targets: exportTargetsFromDestination(destination) };
++}
++
++function sortBulkResultItemsFailedFirst(items: BulkExportResponse["report"]["items"]) {
++  return [...items].sort((left, right) => {
++    const leftFailed =
++      left.status === "failed" || (left.targets ?? []).some((target) => target.status === "failed");
++    const rightFailed =
++      right.status === "failed" ||
++      (right.targets ?? []).some((target) => target.status === "failed");
++    return Number(rightFailed) - Number(leftFailed);
++  });
++}
++
++function BulkExportTargetLine({
++  target,
++  onOpenLink
++}: {
++  target: ExportTargetResult;
++  onOpenLink: (url: string, fallbackLabel: string) => void;
++}) {
++  const label = exportTargetLabel(target.target);
++  return (
++    <p className="bulk-export-target-line">
++      <strong>{label}：</strong>
++      {target.status === "succeeded" ? (
++        target.url ? (
++          <button
++            className="text-button"
++            type="button"
++            onClick={() => onOpenLink(target.url!, `${label} 页面`)}
++          >
++            打开 {label} 页面
++          </button>
++        ) : (
++          <span>{target.path ?? "已完成"}</span>
++        )
++      ) : target.status === "failed" ? (
++        <span>{target.error?.message ?? "失败"}</span>
++      ) : (
++        <span>已跳过</span>
++      )}
++      {target.warning ? <small>{target.warning}</small> : null}
++    </p>
++  );
++}
++
+ function StrategyOption({
+   value,
+   checked,
+--- a/src/pages/SettingsPage.tsx	2026-07-26 15:25:04.459316776 +0000
++++ b/src/pages/SettingsPage.tsx	2026-07-26 15:25:04.465364442 +0000
+@@ -82,6 +82,7 @@
+   saveCredential,
+   saveNotionCredential,
+   saveNotionExportSettings,
++  validateNotionCredential,
+   saveObsidianExportSettings,
+   saveReadingAssistantPreferences,
+   saveWereadProxyUrl,
+@@ -324,6 +325,7 @@
+   const [notionCoverMode, setNotionCoverMode] = useState<NotionCoverMode>("pageCover");
+   const [isSavingIntegrations, setIsSavingIntegrations] = useState(false);
+   const [isCreatingNotionTemplate, setIsCreatingNotionTemplate] = useState(false);
++  const [isValidatingNotionToken, setIsValidatingNotionToken] = useState(false);
+   const [wereadProxyInput, setWereadProxyInput] = useState("");
+   const [isSavingWereadProxy, setIsSavingWereadProxy] = useState(false);
+   const [isResettingWereadProxy, setIsResettingWereadProxy] = useState(false);
+@@ -1132,6 +1134,30 @@
+     }
+   }
+ 
++  async function handleValidateNotionCredential() {
++    setIsValidatingNotionToken(true);
++    setError(undefined);
++    try {
++      if (notionToken.trim()) {
++        await saveNotionCredential(notionToken);
++        setNotionToken("");
++      }
++      const credential = await validateNotionCredential();
++      setState((current) => current ? {
++        ...current,
++        integrationData: {
++          ...current.integrationData,
++          notion: { ...current.integrationData.notion, credential },
++        },
++      } : current);
++      showToast({ message: "Notion Token 验证通过。", tone: "success" });
++    } catch (validationError) {
++      setError(getCommandErrorMessage(validationError));
++    } finally {
++      setIsValidatingNotionToken(false);
++    }
++  }
++
+   async function handleSaveWereadProxy() {
+     const proxyUrl = wereadProxyInput.trim();
+     if (!proxyUrl) {
+@@ -2077,6 +2103,7 @@
+                   notionParentType={notionParentType}
+                   notionCoverMode={notionCoverMode}
+                   isCreatingNotionTemplate={isCreatingNotionTemplate}
++                  isValidatingNotionToken={isValidatingNotionToken}
+                   onObsidianVaultInputChange={setObsidianVaultInput}
+                   onObsidianAttachmentModeChange={setObsidianAttachmentMode}
+                   onObsidianOpenAfterExportChange={setObsidianOpenAfterExport}
+@@ -2093,6 +2120,7 @@
+                   onOpenExternalLink={(url, fallbackLabel) => void handleOpenExternalLink(url, fallbackLabel)}
+                   onCopyNotionViewRecipe={() => void handleCopyNotionViewRecipe()}
+                   onRemoveNotionCredential={() => void handleRemoveNotionCredential()}
++                  onValidateNotionToken={() => void handleValidateNotionCredential()}
+                 />
+               </SettingsSection>
+             ) : null}
+@@ -2926,6 +2954,7 @@
+   notionParentType,
+   notionCoverMode,
+   isCreatingNotionTemplate,
++  isValidatingNotionToken,
+   onObsidianVaultInputChange,
+   onObsidianAttachmentModeChange,
+   onObsidianOpenAfterExportChange,
+@@ -2942,6 +2971,7 @@
+   onOpenExternalLink,
+   onCopyNotionViewRecipe,
+   onRemoveNotionCredential,
++  onValidateNotionToken,
+ }: {
+   state?: SettingsState;
+   isSaving: boolean;
+@@ -2956,6 +2986,7 @@
+   notionParentType: NotionParentType;
+   notionCoverMode: NotionCoverMode;
+   isCreatingNotionTemplate: boolean;
++  isValidatingNotionToken: boolean;
+   onObsidianVaultInputChange: (value: string) => void;
+   onObsidianAttachmentModeChange: (value: ObsidianAttachmentMode) => void;
+   onObsidianOpenAfterExportChange: (value: boolean) => void;
+@@ -2972,6 +3003,7 @@
+   onOpenExternalLink: (url: string, fallbackLabel: string) => void;
+   onCopyNotionViewRecipe: () => void;
+   onRemoveNotionCredential: () => void;
++  onValidateNotionToken: () => void;
+ }) {
+   const hasNotionCredential = state?.integrationData.notion.credential.hasCredential ?? false;
+   const hasNotionTarget = Boolean(state?.integrationData.notion.parentId);
+@@ -3048,8 +3080,16 @@
+         <div className="settings-control-row notion-token-row">
+           <label className="credential-input">
+             <span>Integration Token</span>
+-            <input type="password" value={notionToken} placeholder={state?.integrationData.notion.credential.hasCredential ? "已保存，留空则保持不变" : "secret_..."} onChange={(event) => onNotionTokenChange(event.target.value)} />
++            <input type="password" value={notionToken} placeholder={state?.integrationData.notion.credential.hasCredential ? "已保存，留空则保持不变" : "ntn_ 或 secret_ 开头"} onChange={(event) => onNotionTokenChange(event.target.value)} />
+           </label>
++          <button
++            className="text-button"
++            type="button"
++            onClick={onValidateNotionToken}
++            disabled={isValidatingNotionToken || (!notionToken.trim() && !hasNotionCredential)}
++          >
++            {isValidatingNotionToken ? "验证中" : "验证连接"}
++          </button>
+         </div>
+         <div className="notion-template-panel">
+           <div className="notion-template-copy">
+--- a/src-tauri/src/lib.rs	2026-07-26 15:25:04.461796917 +0000
++++ b/src-tauri/src/lib.rs	2026-07-26 15:25:04.467938306 +0000
+@@ -85,6 +85,7 @@
+             commands::notion_credentials::get_notion_credential_status,
+             commands::notion_credentials::save_notion_credential,
+             commands::notion_credentials::remove_notion_credential,
++            commands::notion_credentials::validate_notion_credential,
+             commands::shelf::sync_shelf,
+             commands::shelf::get_bookshelf,
+             commands::book::get_book_detail,

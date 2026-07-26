@@ -10,6 +10,8 @@
 >
 > 摘要：WeReadMaster v1.0.11 已发布。本次更新带来 AI 阅读助手、候选书确认工作流、热门划线与公开书评面板，让微信读书里的书架、笔记和统计更容易沉淀成个人阅读资产。
 
+![封面建议：本地阅读工作台主视觉](assets/wechat-v1.0.11/cover.png)
+
 ![桌面端 AI 阅读助手：推荐书可先搜索确认再加入本地候选](assets/wechat-v1.0.11/desktop-ai-reading-assistant.png)
 
 你有没有遇到过这种情况：

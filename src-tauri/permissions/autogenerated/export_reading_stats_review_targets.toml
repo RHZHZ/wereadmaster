@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-export-reading-stats-review-targets"
+description = "Enables the export_reading_stats_review_targets command without any pre-configured scope."
+commands.allow = ["export_reading_stats_review_targets"]
+
+[[permission]]
+identifier = "deny-export-reading-stats-review-targets"
+description = "Denies the export_reading_stats_review_targets command without any pre-configured scope."
+commands.deny = ["export_reading_stats_review_targets"]

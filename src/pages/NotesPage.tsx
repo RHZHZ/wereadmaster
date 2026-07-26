@@ -360,6 +360,7 @@ export function NotesPage({
           <h3>划线、想法和书签数量</h3>
           <p>书签只纳入统计；正文内容只展示和导出划线、想法/点评。</p>
         </div>
+        {hasCredential ? (
         <div className="notes-hero-actions" aria-label="笔记操作">
           <button
             className="sync-button"
@@ -388,8 +389,10 @@ export function NotesPage({
             批量导出
           </button>
         </div>
+        ) : null}
       </div>
 
+      {hasCredential ? (
       <section className="shelf-summary-row" aria-label="笔记统计">
         <SummaryPill label="有笔记书籍" value={overview?.summary.totalBookCount ?? books.length} />
         <SummaryPill label="总笔记" value={overview?.summary.totalNoteCount ?? 0} />
@@ -397,6 +400,7 @@ export function NotesPage({
         <SummaryPill label="想法/点评" value={totalThoughts} />
         <SummaryPill label="书签" value={totalBookmarks} />
       </section>
+      ) : null}
 
       {!hasCredential ? (
         <CredentialSetupCard

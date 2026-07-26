@@ -15,12 +15,19 @@ use crate::{
     errors::AppError,
     export::{
         bulk::{
-            build_bulk_export_preflight, chunk_bulk_export_jobs, normalize_bulk_export_concurrency,
-            serialize_bulk_export_index, serialize_bulk_export_report, BulkExportItemStatus,
-            BulkExportPreflight, BulkExportPreflightItem, BulkExportReport, BulkExportResultItem,
-            BulkExportStrategy,
+            build_bulk_export_preflight, bulk_external_targets, chunk_bulk_export_jobs,
+            normalize_bulk_export_concurrency, serialize_bulk_export_index,
+            serialize_bulk_export_report, BulkExportItemStatus, BulkExportPreflight,
+            BulkExportPreflightItem, BulkExportReport, BulkExportResultItem, BulkExportStrategy,
         },
+        dispatcher::export_document_targets_with_notion_blocks,
+        document::ExportDocument,
         markdown::{serialize_book_ai_summary_markdown, serialize_book_notes_markdown},
+        notion_blocks::build_book_notes_blocks,
+        targets::{
+            ExportTargetError, ExportTargetResult, ExportTargetStatus, ExternalExportTarget,
+            MultiTargetExportRequest, MultiTargetExportResponse,
+        },
     },
     mappers::notes::{
         build_book_notes_record, map_bookmark_list_response, map_mine_reviews_page,
@@ -86,6 +93,9 @@ pub struct BulkExportRequest {
     pub selected_book_ids: Option<Vec<String>>,
     pub concurrency: Option<usize>,
     pub exclude_without_exportable_notes: Option<bool>,
+    /// 多目标选择。缺省等价于仅 Markdown（旧前端兼容）；
+    /// 选择 Obsidian / Notion 时，Markdown 仍写入批量目录作为兜底。
+    pub targets: Option<MultiTargetExportRequest>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -401,6 +411,41 @@ impl NotesService {
         })
     }
 
+    pub async fn export_book_notes_targets(
+        &self,
+        book_id: String,
+        request: MultiTargetExportRequest,
+    ) -> Result<MultiTargetExportResponse, AppError> {
+        request.validate().map_err(AppError::InvalidPayload)?;
+        let notes = self.get_book_notes(book_id).await?;
+        let exported_at = current_unix_seconds();
+        let document = ExportDocument::from_book_notes(&notes, &exported_at);
+        let markdown = serialize_book_notes_markdown(&notes, &exported_at);
+        let notion_blocks = build_book_notes_blocks(&notes, &exported_at);
+        let file_stem = format!(
+            "{}-{}",
+            sanitize_file_stem(&document.title, &notes.book_id),
+            exported_at
+        );
+        let results = export_document_targets_with_notion_blocks(
+            &self.app,
+            &document,
+            &markdown,
+            &file_stem,
+            &request,
+            Some(&notion_blocks),
+        )
+        .await;
+
+        Ok(MultiTargetExportResponse {
+            export_id: format!("book-notes-{}-{exported_at}", notes.book_id),
+            source_kind: document.source_kind,
+            source_id: notes.book_id,
+            exported_at,
+            results,
+        })
+    }
+
     pub fn preflight_bulk_export(
         &self,
         selected_book_ids: Option<Vec<String>>,
@@ -425,6 +470,10 @@ impl NotesService {
         request: BulkExportRequest,
     ) -> Result<BulkExportResponse, AppError> {
         BULK_EXPORT_CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+        if let Some(targets) = request.targets.as_ref() {
+            targets.validate().map_err(AppError::InvalidPayload)?;
+        }
+        let external_targets = bulk_external_targets(request.targets.as_ref());
         let concurrency = normalize_bulk_export_concurrency(request.concurrency);
         let selected_book_ids = request.selected_book_ids.clone();
         let exclude_without_exportable_notes =
@@ -700,8 +749,63 @@ impl NotesService {
                 status,
                 notes_file: prepared.notes_file,
                 ai_review_file,
+                targets: Vec::new(),
                 reason,
             });
+        }
+
+        // 外部目标（Obsidian / Notion）串行写入：只处理笔记已成功导出的书；
+        // 单本失败不影响其他书，Notion 限流与部分成功语义由导出适配器兜底。
+        if !external_targets.is_empty() {
+            let external_request = MultiTargetExportRequest {
+                targets: external_targets.clone(),
+                obsidian: request
+                    .targets
+                    .as_ref()
+                    .and_then(|value| value.obsidian.clone()),
+                notion: request
+                    .targets
+                    .as_ref()
+                    .and_then(|value| value.notion.clone()),
+            };
+            for item in items.iter_mut() {
+                if item.status != BulkExportItemStatus::Exported || item.notes_file.is_none() {
+                    continue;
+                }
+                if BULK_EXPORT_CANCEL_REQUESTED.load(Ordering::SeqCst) {
+                    break;
+                }
+                progress.emit(
+                    &self.app,
+                    BulkExportProgressPhase::ExportingCached,
+                    vec![BulkExportProgressBook {
+                        book_id: item.book_id.clone(),
+                        title: item.title.clone(),
+                    }],
+                    format!("正在写入外部目标：{}。", item.title),
+                );
+                let target_results = self
+                    .export_bulk_external_targets(&item.book_id, &exported_at, &external_request)
+                    .await;
+                let succeeded = target_results
+                    .iter()
+                    .filter(|result| result.status == ExportTargetStatus::Succeeded)
+                    .count();
+                let failed = target_results
+                    .iter()
+                    .filter(|result| result.status == ExportTargetStatus::Failed)
+                    .count();
+                if failed > 0 {
+                    item.reason = format!(
+                        "{}；外部目标完成 {succeeded}/{} 个，失败 {failed} 个。",
+                        item.reason,
+                        target_results.len()
+                    );
+                } else if succeeded > 0 {
+                    item.reason = format!("{}；外部目标已完成 {succeeded} 个。", item.reason);
+                }
+                item.targets = target_results;
+            }
         }
 
         let report = BulkExportReport {
@@ -747,6 +851,48 @@ impl NotesService {
     pub fn cancel_bulk_export(&self) -> Result<(), AppError> {
         BULK_EXPORT_CANCEL_REQUESTED.store(true, Ordering::SeqCst);
         Ok(())
+    }
+
+    /// 为单本书写出批量请求中的外部目标（Obsidian / Notion）。
+    /// Markdown 已由批量目录负责，此处只处理外部目标；读取缓存失败时
+    /// 返回目标级失败结果而不是中断整个批量任务。
+    async fn export_bulk_external_targets(
+        &self,
+        book_id: &str,
+        exported_at: &str,
+        request: &MultiTargetExportRequest,
+    ) -> Vec<ExportTargetResult> {
+        let notes = match self
+            .open_connection()
+            .and_then(|connection| read_local_book_notes(&connection, book_id))
+        {
+            Ok(notes) => notes,
+            Err(error) => {
+                let message = error.user_message();
+                return request
+                    .targets
+                    .iter()
+                    .map(|target| bulk_external_target_failure(*target, &message))
+                    .collect();
+            }
+        };
+        let document = ExportDocument::from_book_notes(&notes, exported_at);
+        let markdown = serialize_book_notes_markdown(&notes, exported_at);
+        let notion_blocks = build_book_notes_blocks(&notes, exported_at);
+        let file_stem = format!(
+            "{}-{}",
+            sanitize_file_stem(&document.title, &notes.book_id),
+            exported_at
+        );
+        export_document_targets_with_notion_blocks(
+            &self.app,
+            &document,
+            &markdown,
+            &file_stem,
+            request,
+            Some(&notion_blocks),
+        )
+        .await
     }
 
     fn export_cached_book_notes_into(
@@ -1493,6 +1639,24 @@ fn bool_to_int(value: bool) -> i64 {
         1
     } else {
         0
+    }
+}
+
+fn bulk_external_target_failure(target: ExternalExportTarget, message: &str) -> ExportTargetResult {
+    ExportTargetResult {
+        target,
+        status: ExportTargetStatus::Failed,
+        title: None,
+        path: None,
+        url: None,
+        page_id: None,
+        file_count: None,
+        warning: None,
+        error: Some(ExportTargetError {
+            code: "bulk_notes_read_failed".to_string(),
+            message: "读取本地笔记缓存失败，未写入外部目标。".to_string(),
+            detail: Some(message.to_string()),
+        }),
     }
 }
 

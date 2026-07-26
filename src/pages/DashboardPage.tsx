@@ -592,8 +592,19 @@ export function DashboardPage({
     };
   }, [hasCredential]);
 
+  const localQueueItemCount =
+    continueItems.length + reviewItems.length + candidateItems.length;
+  const isQueuePanelVisible = hasCredential || localQueueItemCount > 0;
+  const shelfErrorText = error ? formatDashboardErrorText(error) : undefined;
+  const showShelfErrorMessage =
+    Boolean(shelfErrorText) &&
+    !(isQueuePanelVisible && readingStateError === shelfErrorText);
+
   return (
-    <section className="dashboard-grid" aria-label="阅读总览">
+    <section
+      className={`dashboard-grid${hasCredential ? "" : " dashboard-grid--onboarding"}`}
+      aria-label="阅读总览"
+    >
       <article className="hero-panel">
         <img src={heroReadingDashboard} alt="" />
         <div className="hero-copy">
@@ -625,6 +636,7 @@ export function DashboardPage({
         </div>
       </article>
 
+      {hasCredential ? (
       <section className="metric-grid" aria-label="核心指标">
         <MetricCard
           label="书架条目"
@@ -642,6 +654,7 @@ export function DashboardPage({
           detail={lastSyncText.detail}
         />
       </section>
+      ) : null}
 
       <article className={`dashboard-status-strip ${hasCredential ? "is-connected" : "is-warning"}`}>
         {hasCredential ? <CheckCircle2 aria-hidden="true" size={18} /> : <KeyRound aria-hidden="true" size={18} />}
@@ -653,17 +666,24 @@ export function DashboardPage({
               : "API Key 会保存到本机安全存储，页面不会显示密钥。"}
           </span>
         </div>
-        <button className="text-button" type="button" onClick={onOpenSettings}>
+        <button
+          className={hasCredential ? "text-button" : "secondary-action"}
+          type="button"
+          onClick={onOpenSettings}
+        >
           打开设置
           <ArrowRight aria-hidden="true" size={16} />
         </button>
       </article>
 
-      <DailyWorkbenchPanel
-        primaryAction={workbenchActions.primaryAction}
-        secondaryActions={workbenchActions.secondaryActions}
-      />
+      {hasCredential ? (
+        <DailyWorkbenchPanel
+          primaryAction={workbenchActions.primaryAction}
+          secondaryActions={workbenchActions.secondaryActions}
+        />
+      ) : null}
 
+      {hasCredential ? (
       <WereadOverviewCard
         hasCredential={hasCredential}
         summary={summary}
@@ -678,7 +698,9 @@ export function DashboardPage({
         onOpenShelfEntry={onOpenShelfEntry}
         onOpenSettings={onOpenSettings}
       />
+      ) : null}
 
+      {hasCredential ? (
       <article className="today-actions-panel" aria-label="今日可做">
         <div className="activity-heading">
           <div>
@@ -706,11 +728,16 @@ export function DashboardPage({
           ))}
         </div>
       </article>
+      ) : null}
 
-      <DailyReadingCardPanel card={dailyReadingCard} onClick={handleDailyReadingCardClick} />
+      {hasCredential ? (
+        <>
+          <DailyReadingCardPanel card={dailyReadingCard} onClick={handleDailyReadingCardClick} />
+          <DashboardLocalProgressPanel progress={localProgress} />
+        </>
+      ) : null}
 
-      <DashboardLocalProgressPanel progress={localProgress} />
-
+      {hasCredential ? (
       <section className="dashboard-insight-grid" aria-label="近期阅读摘要">
         <article
           className={`dashboard-profile-card is-persona${overviewPersona.status === "provisional" ? " is-provisional" : ""}${
@@ -839,7 +866,9 @@ export function DashboardPage({
           )}
         </article>
       </section>
+      ) : null}
 
+      {isQueuePanelVisible ? (
       <article className="dashboard-queue-panel" aria-label="本地阅读队列">
         <div className="activity-heading">
           <div>
@@ -886,7 +915,9 @@ export function DashboardPage({
           />
         </div>
       </article>
+      ) : null}
 
+      {hasCredential ? (
       <article className="activity-panel">
         <div className="activity-heading">
           <div>
@@ -899,16 +930,8 @@ export function DashboardPage({
           </button>
         </div>
 
-        {error ? (
-          <StatusMessage tone="error" icon={<AlertCircle aria-hidden="true" size={18} />} text={formatDashboardErrorText(error)} />
-        ) : null}
-
-        {!hasCredential ? (
-          <StatusMessage
-            tone="warning"
-            icon={<KeyRound aria-hidden="true" size={18} />}
-            text="先保存 API Key，再把微信读书里的书架、笔记和统计同步到本机。"
-          />
+        {showShelfErrorMessage && shelfErrorText ? (
+          <StatusMessage tone="error" icon={<AlertCircle aria-hidden="true" size={18} />} text={shelfErrorText} />
         ) : null}
 
         {hasCredential && !hasShelfData && !error ? (
@@ -961,6 +984,7 @@ export function DashboardPage({
           查看书架
         </button>
       </article>
+      ) : null}
     </section>
   );
 }
