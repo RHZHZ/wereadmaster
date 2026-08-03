@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   AlertCircle,
   ArrowLeft,
@@ -8,8 +9,12 @@ import {
   Settings,
   Sparkles
 } from "lucide-react";
+import { AssetExportDialog } from "../components/export/AssetExportDialog";
+import { useToast } from "../components/ToastProvider";
+import { resolveExportPlatformMode } from "../lib/asset-export-dialog";
+import { formatMultiTargetExportToast } from "../lib/export-targets";
 import type { BookDetail, PreparedAssetUpdate, ReadingProgress, ShelfEntry } from "../lib/types";
-import { exportTargetLabel, type ExportDestination } from "../lib/export-targets";
+import type { SettingsCategoryId } from "./SettingsPage";
 import { ReadingRouteInputPanel } from "./reading-route/ReadingRouteInputPanel";
 import { ReadingRouteResultPanel } from "./reading-route/ReadingRouteResultPanel";
 import { useReadingRoutePageState } from "./reading-route/useReadingRoutePageState";
@@ -20,7 +25,7 @@ type ReadingRoutePageProps = {
   progress?: ReadingProgress;
   preparedUpdate?: PreparedAssetUpdate;
   onBack: () => void;
-  onOpenSettings: () => void;
+  onOpenSettings: (preferredCategory?: SettingsCategoryId) => void;
   onOpenDiscovery: () => void;
 };
 
@@ -34,7 +39,16 @@ export function ReadingRoutePage({
   onOpenDiscovery
 }: ReadingRoutePageProps) {
   const state = useReadingRoutePageState({ shelfEntry, detail, progress, preparedUpdate });
+  const [isAssetExportOpen, setIsAssetExportOpen] = useState(false);
+  const { showToast } = useToast();
   const regenerateLabel = preparedUpdate ? "生成更新版本" : "重新生成";
+  const exportLabel = state.isCrossBookRoute ? "导出阅读路线" : "导出阅读指南";
+
+  async function exportRoute(targets: Parameters<typeof state.exportRoute>[0]) {
+    const response = await state.exportRoute(targets);
+    showToast(formatMultiTargetExportToast(response));
+    return response;
+  }
 
   return (
     <section className="reading-route-page" aria-label="本书阅读指南">
@@ -50,7 +64,7 @@ export function ReadingRoutePage({
         <div>
           <p className="section-kicker">AI 阅读指南</p>
           <h3>{state.currentBook?.title ? `围绕《${state.currentBook.title}》规划下一步` : state.pageTitle}</h3>
-          <p>先生成本书指南；加入候选后生成跨书路线。</p>
+          <p>先生成本书指南；加入候选后生成阅读路线。</p>
           {state.currentBook?.author ? <small>{state.currentBook.author}</small> : null}
         </div>
         <div className="ai-summary-hero-side">
@@ -72,7 +86,7 @@ export function ReadingRoutePage({
                 : state.isLoadingCache
                   ? "读取缓存中"
                   : state.hasCandidateSelection
-                    ? "生成跨书路线图"
+                    ? "生成阅读路线"
                     : "生成本书指南"}
             </button>
             <button
@@ -87,25 +101,12 @@ export function ReadingRoutePage({
             <button
               className="secondary-action"
               type="button"
-              onClick={() => void state.handleExport()}
-              disabled={!state.hasRoute || state.isExporting || state.status === "generating" || state.isLoadingCache}
+              onClick={() => setIsAssetExportOpen(true)}
+              disabled={!state.hasRoute || state.status === "generating" || state.isLoadingCache}
             >
-              {state.isExporting ? <Loader2 aria-hidden="true" size={18} className="spin" /> : <Download aria-hidden="true" size={18} />}
-              {state.isExporting ? "导出中" : "一键导出"}
+              <Download aria-hidden="true" size={18} />
+              {exportLabel}
             </button>
-            <label className="compact-export-select">
-              <span>导出到</span>
-              <select
-                value={state.exportDestination}
-                onChange={(event) => state.setExportDestination(event.target.value as ExportDestination)}
-                disabled={!state.hasRoute || state.isExporting || state.status === "generating" || state.isLoadingCache}
-              >
-                <option value="markdown">Markdown</option>
-                <option value="obsidian">Obsidian</option>
-                <option value="notion">Notion</option>
-                <option value="obsidianNotion">Obsidian + Notion</option>
-              </select>
-            </label>
           </div>
         </div>
       </section>
@@ -117,7 +118,7 @@ export function ReadingRoutePage({
             <strong>需要先配置 AI Provider</strong>
             <p>阅读指南和跨书路线沿用本机 AI Provider 设置。</p>
           </div>
-          <button className="secondary-action" type="button" onClick={onOpenSettings}>
+          <button className="secondary-action" type="button" onClick={() => onOpenSettings()}>
             去设置
           </button>
         </div>
@@ -157,37 +158,6 @@ export function ReadingRoutePage({
         </div>
       ) : null}
 
-      {state.exportResult ? (
-        <section className="export-result-list" aria-label="阅读指南导出结果">
-          {state.exportResult.results.map((result) => (
-            <div
-              className={`status-message ${
-                result.status === "failed" ? "status-message--error" : "status-message--neutral"
-              }`}
-              key={result.target}
-            >
-              {result.status === "failed" ? (
-                <AlertCircle aria-hidden="true" size={18} />
-              ) : (
-                <Download aria-hidden="true" size={18} />
-              )}
-              <span>
-                <strong>{exportTargetLabel(result.target)}：</strong>
-                {result.status === "succeeded"
-                  ? result.path || result.url || "导出成功"
-                  : result.error?.message || "导出失败"}
-                {result.warning ? `（${result.warning}）` : ""}
-              </span>
-              {result.url ? (
-                <a href={result.url} target="_blank" rel="noreferrer">
-                  打开
-                </a>
-              ) : null}
-            </div>
-          ))}
-        </section>
-      ) : null}
-
       <ReadingRouteInputPanel
         currentBook={state.currentBook}
         candidateBooks={state.candidateBooks}
@@ -209,9 +179,20 @@ export function ReadingRoutePage({
       ) : (
         <div className="ai-summary-placeholder">
           <Sparkles aria-hidden="true" size={20} />
-          <p>可以直接生成本书阅读指南；如需比较和排序下一本，再额外加入候选书生成跨书路线图。</p>
+          <p>可以直接生成本书阅读指南；如需比较和排序下一本，再额外加入候选书生成阅读路线。</p>
         </div>
       )}
+
+      <AssetExportDialog
+        open={isAssetExportOpen}
+        ariaLabel={exportLabel}
+        assetTitle={exportLabel}
+        assetDescription={state.currentBook?.title ? `《${state.currentBook.title}》` : undefined}
+        platformMode={resolveExportPlatformMode()}
+        onExport={exportRoute}
+        onOpenSettings={() => onOpenSettings("export")}
+        onClose={() => setIsAssetExportOpen(false)}
+      />
     </section>
   );
 }

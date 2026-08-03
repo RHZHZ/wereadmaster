@@ -345,16 +345,46 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Enables the analyze_notion_database command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-analyze-notion-database",
+          "markdownDescription": "Enables the analyze_notion_database command without any pre-configured scope."
+        },
+        {
           "description": "Enables the ask_local_reader_selection_question command without any pre-configured scope.",
           "type": "string",
           "const": "allow-ask-local-reader-selection-question",
           "markdownDescription": "Enables the ask_local_reader_selection_question command without any pre-configured scope."
         },
         {
+          "description": "Enables the ask_reading_assistant command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ask-reading-assistant",
+          "markdownDescription": "Enables the ask_reading_assistant command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the ask_reading_assistant_stream command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ask-reading-assistant-stream",
+          "markdownDescription": "Enables the ask_reading_assistant_stream command without any pre-configured scope."
+        },
+        {
           "description": "Enables the cancel_bulk_export command without any pre-configured scope.",
           "type": "string",
           "const": "allow-cancel-bulk-export",
           "markdownDescription": "Enables the cancel_bulk_export command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the cancel_notion_cover_backfill command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-cancel-notion-cover-backfill",
+          "markdownDescription": "Enables the cancel_notion_cover_backfill command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the cancel_reading_assistant_stream command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-cancel-reading-assistant-stream",
+          "markdownDescription": "Enables the cancel_reading_assistant_stream command without any pre-configured scope."
         },
         {
           "description": "Enables the choose_custom_data_directory command without any pre-configured scope.",
@@ -375,6 +405,12 @@
           "markdownDescription": "Enables the choose_local_book_file command without any pre-configured scope."
         },
         {
+          "description": "Enables the choose_obsidian_vault_directory command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-choose-obsidian-vault-directory",
+          "markdownDescription": "Enables the choose_obsidian_vault_directory command without any pre-configured scope."
+        },
+        {
           "description": "Enables the clear_ai_output_cache command without any pre-configured scope.",
           "type": "string",
           "const": "allow-clear-ai-output-cache",
@@ -387,10 +423,52 @@
           "markdownDescription": "Enables the clear_local_cache command without any pre-configured scope."
         },
         {
+          "description": "Enables the clear_reading_assistant_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-clear-reading-assistant-history",
+          "markdownDescription": "Enables the clear_reading_assistant_history command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the continue_notion_standard_database_provisioning command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-continue-notion-standard-database-provisioning",
+          "markdownDescription": "Enables the continue_notion_standard_database_provisioning command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the create_notion_reading_library_template command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-create-notion-reading-library-template",
+          "markdownDescription": "Enables the create_notion_reading_library_template command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the create_notion_reading_workspace_template command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-create-notion-reading-workspace-template",
+          "markdownDescription": "Enables the create_notion_reading_workspace_template command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the create_notion_standard_outcomes_database command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-create-notion-standard-outcomes-database",
+          "markdownDescription": "Enables the create_notion_standard_outcomes_database command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the delete_reading_assistant_thread command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-delete-reading-assistant-thread",
+          "markdownDescription": "Enables the delete_reading_assistant_thread command without any pre-configured scope."
+        },
+        {
           "description": "Enables the export_book_decision_markdown command without any pre-configured scope.",
           "type": "string",
           "const": "allow-export-book-decision-markdown",
           "markdownDescription": "Enables the export_book_decision_markdown command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the export_book_decision_targets command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-export-book-decision-targets",
+          "markdownDescription": "Enables the export_book_decision_targets command without any pre-configured scope."
         },
         {
           "description": "Enables the export_book_notes_markdown command without any pre-configured scope.",
@@ -405,10 +483,28 @@
           "markdownDescription": "Enables the export_book_notes_summaries_markdown command without any pre-configured scope."
         },
         {
+          "description": "Enables the export_book_notes_summaries_targets command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-export-book-notes-summaries-targets",
+          "markdownDescription": "Enables the export_book_notes_summaries_targets command without any pre-configured scope."
+        },
+        {
           "description": "Enables the export_book_notes_summary_markdown command without any pre-configured scope.",
           "type": "string",
           "const": "allow-export-book-notes-summary-markdown",
           "markdownDescription": "Enables the export_book_notes_summary_markdown command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the export_book_notes_summary_targets command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-export-book-notes-summary-targets",
+          "markdownDescription": "Enables the export_book_notes_summary_targets command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the export_book_notes_targets command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-export-book-notes-targets",
+          "markdownDescription": "Enables the export_book_notes_targets command without any pre-configured scope."
         },
         {
           "description": "Enables the export_bulk_notes command without any pre-configured scope.",
@@ -435,10 +531,22 @@
           "markdownDescription": "Enables the export_reading_route_markdown command without any pre-configured scope."
         },
         {
+          "description": "Enables the export_reading_route_targets command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-export-reading-route-targets",
+          "markdownDescription": "Enables the export_reading_route_targets command without any pre-configured scope."
+        },
+        {
           "description": "Enables the export_reading_stats_review_markdown command without any pre-configured scope.",
           "type": "string",
           "const": "allow-export-reading-stats-review-markdown",
           "markdownDescription": "Enables the export_reading_stats_review_markdown command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the export_reading_stats_review_targets command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-export-reading-stats-review-targets",
+          "markdownDescription": "Enables the export_reading_stats_review_targets command without any pre-configured scope."
         },
         {
           "description": "Enables the export_report_image command without any pre-configured scope.",
@@ -481,6 +589,12 @@
           "type": "string",
           "const": "allow-get-ai-settings-state",
           "markdownDescription": "Enables the get_ai_settings_state command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_best_bookmarks command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-best-bookmarks",
+          "markdownDescription": "Enables the get_best_bookmarks command without any pre-configured scope."
         },
         {
           "description": "Enables the get_book_detail command without any pre-configured scope.",
@@ -555,10 +669,40 @@
           "markdownDescription": "Enables the get_notebook_overview command without any pre-configured scope."
         },
         {
+          "description": "Enables the get_notion_credential_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-notion-credential-status",
+          "markdownDescription": "Enables the get_notion_credential_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_notion_standard_database_provisioning command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-notion-standard-database-provisioning",
+          "markdownDescription": "Enables the get_notion_standard_database_provisioning command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_public_reviews command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-public-reviews",
           "markdownDescription": "Enables the get_public_reviews command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_read_reviews command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-read-reviews",
+          "markdownDescription": "Enables the get_read_reviews command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_reading_assistant_preferences command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-reading-assistant-preferences",
+          "markdownDescription": "Enables the get_reading_assistant_preferences command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_reading_assistant_thread command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-reading-assistant-thread",
+          "markdownDescription": "Enables the get_reading_assistant_thread command without any pre-configured scope."
         },
         {
           "description": "Enables the get_reading_item_state command without any pre-configured scope.",
@@ -627,6 +771,12 @@
           "markdownDescription": "Enables the list_local_books command without any pre-configured scope."
         },
         {
+          "description": "Enables the list_reading_assistant_threads command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-list-reading-assistant-threads",
+          "markdownDescription": "Enables the list_reading_assistant_threads command without any pre-configured scope."
+        },
+        {
           "description": "Enables the list_reading_item_states command without any pre-configured scope.",
           "type": "string",
           "const": "allow-list-reading-item-states",
@@ -645,10 +795,28 @@
           "markdownDescription": "Enables the open_book_in_weread command without any pre-configured scope."
         },
         {
+          "description": "Enables the open_weread_note_source command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-weread-note-source",
+          "markdownDescription": "Enables the open_weread_note_source command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the patch_reading_item_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-patch-reading-item-state",
+          "markdownDescription": "Enables the patch_reading_item_state command without any pre-configured scope."
+        },
+        {
           "description": "Enables the preflight_bulk_export command without any pre-configured scope.",
           "type": "string",
           "const": "allow-preflight-bulk-export",
           "markdownDescription": "Enables the preflight_bulk_export command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the preflight_notion_cover_backfill command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-preflight-notion-cover-backfill",
+          "markdownDescription": "Enables the preflight_notion_cover_backfill command without any pre-configured scope."
         },
         {
           "description": "Enables the probe_ai_provider_capabilities command without any pre-configured scope.",
@@ -669,6 +837,12 @@
           "markdownDescription": "Enables the remove_credential command without any pre-configured scope."
         },
         {
+          "description": "Enables the remove_notion_credential command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-remove-notion-credential",
+          "markdownDescription": "Enables the remove_notion_credential command without any pre-configured scope."
+        },
+        {
           "description": "Enables the remove_reading_item_state command without any pre-configured scope.",
           "type": "string",
           "const": "allow-remove-reading-item-state",
@@ -687,10 +861,22 @@
           "markdownDescription": "Enables the reset_weread_proxy_url command without any pre-configured scope."
         },
         {
+          "description": "Enables the resolve_notion_standard_database_provisioning command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-resolve-notion-standard-database-provisioning",
+          "markdownDescription": "Enables the resolve_notion_standard_database_provisioning command without any pre-configured scope."
+        },
+        {
           "description": "Enables the restore_local_data_backup command without any pre-configured scope.",
           "type": "string",
           "const": "allow-restore-local-data-backup",
           "markdownDescription": "Enables the restore_local_data_backup command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the run_notion_cover_backfill command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-run-notion-cover-backfill",
+          "markdownDescription": "Enables the run_notion_cover_backfill command without any pre-configured scope."
         },
         {
           "description": "Enables the save_ai_credential command without any pre-configured scope.",
@@ -727,6 +913,36 @@
           "type": "string",
           "const": "allow-save-local-reading-progress",
           "markdownDescription": "Enables the save_local_reading_progress command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the save_notion_credential command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-save-notion-credential",
+          "markdownDescription": "Enables the save_notion_credential command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the save_notion_database_connection command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-save-notion-database-connection",
+          "markdownDescription": "Enables the save_notion_database_connection command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the save_notion_export_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-save-notion-export-settings",
+          "markdownDescription": "Enables the save_notion_export_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the save_obsidian_export_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-save-obsidian-export-settings",
+          "markdownDescription": "Enables the save_obsidian_export_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the save_reading_assistant_preferences command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-save-reading-assistant-preferences",
+          "markdownDescription": "Enables the save_reading_assistant_preferences command without any pre-configured scope."
         },
         {
           "description": "Enables the save_weread_proxy_url command without any pre-configured scope.",
@@ -783,12 +999,6 @@
           "markdownDescription": "Enables the test_ai_connection command without any pre-configured scope."
         },
         {
-          "description": "Enables the upsert_reading_item_state command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-upsert-reading-item-state",
-          "markdownDescription": "Enables the upsert_reading_item_state command without any pre-configured scope."
-        },
-        {
           "description": "Enables the validate_ai_credential command without any pre-configured scope.",
           "type": "string",
           "const": "allow-validate-ai-credential",
@@ -801,16 +1011,52 @@
           "markdownDescription": "Enables the validate_credential command without any pre-configured scope."
         },
         {
+          "description": "Enables the validate_notion_credential command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-validate-notion-credential",
+          "markdownDescription": "Enables the validate_notion_credential command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the analyze_notion_database command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-analyze-notion-database",
+          "markdownDescription": "Denies the analyze_notion_database command without any pre-configured scope."
+        },
+        {
           "description": "Denies the ask_local_reader_selection_question command without any pre-configured scope.",
           "type": "string",
           "const": "deny-ask-local-reader-selection-question",
           "markdownDescription": "Denies the ask_local_reader_selection_question command without any pre-configured scope."
         },
         {
+          "description": "Denies the ask_reading_assistant command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ask-reading-assistant",
+          "markdownDescription": "Denies the ask_reading_assistant command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ask_reading_assistant_stream command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ask-reading-assistant-stream",
+          "markdownDescription": "Denies the ask_reading_assistant_stream command without any pre-configured scope."
+        },
+        {
           "description": "Denies the cancel_bulk_export command without any pre-configured scope.",
           "type": "string",
           "const": "deny-cancel-bulk-export",
           "markdownDescription": "Denies the cancel_bulk_export command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the cancel_notion_cover_backfill command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-cancel-notion-cover-backfill",
+          "markdownDescription": "Denies the cancel_notion_cover_backfill command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the cancel_reading_assistant_stream command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-cancel-reading-assistant-stream",
+          "markdownDescription": "Denies the cancel_reading_assistant_stream command without any pre-configured scope."
         },
         {
           "description": "Denies the choose_custom_data_directory command without any pre-configured scope.",
@@ -831,6 +1077,12 @@
           "markdownDescription": "Denies the choose_local_book_file command without any pre-configured scope."
         },
         {
+          "description": "Denies the choose_obsidian_vault_directory command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-choose-obsidian-vault-directory",
+          "markdownDescription": "Denies the choose_obsidian_vault_directory command without any pre-configured scope."
+        },
+        {
           "description": "Denies the clear_ai_output_cache command without any pre-configured scope.",
           "type": "string",
           "const": "deny-clear-ai-output-cache",
@@ -843,10 +1095,52 @@
           "markdownDescription": "Denies the clear_local_cache command without any pre-configured scope."
         },
         {
+          "description": "Denies the clear_reading_assistant_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-clear-reading-assistant-history",
+          "markdownDescription": "Denies the clear_reading_assistant_history command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the continue_notion_standard_database_provisioning command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-continue-notion-standard-database-provisioning",
+          "markdownDescription": "Denies the continue_notion_standard_database_provisioning command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the create_notion_reading_library_template command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-create-notion-reading-library-template",
+          "markdownDescription": "Denies the create_notion_reading_library_template command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the create_notion_reading_workspace_template command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-create-notion-reading-workspace-template",
+          "markdownDescription": "Denies the create_notion_reading_workspace_template command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the create_notion_standard_outcomes_database command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-create-notion-standard-outcomes-database",
+          "markdownDescription": "Denies the create_notion_standard_outcomes_database command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the delete_reading_assistant_thread command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-delete-reading-assistant-thread",
+          "markdownDescription": "Denies the delete_reading_assistant_thread command without any pre-configured scope."
+        },
+        {
           "description": "Denies the export_book_decision_markdown command without any pre-configured scope.",
           "type": "string",
           "const": "deny-export-book-decision-markdown",
           "markdownDescription": "Denies the export_book_decision_markdown command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the export_book_decision_targets command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-export-book-decision-targets",
+          "markdownDescription": "Denies the export_book_decision_targets command without any pre-configured scope."
         },
         {
           "description": "Denies the export_book_notes_markdown command without any pre-configured scope.",
@@ -861,10 +1155,28 @@
           "markdownDescription": "Denies the export_book_notes_summaries_markdown command without any pre-configured scope."
         },
         {
+          "description": "Denies the export_book_notes_summaries_targets command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-export-book-notes-summaries-targets",
+          "markdownDescription": "Denies the export_book_notes_summaries_targets command without any pre-configured scope."
+        },
+        {
           "description": "Denies the export_book_notes_summary_markdown command without any pre-configured scope.",
           "type": "string",
           "const": "deny-export-book-notes-summary-markdown",
           "markdownDescription": "Denies the export_book_notes_summary_markdown command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the export_book_notes_summary_targets command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-export-book-notes-summary-targets",
+          "markdownDescription": "Denies the export_book_notes_summary_targets command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the export_book_notes_targets command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-export-book-notes-targets",
+          "markdownDescription": "Denies the export_book_notes_targets command without any pre-configured scope."
         },
         {
           "description": "Denies the export_bulk_notes command without any pre-configured scope.",
@@ -891,10 +1203,22 @@
           "markdownDescription": "Denies the export_reading_route_markdown command without any pre-configured scope."
         },
         {
+          "description": "Denies the export_reading_route_targets command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-export-reading-route-targets",
+          "markdownDescription": "Denies the export_reading_route_targets command without any pre-configured scope."
+        },
+        {
           "description": "Denies the export_reading_stats_review_markdown command without any pre-configured scope.",
           "type": "string",
           "const": "deny-export-reading-stats-review-markdown",
           "markdownDescription": "Denies the export_reading_stats_review_markdown command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the export_reading_stats_review_targets command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-export-reading-stats-review-targets",
+          "markdownDescription": "Denies the export_reading_stats_review_targets command without any pre-configured scope."
         },
         {
           "description": "Denies the export_report_image command without any pre-configured scope.",
@@ -937,6 +1261,12 @@
           "type": "string",
           "const": "deny-get-ai-settings-state",
           "markdownDescription": "Denies the get_ai_settings_state command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_best_bookmarks command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-best-bookmarks",
+          "markdownDescription": "Denies the get_best_bookmarks command without any pre-configured scope."
         },
         {
           "description": "Denies the get_book_detail command without any pre-configured scope.",
@@ -1011,10 +1341,40 @@
           "markdownDescription": "Denies the get_notebook_overview command without any pre-configured scope."
         },
         {
+          "description": "Denies the get_notion_credential_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-notion-credential-status",
+          "markdownDescription": "Denies the get_notion_credential_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_notion_standard_database_provisioning command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-notion-standard-database-provisioning",
+          "markdownDescription": "Denies the get_notion_standard_database_provisioning command without any pre-configured scope."
+        },
+        {
           "description": "Denies the get_public_reviews command without any pre-configured scope.",
           "type": "string",
           "const": "deny-get-public-reviews",
           "markdownDescription": "Denies the get_public_reviews command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_read_reviews command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-read-reviews",
+          "markdownDescription": "Denies the get_read_reviews command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_reading_assistant_preferences command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-reading-assistant-preferences",
+          "markdownDescription": "Denies the get_reading_assistant_preferences command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_reading_assistant_thread command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-reading-assistant-thread",
+          "markdownDescription": "Denies the get_reading_assistant_thread command without any pre-configured scope."
         },
         {
           "description": "Denies the get_reading_item_state command without any pre-configured scope.",
@@ -1083,6 +1443,12 @@
           "markdownDescription": "Denies the list_local_books command without any pre-configured scope."
         },
         {
+          "description": "Denies the list_reading_assistant_threads command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-list-reading-assistant-threads",
+          "markdownDescription": "Denies the list_reading_assistant_threads command without any pre-configured scope."
+        },
+        {
           "description": "Denies the list_reading_item_states command without any pre-configured scope.",
           "type": "string",
           "const": "deny-list-reading-item-states",
@@ -1101,10 +1467,28 @@
           "markdownDescription": "Denies the open_book_in_weread command without any pre-configured scope."
         },
         {
+          "description": "Denies the open_weread_note_source command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-weread-note-source",
+          "markdownDescription": "Denies the open_weread_note_source command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the patch_reading_item_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-patch-reading-item-state",
+          "markdownDescription": "Denies the patch_reading_item_state command without any pre-configured scope."
+        },
+        {
           "description": "Denies the preflight_bulk_export command without any pre-configured scope.",
           "type": "string",
           "const": "deny-preflight-bulk-export",
           "markdownDescription": "Denies the preflight_bulk_export command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the preflight_notion_cover_backfill command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-preflight-notion-cover-backfill",
+          "markdownDescription": "Denies the preflight_notion_cover_backfill command without any pre-configured scope."
         },
         {
           "description": "Denies the probe_ai_provider_capabilities command without any pre-configured scope.",
@@ -1125,6 +1509,12 @@
           "markdownDescription": "Denies the remove_credential command without any pre-configured scope."
         },
         {
+          "description": "Denies the remove_notion_credential command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-remove-notion-credential",
+          "markdownDescription": "Denies the remove_notion_credential command without any pre-configured scope."
+        },
+        {
           "description": "Denies the remove_reading_item_state command without any pre-configured scope.",
           "type": "string",
           "const": "deny-remove-reading-item-state",
@@ -1143,10 +1533,22 @@
           "markdownDescription": "Denies the reset_weread_proxy_url command without any pre-configured scope."
         },
         {
+          "description": "Denies the resolve_notion_standard_database_provisioning command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-resolve-notion-standard-database-provisioning",
+          "markdownDescription": "Denies the resolve_notion_standard_database_provisioning command without any pre-configured scope."
+        },
+        {
           "description": "Denies the restore_local_data_backup command without any pre-configured scope.",
           "type": "string",
           "const": "deny-restore-local-data-backup",
           "markdownDescription": "Denies the restore_local_data_backup command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the run_notion_cover_backfill command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-run-notion-cover-backfill",
+          "markdownDescription": "Denies the run_notion_cover_backfill command without any pre-configured scope."
         },
         {
           "description": "Denies the save_ai_credential command without any pre-configured scope.",
@@ -1183,6 +1585,36 @@
           "type": "string",
           "const": "deny-save-local-reading-progress",
           "markdownDescription": "Denies the save_local_reading_progress command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_notion_credential command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-save-notion-credential",
+          "markdownDescription": "Denies the save_notion_credential command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_notion_database_connection command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-save-notion-database-connection",
+          "markdownDescription": "Denies the save_notion_database_connection command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_notion_export_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-save-notion-export-settings",
+          "markdownDescription": "Denies the save_notion_export_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_obsidian_export_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-save-obsidian-export-settings",
+          "markdownDescription": "Denies the save_obsidian_export_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_reading_assistant_preferences command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-save-reading-assistant-preferences",
+          "markdownDescription": "Denies the save_reading_assistant_preferences command without any pre-configured scope."
         },
         {
           "description": "Denies the save_weread_proxy_url command without any pre-configured scope.",
@@ -1239,12 +1671,6 @@
           "markdownDescription": "Denies the test_ai_connection command without any pre-configured scope."
         },
         {
-          "description": "Denies the upsert_reading_item_state command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-upsert-reading-item-state",
-          "markdownDescription": "Denies the upsert_reading_item_state command without any pre-configured scope."
-        },
-        {
           "description": "Denies the validate_ai_credential command without any pre-configured scope.",
           "type": "string",
           "const": "deny-validate-ai-credential",
@@ -1255,6 +1681,12 @@
           "type": "string",
           "const": "deny-validate-credential",
           "markdownDescription": "Denies the validate_credential command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the validate_notion_credential command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-validate-notion-credential",
+          "markdownDescription": "Denies the validate_notion_credential command without any pre-configured scope."
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
@@ -3337,6 +3769,42 @@
           "type": "string",
           "const": "dialog:deny-save",
           "markdownDescription": "Denies the save command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_capabilities command without any pre-configured scope.",
+          "type": "string",
+          "const": "image-artifact-mobile:allow-get-capabilities",
+          "markdownDescription": "Enables the get_capabilities command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the save_image_to_album command without any pre-configured scope.",
+          "type": "string",
+          "const": "image-artifact-mobile:allow-save-image-to-album",
+          "markdownDescription": "Enables the save_image_to_album command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the share_image command without any pre-configured scope.",
+          "type": "string",
+          "const": "image-artifact-mobile:allow-share-image",
+          "markdownDescription": "Enables the share_image command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_capabilities command without any pre-configured scope.",
+          "type": "string",
+          "const": "image-artifact-mobile:deny-get-capabilities",
+          "markdownDescription": "Denies the get_capabilities command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_image_to_album command without any pre-configured scope.",
+          "type": "string",
+          "const": "image-artifact-mobile:deny-save-image-to-album",
+          "markdownDescription": "Denies the save_image_to_album command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the share_image command without any pre-configured scope.",
+          "type": "string",
+          "const": "image-artifact-mobile:deny-share-image",
+          "markdownDescription": "Denies the share_image command without any pre-configured scope."
         },
         {
           "description": "This permission set allows opening `mailto:`, `tel:`, `https://` and `http://` urls using their default application\nas well as reveal file in directories using default file explorer\n#### This default permission set includes:\n\n- `allow-open-url`\n- `allow-reveal-item-in-dir`\n- `allow-default-urls`",

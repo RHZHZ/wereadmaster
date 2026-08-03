@@ -5,6 +5,7 @@ pub mod discovery;
 pub mod local_books;
 pub mod notes;
 pub mod notion_credentials;
+pub mod notion_tracker;
 pub mod reading_state;
 pub mod settings;
 pub mod shelf;

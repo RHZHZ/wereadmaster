@@ -22,7 +22,9 @@ describe("note list chapter labels", () => {
   ] satisfies ChapterNoteGroup[];
 
   it("shows the chapter title instead of the internal chapter uid", () => {
-    const markup = renderToStaticMarkup(<NoteList groups={groups} />);
+    const markup = renderToStaticMarkup(
+      <NoteList groups={groups} canOpenSource={false} onOpenSource={() => undefined} />
+    );
 
     expect(markup).toContain("书内章节");
     expect(markup).toContain("第一章 童年");
@@ -30,7 +32,9 @@ describe("note list chapter labels", () => {
   });
 
   it("keeps the chapter directory collapsed by default", () => {
-    const markup = renderToStaticMarkup(<NoteList groups={groups} />);
+    const markup = renderToStaticMarkup(
+      <NoteList groups={groups} canOpenSource={false} onOpenSource={() => undefined} />
+    );
 
     expect(markup).toContain("章节目录");
     expect(markup).toContain('aria-expanded="false"');

@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { BookshelfResponse, NotebookOverviewResponse, ReadingStatsResponse } from "../lib/reading-api";
+import type { NotebookBook } from "../lib/types";
 import type { ReadingStatsCache } from "./reading-stats-period";
 import { DashboardPage } from "./DashboardPage";
 import { buildUnprocessedInsightItem } from "./DashboardPage";
@@ -18,8 +19,8 @@ vi.mock("@tauri-apps/plugin-updater", () => ({
 }));
 
 describe("dashboard page reading persona overview", () => {
-  test("builds a recent unprocessed insight reminder from generated reviews", () => {
-    const openedBooks: string[] = [];
+  test("builds a recent unprocessed insight reminder from generated reviews without inventing note counts", () => {
+    const openedBooks: NotebookBook[] = [];
     const item = buildUnprocessedInsightItem({
       summaries: [
         {
@@ -45,15 +46,23 @@ describe("dashboard page reading persona overview", () => {
           feedbackCount: 0
         }
       ],
-      onOpenBookSummary: (book) => openedBooks.push(book.bookId),
-      onOpenReadingReview: () => openedBooks.push("review")
+      onOpenBookSummary: (book) => openedBooks.push(book),
+      onOpenReadingReview: () => undefined
     });
 
     expect(item?.title).toBe("最新复盘");
     expect(item?.meta).toContain("尚无反馈");
 
     item?.onClick();
-    expect(openedBooks).toEqual(["latest"]);
+    expect(openedBooks).toEqual([
+      expect.objectContaining({
+        bookId: "latest",
+        reviewCount: 0,
+        noteCount: 0,
+        bookmarkCount: 0,
+        totalNoteCount: 0
+      })
+    ]);
   });
 
   test("does not build insight reminder when every generated review has feedback", () => {

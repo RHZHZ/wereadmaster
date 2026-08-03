@@ -1,18 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../../lib/reading-api", () => ({
-  exportReportImage: vi.fn()
-}));
-
-import { exportReportImage } from "../../lib/reading-api";
 import { exportCanvasAsReportImage } from "./report-image-export";
 
 const originalDocument = globalThis.document;
 const originalCreateObjectURL = URL.createObjectURL;
 const originalRevokeObjectURL = URL.revokeObjectURL;
 const originalBtoa = globalThis.btoa;
-
-const exportReportImageMock = vi.mocked(exportReportImage);
+const exportReportImageMock = vi.fn();
 
 let appendSpy: ReturnType<typeof vi.fn>;
 let anchorClickSpy: ReturnType<typeof vi.fn>;
@@ -86,7 +80,12 @@ describe("exportCanvasAsReportImage", () => {
   });
 
   it("uses browser download when Tauri runtime is unavailable", async () => {
-    const result = await exportCanvasAsReportImage(makeCanvas(), "2026-05-report", "生成失败。");
+    const result = await exportCanvasAsReportImage(
+      makeCanvas(),
+      "2026-05-report",
+      "生成失败。",
+      exportReportImageMock
+    );
 
     expect(result).toEqual({
       fileName: "2026-05-report.png",
@@ -110,7 +109,12 @@ describe("exportCanvasAsReportImage", () => {
       exportedAt: "1800000000"
     });
 
-    const result = await exportCanvasAsReportImage(makeCanvas(), "2026-05-report", "生成失败。");
+    const result = await exportCanvasAsReportImage(
+      makeCanvas(),
+      "2026-05-report",
+      "生成失败。",
+      exportReportImageMock
+    );
 
     expect(result).toEqual({
       fileName: "2026-05-report.png",

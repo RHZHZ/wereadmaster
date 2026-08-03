@@ -19,15 +19,24 @@ use crate::{
     errors::AppError,
     export::{
         assets::{ExportAsset, ExportAssetKind},
-        dispatcher::{export_document_targets, export_document_targets_with_notion_blocks},
+        dispatcher::{
+            export_document_targets_with_context, export_document_targets_with_notion_blocks,
+        },
         document::{ExportDocument, ExportMetaField, ExportSourceKind},
         markdown::{
             serialize_book_ai_summary_markdown, serialize_book_ai_summary_markdown_with_options,
             serialize_book_decision_markdown, serialize_reading_route_markdown,
             serialize_reading_stats_review_markdown, BookAiSummaryMarkdownOptions,
         },
-        notion_blocks::{build_book_review_blocks, BookReviewBlocksInput, ReviewQuoteBlocksInput},
-        targets::{MultiTargetExportRequest, MultiTargetExportResponse},
+        notion_blocks::{
+            build_book_decision_blocks, build_book_review_blocks, build_reading_route_blocks,
+            build_reading_stats_review_blocks, BookReviewBlocksInput, ReviewQuoteBlocksInput,
+        },
+        targets::{
+            ExportTargetError, ExportTargetResult, ExportTargetStatus, ExternalExportTarget,
+            MultiTargetExportRequest, MultiTargetExportResponse, NotionExportOverrides,
+            ObsidianExportOverrides,
+        },
     },
     mappers::{
         discovery::DiscoveryBookRecord,
@@ -41,7 +50,7 @@ use crate::{
 pub const BOOK_NOTES_SUMMARY_PROMPT_VERSION: &str = "book-notes-summary-v3";
 pub const READING_STATS_REVIEW_PROMPT_VERSION: &str = "reading-stats-review-v2";
 pub const READING_ROUTE_PROMPT_VERSION: &str = "reading-route-v2.1";
-pub const BOOK_DECISION_PROMPT_VERSION: &str = "book-decision-v1";
+pub const BOOK_DECISION_PROMPT_VERSION: &str = "book-decision-v2";
 pub const LOCAL_READER_SELECTION_QA_PROMPT_VERSION: &str = "local-reader-selection-qa-v2";
 pub const READING_ASSISTANT_PROMPT_VERSION: &str = "reading-assistant-chat-v1.3";
 
@@ -671,7 +680,23 @@ pub struct BookDecisionCandidateInput {
     pub title: String,
     pub author: Option<String>,
     pub category: Option<String>,
-    pub local_status: Option<String>,
+    pub life_status: String,
+    pub organize_status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BookDecisionActiveCategoryInput {
+    pub name: String,
+    pub minutes: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BookDecisionRecentReadingContextInput {
+    pub finished_titles: Vec<String>,
+    pub active_categories: Vec<BookDecisionActiveCategoryInput>,
+    pub average_daily_minutes: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -714,6 +739,10 @@ pub struct BookDecision {
     pub deferred_candidates: Vec<BookDecisionDeferredCandidate>,
     pub next_actions: Vec<String>,
     pub source_stats: BookDecisionSourceStats,
+    #[serde(default)]
+    pub reference_factors: Option<Vec<String>>,
+    #[serde(default)]
+    pub recent_reading_window_days: Option<i64>,
     pub generated_at: String,
     pub prompt_version: String,
     pub response_format: Option<AiResponseFormatKind>,
@@ -1200,6 +1229,7 @@ struct PreparedExportDocument {
     markdown: String,
     file_stem: String,
     exported_at: String,
+    review_feedback: Option<AiReviewFeedbackExport>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1216,6 +1246,50 @@ pub struct ExportAiBulkMarkdownResponse {
     pub exported_at: String,
     pub files: Vec<String>,
     pub item_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BookNotesSummaryTargetSelection {
+    pub book_id: String,
+    pub targets: Vec<ExternalExportTarget>,
+    pub known_obsidian_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BookNotesSummariesTargetExportRequest {
+    pub items: Vec<BookNotesSummaryTargetSelection>,
+    #[serde(default)]
+    pub options: BookNotesSummariesExportOptions,
+    pub obsidian: Option<ObsidianExportOverrides>,
+    pub notion: Option<NotionExportOverrides>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BookNotesSummariesTargetExportItemResult {
+    pub book_id: String,
+    pub title: String,
+    pub author: Option<String>,
+    pub results: Vec<ExportTargetResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BookReviewMarkdownBatchResult {
+    pub path: String,
+    pub index_path: Option<String>,
+    pub warning: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BookNotesSummariesTargetExportResponse {
+    pub export_id: String,
+    pub exported_at: String,
+    pub markdown_batch: Option<BookReviewMarkdownBatchResult>,
+    pub items: Vec<BookNotesSummariesTargetExportItemResult>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2635,7 +2709,15 @@ impl AiService {
             key_ideas: &summary.key_ideas,
             my_focus: &summary.my_focus,
             action_items: &summary.action_items,
+            action_feedback: prepared
+                .review_feedback
+                .as_ref()
+                .map(|feedback| &feedback.action_items),
             reflection_questions: &summary.reflection_questions,
+            reflection_feedback: prepared
+                .review_feedback
+                .as_ref()
+                .map(|feedback| &feedback.reflection_questions),
             quotes,
             basis_notice: &summary.basis_notice,
             error_message: response.error_message.as_deref(),
@@ -2763,6 +2845,380 @@ impl AiService {
                 markdown,
                 file_stem,
                 exported_at,
+                review_feedback: Some(merged_feedback),
+            },
+            response,
+        ))
+    }
+
+    pub async fn export_book_notes_summaries_targets(
+        &self,
+        request: BookNotesSummariesTargetExportRequest,
+    ) -> Result<BookNotesSummariesTargetExportResponse, AiServiceError> {
+        if request.items.is_empty() {
+            return Err(AiServiceError::InvalidProviderOutput(
+                "至少选择一本书籍复盘。".to_string(),
+            ));
+        }
+        for selection in &request.items {
+            MultiTargetExportRequest {
+                targets: selection.targets.clone(),
+                obsidian: request.obsidian.clone(),
+                notion: request.notion.clone(),
+            }
+            .validate()
+            .map_err(AiServiceError::InvalidProviderOutput)?;
+        }
+
+        let connection = self.open_connection()?;
+        let requested_book_ids = request
+            .items
+            .iter()
+            .map(|item| item.book_id.trim().to_string())
+            .filter(|book_id| !book_id.is_empty())
+            .collect::<Vec<_>>();
+        if requested_book_ids.len() != request.items.len() {
+            return Err(AiServiceError::InvalidProviderOutput(
+                "书籍 ID 不能为空。".to_string(),
+            ));
+        }
+        if requested_book_ids.iter().collect::<HashSet<_>>().len() != requested_book_ids.len() {
+            return Err(AiServiceError::InvalidProviderOutput(
+                "同一本书不能在一次批量导出请求中重复出现。".to_string(),
+            ));
+        }
+        let export_items = read_book_summary_export_items(&connection, Some(&requested_book_ids))?;
+        let export_items_by_id = export_items
+            .into_iter()
+            .map(|item| (item.book_id.clone(), item))
+            .collect::<HashMap<_, _>>();
+        let exported_at = current_unix_seconds();
+        let export_id = format!("wxreadmaster-book-reviews-{exported_at}");
+        let has_markdown = request.items.iter().any(|item| {
+            item.targets
+                .iter()
+                .any(|target| *target == ExternalExportTarget::Markdown)
+        });
+        let markdown_dir = if has_markdown {
+            db::active_export_dir(&self.app)
+                .map(|dir| dir.join(&export_id))
+                .map_err(|error| error.to_string())
+                .and_then(|dir| {
+                    fs::create_dir_all(&dir)
+                        .map(|_| dir)
+                        .map_err(|error| error.to_string())
+                })
+        } else {
+            Err("未选择 Markdown。".to_string())
+        };
+        let markdown_options = BookAiSummaryMarkdownOptions::from(request.options.clone());
+        let mut indexed_items = Vec::new();
+        let mut response_items = Vec::with_capacity(request.items.len());
+
+        for selection in &request.items {
+            let Some(item) = export_items_by_id.get(&selection.book_id) else {
+                response_items.push(BookNotesSummariesTargetExportItemResult {
+                    book_id: selection.book_id.clone(),
+                    title: selection.book_id.clone(),
+                    author: None,
+                    results: selection
+                        .targets
+                        .iter()
+                        .copied()
+                        .map(|target| {
+                            book_review_target_failure(
+                                target,
+                                "book_review_cache_missing",
+                                "当前书没有可导出的复盘缓存。",
+                                None,
+                            )
+                        })
+                        .collect(),
+                });
+                continue;
+            };
+
+            let prepared = self.prepare_book_summary_export_item(
+                &connection,
+                item,
+                markdown_options,
+                &exported_at,
+            );
+            let (prepared, response) = match prepared {
+                Ok(value) => value,
+                Err(error) => {
+                    response_items.push(BookNotesSummariesTargetExportItemResult {
+                        book_id: item.book_id.clone(),
+                        title: item.title.clone(),
+                        author: item.author.clone(),
+                        results: selection
+                            .targets
+                            .iter()
+                            .copied()
+                            .map(|target| {
+                                book_review_target_failure(
+                                    target,
+                                    error.code(),
+                                    &error.user_message(),
+                                    None,
+                                )
+                            })
+                            .collect(),
+                    });
+                    continue;
+                }
+            };
+
+            let quotes = if request.options.include_representative_quotes {
+                response
+                    .summary
+                    .representative_quotes
+                    .iter()
+                    .map(|quote| ReviewQuoteBlocksInput {
+                        quote: &quote.quote,
+                        reason: &quote.reason,
+                        chapter: quote.chapter.as_deref(),
+                        note_type: &quote.note_type,
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            let review_blocks = build_book_review_blocks(&BookReviewBlocksInput {
+                author: prepared.document.author.as_deref(),
+                overview: &response.summary.overview,
+                theme_tags: &response.summary.theme_tags,
+                key_ideas: &response.summary.key_ideas,
+                my_focus: &response.summary.my_focus,
+                action_items: &response.summary.action_items,
+                action_feedback: request
+                    .options
+                    .include_action_feedback
+                    .then(|| prepared.review_feedback.as_ref())
+                    .flatten()
+                    .map(|feedback| &feedback.action_items),
+                reflection_questions: &response.summary.reflection_questions,
+                reflection_feedback: request
+                    .options
+                    .include_reflection_feedback
+                    .then(|| prepared.review_feedback.as_ref())
+                    .flatten()
+                    .map(|feedback| &feedback.reflection_questions),
+                quotes,
+                basis_notice: &response.summary.basis_notice,
+                error_message: response.error_message.as_deref(),
+                generated_at: &response.summary.generated_at,
+                exported_at: &prepared.exported_at,
+                provider_model: response.provider_model.as_deref(),
+                prompt_version: &response.summary.prompt_version,
+                highlight_count: response.summary.source_stats.highlight_count,
+                included_highlight_count: response.summary.source_stats.included_highlight_count,
+                thought_count: response.summary.source_stats.thought_count,
+                included_thought_count: response.summary.source_stats.included_thought_count,
+            });
+
+            let external_targets = selection
+                .targets
+                .iter()
+                .copied()
+                .filter(|target| *target != ExternalExportTarget::Markdown)
+                .collect::<Vec<_>>();
+            let external_results = if external_targets.is_empty() {
+                Vec::new()
+            } else {
+                export_document_targets_with_context(
+                    &self.app,
+                    &prepared.document,
+                    &prepared.markdown,
+                    &prepared.file_stem,
+                    &MultiTargetExportRequest {
+                        targets: external_targets,
+                        obsidian: request.obsidian.clone(),
+                        notion: request.notion.clone(),
+                    },
+                    Some(&review_blocks),
+                    selection.known_obsidian_path.as_deref(),
+                )
+                .await
+            };
+
+            let mut results = Vec::with_capacity(selection.targets.len());
+            for target in &selection.targets {
+                if *target == ExternalExportTarget::Markdown {
+                    let result = match &markdown_dir {
+                        Ok(export_dir) => {
+                            let file_name = format!(
+                                "{}-ai-summary-{exported_at}.md",
+                                sanitize_file_stem(&item.title, &item.book_id)
+                            );
+                            match fs::write(export_dir.join(&file_name), &prepared.markdown) {
+                                Ok(()) => {
+                                    indexed_items.push((file_name.clone(), item.clone()));
+                                    ExportTargetResult {
+                                        target: ExternalExportTarget::Markdown,
+                                        status: ExportTargetStatus::Succeeded,
+                                        title: Some(prepared.document.title.clone()),
+                                        path: Some(
+                                            export_dir
+                                                .join(&file_name)
+                                                .to_string_lossy()
+                                                .to_string(),
+                                        ),
+                                        url: None,
+                                        page_id: None,
+                                        file_count: Some(1),
+                                        warning: None,
+                                        error: None,
+                                    }
+                                }
+                                Err(error) => book_review_target_failure(
+                                    ExternalExportTarget::Markdown,
+                                    "markdown_write_failed",
+                                    "Markdown 文件写入失败。",
+                                    Some(error.to_string()),
+                                ),
+                            }
+                        }
+                        Err(error) => book_review_target_failure(
+                            ExternalExportTarget::Markdown,
+                            "markdown_directory_unavailable",
+                            "Markdown 导出目录不可用。",
+                            Some(error.clone()),
+                        ),
+                    };
+                    results.push(result);
+                } else if let Some(result) = external_results
+                    .iter()
+                    .find(|result| result.target == *target)
+                {
+                    results.push(result.clone());
+                }
+            }
+            response_items.push(BookNotesSummariesTargetExportItemResult {
+                book_id: item.book_id.clone(),
+                title: item.title.clone(),
+                author: item.author.clone(),
+                results,
+            });
+        }
+
+        let markdown_batch = if has_markdown {
+            match markdown_dir {
+                Ok(export_dir) => {
+                    let (index_path, warning) = if indexed_items.is_empty() {
+                        (
+                            None,
+                            Some("没有成功的 Markdown 文件，未生成复盘索引。".to_string()),
+                        )
+                    } else {
+                        let index_markdown = serialize_book_summary_export_index(
+                            &export_id,
+                            &exported_at,
+                            &indexed_items,
+                        );
+                        let path = export_dir.join("index.md");
+                        match fs::write(&path, index_markdown) {
+                            Ok(()) => (Some(path.to_string_lossy().to_string()), None),
+                            Err(error) => (
+                                None,
+                                Some(format!("Markdown 文件已导出，但索引写入失败：{error}")),
+                            ),
+                        }
+                    };
+                    Some(BookReviewMarkdownBatchResult {
+                        path: export_dir.to_string_lossy().to_string(),
+                        index_path,
+                        warning,
+                    })
+                }
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+
+        Ok(BookNotesSummariesTargetExportResponse {
+            export_id,
+            exported_at,
+            markdown_batch,
+            items: response_items,
+        })
+    }
+
+    fn prepare_book_summary_export_item(
+        &self,
+        connection: &rusqlite::Connection,
+        item: &BookSummaryExportItem,
+        markdown_options: BookAiSummaryMarkdownOptions,
+        exported_at: &str,
+    ) -> Result<(PreparedExportDocument, BookAiSummaryResponse), AiServiceError> {
+        let response = BookAiSummaryResponse {
+            book_id: item.book_id.clone(),
+            prompt_version: item.prompt_version.clone(),
+            input_hash: item.input_hash.clone(),
+            provider_model: item.provider_model.clone(),
+            source: BookAiSummarySource::Cache,
+            summary: item.summary.clone(),
+            cached_updated_at: Some(item.cached_updated_at.clone()),
+            error_message: None,
+        };
+        let review_feedback =
+            read_ai_review_feedback(connection, "book-review", &item.book_id, &item.input_hash)?;
+        let markdown = serialize_book_ai_summary_markdown_with_options(
+            &item.book_id,
+            &item.title,
+            item.author.as_deref(),
+            &response,
+            exported_at,
+            Some(&review_feedback),
+            markdown_options,
+        );
+        let mut document = ExportDocument {
+            source_kind: ExportSourceKind::BookReview,
+            source_id: item.book_id.clone(),
+            title: format!("{} AI 复盘", item.title),
+            author: item.author.clone(),
+            cover: None,
+            front_matter: vec![
+                ExportMetaField {
+                    key: "bookId".to_string(),
+                    value: item.book_id.clone(),
+                },
+                ExportMetaField {
+                    key: "promptVersion".to_string(),
+                    value: item.prompt_version.clone(),
+                },
+                ExportMetaField {
+                    key: "inputHash".to_string(),
+                    value: item.input_hash.clone(),
+                },
+                ExportMetaField {
+                    key: "tagList".to_string(),
+                    value: item.summary.theme_tags.join(","),
+                },
+                ExportMetaField {
+                    key: "actionCount".to_string(),
+                    value: item.summary.action_items.len().to_string(),
+                },
+            ],
+            sections: Vec::new(),
+            exported_at: exported_at.to_string(),
+            basis_notice: Some(item.summary.basis_notice.clone()),
+        };
+        append_reading_stage_front_matter(
+            &mut document.front_matter,
+            item.summary.reading_stage.as_ref(),
+        );
+        Ok((
+            PreparedExportDocument {
+                document,
+                markdown,
+                file_stem: format!(
+                    "{}-ai-summary",
+                    sanitize_file_stem(&item.title, &item.book_id)
+                ),
+                exported_at: exported_at.to_string(),
+                review_feedback: Some(review_feedback),
             },
             response,
         ))
@@ -3006,7 +3462,7 @@ impl AiService {
         mode: Option<String>,
         base_time: Option<i64>,
     ) -> Result<ExportAiMarkdownResponse, AiServiceError> {
-        let prepared = self
+        let (prepared, _response, _persona) = self
             .prepare_reading_stats_review_export(mode, base_time)
             .await?;
 
@@ -3026,15 +3482,18 @@ impl AiService {
         request
             .validate()
             .map_err(AiServiceError::InvalidProviderOutput)?;
-        let prepared = self
+        let (prepared, response, persona) = self
             .prepare_reading_stats_review_export(mode, base_time)
             .await?;
-        let results = export_document_targets(
+        let review_blocks =
+            build_reading_stats_review_blocks(&response, Some(&persona), &prepared.exported_at);
+        let results = export_document_targets_with_notion_blocks(
             &self.app,
             &prepared.document,
             &prepared.markdown,
             &prepared.file_stem,
             &request,
+            Some(&review_blocks),
         )
         .await;
 
@@ -3054,7 +3513,14 @@ impl AiService {
         &self,
         mode: Option<String>,
         base_time: Option<i64>,
-    ) -> Result<PreparedExportDocument, AiServiceError> {
+    ) -> Result<
+        (
+            PreparedExportDocument,
+            ReadingStatsAiReviewResponse,
+            ReadingPersona,
+        ),
+        AiServiceError,
+    > {
         let response = self
             .get_latest_reading_stats_review(mode, base_time)
             .await?
@@ -3122,12 +3588,17 @@ impl AiService {
             basis_notice: Some(response.review.basis_notice.clone()),
         };
 
-        Ok(PreparedExportDocument {
-            document,
-            markdown,
-            file_stem: period_label.to_string(),
-            exported_at,
-        })
+        Ok((
+            PreparedExportDocument {
+                document,
+                markdown,
+                file_stem: period_label.to_string(),
+                exported_at,
+                review_feedback: None,
+            },
+            response,
+            resolved_persona,
+        ))
     }
 
     pub async fn summarize_reading_route(
@@ -3297,7 +3768,7 @@ impl AiService {
         &self,
         request: ReadingRouteRequest,
     ) -> Result<ExportAiMarkdownResponse, AiServiceError> {
-        let prepared = self.prepare_reading_route_export(request)?;
+        let (prepared, _response) = self.prepare_reading_route_export(request)?;
 
         self.write_ai_markdown_export(
             &prepared.file_stem,
@@ -3314,13 +3785,15 @@ impl AiService {
         target_request
             .validate()
             .map_err(AiServiceError::InvalidProviderOutput)?;
-        let prepared = self.prepare_reading_route_export(request)?;
-        let results = export_document_targets(
+        let (prepared, response) = self.prepare_reading_route_export(request)?;
+        let route_blocks = build_reading_route_blocks(&response, &prepared.exported_at);
+        let results = export_document_targets_with_notion_blocks(
             &self.app,
             &prepared.document,
             &prepared.markdown,
             &prepared.file_stem,
             &target_request,
+            Some(&route_blocks),
         )
         .await;
 
@@ -3339,7 +3812,7 @@ impl AiService {
     fn prepare_reading_route_export(
         &self,
         request: ReadingRouteRequest,
-    ) -> Result<PreparedExportDocument, AiServiceError> {
+    ) -> Result<(PreparedExportDocument, ReadingRouteResponse), AiServiceError> {
         let response = self.get_latest_reading_route(request)?.ok_or_else(|| {
             AiServiceError::InvalidProviderOutput(
                 "当前书还没有可导出的 AI 阅读指南缓存，请先生成或读取缓存。".to_string(),
@@ -3395,24 +3868,39 @@ impl AiService {
             response.route.reading_stage.as_ref(),
         );
 
-        Ok(PreparedExportDocument {
-            document,
-            markdown,
-            file_stem: format!(
-                "{}-reading-route",
-                sanitize_file_stem(title, &response.book_id)
-            ),
-            exported_at,
-        })
+        let file_stem = format!(
+            "{}-reading-route",
+            sanitize_file_stem(title, &response.book_id)
+        );
+        Ok((
+            PreparedExportDocument {
+                document,
+                markdown,
+                file_stem,
+                exported_at,
+                review_feedback: None,
+            },
+            response,
+        ))
     }
 
     pub async fn summarize_book_decision(
         &self,
         candidates: Vec<BookDecisionCandidateInput>,
         goal: Option<String>,
+        reference_factors: Vec<String>,
+        recent_reading_window_days: Option<i64>,
+        recent_reading_context: BookDecisionRecentReadingContextInput,
         regenerate: bool,
     ) -> Result<BookDecisionResponse, AiServiceError> {
-        let decision_input = build_book_decision_input(&self.open_connection()?, candidates, goal)?;
+        let decision_input = build_book_decision_input(
+            &self.open_connection()?,
+            candidates,
+            goal,
+            reference_factors,
+            recent_reading_window_days,
+            recent_reading_context,
+        )?;
         let input_hash = stable_hash_json(&decision_input.payload)?;
 
         if !regenerate {
@@ -3427,19 +3915,6 @@ impl AiService {
                     &input_hash,
                     cached,
                     None,
-                );
-            }
-
-            if let Some(cached) = self.latest_cached_output(
-                BOOK_DECISION_FEATURE,
-                &decision_input.scope_id,
-                BOOK_DECISION_PROMPT_VERSION,
-            )? {
-                return cached_book_decision_response(
-                    &decision_input.scope_id,
-                    &input_hash,
-                    cached,
-                    Some("当前候选书输入较上次生成有变化，已先展示最近一次缓存；如需更新，请点击重新生成。".to_string()),
                 );
             }
         }
@@ -3460,6 +3935,8 @@ impl AiService {
                 result.value,
                 decision_input.allowed_book_ids,
                 decision_input.source_stats.clone(),
+                decision_input.reference_factors.clone(),
+                decision_input.recent_reading_window_days,
                 current_unix_seconds(),
                 BOOK_DECISION_PROMPT_VERSION,
                 result.response_format,
@@ -3505,8 +3982,18 @@ impl AiService {
         &self,
         candidates: Vec<BookDecisionCandidateInput>,
         goal: Option<String>,
+        reference_factors: Vec<String>,
+        recent_reading_window_days: Option<i64>,
+        recent_reading_context: BookDecisionRecentReadingContextInput,
     ) -> Result<Option<BookDecisionResponse>, AiServiceError> {
-        let decision_input = build_book_decision_input(&self.open_connection()?, candidates, goal)?;
+        let decision_input = build_book_decision_input(
+            &self.open_connection()?,
+            candidates,
+            goal,
+            reference_factors,
+            recent_reading_window_days,
+            recent_reading_context,
+        )?;
         let input_hash = stable_hash_json(&decision_input.payload)?;
 
         if let Some(cached) = self.get_cached_output(
@@ -3524,20 +4011,6 @@ impl AiService {
             .map(Some);
         }
 
-        if let Some(cached) = self.latest_cached_output(
-            BOOK_DECISION_FEATURE,
-            &decision_input.scope_id,
-            BOOK_DECISION_PROMPT_VERSION,
-        )? {
-            return cached_book_decision_response(
-                &decision_input.scope_id,
-                &input_hash,
-                cached,
-                Some("当前候选书输入较上次生成有变化，已先展示最近一次缓存；如需更新，请点击重新生成。".to_string()),
-            )
-            .map(Some);
-        }
-
         Ok(None)
     }
 
@@ -3545,8 +4018,17 @@ impl AiService {
         &self,
         candidates: Vec<BookDecisionCandidateInput>,
         goal: Option<String>,
+        reference_factors: Vec<String>,
+        recent_reading_window_days: Option<i64>,
+        recent_reading_context: BookDecisionRecentReadingContextInput,
     ) -> Result<ExportAiMarkdownResponse, AiServiceError> {
-        let prepared = self.prepare_book_decision_export(candidates, goal)?;
+        let (prepared, _response) = self.prepare_book_decision_export(
+            candidates,
+            goal,
+            reference_factors,
+            recent_reading_window_days,
+            recent_reading_context,
+        )?;
 
         self.write_ai_markdown_export(
             &prepared.file_stem,
@@ -3559,18 +4041,29 @@ impl AiService {
         &self,
         candidates: Vec<BookDecisionCandidateInput>,
         goal: Option<String>,
+        reference_factors: Vec<String>,
+        recent_reading_window_days: Option<i64>,
+        recent_reading_context: BookDecisionRecentReadingContextInput,
         request: MultiTargetExportRequest,
     ) -> Result<MultiTargetExportResponse, AiServiceError> {
         request
             .validate()
             .map_err(AiServiceError::InvalidProviderOutput)?;
-        let prepared = self.prepare_book_decision_export(candidates, goal)?;
-        let results = export_document_targets(
+        let (prepared, response) = self.prepare_book_decision_export(
+            candidates,
+            goal,
+            reference_factors,
+            recent_reading_window_days,
+            recent_reading_context,
+        )?;
+        let decision_blocks = build_book_decision_blocks(&response, &prepared.exported_at);
+        let results = export_document_targets_with_notion_blocks(
             &self.app,
             &prepared.document,
             &prepared.markdown,
             &prepared.file_stem,
             &request,
+            Some(&decision_blocks),
         )
         .await;
 
@@ -3590,9 +4083,18 @@ impl AiService {
         &self,
         candidates: Vec<BookDecisionCandidateInput>,
         goal: Option<String>,
-    ) -> Result<PreparedExportDocument, AiServiceError> {
+        reference_factors: Vec<String>,
+        recent_reading_window_days: Option<i64>,
+        recent_reading_context: BookDecisionRecentReadingContextInput,
+    ) -> Result<(PreparedExportDocument, BookDecisionResponse), AiServiceError> {
         let response = self
-            .get_latest_book_decision(candidates, goal)?
+            .get_latest_book_decision(
+                candidates,
+                goal,
+                reference_factors,
+                recent_reading_window_days,
+                recent_reading_context,
+            )?
             .ok_or_else(|| {
                 AiServiceError::InvalidProviderOutput(
                     "当前候选书还没有可导出的选书决策缓存，请先生成。".to_string(),
@@ -3651,15 +4153,20 @@ impl AiService {
             basis_notice: Some(response.decision.basis_notice.clone()),
         };
 
-        Ok(PreparedExportDocument {
-            document,
-            markdown,
-            file_stem: format!(
-                "{}-book-decision",
-                sanitize_file_stem(title, &response.scope_id)
-            ),
-            exported_at,
-        })
+        let file_stem = format!(
+            "{}-book-decision",
+            sanitize_file_stem(title, &response.scope_id)
+        );
+        Ok((
+            PreparedExportDocument {
+                document,
+                markdown,
+                file_stem,
+                exported_at,
+                review_feedback: None,
+            },
+            response,
+        ))
     }
 
     pub async fn ask_local_reader_selection_question(
@@ -4142,6 +4649,8 @@ struct BookDecisionInput {
     payload: Value,
     source_stats: BookDecisionSourceStats,
     allowed_book_ids: HashSet<String>,
+    reference_factors: Vec<String>,
+    recent_reading_window_days: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -5016,7 +5525,7 @@ fn reading_route_system_prompt() -> &'static str {
 }
 
 fn book_decision_system_prompt() -> &'static str {
-    "你是个人选书决策助手。只基于用户提供的本地候选书、已生成复盘摘要、结构化统计信号和本地状态做取舍，不编造未提供的书籍内容，不推荐输入之外的书，不假装读取微信读书远端或写回微信读书。必须使用简体中文，只输出一个顶层 JSON 对象，不要 Markdown。字段必须使用英文 camelCase，且必须包含 decisionOverview、topCandidates、deferredCandidates、nextActions。输入里的 decisionGoal 是本次选书目标，必须影响 whyNow、tradeoff、estimatedEffort 和 nextActions 的侧重点，但不能扩大数据来源。decisionOverview 必须是 1-2 句，回答“下一本为什么先读它”。topCandidates 最多 3 本，每项必须包含 bookId、title、author、rank、whyNow、tradeoff、estimatedEffort、prerequisiteAction、reviewTrigger、basis；只允许使用输入中出现的 bookId。whyNow 必须说明为什么现在读，tradeoff 必须说明为什么暂缓其他选择或这个选择的代价，estimatedEffort 必须包含明确时长或阅读时段，prerequisiteAction 必须是读前动作，reviewTrigger 必须说明读到什么节点后产出什么复盘。deferredCandidates 是暂缓项数组，每项包含 bookId、title、reason。nextActions 是 2-5 条用户能直接照做的中文动作，必须包含打开详情、安排阅读时段、读后输出或复盘触发中的至少两类；每条必须是完整中文句子，不得输出 openDetails、scheduleReadingBlock、postReadReview 等内部动作码或驼峰命名 token。不要输出评分排行榜、年度计划、泛推荐书单或空泛话术。"
+    "你是个人选书决策助手。只基于用户提供的本地候选书、用户声明的参考维度、限定窗口内的近期阅读背景、已生成复盘摘要、结构化统计信号和本地状态做取舍，不编造未提供的书籍内容，不推荐输入之外的书，不假装读取微信读书远端或写回微信读书。必须使用简体中文，只输出一个顶层 JSON 对象，不要 Markdown。字段必须使用英文 camelCase，且必须包含 decisionOverview、topCandidates、deferredCandidates、nextActions。输入里的 decisionGoal 是本次选书目标，必须影响 whyNow、tradeoff、estimatedEffort 和 nextActions 的侧重点，但不能扩大数据来源。referenceFactors 是用户显式选择的参考维度，必须逐项回应它们如何影响推荐；未选择的维度不得假装已使用。recentReadingContext 只作为倾向参考；窗口内无记录或字段为空时，不得据此编造偏好、习惯或完成记录。候选的 lifeStatus 与 organizeStatus 是相互独立的真实状态，不得把候选身份硬编码为待读状态。decisionOverview 必须是 1-2 句，回答“下一本为什么先读它”。topCandidates 最多 3 本，每项必须包含 bookId、title、author、rank、whyNow、tradeoff、estimatedEffort、prerequisiteAction、reviewTrigger、basis；只允许使用输入中出现的 bookId。whyNow 必须说明为什么现在读，tradeoff 必须说明为什么暂缓其他选择或这个选择的代价，estimatedEffort 必须包含明确时长或阅读时段，prerequisiteAction 必须是读前动作，reviewTrigger 必须说明读到什么节点后产出什么复盘。deferredCandidates 是暂缓项数组，每项包含 bookId、title、reason。nextActions 是 2-5 条用户能直接照做的中文动作，必须包含打开详情、安排阅读时段、读后输出或复盘触发中的至少两类；每条必须是完整中文句子，不得输出 openDetails、scheduleReadingBlock、postReadReview 等内部动作码或驼峰命名 token。不要输出评分排行榜、年度计划、泛推荐书单或空泛话术。"
 }
 
 fn local_reader_selection_question_system_prompt() -> &'static str {
@@ -6896,6 +7405,9 @@ fn build_book_decision_input(
     connection: &rusqlite::Connection,
     candidates: Vec<BookDecisionCandidateInput>,
     goal: Option<String>,
+    reference_factors: Vec<String>,
+    recent_reading_window_days: Option<i64>,
+    recent_reading_context: BookDecisionRecentReadingContextInput,
 ) -> Result<BookDecisionInput, AiServiceError> {
     let candidates = normalize_book_decision_candidates(candidates)?;
     if candidates.is_empty() {
@@ -6916,21 +7428,28 @@ fn build_book_decision_input(
         .iter()
         .map(|book| {
             let state = states.get(&book.book_id);
-            let local_status = state
-                .and_then(|value| string_value(value.get("status")))
-                .or_else(|| book.local_status.clone());
+            let life_status = state
+                .and_then(|value| string_value(value.get("lifeStatus")))
+                .unwrap_or_else(|| book.life_status.clone());
+            let organize_status = state
+                .and_then(|value| string_value(value.get("organizeStatus")))
+                .unwrap_or_else(|| book.organize_status.clone());
             json!({
                 "bookId": book.book_id,
                 "title": book.title,
                 "author": book.author,
                 "category": book.category,
-                "localStatus": local_status,
-                "localNote": state.and_then(|value| string_value(value.get("note"))),
+                "lifeStatus": life_status,
+                "organizeStatus": organize_status,
+                "localNote": state.and_then(|value| string_value(value.get("userNote"))),
                 "summary": summaries.get(&book.book_id)
             })
         })
         .collect::<Vec<_>>();
     let decision_goal = normalize_book_decision_goal(goal);
+    let reference_factors = normalize_book_decision_reference_factors(reference_factors)?;
+    let recent_reading_window_days = normalize_book_decision_window(recent_reading_window_days)?;
+    let recent_reading_context = normalize_book_decision_recent_context(recent_reading_context)?;
     let candidate_hash = stable_hash_json(&json!({
         "goal": decision_goal,
         "candidates": candidates
@@ -6956,8 +7475,11 @@ fn build_book_decision_input(
     let allowed_book_ids = book_ids.iter().cloned().collect::<HashSet<_>>();
     let payload = json!({
         "promptVersion": BOOK_DECISION_PROMPT_VERSION,
-        "basis": "基于用户保存到本机的候选书、已生成复盘摘要、结构化统计信号和本地状态生成，不包含全量书架、原始笔记、远端同步结果或 API Key。",
+        "basis": "基于用户保存到本机的候选书、用户声明的参考维度、限定窗口内的近期阅读背景、已生成复盘摘要、结构化统计信号和本地状态生成，不包含全量书架、原始笔记、远端同步结果或 API Key。",
         "decisionGoal": decision_goal,
+        "referenceFactors": reference_factors.clone(),
+        "recentReadingWindowDays": recent_reading_window_days,
+        "recentReadingContext": recent_reading_context,
         "candidates": decision_candidates,
         "latestStatsReview": latest_stats_review,
         "latestStatsSignals": latest_stats.map(book_decision_stats_signal_payload),
@@ -6969,6 +7491,8 @@ fn build_book_decision_input(
         payload,
         source_stats,
         allowed_book_ids,
+        reference_factors,
+        recent_reading_window_days,
     })
 }
 
@@ -10411,6 +10935,89 @@ fn normalize_book_decision_goal(goal: Option<String>) -> String {
     }
 }
 
+fn normalize_book_decision_reference_factors(
+    factors: Vec<String>,
+) -> Result<Vec<String>, AiServiceError> {
+    let allowed = ["finished", "habits", "recent"];
+    let mut normalized = factors
+        .into_iter()
+        .map(|factor| factor.trim().to_string())
+        .filter(|factor| !factor.is_empty())
+        .collect::<Vec<_>>();
+    if normalized
+        .iter()
+        .any(|factor| !allowed.contains(&factor.as_str()))
+    {
+        return Err(AiServiceError::InvalidProviderOutput(
+            "选书决策包含不支持的参考因子。".to_string(),
+        ));
+    }
+    normalized.sort();
+    normalized.dedup();
+    Ok(normalized)
+}
+
+fn normalize_book_decision_window(window_days: Option<i64>) -> Result<Option<i64>, AiServiceError> {
+    if window_days.is_some_and(|days| ![30, 60, 90, 180, 365].contains(&days)) {
+        return Err(AiServiceError::InvalidProviderOutput(
+            "选书决策近期阅读时间窗口不合法。".to_string(),
+        ));
+    }
+    Ok(window_days)
+}
+
+fn normalize_book_decision_recent_context(
+    context: BookDecisionRecentReadingContextInput,
+) -> Result<BookDecisionRecentReadingContextInput, AiServiceError> {
+    let finished_titles = context
+        .finished_titles
+        .into_iter()
+        .filter_map(|title| normalize_route_optional(Some(title), 160))
+        .take(5)
+        .collect();
+    let active_categories = context
+        .active_categories
+        .into_iter()
+        .filter_map(|category| {
+            normalize_route_optional(Some(category.name), 120).map(|name| {
+                BookDecisionActiveCategoryInput {
+                    name,
+                    minutes: category.minutes.clamp(0, 525_600),
+                }
+            })
+        })
+        .filter(|category| category.minutes > 0)
+        .take(5)
+        .collect();
+    Ok(BookDecisionRecentReadingContextInput {
+        finished_titles,
+        active_categories,
+        average_daily_minutes: context.average_daily_minutes.clamp(0, 1_440),
+    })
+}
+
+fn normalize_book_decision_life_status(value: &str) -> Result<String, AiServiceError> {
+    let value = value.trim();
+    if ["none", "want", "reading", "paused", "finished", "dropped"].contains(&value) {
+        Ok(value.to_string())
+    } else {
+        Err(AiServiceError::InvalidProviderOutput(
+            "选书决策候选包含不支持的阅读生命周期。".to_string(),
+        ))
+    }
+}
+
+fn normalize_book_decision_organize_status(value: &str) -> Result<String, AiServiceError> {
+    let value = value.trim();
+    if ["none", "to_organize", "organized"].contains(&value) {
+        Ok(value.to_string())
+    } else {
+        Err(AiServiceError::InvalidProviderOutput(
+            "选书决策候选包含不支持的整理状态。".to_string(),
+        ))
+    }
+}
+
 fn normalize_summary_output(
     value: Value,
     source_stats: BookAiSummarySourceStats,
@@ -10684,6 +11291,8 @@ fn normalize_book_decision_output(
     value: Value,
     allowed_book_ids: HashSet<String>,
     source_stats: BookDecisionSourceStats,
+    reference_factors: Vec<String>,
+    recent_reading_window_days: Option<i64>,
     generated_at: String,
     prompt_version: &str,
     response_format: Option<AiResponseFormatKind>,
@@ -10755,6 +11364,8 @@ fn normalize_book_decision_output(
         .take(5)
         .collect(),
         source_stats,
+        reference_factors: Some(reference_factors),
+        recent_reading_window_days,
         generated_at,
         prompt_version: prompt_version.to_string(),
         response_format,
@@ -10933,10 +11544,15 @@ fn cached_book_decision_response(
         BookAiSummarySource::Cache
     };
 
+    let response_input_hash = if error_message.is_some() {
+        cached.input_hash.clone()
+    } else {
+        current_input_hash.to_string()
+    };
     Ok(BookDecisionResponse {
         scope_id: scope_id.to_string(),
         prompt_version: cached.prompt_version,
-        input_hash: current_input_hash.to_string(),
+        input_hash: response_input_hash,
         provider_model: cached.provider_model,
         source,
         decision: sanitize_cached_book_decision(decision),
@@ -11417,7 +12033,8 @@ fn normalize_book_decision_candidate_input(
         title,
         author: normalize_route_optional(book.author, 120),
         category: normalize_route_optional(book.category, 120),
-        local_status: normalize_route_optional(book.local_status, 40),
+        life_status: normalize_book_decision_life_status(&book.life_status)?,
+        organize_status: normalize_book_decision_organize_status(&book.organize_status)?,
     })
 }
 
@@ -11708,7 +12325,25 @@ fn read_route_item_states(
     let mut statement = connection
         .prepare(
             "
-            SELECT item_id, item_type, status, title, author, category, note, updated_at
+            SELECT
+                item_id,
+                item_type,
+                status,
+                title,
+                author,
+                category,
+                note,
+                updated_at,
+                COALESCE(life_status, 'none'),
+                COALESCE(
+                    organize_status,
+                    CASE status
+                        WHEN 'reviewing' THEN 'to_organize'
+                        WHEN 'organized' THEN 'organized'
+                        ELSE 'none'
+                    END
+                ),
+                user_note
             FROM reading_item_states
             WHERE item_id = ?1
             ",
@@ -11726,7 +12361,10 @@ fn read_route_item_states(
                     "author": row.get::<_, Option<String>>(4)?,
                     "category": row.get::<_, Option<String>>(5)?,
                     "note": row.get::<_, Option<String>>(6)?,
-                    "updatedAt": row.get::<_, String>(7)?
+                    "updatedAt": row.get::<_, String>(7)?,
+                    "lifeStatus": row.get::<_, String>(8)?,
+                    "organizeStatus": row.get::<_, String>(9)?,
+                    "userNote": row.get::<_, Option<String>>(10)?
                 }))
             })
             .optional()
@@ -14381,6 +15019,29 @@ fn normalize_ai_feedback_note(note: &str) -> String {
     normalized.trim().chars().take(500).collect()
 }
 
+fn book_review_target_failure(
+    target: ExternalExportTarget,
+    code: &str,
+    message: &str,
+    detail: Option<String>,
+) -> ExportTargetResult {
+    ExportTargetResult {
+        target,
+        status: ExportTargetStatus::Failed,
+        title: None,
+        path: None,
+        url: None,
+        page_id: None,
+        file_count: None,
+        warning: None,
+        error: Some(ExportTargetError {
+            code: code.to_string(),
+            message: message.to_string(),
+            detail,
+        }),
+    }
+}
+
 fn merge_ai_review_feedback(
     mut stored: AiReviewFeedbackExport,
     override_feedback: AiReviewFeedbackExport,
@@ -15206,9 +15867,9 @@ mod tests {
         build_reading_assistant_category_books_output, build_reading_assistant_context,
         build_reading_assistant_payload, build_reading_assistant_stats_aggregate_output,
         build_reading_route_input, build_reading_stats_review_input, build_summary_input,
-        cached_reading_route_response, cached_reading_stats_review_response,
-        chat_completion_stream_delta_from_frame, chat_completions_url,
-        default_json_object_response_format, default_provider_settings,
+        cached_book_decision_response, cached_reading_route_response,
+        cached_reading_stats_review_response, chat_completion_stream_delta_from_frame,
+        chat_completions_url, default_json_object_response_format, default_provider_settings,
         enforce_reading_assistant_book_review_routing, extract_chat_completion_json,
         filter_existing_reading_assistant_recommended_books, humanize_review_text,
         infer_reading_assistant_intent, insert_reading_assistant_message, is_empty_reading_stats,
@@ -15226,20 +15887,21 @@ mod tests {
         reading_assistant_intent_supports_streaming, reading_assistant_json_schema,
         reading_assistant_stats_aggregate_answer, reading_assistant_system_prompt,
         reading_assistant_weread_search_answer, reading_assistant_weread_search_result,
-        reading_route_json_schema, reading_route_update_context, reading_stats_review_json_schema,
-        recommend_response_format_policy, replace_reading_assistant_thread_tail,
-        require_ai_credential_for_uncached_summary, resolve_book_summary_update_context,
-        resolve_reading_assistant_search_keyword, resolve_reading_persona,
-        response_format_attempts_for_policy, save_ai_review_feedback,
+        reading_route_json_schema, reading_route_update_context, reading_stage_signal,
+        reading_stats_review_json_schema, recommend_response_format_policy,
+        replace_reading_assistant_thread_tail, require_ai_credential_for_uncached_summary,
+        resolve_book_summary_update_context, resolve_reading_assistant_search_keyword,
+        resolve_reading_persona, response_format_attempts_for_policy, save_ai_review_feedback,
         serialize_book_summary_export_index, stable_hash_json, streamed_json_string_field_prefix,
         update_reading_assistant_message_input_hash, upsert_ai_output,
         upsert_reading_assistant_thread, AiCachedOutputRecord, AiFeedbackExportRecord,
         AiOutputUpsert, AiProviderCapabilityStatus, AiResponseFormatKind, AiResponseFormatPolicy,
         AiReviewFeedbackExport, AiReviewFeedbackState, AiService, AiServiceError,
         AssistantContextScope, BookAiSummarySource, BookAiSummarySourceStats,
-        BookAiSummaryUpdateContext, BookDecisionCandidateInput, BookDecisionSourceStats,
-        BookSummaryExportItem, BookSummaryUpdateContext, LocalReaderSelectionBookInput,
-        LocalReaderSelectionContextInput, LocalReaderSelectionInput,
+        BookAiSummaryUpdateContext, BookDecision, BookDecisionActiveCategoryInput,
+        BookDecisionCandidateInput, BookDecisionRecentReadingContextInput, BookDecisionSourceStats,
+        BookDecisionTopCandidate, BookSummaryExportItem, BookSummaryUpdateContext,
+        LocalReaderSelectionBookInput, LocalReaderSelectionContextInput, LocalReaderSelectionInput,
         LocalReaderSelectionQuestionInput, ReadingAssistantActionOutput,
         ReadingAssistantBookReviewActionOutput, ReadingAssistantContextBuildRequest,
         ReadingAssistantContextBundle, ReadingAssistantContextOption,
@@ -15402,6 +16064,27 @@ mod tests {
                 })
                 .collect(),
             raw: serde_json::Value::Null,
+        }
+    }
+
+    #[test]
+    fn reading_stage_signal_keeps_closing_and_completion_boundaries_stable() {
+        let cases = [
+            (69, false, "deepening", "深入推进", Some("stage_changed")),
+            (70, false, "closing", "收束整理", Some("stage_changed")),
+            (95, false, "closing", "收束整理", Some("stage_changed")),
+            (99, false, "closing", "收束整理", Some("stage_changed")),
+            (100, false, "completed", "完成归档", Some("completed")),
+            (69, true, "completed", "完成归档", Some("completed")),
+        ];
+
+        for (progress, is_finished, stage, label, refresh_reason) in cases {
+            let signal = reading_stage_signal(progress, is_finished);
+
+            assert_eq!(signal.progress_percent, progress);
+            assert_eq!(signal.stage, stage);
+            assert_eq!(signal.label, label);
+            assert_eq!(signal.refresh_reason.as_deref(), refresh_reason);
         }
     }
 
@@ -15857,25 +16540,44 @@ mod tests {
         initialize_schema(&connection).expect("schema should initialize");
         insert_book_decision_fixture(&connection);
 
+        let candidates = vec![
+            BookDecisionCandidateInput {
+                book_id: "candidate_moon".to_string(),
+                title: "月亮与六便士".to_string(),
+                author: Some("毛姆".to_string()),
+                category: Some("文学".to_string()),
+                life_status: "want".to_string(),
+                organize_status: "none".to_string(),
+            },
+            BookDecisionCandidateInput {
+                book_id: "candidate_focus".to_string(),
+                title: "专注力".to_string(),
+                author: Some("作者".to_string()),
+                category: Some("效率".to_string()),
+                life_status: "reading".to_string(),
+                organize_status: "to_organize".to_string(),
+            },
+        ];
+        let context = BookDecisionRecentReadingContextInput {
+            finished_titles: vec!["深度工作".to_string()],
+            active_categories: vec![BookDecisionActiveCategoryInput {
+                name: "文学".to_string(),
+                minutes: 90,
+            }],
+            average_daily_minutes: 35,
+        };
         let input = build_book_decision_input(
             &connection,
-            vec![
-                BookDecisionCandidateInput {
-                    book_id: "candidate_moon".to_string(),
-                    title: "月亮与六便士".to_string(),
-                    author: Some("毛姆".to_string()),
-                    category: Some("文学".to_string()),
-                    local_status: Some("toRead".to_string()),
-                },
-                BookDecisionCandidateInput {
-                    book_id: "candidate_focus".to_string(),
-                    title: "专注力".to_string(),
-                    author: Some("作者".to_string()),
-                    category: Some("效率".to_string()),
-                    local_status: Some("toRead".to_string()),
-                },
-            ],
+            candidates.clone(),
             Some("推进长期书".to_string()),
+            vec![
+                "recent".to_string(),
+                "habits".to_string(),
+                "finished".to_string(),
+                "recent".to_string(),
+            ],
+            Some(60),
+            context.clone(),
         )
         .expect("decision input should build");
         let payload_text = input.payload.to_string();
@@ -15883,14 +16585,247 @@ mod tests {
         assert_eq!(input.source_stats.candidate_count, 2);
         assert_eq!(input.source_stats.summary_count, 1);
         assert_eq!(input.source_stats.local_status_count, 2);
+        assert_eq!(
+            input.payload["referenceFactors"],
+            json!(["finished", "habits", "recent"])
+        );
+        assert_eq!(input.payload["recentReadingWindowDays"], json!(60));
+        assert_eq!(
+            input.payload["recentReadingContext"]["averageDailyMinutes"],
+            json!(35)
+        );
+        assert_eq!(input.payload["candidates"][0]["lifeStatus"], json!("want"));
+        assert_eq!(
+            input.payload["candidates"][1]["organizeStatus"],
+            json!("to_organize")
+        );
         assert!(payload_text.contains("月亮与六便士"));
         assert!(payload_text.contains("复盘概览"));
         assert!(payload_text.contains("推进长期书"));
+        assert!(payload_text.contains("深度工作"));
         assert!(!payload_text.contains("shelf_entries"));
         assert!(!payload_text.contains("raw_json"));
         assert!(!payload_text.contains("sk-"));
         assert!(!payload_text.contains("app.db"));
         assert!(!payload_text.contains("原始划线正文不应进入选书决策"));
+
+        let reordered = build_book_decision_input(
+            &connection,
+            candidates.clone(),
+            Some("推进长期书".to_string()),
+            vec![
+                "habits".to_string(),
+                "finished".to_string(),
+                "recent".to_string(),
+            ],
+            Some(60),
+            context.clone(),
+        )
+        .expect("reordered factors should build");
+        assert_eq!(
+            stable_hash_json(&input.payload).expect("input should hash"),
+            stable_hash_json(&reordered.payload).expect("reordered input should hash")
+        );
+
+        let changed_window = build_book_decision_input(
+            &connection,
+            candidates.clone(),
+            Some("推进长期书".to_string()),
+            vec![
+                "recent".to_string(),
+                "finished".to_string(),
+                "habits".to_string(),
+            ],
+            Some(90),
+            context.clone(),
+        )
+        .expect("changed window should build");
+        assert_ne!(
+            stable_hash_json(&input.payload).expect("input should hash"),
+            stable_hash_json(&changed_window.payload).expect("changed window should hash")
+        );
+
+        let changed_context = build_book_decision_input(
+            &connection,
+            candidates,
+            Some("推进长期书".to_string()),
+            vec![
+                "recent".to_string(),
+                "finished".to_string(),
+                "habits".to_string(),
+            ],
+            Some(60),
+            BookDecisionRecentReadingContextInput {
+                average_daily_minutes: 50,
+                ..context
+            },
+        )
+        .expect("changed context should build");
+        assert_ne!(
+            stable_hash_json(&input.payload).expect("input should hash"),
+            stable_hash_json(&changed_context.payload).expect("changed context should hash")
+        );
+    }
+
+    #[test]
+    fn book_decision_input_rejects_unknown_factors_windows_and_states() {
+        let connection = Connection::open_in_memory().expect("in-memory database should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        let context = BookDecisionRecentReadingContextInput {
+            finished_titles: Vec::new(),
+            active_categories: Vec::new(),
+            average_daily_minutes: 0,
+        };
+        let candidate = BookDecisionCandidateInput {
+            book_id: "candidate".to_string(),
+            title: "候选书".to_string(),
+            author: None,
+            category: None,
+            life_status: "want".to_string(),
+            organize_status: "none".to_string(),
+        };
+
+        assert!(build_book_decision_input(
+            &connection,
+            vec![candidate.clone()],
+            None,
+            vec!["unknown".to_string()],
+            Some(60),
+            context.clone(),
+        )
+        .is_err());
+        assert!(build_book_decision_input(
+            &connection,
+            vec![candidate.clone()],
+            None,
+            vec!["recent".to_string()],
+            Some(45),
+            context.clone(),
+        )
+        .is_err());
+        assert!(build_book_decision_input(
+            &connection,
+            vec![BookDecisionCandidateInput {
+                life_status: "toRead".to_string(),
+                ..candidate.clone()
+            }],
+            None,
+            Vec::new(),
+            None,
+            context.clone(),
+        )
+        .is_err());
+        assert!(build_book_decision_input(
+            &connection,
+            vec![BookDecisionCandidateInput {
+                organize_status: "reviewing".to_string(),
+                ..candidate
+            }],
+            None,
+            Vec::new(),
+            None,
+            context,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn cached_book_decision_response_uses_cached_hash_for_stale_fallback() {
+        let decision = BookDecision {
+            decision_overview: "先读候选书。".to_string(),
+            top_candidates: vec![BookDecisionTopCandidate {
+                book_id: "candidate".to_string(),
+                title: "候选书".to_string(),
+                author: None,
+                rank: 1,
+                why_now: "当前最匹配。".to_string(),
+                tradeoff: "暂缓其他书。".to_string(),
+                estimated_effort: "30 分钟".to_string(),
+                prerequisite_action: "打开详情。".to_string(),
+                review_trigger: "读完后复盘。".to_string(),
+                basis: "来自本地候选。".to_string(),
+            }],
+            deferred_candidates: Vec::new(),
+            next_actions: vec!["打开详情。".to_string()],
+            source_stats: BookDecisionSourceStats {
+                candidate_count: 1,
+                summary_count: 0,
+                stats_signal_count: 0,
+                local_status_count: 1,
+            },
+            reference_factors: Some(vec!["finished".to_string()]),
+            recent_reading_window_days: Some(30),
+            generated_at: "100".to_string(),
+            prompt_version: BOOK_DECISION_PROMPT_VERSION.to_string(),
+            response_format: None,
+            basis_notice: "基于本地候选。".to_string(),
+        };
+        let cached = AiCachedOutputRecord {
+            feature: "book-decision".to_string(),
+            scope_id: "candidates:fixture".to_string(),
+            prompt_version: BOOK_DECISION_PROMPT_VERSION.to_string(),
+            input_hash: "cached-input-hash".to_string(),
+            output: serde_json::to_value(decision).expect("decision should serialize"),
+            source_count: Some(1),
+            provider_model: Some("fixture-model".to_string()),
+            created_at: "100".to_string(),
+            updated_at: "120".to_string(),
+        };
+
+        let strict = cached_book_decision_response(
+            "candidates:fixture",
+            "current-input-hash",
+            cached.clone(),
+            None,
+        )
+        .expect("strict cache response should build");
+        assert_eq!(strict.source, BookAiSummarySource::Cache);
+        assert_eq!(strict.input_hash, "current-input-hash");
+        assert_eq!(
+            strict.decision.reference_factors,
+            Some(vec!["finished".to_string()])
+        );
+        assert_eq!(strict.decision.recent_reading_window_days, Some(30));
+
+        let stale = cached_book_decision_response(
+            "candidates:fixture",
+            "current-input-hash",
+            cached,
+            Some("AI 请求失败".to_string()),
+        )
+        .expect("stale cache response should build");
+        assert_eq!(stale.source, BookAiSummarySource::StaleCache);
+        assert_eq!(stale.input_hash, "cached-input-hash");
+        assert_eq!(
+            stale.decision.reference_factors,
+            Some(vec!["finished".to_string()])
+        );
+        assert_eq!(stale.decision.recent_reading_window_days, Some(30));
+        assert_eq!(stale.error_message.as_deref(), Some("AI 请求失败"));
+    }
+
+    #[test]
+    fn book_decision_deserializes_legacy_cache_without_request_metadata() {
+        let decision = serde_json::from_value::<BookDecision>(json!({
+            "decisionOverview": "旧缓存决策。",
+            "topCandidates": [],
+            "deferredCandidates": [],
+            "nextActions": [],
+            "sourceStats": {
+                "candidateCount": 1,
+                "summaryCount": 0,
+                "statsSignalCount": 0,
+                "localStatusCount": 1
+            },
+            "generatedAt": "100",
+            "promptVersion": BOOK_DECISION_PROMPT_VERSION,
+            "responseFormat": null,
+            "basisNotice": "旧缓存。"
+        }))
+        .expect("legacy book decision cache should deserialize");
+
+        assert_eq!(decision.reference_factors, None);
+        assert_eq!(decision.recent_reading_window_days, None);
     }
 
     #[test]
@@ -17850,7 +18785,9 @@ mod tests {
                         "reason": "与近期主题重复，先暂缓。"
                     }
                 ],
-                "nextActions": ["今天先打开《月亮与六便士》详情，确认是否继续读。", "读完第一章后写 3 条选择代价问题。"]
+                "nextActions": ["今天先打开《月亮与六便士》详情，确认是否继续读。", "读完第一章后写 3 条选择代价问题。"],
+                "referenceFactors": ["habits"],
+                "recentReadingWindowDays": 365
             }),
             HashSet::from(["candidate_moon".to_string(), "candidate_focus".to_string()]),
             BookDecisionSourceStats {
@@ -17859,6 +18796,8 @@ mod tests {
                 stats_signal_count: 1,
                 local_status_count: 2,
             },
+            vec!["finished".to_string(), "recent".to_string()],
+            Some(60),
             "100".to_string(),
             BOOK_DECISION_PROMPT_VERSION,
             Some(AiResponseFormatKind::JsonSchema),
@@ -17873,7 +18812,12 @@ mod tests {
         );
         assert_eq!(decision.deferred_candidates.len(), 1);
         assert_eq!(decision.next_actions.len(), 2);
-        assert_eq!(decision.prompt_version, "book-decision-v1");
+        assert_eq!(
+            decision.reference_factors,
+            Some(vec!["finished".to_string(), "recent".to_string()])
+        );
+        assert_eq!(decision.recent_reading_window_days, Some(60));
+        assert_eq!(decision.prompt_version, BOOK_DECISION_PROMPT_VERSION);
         assert_eq!(
             decision.response_format,
             Some(AiResponseFormatKind::JsonSchema)
@@ -17910,6 +18854,8 @@ mod tests {
                 stats_signal_count: 0,
                 local_status_count: 1,
             },
+            vec!["habits".to_string()],
+            Some(30),
             "100".to_string(),
             BOOK_DECISION_PROMPT_VERSION,
             Some(AiResponseFormatKind::JsonObject),
@@ -20695,10 +21641,20 @@ mod tests {
             .execute(
                 "
                 INSERT INTO reading_item_states (
-                    item_id, item_type, status, title, author, cover, category, note, created_at, updated_at
+                    item_id, item_type, status, title, author, cover, category, note,
+                    created_at, updated_at, item_kind, is_candidate, candidate_source,
+                    life_status, organize_status, user_note
                 ) VALUES
-                    ('candidate_moon', 'candidate', 'toRead', '月亮与六便士', '毛姆', NULL, '文学', '本地候选', '100', '120'),
-                    ('candidate_focus', 'candidate', 'toRead', '专注力', '作者', NULL, '效率', '本地候选', '100', '120')
+                    (
+                        'candidate_moon', 'candidate', 'toRead', '月亮与六便士', '毛姆',
+                        NULL, '文学', '本地候选', '100', '120', 'book', 1, 'manual',
+                        'want', 'none', NULL
+                    ),
+                    (
+                        'candidate_focus', 'candidate', 'toRead', '专注力', '作者',
+                        NULL, '效率', '本地候选', '100', '120', 'book', 1, 'manual',
+                        'reading', 'to_organize', NULL
+                    )
                 ",
                 [],
             )

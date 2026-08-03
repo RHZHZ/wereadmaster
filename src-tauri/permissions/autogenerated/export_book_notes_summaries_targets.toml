@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-export-book-notes-summaries-targets"
+description = "Enables the export_book_notes_summaries_targets command without any pre-configured scope."
+commands.allow = ["export_book_notes_summaries_targets"]
+
+[[permission]]
+identifier = "deny-export-book-notes-summaries-targets"
+description = "Denies the export_book_notes_summaries_targets command without any pre-configured scope."
+commands.deny = ["export_book_notes_summaries_targets"]

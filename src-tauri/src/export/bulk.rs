@@ -58,6 +58,9 @@ pub struct BulkExportPreflight {
 pub struct BulkExportResultItem {
     pub book_id: String,
     pub title: String,
+    /// 作者，用于在结果里区分同名不同版本的书。
+    #[serde(default)]
+    pub author: Option<String>,
     pub status: BulkExportItemStatus,
     pub notes_file: Option<String>,
     pub ai_review_file: Option<String>,
@@ -327,6 +330,13 @@ pub fn serialize_bulk_export_report(report: &BulkExportReport) -> String {
     for item in &report.items {
         let _ = writeln!(markdown, "## {}", item.title);
         let _ = writeln!(markdown);
+        if let Some(author) = item
+            .author
+            .as_deref()
+            .filter(|author| !author.trim().is_empty())
+        {
+            let _ = writeln!(markdown, "- 作者：{}", author.trim());
+        }
         let _ = writeln!(markdown, "- 状态：{:?}", item.status);
         let _ = writeln!(markdown, "- 原因：{}", item.reason);
         if let Some(notes_file) = item.notes_file.as_deref() {
@@ -491,6 +501,7 @@ mod tests {
             items: vec![BulkExportResultItem {
                 book_id: "missing".to_string(),
                 title: "未缓存".to_string(),
+                author: Some("作者".to_string()),
                 status: BulkExportItemStatus::Skipped,
                 notes_file: None,
                 ai_review_file: Some("reviews/missing-ai-summary.md".to_string()),
@@ -518,6 +529,7 @@ mod tests {
             items: vec![BulkExportResultItem {
                 book_id: "canceled".to_string(),
                 title: "已取消".to_string(),
+                author: Some("作者".to_string()),
                 status: BulkExportItemStatus::Canceled,
                 notes_file: None,
                 ai_review_file: None,
@@ -541,6 +553,7 @@ mod tests {
             items: vec![BulkExportResultItem {
                 book_id: "failed".to_string(),
                 title: "同步失败".to_string(),
+                author: Some("作者".to_string()),
                 status: BulkExportItemStatus::Failed,
                 notes_file: None,
                 ai_review_file: None,
@@ -595,6 +608,7 @@ mod tests {
                 BulkExportResultItem {
                     book_id: "book-1".to_string(),
                     title: "深度工作".to_string(),
+                    author: Some("作者".to_string()),
                     status: BulkExportItemStatus::Exported,
                     notes_file: Some("notes/深度工作-100.md".to_string()),
                     ai_review_file: None,
@@ -629,6 +643,7 @@ mod tests {
                 BulkExportResultItem {
                     book_id: "book-2".to_string(),
                     title: "另一本".to_string(),
+                    author: Some("作者".to_string()),
                     status: BulkExportItemStatus::Exported,
                     notes_file: Some("notes/另一本-100.md".to_string()),
                     ai_review_file: None,

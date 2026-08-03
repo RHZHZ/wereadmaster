@@ -14,14 +14,12 @@ import {
   type BookshelfResponse,
   type ReadingStatsResponse
 } from "../lib/reading-api";
+import { AssetExportDialog } from "../components/export/AssetExportDialog";
 import { useToast } from "../components/ToastProvider";
+import { resolveExportPlatformMode } from "../lib/asset-export-dialog";
+import { formatMultiTargetExportToast } from "../lib/export-targets";
 import { formatAiResponseFormat, formatAiTimestamp } from "../lib/formatters";
-import {
-  exportTargetLabel,
-  exportTargetsFromDestination,
-  formatMultiTargetExportToast,
-  type ExportDestination
-} from "../lib/export-targets";
+import { TERMS } from "../lib/glossary";
 import {
   buildAiActionItemId,
   getAiActionItemStorage,
@@ -31,12 +29,14 @@ import {
 import type {
   BookDecisionGoal,
   BookDecisionResponse,
+  ExternalExportTarget,
   MultiTargetExportResponse,
   ReadingStatsMode,
   SearchResult
 } from "../lib/types";
 import { buildBookDecisionCandidates } from "./candidate-books";
 import {
+  buildBookDecisionRecentReadingContext,
   getRecentReadingContext,
   type RecentReadingWindowMode
 } from "./book-decision-context";
@@ -46,8 +46,10 @@ import {
 } from "./book-decision-draft";
 import { BookDecisionInputDialog } from "./BookDecisionInputDialog";
 import { type ReadingStatsCache } from "./reading-stats-period";
+import type { SettingsCategoryId } from "./SettingsPage";
 import {
   maxDecisionCandidates,
+  referenceFactors,
   type BookDecisionSession,
   type ReferenceFactor
 } from "./book-decision-input-model";
@@ -57,14 +59,9 @@ type BookDecisionPageProps = {
   readingStatsCache: ReadingStatsCache;
   session?: BookDecisionSession;
   onSessionChange: (session: BookDecisionSession) => void;
+  onOpenSettings: (preferredCategory?: SettingsCategoryId) => void;
   onBack: () => void;
 };
-
-type ExportStatus =
-  | { type: "idle" }
-  | { type: "running" }
-  | { type: "success"; result: MultiTargetExportResponse }
-  | { type: "error"; message: string };
 
 const bookDecisionActionScope = "book-decision";
 
@@ -99,6 +96,7 @@ export function BookDecisionPage({
   readingStatsCache,
   session,
   onSessionChange,
+  onOpenSettings,
   onBack
 }: BookDecisionPageProps) {
   const { showToast } = useToast();
@@ -115,9 +113,8 @@ export function BookDecisionPage({
   const [recentReadingWindowMode, setRecentReadingWindowMode] =
     useState<RecentReadingWindowMode>(session?.recentReadingWindowMode ?? "auto");
   const [isInputDialogOpen, setIsInputDialogOpen] = useState(false);
+  const [isAssetExportOpen, setIsAssetExportOpen] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [exportStatus, setExportStatus] = useState<ExportStatus>({ type: "idle" });
-  const [exportDestination, setExportDestination] = useState<ExportDestination>("markdown");
   const [error, setError] = useState<string>();
   const candidateBooks = session?.candidateBooks ?? [];
   const decisionResponse = session?.response;
@@ -129,7 +126,22 @@ export function BookDecisionPage({
     undefined,
     recentReadingWindowMode
   );
-  const selectedFactorCount = selectedFactorIds.size;
+  const decisionRequest = {
+    candidates: decisionCandidates,
+    goal: decisionGoal,
+    referenceFactors: Array.from(selectedFactorIds),
+    recentReadingWindowDays: recentReadingContext.windowDays,
+    recentReadingContext: buildBookDecisionRecentReadingContext(
+      bookshelf?.snapshot.entries ?? [],
+      readingStatsCache,
+      recentReadingContext.windowDays
+    )
+  };
+  const decision = decisionResponse?.decision;
+  const recordedReferenceFactors = decision?.referenceFactors;
+  const recordedFactorLabels = recordedReferenceFactors?.map(
+    (factorId) => referenceFactors.find((factor) => factor.id === factorId)?.label ?? factorId
+  );
   const sourceStatus = getDecisionSourceStatus(decisionResponse);
   const statusLabel = isGenerating ? "生成中" : sourceStatus.label;
   const statusTone = isGenerating ? "pending" : sourceStatus.tone;
@@ -145,7 +157,7 @@ export function BookDecisionPage({
     setRecentReadingWindowMode(session.recentReadingWindowMode);
     setCandidateLimitMessage(undefined);
     setError(undefined);
-    setExportStatus({ type: "idle" });
+    setIsAssetExportOpen(false);
   }, [session]);
 
   useEffect(() => {
@@ -226,8 +238,7 @@ export function BookDecisionPage({
 
     try {
       const response = await summarizeBookDecision({
-        candidates: decisionCandidates,
-        goal: decisionGoal,
+        ...decisionRequest,
         regenerate: true
       });
       onSessionChange({
@@ -239,7 +250,6 @@ export function BookDecisionPage({
         recentReadingWindowMode
       });
       setIsInputDialogOpen(false);
-      setExportStatus({ type: "idle" });
     } catch (generateError) {
       setError(getCommandErrorMessage(generateError));
     } finally {
@@ -247,23 +257,16 @@ export function BookDecisionPage({
     }
   }
 
-  async function handleExport() {
+  async function exportDecision(
+    targets: ExternalExportTarget[]
+  ): Promise<MultiTargetExportResponse> {
     if (decisionCandidates.length === 0) {
-      setExportStatus({ type: "error", message: "没有可导出的选书决策候选。" });
-      return;
+      throw new Error("没有可导出的选书决策候选。");
     }
 
-    setExportStatus({ type: "running" });
-
-    try {
-      const result = await exportBookDecisionTargets(decisionCandidates, decisionGoal, {
-        targets: exportTargetsFromDestination(exportDestination)
-      });
-      setExportStatus({ type: "success", result });
-      showToast(formatMultiTargetExportToast(result));
-    } catch (exportError) {
-      setExportStatus({ type: "error", message: getCommandErrorMessage(exportError) });
-    }
+    const result = await exportBookDecisionTargets(decisionRequest, { targets });
+    showToast(formatMultiTargetExportToast(result));
+    return result;
   }
 
   if (!decisionResponse || !session) {
@@ -273,7 +276,7 @@ export function BookDecisionPage({
           <div>
             <p className="section-kicker">结果</p>
             <h3>选书决策</h3>
-            <p>请先从候选书架点击“推荐下一本”，确认输入后生成选书决策。</p>
+            <p>请先从候选书架点击“{TERMS.generateBookDecision}”，确认输入后生成结果。</p>
           </div>
           <div className="book-decision-hero-actions">
             <span className="ai-summary-badge ai-summary-badge--neutral">待生成</span>
@@ -300,10 +303,30 @@ export function BookDecisionPage({
       <section className="book-decision-hero" aria-label="选书决策标题区">
         <div>
           <p className="section-kicker">结果</p>
-          <h3>推荐下一本</h3>
+          <h3>{TERMS.bookDecision}</h3>
           <p>
-            基于 {decisionCandidates.length} 本候选和 {selectedFactorCount} 个参考因子生成。结果只用于本地阅读决策，不写回微信读书。
+            基于 {decisionResponse.decision.sourceStats.candidateCount} 本候选生成。结果只用于本地阅读决策，不写回微信读书。
           </p>
+          <div className="book-decision-asset-meta" aria-label="选书决策参考依据">
+            <span className="book-decision-asset-meta-label">参考因子</span>
+            {recordedFactorLabels === undefined ? (
+              <span className="book-decision-asset-chip book-decision-asset-chip--muted">未记录</span>
+            ) : recordedFactorLabels.length === 0 ? (
+              <span className="book-decision-asset-chip book-decision-asset-chip--muted">未使用</span>
+            ) : (
+              recordedFactorLabels.map((label) => (
+                <span className="book-decision-asset-chip" key={label}>
+                  {label}
+                </span>
+              ))
+            )}
+            <span className="book-decision-asset-meta-label">近期窗口</span>
+            <span className={`book-decision-asset-chip${decisionResponse.decision.recentReadingWindowDays === undefined ? " book-decision-asset-chip--muted" : ""}`}>
+              {decisionResponse.decision.recentReadingWindowDays === undefined
+                ? "未记录"
+                : `近 ${decisionResponse.decision.recentReadingWindowDays} 天`}
+            </span>
+          </div>
         </div>
         <div className="book-decision-hero-actions">
           <span className={`ai-summary-badge ai-summary-badge--${statusTone}`}>
@@ -312,29 +335,11 @@ export function BookDecisionPage({
           <button
             className="secondary-action"
             type="button"
-            disabled={exportStatus.type === "running"}
-            onClick={() => void handleExport()}
+            onClick={() => setIsAssetExportOpen(true)}
           >
-            {exportStatus.type === "running" ? (
-              <Loader2 aria-hidden="true" size={18} className="spin" />
-            ) : (
-              <BookOpen aria-hidden="true" size={18} />
-            )}
-            {exportStatus.type === "running" ? "导出中" : "一键导出"}
+            <BookOpen aria-hidden="true" size={18} />
+            导出选书决策
           </button>
-          <label className="compact-export-select">
-            <span>导出到</span>
-            <select
-              value={exportDestination}
-              onChange={(event) => setExportDestination(event.target.value as ExportDestination)}
-              disabled={exportStatus.type === "running"}
-            >
-              <option value="markdown">Markdown</option>
-              <option value="obsidian">Obsidian</option>
-              <option value="notion">Notion</option>
-              <option value="obsidianNotion">Obsidian + Notion</option>
-            </select>
-          </label>
           <button
             className="sync-button"
             type="button"
@@ -373,44 +378,6 @@ export function BookDecisionPage({
         </div>
       ) : null}
 
-      {exportStatus.type === "success" ? (
-        <section className="export-result-list" aria-label="选书决策导出结果">
-          {exportStatus.result.results.map((result) => (
-            <div
-              className={`status-message ${
-                result.status === "failed" ? "status-message--error" : "status-message--neutral"
-              }`}
-              key={result.target}
-            >
-              {result.status === "failed" ? (
-                <AlertCircle aria-hidden="true" size={18} />
-              ) : (
-                <CheckCircle2 aria-hidden="true" size={18} />
-              )}
-              <span>
-                <strong>{exportTargetLabel(result.target)}：</strong>
-                {result.status === "succeeded"
-                  ? result.path || result.url || "导出成功"
-                  : result.error?.message || "导出失败"}
-                {result.warning ? `（${result.warning}）` : ""}
-              </span>
-              {result.url ? (
-                <a href={result.url} target="_blank" rel="noreferrer">
-                  打开
-                </a>
-              ) : null}
-            </div>
-          ))}
-        </section>
-      ) : null}
-
-      {exportStatus.type === "error" ? (
-        <div className="status-message status-message--error" aria-label="选书决策导出结果">
-          <AlertCircle aria-hidden="true" size={18} />
-          <span>{exportStatus.message}</span>
-        </div>
-      ) : null}
-
       <BookDecisionResult
         response={decisionResponse}
         candidateStates={candidateBooks}
@@ -441,6 +408,17 @@ export function BookDecisionPage({
           }}
         />
       ) : null}
+
+      <AssetExportDialog
+        open={isAssetExportOpen}
+        ariaLabel="导出选书决策"
+        assetTitle="导出选书决策"
+        assetDescription={`基于 ${decisionResponse.decision.sourceStats.candidateCount} 本候选`}
+        platformMode={resolveExportPlatformMode()}
+        onExport={exportDecision}
+        onOpenSettings={() => onOpenSettings("export")}
+        onClose={() => setIsAssetExportOpen(false)}
+      />
     </section>
   );
 }
@@ -527,7 +505,7 @@ function BookDecisionResult({
     <section className="book-decision-result-view" aria-label="选书决策结果">
       <section className="book-decision-primary-card" aria-label="主推荐">
         <div>
-          <p className="section-kicker">推荐下一本</p>
+          <p className="section-kicker">首选书目</p>
           <h4>{primaryCandidate?.title || "暂无推荐"}</h4>
           <p>{decision.decisionOverview}</p>
         </div>

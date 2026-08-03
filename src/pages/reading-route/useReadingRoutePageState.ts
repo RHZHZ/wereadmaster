@@ -7,14 +7,11 @@ import {
   listReadingItemStates,
   summarizeReadingRoute
 } from "../../lib/reading-api";
-import {
-  exportTargetsFromDestination,
-  type ExportDestination
-} from "../../lib/export-targets";
 import type {
   AiSettingsState,
   BookDetail,
   BookAiSummarySource,
+  ExternalExportTarget,
   MultiTargetExportResponse,
   ReadingItemState,
   ReadingProgress,
@@ -51,9 +48,6 @@ export function useReadingRoutePageState({ shelfEntry, detail, progress, prepare
   const [isLoadingSettings, setIsLoadingSettings] = useState(false);
   const [isLoadingInputs, setIsLoadingInputs] = useState(false);
   const [isLoadingCache, setIsLoadingCache] = useState(false);
-  const [isExporting, setIsExporting] = useState(false);
-  const [exportResult, setExportResult] = useState<MultiTargetExportResponse>();
-  const [exportDestination, setExportDestination] = useState<ExportDestination>("markdown");
   const [error, setError] = useState<string>();
   const aiStateRef = useRef<AiSettingsState>();
 
@@ -65,8 +59,8 @@ export function useReadingRoutePageState({ shelfEntry, detail, progress, prepare
   const route = routeResponse?.route;
   const hasRoute = Boolean(route);
   const isCrossBookRoute = (route?.sourceStats.candidateCount ?? selectedCandidates.length) > 0;
-  const pageTitle = isCrossBookRoute ? "跨书阅读路线图" : "本书阅读指南";
-  const resultTitle = isCrossBookRoute ? "跨书路线图" : "本书指南图";
+  const pageTitle = isCrossBookRoute ? "阅读路线" : "本书阅读指南";
+  const resultTitle = isCrossBookRoute ? "阅读路线" : "本书指南图";
   const canGenerate =
     Boolean(request) &&
     aiState?.credential.hasCredential === true &&
@@ -140,7 +134,6 @@ export function useReadingRoutePageState({ shelfEntry, detail, progress, prepare
       }
 
       setRouteResponse(undefined);
-      setExportResult(undefined);
       setIsLoadingCache(true);
       setError(undefined);
       setStatus("loading-cache");
@@ -213,7 +206,6 @@ export function useReadingRoutePageState({ shelfEntry, detail, progress, prepare
 
     setStatus("generating");
     setError(undefined);
-    setExportResult(undefined);
 
     try {
       const response = await summarizeReadingRoute({
@@ -230,25 +222,14 @@ export function useReadingRoutePageState({ shelfEntry, detail, progress, prepare
     }
   }
 
-  async function handleExport() {
+  async function exportRoute(
+    targets: ExternalExportTarget[]
+  ): Promise<MultiTargetExportResponse> {
     if (!request || !hasRoute) {
-      return;
+      throw new Error("当前没有可导出的阅读指南或阅读路线。");
     }
 
-    setIsExporting(true);
-    setError(undefined);
-    setExportResult(undefined);
-
-    try {
-      const response = await exportReadingRouteTargets(request, {
-        targets: exportTargetsFromDestination(exportDestination)
-      });
-      setExportResult(response);
-    } catch (exportError) {
-      setError(getCommandErrorMessage(exportError));
-    } finally {
-      setIsExporting(false);
-    }
+    return exportReadingRouteTargets(request, { targets });
   }
 
   return {
@@ -262,9 +243,6 @@ export function useReadingRoutePageState({ shelfEntry, detail, progress, prepare
     isLoadingSettings,
     isLoadingInputs,
     isLoadingCache,
-    isExporting,
-    exportDestination,
-    exportResult,
     error,
     hasCandidateSelection,
     hasRoute,
@@ -280,8 +258,7 @@ export function useReadingRoutePageState({ shelfEntry, detail, progress, prepare
     handleSelectAllCandidates,
     handleClearCandidates,
     handleGenerate,
-    handleExport,
-    setExportDestination
+    exportRoute
   };
 }
 

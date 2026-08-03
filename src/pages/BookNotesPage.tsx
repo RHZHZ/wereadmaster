@@ -9,24 +9,26 @@ import {
   List,
   Loader2,
   MessageSquareText,
+  Navigation,
   RefreshCw,
   Share2,
   Shuffle,
   Sparkles
 } from "lucide-react";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { NoteList } from "../components/NoteList";
+import { AssetExportDialog } from "../components/export/AssetExportDialog";
 import { SkillUpgradeNotice } from "../components/SkillUpgradeNotice";
-import { copyTextToClipboard } from "../lib/clipboard";
 import {
   exportBookNotesTargets,
   getBookNotes,
   getCommandErrorInfo,
   getCommandErrorMessage,
+  openWereadNoteSource,
   type CommandErrorInfo,
 } from "../lib/reading-api";
 import { useToast } from "../components/ToastProvider";
 import { formatUnixDate } from "../lib/formatters";
+import { TERMS } from "../lib/glossary";
 import {
   formatArtifactCreatedMessage,
   formatArtifactExportedMessage,
@@ -39,11 +41,14 @@ import {
   type ImageArtifactDeliveryResult,
   shareCanvasAsPng
 } from "../lib/image-artifact-export";
+import { resolveExportPlatformMode } from "../lib/asset-export-dialog";
+import { formatMultiTargetExportToast } from "../lib/export-targets";
 import type { DefaultNotesView } from "../lib/preferences";
 import type {
   BookNotes,
   ChapterNoteGroup,
   Highlight,
+  ExternalExportTarget,
   MultiTargetExportResponse,
   NotebookBook,
   Thought
@@ -52,6 +57,7 @@ import {
   buildBookNotesReviewStatus,
   type BookNotesReviewStatus
 } from "./book-notes-review-status";
+import type { SettingsCategoryId } from "./SettingsPage";
 import { useImageArtifactCapabilities } from "../lib/use-image-artifact-capabilities";
 
 type BookNotesPageProps = {
@@ -60,6 +66,7 @@ type BookNotesPageProps = {
   cachedNotes?: BookNotes;
   onNotesChange: (bookId: string, notes: BookNotes) => void;
   onOpenAiSummary: (bookId: string, notes: BookNotes) => void;
+  onOpenSettings: (preferredCategory?: SettingsCategoryId) => void;
   onBack: () => void;
   backLabel?: string;
   defaultViewMode?: DefaultNotesView;
@@ -68,11 +75,12 @@ type BookNotesPageProps = {
 type NoteViewMode = "list" | "cards";
 type NoteCardFilter = "all" | "highlight" | "thought";
 type NoteCardSort = "chapter" | "latest";
-type ExportDestination = "markdown" | "obsidian" | "notion" | "obsidianNotion";
 
 type NoteCardItem = {
   id: string;
   type: "highlight" | "thought";
+  bookId: string;
+  range?: string;
   text: string;
   abstractText?: string;
   chapterTitle: string;
@@ -86,18 +94,13 @@ const SHARE_GROUP_LIMIT = 6;
 const SHARE_CARD_WIDTH = 900;
 const SHARE_CARD_PADDING = 64;
 
-function exportTargetLabel(target: "markdown" | "obsidian" | "notion") {
-  if (target === "obsidian") return "Obsidian";
-  if (target === "notion") return "Notion";
-  return "Markdown";
-}
-
 export function BookNotesPage({
   book,
   bookId,
   cachedNotes,
   onNotesChange,
   onOpenAiSummary,
+  onOpenSettings,
   onBack,
   backLabel = "返回笔记中心",
   defaultViewMode = "list"
@@ -105,15 +108,14 @@ export function BookNotesPage({
   const targetBookId = bookId ?? book?.bookId;
   const [notes, setNotes] = useState<BookNotes>();
   const [isLoading, setIsLoading] = useState(false);
-  const [isExporting, setIsExporting] = useState(false);
+  const [isAssetExportOpen, setIsAssetExportOpen] = useState(false);
   const [error, setError] = useState<CommandErrorInfo>();
-  const [exportResult, setExportResult] = useState<MultiTargetExportResponse>();
-  const [exportDestination, setExportDestination] = useState<ExportDestination>("markdown");
   const [viewMode, setViewMode] = useState<NoteViewMode>(defaultViewMode);
   const [cardFilter, setCardFilter] = useState<NoteCardFilter>("all");
   const [cardSort, setCardSort] = useState<NoteCardSort>("chapter");
   const [randomCardIds, setRandomCardIds] = useState<string[]>([]);
   const [sharingCardId, setSharingCardId] = useState<string>();
+  const [openingSourceId, setOpeningSourceId] = useState<string>();
   const [isSharingGroup, setIsSharingGroup] = useState(false);
   const imageArtifactCapabilities = useImageArtifactCapabilities();
   const [shareError, setShareError] = useState<string>();
@@ -126,6 +128,7 @@ export function BookNotesPage({
   const visibleCards =
     randomCardIds.length > 0 ? orderedCards.filter((card) => randomIdSet.has(card.id)) : orderedCards;
   const notesReviewStatus = notes ? buildBookNotesReviewStatus(notes) : undefined;
+  const canOpenWereadSource = hasDesktopRuntime();
 
   useEffect(() => {
     if (!targetBookId) {
@@ -133,7 +136,6 @@ export function BookNotesPage({
     }
 
     setError(undefined);
-    setExportResult(undefined);
     setShareError(undefined);
     setRandomCardIds([]);
 
@@ -154,7 +156,6 @@ export function BookNotesPage({
 
     setIsLoading(true);
     setError(undefined);
-    setExportResult(undefined);
     setShareError(undefined);
 
     try {
@@ -165,6 +166,43 @@ export function BookNotesPage({
       setError(getCommandErrorInfo(loadError));
     } finally {
       setIsLoading(false);
+    }
+  }
+
+  async function handleOpenNoteSource({
+    id,
+    bookId: sourceBookId,
+    chapterUid,
+    range
+  }: {
+    id: string;
+    bookId: string;
+    chapterUid?: number;
+    range?: string;
+  }) {
+    if (openingSourceId) {
+      return;
+    }
+
+    setOpeningSourceId(id);
+
+    try {
+      const result = await openWereadNoteSource({
+        bookId: sourceBookId,
+        chapterUid,
+        range
+      });
+      showToast({
+        message: result.warning || "已交给系统尝试打开微信读书。",
+        tone: result.opened ? (result.warning ? "warning" : "success") : "warning"
+      });
+    } catch (openError) {
+      showToast({
+        message: getCommandErrorMessage(getCommandErrorInfo(openError)),
+        tone: "error"
+      });
+    } finally {
+      setOpeningSourceId(undefined);
     }
   }
 
@@ -262,48 +300,16 @@ export function BookNotesPage({
     }
   }
 
-  async function handleExport() {
+  async function exportNotes(
+    targets: ExternalExportTarget[]
+  ): Promise<MultiTargetExportResponse> {
     if (!targetBookId) {
-      return;
+      throw new Error("缺少书籍 ID，无法导出笔记。");
     }
 
-    setIsExporting(true);
-    setError(undefined);
-    setExportResult(undefined);
-
-    try {
-      const targets =
-        exportDestination === "obsidianNotion"
-          ? (["obsidian", "notion"] as const)
-          : ([exportDestination] as const);
-      const response = await exportBookNotesTargets(targetBookId, { targets: [...targets] });
-      setExportResult(response);
-      const succeeded = response.results.filter((result) => result.status === "succeeded").length;
-      showToast({
-        message:
-          succeeded === response.results.length
-            ? `已完成 ${succeeded} 个导出目标。`
-            : `已完成 ${succeeded}/${response.results.length} 个导出目标，请查看结果。`,
-        tone: succeeded > 0 ? "success" : "error"
-      });
-    } catch (exportError) {
-      setError(getCommandErrorInfo(exportError));
-    } finally {
-      setIsExporting(false);
-    }
-  }
-
-  async function handleOpenExportResultLink(url: string) {
-    try {
-      await openUrl(url);
-    } catch {
-      try {
-        await copyTextToClipboard(url);
-        showToast({ message: "外部浏览器打开失败，已复制页面链接。", tone: "warning" });
-      } catch {
-        showToast({ message: "外部浏览器打开失败，请手动访问页面链接。", tone: "error" });
-      }
-    }
+    const response = await exportBookNotesTargets(targetBookId, { targets });
+    showToast(formatMultiTargetExportToast(response));
+    return response;
   }
 
   function handleViewModeChange(nextMode: NoteViewMode) {
@@ -368,39 +374,20 @@ export function BookNotesPage({
               : "划线和想法会按章节分组展示，可导出 Markdown，也可手动整理成复盘。"}
           </p>
           <div className="book-notes-actions">
-            <label className="book-notes-export-target">
-              <span className="sr-only">导出目标</span>
-              <select
-                value={exportDestination}
-                onChange={(event) =>
-                  setExportDestination(event.target.value as ExportDestination)
-                }
-                disabled={isLoading || isExporting}
-              >
-                <option value="markdown">Markdown</option>
-                <option value="obsidian">Obsidian</option>
-                <option value="notion">Notion</option>
-                <option value="obsidianNotion">Obsidian + Notion</option>
-              </select>
-            </label>
             <button
               className="secondary-action"
               type="button"
-              onClick={() => void handleExport()}
-              disabled={isLoading || isExporting}
+              onClick={() => setIsAssetExportOpen(true)}
+              disabled={isLoading || !notes}
             >
-              {isExporting ? (
-                <Loader2 aria-hidden="true" size={18} className="spin" />
-              ) : (
-                <Download aria-hidden="true" size={18} />
-              )}
-              {isExporting ? "导出中" : "一键导出"}
+              <Download aria-hidden="true" size={18} />
+              导出笔记
             </button>
             <button
               className="sync-button"
               type="button"
               onClick={() => void loadNotes(targetBookId)}
-              disabled={isLoading || isExporting}
+              disabled={isLoading}
             >
               {isLoading ? (
                 <Loader2 aria-hidden="true" size={18} className="spin" />
@@ -413,10 +400,10 @@ export function BookNotesPage({
               className="sync-button"
               type="button"
               onClick={() => notes && onOpenAiSummary(targetBookId, notes)}
-              disabled={!notes || isLoading || isExporting}
+              disabled={!notes || isLoading}
             >
               <Sparkles aria-hidden="true" size={18} />
-              AI 复盘
+              {TERMS.bookReview}
             </button>
           </div>
         </div>
@@ -561,43 +548,6 @@ export function BookNotesPage({
         </div>
       ) : null}
 
-      {exportResult ? (
-        <section className="book-notes-export-results" aria-label="导出结果">
-          {exportResult.results.map((result) => (
-            <div
-              className={`status-message ${
-                result.status === "failed"
-                  ? "status-message--error"
-                  : "status-message--neutral"
-              }`}
-              key={result.target}
-            >
-              {result.status === "failed" ? (
-                <AlertCircle aria-hidden="true" size={18} />
-              ) : (
-                <Download aria-hidden="true" size={18} />
-              )}
-              <span>
-                <strong>{exportTargetLabel(result.target)}：</strong>
-                {result.status === "succeeded"
-                  ? result.path || result.url || "导出成功"
-                  : result.error?.message || "导出失败"}
-                {result.warning ? `（${result.warning}）` : ""}
-              </span>
-              {result.url ? (
-                <button
-                  className="text-button"
-                  type="button"
-                  onClick={() => void handleOpenExportResultLink(result.url!)}
-                >
-                  打开 Notion 页面
-                </button>
-              ) : null}
-            </div>
-          ))}
-        </section>
-      ) : null}
-
       {shareError ? (
         <div className="status-message status-message--error">
           <AlertCircle aria-hidden="true" size={18} />
@@ -630,18 +580,39 @@ export function BookNotesPage({
         </section>
       ) : null}
 
-      {notes && !isLoading && viewMode === "list" ? <NoteList groups={notes.chapterGroups} /> : null}
+      {notes && !isLoading && viewMode === "list" ? (
+        <NoteList
+          groups={notes.chapterGroups}
+          canOpenSource={canOpenWereadSource}
+          openingSourceId={openingSourceId}
+          onOpenSource={(location) => void handleOpenNoteSource(location)}
+        />
+      ) : null}
       {notes && !isLoading && viewMode === "cards" ? (
         <NoteCardGrid
           cards={visibleCards}
           canSaveToAlbum={imageArtifactCapabilities.canSaveToAlbum}
           canShareImage={imageArtifactCapabilities.canShareImage}
+          onOpenSource={(card) => void handleOpenNoteSource(card)}
           onShareCard={(card) => void handleShareCard(card)}
           onShowAll={handleShowAllCards}
+          canOpenSource={canOpenWereadSource}
+          openingSourceId={openingSourceId}
           sharingCardId={sharingCardId}
           isGroupSharing={isSharingGroup}
         />
       ) : null}
+
+      <AssetExportDialog
+        open={isAssetExportOpen}
+        ariaLabel="导出笔记"
+        assetTitle="导出笔记"
+        assetDescription={displayBook?.title ? `《${displayBook.title}》` : undefined}
+        platformMode={resolveExportPlatformMode()}
+        onExport={exportNotes}
+        onOpenSettings={() => onOpenSettings("export")}
+        onClose={() => setIsAssetExportOpen(false)}
+      />
     </section>
   );
 }
@@ -687,16 +658,22 @@ function NoteCardGrid({
   cards,
   canSaveToAlbum,
   canShareImage,
+  onOpenSource,
   onShareCard,
   onShowAll,
+  canOpenSource,
+  openingSourceId,
   sharingCardId,
   isGroupSharing
 }: {
   cards: NoteCardItem[];
   canSaveToAlbum: boolean;
   canShareImage: boolean;
+  onOpenSource: (card: NoteCardItem) => void;
   onShareCard: (card: NoteCardItem) => void;
   onShowAll: () => void;
+  canOpenSource: boolean;
+  openingSourceId?: string;
   sharingCardId?: string;
   isGroupSharing: boolean;
 }) {
@@ -737,6 +714,20 @@ function NoteCardGrid({
             ))}
           </div>
           <div className="note-card-actions">
+            <button
+              className="text-button note-card-source"
+              type="button"
+              title={canOpenSource ? "尝试在微信读书中定位原文" : "定位原文需要在桌面应用中使用"}
+              onClick={() => onOpenSource(card)}
+              disabled={!canOpenSource || openingSourceId !== undefined}
+            >
+              {openingSourceId === card.id ? (
+                <Loader2 aria-hidden="true" size={15} className="spin" />
+              ) : (
+                <Navigation aria-hidden="true" size={15} />
+              )}
+              {openingSourceId === card.id ? "打开中" : canOpenSource ? "定位原文" : "桌面版可用"}
+            </button>
             <button
               className="text-button note-card-share"
               type="button"
@@ -783,6 +774,8 @@ function buildHighlightCard(
   return {
     id: `highlight-${highlight.bookmarkId || `${groupIndex}-${index}`}`,
     type: "highlight",
+    bookId: highlight.bookId,
+    range: highlight.range,
     text: highlight.markText,
     chapterTitle: highlight.chapterTitle || group.title,
     chapterUid: highlight.chapterUid ?? group.chapterUid,
@@ -803,6 +796,8 @@ function buildThoughtCard(
   return {
     id: `thought-${thought.reviewId || `${groupIndex}-${index}`}`,
     type: "thought",
+    bookId: thought.bookId,
+    range: thought.range,
     text: thought.content,
     abstractText: thought.abstractText,
     chapterTitle: thought.chapterName || group.title,
@@ -843,6 +838,11 @@ function pickRandomCards(cards: NoteCardItem[], limit: number): NoteCardItem[] {
 
 function formatChapterUid(chapterUid?: number): string | undefined {
   return chapterUid ? `章节 ${chapterUid}` : undefined;
+}
+
+function hasDesktopRuntime(): boolean {
+  const runtime = globalThis as typeof globalThis & { __TAURI__?: unknown; __TAURI_INTERNALS__?: unknown };
+  return Boolean(runtime.__TAURI__ || runtime.__TAURI_INTERNALS__);
 }
 
 function formatPersonalStar(star: number): string {

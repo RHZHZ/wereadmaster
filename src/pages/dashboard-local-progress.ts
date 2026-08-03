@@ -55,7 +55,7 @@ export function buildDashboardLocalProgress({
         tone: "organized"
       },
       {
-        label: "待复盘",
+        label: "待整理",
         value: reviewingCount,
         detail: "可继续整理的书",
         tone: "review"
@@ -164,7 +164,7 @@ function resolveProgressHighlight({
   if (latestReviewing) {
     return {
       title: `下一本可整理${formatBookTitle(latestReviewing.title)}`,
-      body: latestReviewing.note || "这本书已经被标记为待复盘，可以继续整理行动清单和复盘问题。",
+      body: latestReviewing.note || "这本书已经被标记为待整理，可以继续整理行动清单和复盘问题。",
       tone: "review"
     };
   }

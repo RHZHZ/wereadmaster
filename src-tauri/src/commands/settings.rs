@@ -2,17 +2,25 @@ use serde::Serialize;
 use tauri::AppHandle;
 
 use crate::{
+    db::NotionDatabaseConnectionConfig,
     errors::AppError,
-    export::targets::NotionParentType,
-    services::settings::{
-        ChooseDataDirectoryResponse, ChooseExportDirectoryResponse,
-        ChooseObsidianVaultDirectoryResponse, ClearAiOutputCacheResponse, ClearLocalCacheResponse,
-        CreateNotionReadingLibraryTemplateResponse, CreateNotionReadingWorkspaceTemplateResponse,
-        ExportBackupResponse, ExportDiagnosticsResponse, ExportImageResponse,
-        MigrateDataDirectoryResponse, NotionCoverMode, ObsidianAttachmentMode,
-        RemoteAppUpdateManifestResponse, ResetExportDirectoryResponse, ResetWereadProxyResponse,
-        RestoreBackupResponse, SaveExportDirectoryResponse, SaveWereadProxyResponse,
-        SettingsService, SettingsStateResponse,
+    export::{notion::NotionDatabaseAnalysis, targets::NotionParentType},
+    services::{
+        notion_cover_backfill::{
+            NotionCoverBackfillPreflight, NotionCoverBackfillReport, NotionCoverBackfillService,
+            RunNotionCoverBackfillRequest,
+        },
+        settings::{
+            ChooseDataDirectoryResponse, ChooseExportDirectoryResponse,
+            ChooseObsidianVaultDirectoryResponse, ClearAiOutputCacheResponse,
+            ClearLocalCacheResponse, CreateNotionReadingLibraryTemplateResponse,
+            CreateNotionReadingWorkspaceTemplateResponse, CreateNotionStandardDatabaseResponse,
+            ExportBackupResponse, ExportDiagnosticsResponse, ExportImageResponse,
+            MigrateDataDirectoryResponse, NotionCoverMode, NotionStandardProvisioningResolution,
+            ObsidianAttachmentMode, RemoteAppUpdateManifestResponse, ResetExportDirectoryResponse,
+            ResetWereadProxyResponse, RestoreBackupResponse, SaveExportDirectoryResponse,
+            SaveWereadProxyResponse, SettingsService, SettingsStateResponse,
+        },
     },
 };
 
@@ -200,6 +208,101 @@ pub async fn save_notion_export_settings(
         SettingsService::new(app).save_notion_export_settings(parent_id, parent_type, cover_mode)
     })
     .await
+}
+
+#[tauri::command]
+pub async fn analyze_notion_database(
+    app: AppHandle,
+    database_id: String,
+) -> Result<NotionDatabaseAnalysis, AppCommandError> {
+    SettingsService::new(app)
+        .analyze_notion_database(database_id)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn save_notion_database_connection(
+    app: AppHandle,
+    connection: NotionDatabaseConnectionConfig,
+) -> Result<SettingsStateResponse, AppCommandError> {
+    run_blocking(move || SettingsService::new(app).save_notion_database_connection(connection))
+        .await
+}
+
+#[tauri::command]
+pub async fn preflight_notion_cover_backfill(
+    app: AppHandle,
+) -> Result<NotionCoverBackfillPreflight, AppCommandError> {
+    NotionCoverBackfillService::new(app)
+        .preflight()
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn run_notion_cover_backfill(
+    app: AppHandle,
+    request: RunNotionCoverBackfillRequest,
+) -> Result<NotionCoverBackfillReport, AppCommandError> {
+    NotionCoverBackfillService::new(app)
+        .run(request)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn cancel_notion_cover_backfill(
+    app: AppHandle,
+    operation_id: String,
+) -> Result<(), AppCommandError> {
+    NotionCoverBackfillService::new(app)
+        .cancel(operation_id)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn get_notion_standard_database_provisioning(
+    app: AppHandle,
+) -> Result<Option<CreateNotionStandardDatabaseResponse>, AppCommandError> {
+    SettingsService::new(app)
+        .get_notion_standard_database_provisioning()
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn continue_notion_standard_database_provisioning(
+    app: AppHandle,
+    provisioning_id: String,
+) -> Result<CreateNotionStandardDatabaseResponse, AppCommandError> {
+    SettingsService::new(app)
+        .continue_notion_standard_database_provisioning(provisioning_id)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn resolve_notion_standard_database_provisioning(
+    app: AppHandle,
+    provisioning_id: String,
+    resolution: NotionStandardProvisioningResolution,
+    confirm: bool,
+) -> Result<Option<CreateNotionStandardDatabaseResponse>, AppCommandError> {
+    SettingsService::new(app)
+        .resolve_notion_standard_database_provisioning(provisioning_id, resolution, confirm)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn create_notion_standard_outcomes_database(
+    app: AppHandle,
+    parent_page_id: String,
+) -> Result<CreateNotionStandardDatabaseResponse, AppCommandError> {
+    SettingsService::new(app)
+        .create_notion_standard_outcomes_database(parent_page_id)
+        .await
+        .map_err(Into::into)
 }
 
 #[tauri::command]

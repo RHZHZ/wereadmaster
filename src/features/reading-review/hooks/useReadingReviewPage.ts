@@ -11,9 +11,7 @@ import {
   type ReadingStatsResponse
 } from "../../../lib/reading-api";
 import {
-  exportTargetsFromDestination,
-  formatMultiTargetExportToast,
-  type ExportDestination
+  formatMultiTargetExportToast
 } from "../../../lib/export-targets";
 import { useToast } from "../../../components/ToastProvider";
 import {
@@ -24,6 +22,7 @@ import {
 import type {
   AiSettingsState,
   CredentialStatus,
+  ExternalExportTarget,
   MultiTargetExportResponse,
   ReadingStatsAiReviewResponse,
   ReadingStatsMode
@@ -72,9 +71,6 @@ export function useReadingReviewPage({
   const [isLoadingStats, setIsLoadingStats] = useState(false);
   const [isLoadingReviewCache, setIsLoadingReviewCache] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [isExporting, setIsExporting] = useState(false);
-  const [exportResult, setExportResult] = useState<MultiTargetExportResponse>();
-  const [exportDestination, setExportDestination] = useState<ExportDestination>("markdown");
   const [error, setError] = useState<CommandErrorInfo>();
   const { showToast } = useToast();
   const hasCredential = credentialStatus?.hasCredential === true;
@@ -273,7 +269,6 @@ export function useReadingReviewPage({
 
     setStatus("generating");
     setError(undefined);
-    setExportResult(undefined);
 
     try {
       const response = await summarizeReadingStats({
@@ -292,35 +287,24 @@ export function useReadingReviewPage({
     }
   }
 
-  async function handleExport() {
+  async function exportReview(
+    targets: ExternalExportTarget[]
+  ): Promise<MultiTargetExportResponse> {
     if (!stats || !review) {
-      return;
+      throw new Error("请先读取当前周期统计并生成阅读复盘，再导出报告。");
     }
 
     if (isPreviewReadonly) {
-      setError({ message: "Web 预览只支持查看已缓存复盘，导出请在桌面应用中执行。" });
-      return;
+      throw new Error("Web 预览只支持查看已缓存复盘，导出请在桌面应用中执行。");
     }
 
-    setIsExporting(true);
-    setError(undefined);
-    setExportResult(undefined);
-
-    try {
-      const response = await exportReadingStatsReviewTargets({
-        mode: stats.mode,
-        baseTime: stats.baseTime,
-        request: {
-          targets: exportTargetsFromDestination(exportDestination)
-        }
-      });
-      setExportResult(response);
-      showToast(formatMultiTargetExportToast(response));
-    } catch (exportError) {
-      setError(getCommandErrorInfo(exportError));
-    } finally {
-      setIsExporting(false);
-    }
+    const response = await exportReadingStatsReviewTargets({
+      mode: stats.mode,
+      baseTime: stats.baseTime,
+      request: { targets }
+    });
+    showToast(formatMultiTargetExportToast(response));
+    return response;
   }
 
   function handleModeChange(nextMode: ReadingStatsMode) {
@@ -348,17 +332,14 @@ export function useReadingReviewPage({
     canStepForward,
     drillPeriods,
     error,
-    exportDestination,
-    exportResult,
+    exportReview,
     handleDrillPeriod,
-    handleExport,
     handleGenerate,
     handleModeChange,
     handleShiftPeriod,
     handleSyncStats,
     hasCredential,
     hasStatsData,
-    isExporting,
     isLoadingReviewCache,
     isLoadingStats,
     isPreviewReadonly,
@@ -375,7 +356,6 @@ export function useReadingReviewPage({
     statusMeta,
     timeSegments,
     timelineInsights,
-    topCategory,
-    setExportDestination
+    topCategory
   };
 }

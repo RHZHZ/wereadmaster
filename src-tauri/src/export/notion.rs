@@ -1,14 +1,20 @@
+use std::{fmt, time::Duration};
+
+use chrono::Utc;
 use reqwest::{Client, StatusCode};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use super::{document::ExportDocument, targets::NotionParentType};
 
 const NOTION_API_BASE: &str = "https://api.notion.com/v1";
-const NOTION_API_VERSION: &str = "2022-06-28";
+pub(crate) const NOTION_LEGACY_API_VERSION: &str = "2022-06-28";
+pub(crate) const NOTION_VIEWS_API_VERSION: &str = "2026-03-11";
 const MAX_BLOCK_TEXT_LENGTH: usize = 1_900;
 const MAX_BLOCKS_PER_REQUEST: usize = 100;
 const MAX_RICH_TEXT_ITEMS_PER_BLOCK: usize = 100;
 const NOTION_REQUEST_TIMEOUT_SECONDS: u64 = 30;
+const NOTION_CONNECT_TIMEOUT_SECONDS: u64 = 15;
 const NOTION_RATE_LIMIT_MAX_RETRIES: u32 = 3;
 const NOTION_RATE_LIMIT_MAX_DELAY_SECONDS: u64 = 15;
 const WORKSPACE_PAGE_TITLE: &str = "微信读书知识库";
@@ -16,12 +22,33 @@ const READING_DATABASE_TITLE: &str = "阅读成果库";
 const WORKSPACE_PAGE_COVER_URL: &str =
     "https://images.unsplash.com/photo-1519682337058-a94d519337bc?auto=format&fit=crop&w=1600&q=80";
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NotionRequestError {
+    message: String,
+    result_unknown: bool,
+}
+
+impl NotionRequestError {
+    pub(crate) fn result_unknown(&self) -> bool {
+        self.result_unknown
+    }
+}
+
+impl fmt::Display for NotionRequestError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for NotionRequestError {}
+
 #[derive(Debug, Clone)]
 pub struct NotionExportOptions {
     pub token: String,
     pub parent_id: String,
     pub parent_type: NotionParentType,
     pub use_page_cover: bool,
+    pub property_mappings: Vec<NotionPropertyMapping>,
 }
 
 #[derive(Debug, Clone)]
@@ -38,6 +65,22 @@ pub struct NotionReadingLibraryTemplateOutput {
     pub title: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotionDatabaseCreateError {
+    pub code: String,
+    pub message: String,
+    pub retryable: bool,
+    pub result_unknown: bool,
+}
+
+impl fmt::Display for NotionDatabaseCreateError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for NotionDatabaseCreateError {}
+
 #[derive(Debug, Clone)]
 pub struct NotionReadingWorkspaceTemplateOutput {
     pub home_page_id: String,
@@ -48,22 +91,73 @@ pub struct NotionReadingWorkspaceTemplateOutput {
     pub warning: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotionPropertySummary {
+    pub id: String,
+    pub name: String,
+    pub property_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotionPropertyMapping {
+    pub logical_field: String,
+    pub property_id: String,
+    pub property_name_snapshot: String,
+    pub property_type: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotionDatabaseIssue {
+    pub code: String,
+    pub message: String,
+    pub logical_field: Option<String>,
+    pub property_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotionDatabaseAnalysis {
+    pub compatibility: String,
+    pub database_id: String,
+    pub database_name: Option<String>,
+    pub database_url: Option<String>,
+    pub title_property: Option<NotionPropertySummary>,
+    pub properties: Vec<NotionPropertySummary>,
+    pub suggested_mappings: Vec<NotionPropertyMapping>,
+    pub issues: Vec<NotionDatabaseIssue>,
+    pub schema_checked_at: String,
+    pub schema_fingerprint: Option<String>,
+}
+
 pub async fn export_document(
     document: &ExportDocument,
     markdown: &str,
     options: &NotionExportOptions,
     prebuilt_blocks: Option<&[Value]>,
 ) -> Result<NotionExportOutput, String> {
-    let client = Client::new();
+    let client = notion_client()?;
     let database_schema = match options.parent_type {
         NotionParentType::Page => None,
         NotionParentType::Database => Some(database_schema(&client, options).await?),
     };
-    let title_property = database_schema
-        .as_ref()
-        .and_then(|schema| schema.title_property.as_deref());
+    let title_property = database_schema.as_ref().and_then(|schema| {
+        if options.property_mappings.is_empty() {
+            schema.title_property.clone()
+        } else {
+            mapped_property_name(schema, &options.property_mappings, "title")
+        }
+    });
     if options.parent_type == NotionParentType::Database && title_property.is_none() {
-        return Err("目标 Notion 数据库缺少标题属性。".to_string());
+        return Err(if options.property_mappings.is_empty() {
+            "目标 Notion 数据库缺少标题属性。".to_string()
+        } else {
+            "已保存的 Notion 标题字段已删除或类型发生变化，请重新检查数据库并保存字段映射。"
+                .to_string()
+        });
     }
     let blocks = match prebuilt_blocks {
         Some(prebuilt) => {
@@ -87,27 +181,20 @@ pub async fn export_document(
         .take(MAX_BLOCKS_PER_REQUEST)
         .cloned()
         .collect::<Vec<_>>();
-    let mut payload =
-        create_page_payload(document, options, title_property, database_schema.as_ref());
+    let mapping_warning = database_schema
+        .as_ref()
+        .and_then(|schema| property_mapping_warning(schema, &options.property_mappings));
+    let mut payload = create_page_payload(
+        document,
+        options,
+        title_property.as_deref(),
+        database_schema.as_ref(),
+    );
     if !first_blocks.is_empty() {
         payload["children"] = Value::Array(first_blocks);
     }
 
-    let has_cover = payload.get("cover").is_some();
-    let (page, warning) = match create_page(&client, options, &payload).await {
-        Ok(page) => (page, None),
-        Err(cover_error) if has_cover && is_cover_related_error(&cover_error) => {
-            payload.as_object_mut().map(|value| value.remove("cover"));
-            let page = create_page(&client, options, &payload).await?;
-            (
-                page,
-                Some(format!(
-                    "Notion 封面写入失败，正文已无封面导入：{cover_error}"
-                )),
-            )
-        }
-        Err(error) => return Err(error),
-    };
+    let page = create_page(&client, options, &payload).await?;
     let page_id = page
         .get("id")
         .and_then(Value::as_str)
@@ -121,7 +208,38 @@ pub async fn export_document(
 
     let total_blocks = blocks.len();
     let mut appended_blocks = MAX_BLOCKS_PER_REQUEST.min(total_blocks);
-    let mut warning = warning;
+    let mut warning = mapping_warning;
+    if let Some(cover_url) = document_cover_url(document) {
+        if let Some(cover_property) = database_schema.as_ref().and_then(|schema| {
+            if options.property_mappings.is_empty() {
+                property_type_matches(schema, "封面", "files").then(|| "封面".to_string())
+            } else {
+                mapped_property_name(schema, &options.property_mappings, "cover")
+            }
+        }) {
+            if let Err(error) =
+                update_page_files_property(&client, options, &page_id, &cover_property, cover_url)
+                    .await
+            {
+                warning = merge_warning(
+                    warning,
+                    Some(format!(
+                        "Notion 封面属性写入失败，正文与页面已保留：{error}"
+                    )),
+                );
+            }
+        }
+        if options.use_page_cover {
+            if let Err(error) = update_page_cover(&client, options, &page_id, cover_url).await {
+                warning = merge_warning(
+                    warning,
+                    Some(format!(
+                        "Notion 页面封面写入失败，正文与封面属性已保留：{error}"
+                    )),
+                );
+            }
+        }
+    }
     for chunk in blocks[appended_blocks..].chunks(MAX_BLOCKS_PER_REQUEST) {
         let result = send_notion_request(
             notion_request(
@@ -139,10 +257,7 @@ pub async fn export_document(
                 let addition = format!(
                     "正文只写入前 {appended_blocks}/{total_blocks} 个块，剩余内容追加失败：{error}。页面已创建，可从链接查看后重试。"
                 );
-                warning = Some(match warning {
-                    Some(existing) => format!("{existing}；{addition}"),
-                    None => addition,
-                });
+                warning = merge_warning(warning, Some(addition));
                 break;
             }
         }
@@ -155,20 +270,57 @@ pub async fn export_document(
     })
 }
 
+pub async fn analyze_database(
+    token: &str,
+    database_id: &str,
+) -> Result<NotionDatabaseAnalysis, String> {
+    let options = NotionExportOptions {
+        token: token.to_string(),
+        parent_id: database_id.to_string(),
+        parent_type: NotionParentType::Database,
+        use_page_cover: false,
+        property_mappings: Vec::new(),
+    };
+    let client = notion_client()?;
+    let database = retrieve_database(&client, &options).await?;
+    Ok(analyze_database_value(database_id, &database))
+}
+
 pub async fn create_reading_library_template(
     token: &str,
     parent_page_id: &str,
 ) -> Result<NotionReadingLibraryTemplateOutput, String> {
+    create_reading_library_template_typed(token, parent_page_id)
+        .await
+        .map_err(|error| error.message)
+}
+
+pub async fn create_reading_library_template_typed(
+    token: &str,
+    parent_page_id: &str,
+) -> Result<NotionReadingLibraryTemplateOutput, NotionDatabaseCreateError> {
     let options = NotionExportOptions {
         token: token.to_string(),
         parent_id: parent_page_id.to_string(),
         parent_type: NotionParentType::Page,
         use_page_cover: false,
+        property_mappings: Vec::new(),
     };
-    let client = Client::new();
-    let database = create_reading_database(&client, &options, READING_DATABASE_TITLE).await?;
+    let client = notion_client().map_err(|message| NotionDatabaseCreateError {
+        code: "notion_client_initialization_failed".to_string(),
+        message,
+        retryable: true,
+        result_unknown: false,
+    })?;
+    let database = create_reading_database_typed(&client, &options, READING_DATABASE_TITLE).await?;
     let (database_id, url) =
-        notion_object_id_and_url(&database, "Notion 数据库创建成功，但响应缺少数据库 ID。")?;
+        notion_object_id_and_url(&database, "Notion 数据库创建成功，但响应缺少数据库 ID。")
+            .map_err(|message| NotionDatabaseCreateError {
+                code: "notion_database_create_response_invalid".to_string(),
+                message,
+                retryable: false,
+                result_unknown: true,
+            })?;
 
     Ok(NotionReadingLibraryTemplateOutput {
         database_id,
@@ -186,8 +338,9 @@ pub async fn create_reading_workspace_template(
         parent_id: parent_page_id.to_string(),
         parent_type: NotionParentType::Page,
         use_page_cover: false,
+        property_mappings: Vec::new(),
     };
-    let client = Client::new();
+    let client = notion_client()?;
     let mut home_payload = workspace_homepage_payload(parent_page_id, true);
     let (home_page, warning) = match create_page(&client, &options, &home_payload).await {
         Ok(page) => (page, None),
@@ -213,6 +366,7 @@ pub async fn create_reading_workspace_template(
         parent_id: home_page_id.clone(),
         parent_type: NotionParentType::Page,
         use_page_cover: false,
+        property_mappings: Vec::new(),
     };
     let database =
         create_reading_database(&client, &database_options, READING_DATABASE_TITLE).await?;
@@ -256,13 +410,280 @@ async fn create_page(
     .await
 }
 
-async fn create_reading_database(
+pub(crate) async fn retrieve_page(
+    client: &Client,
+    options: &NotionExportOptions,
+    page_id: &str,
+) -> Result<Value, String> {
+    send_notion_request(notion_request(
+        client,
+        options,
+        reqwest::Method::GET,
+        &format!("/pages/{page_id}"),
+    ))
+    .await
+}
+
+pub(crate) async fn update_page_files_property(
+    client: &Client,
+    options: &NotionExportOptions,
+    page_id: &str,
+    property_name: &str,
+    url: &str,
+) -> Result<Value, String> {
+    let file = external_file_value("封面", url)
+        .ok_or_else(|| "封面 URL 不是有效的 HTTP(S) 地址。".to_string())?;
+    let result = send_notion_request(
+        notion_request(
+            client,
+            options,
+            reqwest::Method::PATCH,
+            &format!("/pages/{page_id}"),
+        )
+        .json(&json!({
+            "properties": {
+                property_name: { "files": [file] }
+            }
+        })),
+    )
+    .await;
+    reconcile_page_mutation(
+        client,
+        options,
+        page_id,
+        result,
+        |page| page_files_property_contains_url(page, property_name, url),
+        "封面属性",
+    )
+    .await
+}
+
+pub(crate) async fn update_page_cover(
+    client: &Client,
+    options: &NotionExportOptions,
+    page_id: &str,
+    url: &str,
+) -> Result<Value, String> {
+    let cover = external_cover_value(url)
+        .ok_or_else(|| "封面 URL 不是有效的 HTTP(S) 地址。".to_string())?;
+    let result = send_notion_request(
+        notion_request(
+            client,
+            options,
+            reqwest::Method::PATCH,
+            &format!("/pages/{page_id}"),
+        )
+        .json(&json!({ "cover": cover })),
+    )
+    .await;
+    reconcile_page_mutation(
+        client,
+        options,
+        page_id,
+        result,
+        |page| page_cover_contains_url(page, url),
+        "页面封面",
+    )
+    .await
+}
+
+async fn reconcile_page_mutation(
+    client: &Client,
+    options: &NotionExportOptions,
+    page_id: &str,
+    result: Result<Value, String>,
+    applied: impl Fn(&Value) -> bool,
+    target: &str,
+) -> Result<Value, String> {
+    match result {
+        Ok(page) => Ok(page),
+        Err(error) => match retrieve_page(client, options, page_id).await {
+            Ok(page) if applied(&page) => Ok(page),
+            Ok(_) => Err(error),
+            Err(reconcile_error) => Err(format!(
+                "{error}；无法重新读取页面确认{target}是否已生效：{reconcile_error}"
+            )),
+        },
+    }
+}
+
+pub(crate) async fn query_database_pages(
+    client: &Client,
+    options: &NotionExportOptions,
+) -> Result<Vec<Value>, String> {
+    let mut pages = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let mut payload = json!({ "page_size": 100 });
+        if let Some(value) = cursor.as_deref() {
+            payload["start_cursor"] = Value::String(value.to_string());
+        }
+        let response = send_notion_request(
+            notion_request(
+                client,
+                options,
+                reqwest::Method::POST,
+                &format!("/databases/{}/query", options.parent_id),
+            )
+            .json(&payload),
+        )
+        .await?;
+        let results = response
+            .get("results")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "Notion 数据库查询响应缺少 results。".to_string())?;
+        pages.extend(results.iter().cloned());
+        let has_more = response
+            .get("has_more")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if !has_more {
+            break;
+        }
+        cursor = response
+            .get("next_cursor")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        if cursor.is_none() {
+            return Err("Notion 数据库查询响应标记了更多结果，但缺少 next_cursor。".to_string());
+        }
+    }
+    Ok(pages)
+}
+
+pub(crate) async fn add_database_files_property(
+    client: &Client,
+    options: &NotionExportOptions,
+    property_name: &str,
+) -> Result<Value, String> {
+    let result = send_notion_request(
+        notion_request(
+            client,
+            options,
+            reqwest::Method::PATCH,
+            &format!("/databases/{}", options.parent_id),
+        )
+        .json(&json!({
+            "properties": {
+                property_name: { "files": {} }
+            }
+        })),
+    )
+    .await;
+    match result {
+        Ok(database) => Ok(database),
+        Err(error) => match retrieve_database(client, options).await {
+            Ok(database) if database_property_type(&database, property_name) == Some("files") => {
+                Ok(database)
+            }
+            Ok(_) => Err(error),
+            Err(reconcile_error) => Err(format!(
+                "{error}；无法重新读取数据库确认封面属性是否已创建：{reconcile_error}"
+            )),
+        },
+    }
+}
+
+pub(crate) fn database_property_type<'a>(
+    database: &'a Value,
+    property_name: &str,
+) -> Option<&'a str> {
+    database
+        .get("properties")?
+        .get(property_name)?
+        .get("type")?
+        .as_str()
+}
+
+pub(crate) fn page_property_plain_text(page: &Value, property_name: &str) -> Option<String> {
+    let property = page.get("properties")?.get(property_name)?;
+    let items = property
+        .get("rich_text")
+        .or_else(|| property.get("title"))?
+        .as_array()?;
+    let value = items
+        .iter()
+        .filter_map(|item| item.get("plain_text").and_then(Value::as_str))
+        .collect::<String>();
+    (!value.trim().is_empty()).then(|| value.trim().to_string())
+}
+
+pub(crate) fn page_title(page: &Value) -> Option<String> {
+    page.get("properties")?
+        .as_object()?
+        .values()
+        .find(|property| property.get("type").and_then(Value::as_str) == Some("title"))
+        .and_then(|property| {
+            let value = property
+                .get("title")?
+                .as_array()?
+                .iter()
+                .filter_map(|item| item.get("plain_text").and_then(Value::as_str))
+                .collect::<String>();
+            (!value.trim().is_empty()).then(|| value.trim().to_string())
+        })
+}
+
+pub(crate) fn page_files_property_is_empty(page: &Value, property_name: &str) -> bool {
+    page.get("properties")
+        .and_then(|properties| properties.get(property_name))
+        .and_then(|property| property.get("files"))
+        .and_then(Value::as_array)
+        .map(Vec::is_empty)
+        .unwrap_or(true)
+}
+
+pub(crate) fn page_cover_is_empty(page: &Value) -> bool {
+    page.get("cover").map(Value::is_null).unwrap_or(true)
+}
+
+fn page_files_property_contains_url(page: &Value, property_name: &str, expected: &str) -> bool {
+    page.get("properties")
+        .and_then(|properties| properties.get(property_name))
+        .and_then(|property| property.get("files"))
+        .and_then(Value::as_array)
+        .map(|files| {
+            files
+                .iter()
+                .any(|file| notion_file_url(file) == Some(expected))
+        })
+        .unwrap_or(false)
+}
+
+fn page_cover_contains_url(page: &Value, expected: &str) -> bool {
+    page.get("cover").and_then(notion_file_url) == Some(expected)
+}
+
+fn notion_file_url(value: &Value) -> Option<&str> {
+    value
+        .get("external")
+        .and_then(|external| external.get("url"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            value
+                .get("file")
+                .and_then(|file| file.get("url"))
+                .and_then(Value::as_str)
+        })
+}
+
+pub(crate) async fn create_reading_database(
     client: &Client,
     options: &NotionExportOptions,
     title: &str,
 ) -> Result<Value, String> {
+    create_reading_database_typed(client, options, title)
+        .await
+        .map_err(|error| error.message)
+}
+
+pub(crate) async fn create_reading_database_typed(
+    client: &Client,
+    options: &NotionExportOptions,
+    title: &str,
+) -> Result<Value, NotionDatabaseCreateError> {
     let payload = reading_database_payload(&options.parent_id, title);
-    send_notion_request(
+    send_notion_database_create_request(
         notion_request(client, options, reqwest::Method::POST, "/databases").json(&payload),
     )
     .await
@@ -546,17 +967,24 @@ struct NotionDatabaseSchema {
     properties: Map<String, Value>,
 }
 
-async fn database_schema(
+pub(crate) async fn retrieve_database(
     client: &Client,
     options: &NotionExportOptions,
-) -> Result<NotionDatabaseSchema, String> {
-    let database = send_notion_request(notion_request(
+) -> Result<Value, String> {
+    send_notion_request(notion_request(
         client,
         options,
         reqwest::Method::GET,
         &format!("/databases/{}", options.parent_id),
     ))
-    .await?;
+    .await
+}
+
+async fn database_schema(
+    client: &Client,
+    options: &NotionExportOptions,
+) -> Result<NotionDatabaseSchema, String> {
+    let database = retrieve_database(client, options).await?;
     let properties = database
         .get("properties")
         .and_then(Value::as_object)
@@ -570,6 +998,156 @@ async fn database_schema(
         title_property,
         properties,
     })
+}
+
+fn analyze_database_value(database_id: &str, database: &Value) -> NotionDatabaseAnalysis {
+    let properties = database
+        .get("properties")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut summaries = properties
+        .iter()
+        .filter_map(|(name, property)| {
+            let id = property.get("id").and_then(Value::as_str)?;
+            let property_type = property.get("type").and_then(Value::as_str)?;
+            Some(NotionPropertySummary {
+                id: id.to_string(),
+                name: name.clone(),
+                property_type: property_type.to_string(),
+            })
+        })
+        .collect::<Vec<_>>();
+    summaries.sort_by(|left, right| left.name.cmp(&right.name));
+    let title_property = summaries
+        .iter()
+        .find(|property| property.property_type == "title")
+        .cloned();
+    let suggested_mappings = suggested_property_mappings(&summaries);
+    let recommended_count = suggested_mappings
+        .iter()
+        .filter(|mapping| mapping.logical_field != "title")
+        .count();
+    let mut issues = Vec::new();
+    let compatibility = if title_property.is_none() {
+        issues.push(NotionDatabaseIssue {
+            code: "missing_title_property".to_string(),
+            message: "数据库缺少 Title 属性，无法创建导出页面。".to_string(),
+            logical_field: Some("title".to_string()),
+            property_id: None,
+        });
+        "invalid"
+    } else if recommended_count >= 4 {
+        "full"
+    } else {
+        issues.push(NotionDatabaseIssue {
+            code: "limited_metadata_fields".to_string(),
+            message: "数据库可用于标题和正文导出，但可自动写入的推荐元数据字段较少。".to_string(),
+            logical_field: None,
+            property_id: None,
+        });
+        "basic"
+    };
+    let title = notion_database_title(database);
+    let url = database
+        .get("url")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let schema_fingerprint = schema_fingerprint(&summaries);
+
+    NotionDatabaseAnalysis {
+        compatibility: compatibility.to_string(),
+        database_id: database
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or(database_id)
+            .to_string(),
+        database_name: title,
+        database_url: url,
+        title_property,
+        properties: summaries,
+        suggested_mappings,
+        issues,
+        schema_checked_at: Utc::now().to_rfc3339(),
+        schema_fingerprint: Some(schema_fingerprint),
+    }
+}
+
+fn notion_database_title(database: &Value) -> Option<String> {
+    let title = database.get("title")?.as_array()?;
+    let value = title
+        .iter()
+        .filter_map(|item| item.get("plain_text").and_then(Value::as_str))
+        .collect::<String>();
+    (!value.trim().is_empty()).then(|| value.trim().to_string())
+}
+
+fn suggested_property_mappings(properties: &[NotionPropertySummary]) -> Vec<NotionPropertyMapping> {
+    const FIELD_SPECS: &[(&str, &[&str], &[&str])] = &[
+        ("title", &["名称", "标题", "Name", "Title"], &["title"]),
+        ("author", &["作者", "Author"], &["rich_text"]),
+        ("cover", &["封面", "Cover"], &["files"]),
+        ("bookId", &["Book ID", "书籍 ID", "书籍ID"], &["rich_text"]),
+        ("assetType", &["资产类型", "类型"], &["select", "status"]),
+        (
+            "source",
+            &["来源", "Source"],
+            &["select", "status", "rich_text"],
+        ),
+        ("exportedAt", &["导出时间", "Exported At"], &["date"]),
+        ("importStatus", &["导入状态"], &["status", "select"]),
+        ("readingStatus", &["阅读状态"], &["status", "select"]),
+        ("readingStage", &["阅读阶段"], &["select", "status"]),
+        ("progress", &["进度", "Progress"], &["number"]),
+        ("tags", &["标签", "Tags"], &["multi_select"]),
+        ("wereadUrl", &["微信读书", "微信读书链接"], &["url"]),
+        ("obsidianPath", &["Obsidian 路径"], &["rich_text"]),
+        ("promptVersion", &["Prompt 版本"], &["rich_text"]),
+        ("inputHash", &["输入哈希"], &["rich_text"]),
+        ("scopeId", &["Scope ID"], &["rich_text"]),
+        ("period", &["周期"], &["select", "status"]),
+        ("actionCount", &["行动数"], &["number"]),
+        ("candidateCount", &["候选书数"], &["number"]),
+        ("highlightCount", &["划线数"], &["number"]),
+        ("thoughtCount", &["想法数"], &["number"]),
+        ("bookmarkCount", &["书签数"], &["number"]),
+        ("exportableCount", &["可导出数"], &["number"]),
+    ];
+
+    FIELD_SPECS
+        .iter()
+        .filter_map(|(logical_field, names, types)| {
+            let property = properties.iter().find(|property| {
+                types.contains(&property.property_type.as_str())
+                    && (property.property_type == "title"
+                        || names
+                            .iter()
+                            .any(|name| property.name.eq_ignore_ascii_case(name)))
+            })?;
+            Some(NotionPropertyMapping {
+                logical_field: (*logical_field).to_string(),
+                property_id: property.id.clone(),
+                property_name_snapshot: property.name.clone(),
+                property_type: property.property_type.clone(),
+                enabled: true,
+            })
+        })
+        .collect()
+}
+
+fn schema_fingerprint(properties: &[NotionPropertySummary]) -> String {
+    let mut canonical_properties = properties
+        .iter()
+        .map(|property| format!("{}:{}", property.id, property.property_type))
+        .collect::<Vec<_>>();
+    canonical_properties.sort();
+    let canonical = canonical_properties.join("|");
+    let hash = canonical
+        .bytes()
+        .fold(0xcbf29ce484222325_u64, |hash, byte| {
+            hash.wrapping_mul(0x100000001b3) ^ u64::from(byte)
+        });
+    format!("{hash:016x}")
 }
 
 fn create_page_payload(
@@ -590,132 +1168,162 @@ fn create_page_payload(
                 json!({ "title": rich_text(&document.title) }),
             );
             if let Some(schema) = database_schema {
-                append_template_page_properties(&mut values, schema, document);
+                append_template_page_properties(
+                    &mut values,
+                    schema,
+                    document,
+                    &options.property_mappings,
+                );
             }
             Value::Object(values)
         }
         None => json!({ "title": rich_text(&document.title) }),
     };
-    let mut payload = json!({ "parent": parent, "properties": properties });
-    if options.use_page_cover {
-        if let Some(url) = document
-            .cover
-            .as_ref()
-            .and_then(|asset| asset.remote_url.as_deref())
-        {
-            payload["cover"] = json!({ "type": "external", "external": { "url": url } });
-        }
-    }
-    payload
+    json!({ "parent": parent, "properties": properties })
 }
 
 fn append_template_page_properties(
     values: &mut Map<String, Value>,
     schema: &NotionDatabaseSchema,
     document: &ExportDocument,
+    mappings: &[NotionPropertyMapping],
 ) {
-    insert_rich_text_property(values, schema, "作者", document.author.as_deref());
+    let property_name = |logical_field: &str, fallback: &str| {
+        if mappings.is_empty() {
+            Some(fallback.to_string())
+        } else {
+            mapped_property_name(schema, mappings, logical_field)
+        }
+    };
+    if let Some(name) = property_name("author", "作者") {
+        insert_rich_text_property(values, schema, &name, document.author.as_deref());
+    }
     let actual_book_id = meta_value(document, "bookId");
     let display_book_id = actual_book_id.or(Some(&document.source_id));
-    insert_rich_text_property(values, schema, "Book ID", display_book_id);
-    insert_rich_text_property(values, schema, "Scope ID", meta_value(document, "scope"));
-    insert_select_property(
-        values,
-        schema,
-        "资产类型",
-        Some(source_kind_label(document.source_kind)),
-    );
-    insert_select_property(values, schema, "来源", Some("wxreadmaster"));
-    insert_date_property(
-        values,
-        schema,
-        "导出时间",
-        exported_at_to_notion_date(&document.exported_at),
-    );
-    insert_status_like_property(values, schema, "导入状态", Some("已导入"));
-    insert_rich_text_property(
-        values,
-        schema,
-        "Prompt 版本",
-        meta_value(document, "promptVersion"),
-    );
-    insert_rich_text_property(
-        values,
-        schema,
-        "输入哈希",
-        meta_value(document, "inputHash"),
-    );
-    insert_select_property(
-        values,
-        schema,
-        "周期",
-        meta_value(document, "period").map(period_label),
-    );
-    insert_select_property(
-        values,
-        schema,
-        "阅读阶段",
-        meta_value(document, "readingStageLabel")
-            .or_else(|| meta_value(document, "readingStage").map(reading_stage_label)),
-    );
-    insert_progress_property(values, schema, "进度", meta_number(document, "progress"));
-    insert_number_property(
-        values,
-        schema,
-        "行动数",
-        meta_number(document, "actionCount"),
-    );
-    insert_number_property(
-        values,
-        schema,
-        "候选书数",
-        meta_number(document, "candidateCount"),
-    );
-    insert_number_property(
-        values,
-        schema,
-        "划线数",
-        meta_number(document, "highlightCount"),
-    );
-    insert_number_property(
-        values,
-        schema,
-        "想法数",
-        meta_number(document, "thoughtCount"),
-    );
-    insert_number_property(
-        values,
-        schema,
-        "书签数",
-        meta_number(document, "bookmarkCount"),
-    );
-    insert_number_property(
-        values,
-        schema,
-        "可导出数",
-        meta_number(document, "exportableCount"),
-    );
-    insert_multi_select_property(values, schema, "标签", meta_csv_values(document, "tagList"));
-    insert_url_property(
-        values,
-        schema,
-        "微信读书",
-        meta_value(document, "wereadUrl")
-            .map(str::to_string)
-            .or_else(|| actual_book_id.and_then(weread_book_url)),
-    );
-    insert_rich_text_property(
-        values,
-        schema,
-        "Obsidian 路径",
-        meta_value(document, "obsidianPath"),
-    );
+    if let Some(name) = property_name("bookId", "Book ID") {
+        insert_rich_text_property(values, schema, &name, display_book_id);
+    }
+    if let Some(name) = property_name("scopeId", "Scope ID") {
+        insert_rich_text_property(values, schema, &name, meta_value(document, "scope"));
+    }
+    if let Some(name) = property_name("assetType", "资产类型") {
+        insert_status_like_property(
+            values,
+            schema,
+            &name,
+            Some(source_kind_label(document.source_kind)),
+        );
+    }
+    if let Some(name) = property_name("source", "来源") {
+        insert_select_status_or_text_property(values, schema, &name, Some("wxreadmaster"));
+    }
+    if let Some(name) = property_name("exportedAt", "导出时间") {
+        insert_date_property(
+            values,
+            schema,
+            &name,
+            exported_at_to_notion_date(&document.exported_at),
+        );
+    }
+    if let Some(name) = property_name("importStatus", "导入状态") {
+        insert_status_like_property(values, schema, &name, Some("已导入"));
+    }
+    if let Some(name) = property_name("readingStatus", "阅读状态") {
+        insert_status_like_property(
+            values,
+            schema,
+            &name,
+            meta_value(document, "readingStatusLabel")
+                .or_else(|| meta_value(document, "readingStatus")),
+        );
+    }
+    if let Some(name) = property_name("promptVersion", "Prompt 版本") {
+        insert_rich_text_property(values, schema, &name, meta_value(document, "promptVersion"));
+    }
+    if let Some(name) = property_name("inputHash", "输入哈希") {
+        insert_rich_text_property(values, schema, &name, meta_value(document, "inputHash"));
+    }
+    if let Some(name) = property_name("period", "周期") {
+        insert_status_like_property(
+            values,
+            schema,
+            &name,
+            meta_value(document, "period").map(period_label),
+        );
+    }
+    if let Some(name) = property_name("readingStage", "阅读阶段") {
+        insert_status_like_property(
+            values,
+            schema,
+            &name,
+            meta_value(document, "readingStageLabel")
+                .or_else(|| meta_value(document, "readingStage").map(reading_stage_label)),
+        );
+    }
+    if let Some(name) = property_name("progress", "进度") {
+        insert_progress_property(values, schema, &name, meta_number(document, "progress"));
+    }
+    if let Some(name) = property_name("actionCount", "行动数") {
+        insert_number_property(values, schema, &name, meta_number(document, "actionCount"));
+    }
+    if let Some(name) = property_name("candidateCount", "候选书数") {
+        insert_number_property(
+            values,
+            schema,
+            &name,
+            meta_number(document, "candidateCount"),
+        );
+    }
+    if let Some(name) = property_name("highlightCount", "划线数") {
+        insert_number_property(
+            values,
+            schema,
+            &name,
+            meta_number(document, "highlightCount"),
+        );
+    }
+    if let Some(name) = property_name("thoughtCount", "想法数") {
+        insert_number_property(values, schema, &name, meta_number(document, "thoughtCount"));
+    }
+    if let Some(name) = property_name("bookmarkCount", "书签数") {
+        insert_number_property(
+            values,
+            schema,
+            &name,
+            meta_number(document, "bookmarkCount"),
+        );
+    }
+    if let Some(name) = property_name("exportableCount", "可导出数") {
+        insert_number_property(
+            values,
+            schema,
+            &name,
+            meta_number(document, "exportableCount"),
+        );
+    }
+    if let Some(name) = property_name("tags", "标签") {
+        insert_multi_select_property(values, schema, &name, meta_csv_values(document, "tagList"));
+    }
+    if let Some(name) = property_name("wereadUrl", "微信读书") {
+        insert_url_property(
+            values,
+            schema,
+            &name,
+            meta_value(document, "wereadUrl")
+                .map(str::to_string)
+                .or_else(|| actual_book_id.and_then(weread_book_url)),
+        );
+    }
+    if let Some(name) = property_name("obsidianPath", "Obsidian 路径") {
+        insert_rich_text_property(values, schema, &name, meta_value(document, "obsidianPath"));
+    }
 }
 
 fn reading_library_template_properties() -> Value {
     json!({
         "名称": { "title": {} },
         "作者": { "rich_text": {} },
+        "封面": { "files": {} },
         "Book ID": { "rich_text": {} },
         "资产类型": {
             "select": {
@@ -770,7 +1378,15 @@ fn reading_library_template_properties() -> Value {
             }
         },
         "进度": { "number": { "format": "percent" } },
-        "标签": { "multi_select": {} },
+        "标签": {
+            "multi_select": {
+                "options": [
+                    { "name": "重点", "color": "red" },
+                    { "name": "待复盘", "color": "yellow" },
+                    { "name": "可行动", "color": "green" }
+                ]
+            }
+        },
         "微信读书": { "url": {} },
         "Obsidian 路径": { "rich_text": {} },
         "Prompt 版本": { "rich_text": {} },
@@ -795,6 +1411,39 @@ fn reading_library_template_properties() -> Value {
     })
 }
 
+fn external_url(value: &str) -> Option<&str> {
+    let value = value.trim();
+    (!value.is_empty() && (value.starts_with("http://") || value.starts_with("https://")))
+        .then_some(value)
+}
+
+fn document_cover_url(document: &ExportDocument) -> Option<&str> {
+    document
+        .cover
+        .as_ref()
+        .and_then(|asset| asset.remote_url.as_deref())
+        .and_then(external_url)
+}
+
+pub(crate) fn external_file_value(name: &str, url: &str) -> Option<Value> {
+    let url = external_url(url)?;
+    let name = name.trim();
+    Some(json!({
+        "name": if name.is_empty() { "封面" } else { name },
+        "type": "external",
+        "external": { "url": url }
+    }))
+}
+
+pub(crate) fn external_cover_value(url: &str) -> Option<Value> {
+    external_url(url).map(|url| {
+        json!({
+            "type": "external",
+            "external": { "url": url }
+        })
+    })
+}
+
 fn insert_rich_text_property(
     values: &mut Map<String, Value>,
     schema: &NotionDatabaseSchema,
@@ -810,21 +1459,6 @@ fn insert_rich_text_property(
     values.insert(name.to_string(), json!({ "rich_text": rich_text(value) }));
 }
 
-fn insert_select_property(
-    values: &mut Map<String, Value>,
-    schema: &NotionDatabaseSchema,
-    name: &str,
-    value: Option<&str>,
-) {
-    if !property_type_matches(schema, name, "select") {
-        return;
-    }
-    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
-        return;
-    };
-    values.insert(name.to_string(), json!({ "select": { "name": value } }));
-}
-
 fn insert_status_like_property(
     values: &mut Map<String, Value>,
     schema: &NotionDatabaseSchema,
@@ -838,6 +1472,22 @@ fn insert_status_like_property(
         values.insert(name.to_string(), json!({ "status": { "name": value } }));
     } else if property_type_matches(schema, name, "select") {
         values.insert(name.to_string(), json!({ "select": { "name": value } }));
+    }
+}
+
+fn insert_select_status_or_text_property(
+    values: &mut Map<String, Value>,
+    schema: &NotionDatabaseSchema,
+    name: &str,
+    value: Option<&str>,
+) {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return;
+    };
+    if property_type_matches(schema, name, "rich_text") {
+        values.insert(name.to_string(), json!({ "rich_text": rich_text(value) }));
+    } else {
+        insert_status_like_property(values, schema, name, Some(value));
     }
 }
 
@@ -927,6 +1577,61 @@ fn insert_url_property(
     values.insert(name.to_string(), json!({ "url": value }));
 }
 
+fn mapped_property_name(
+    schema: &NotionDatabaseSchema,
+    mappings: &[NotionPropertyMapping],
+    logical_field: &str,
+) -> Option<String> {
+    let mapping = mappings
+        .iter()
+        .find(|mapping| mapping.enabled && mapping.logical_field == logical_field)?;
+    schema.properties.iter().find_map(|(name, property)| {
+        let id_matches =
+            property.get("id").and_then(Value::as_str) == Some(mapping.property_id.as_str());
+        let type_matches =
+            property.get("type").and_then(Value::as_str) == Some(mapping.property_type.as_str());
+        (id_matches && type_matches).then(|| name.clone())
+    })
+}
+
+fn property_mapping_warning(
+    schema: &NotionDatabaseSchema,
+    mappings: &[NotionPropertyMapping],
+) -> Option<String> {
+    if mappings.is_empty() {
+        return None;
+    }
+
+    let unavailable = mappings
+        .iter()
+        .filter(|mapping| mapping.enabled && mapping.logical_field != "title")
+        .filter(|mapping| {
+            !schema.properties.values().any(|property| {
+                property.get("id").and_then(Value::as_str) == Some(mapping.property_id.as_str())
+                    && property.get("type").and_then(Value::as_str)
+                        == Some(mapping.property_type.as_str())
+            })
+        })
+        .map(|mapping| mapping.property_name_snapshot.as_str())
+        .collect::<Vec<_>>();
+
+    (!unavailable.is_empty()).then(|| {
+        format!(
+            "以下 Notion 可选字段已删除或类型发生变化，本次已跳过：{}。正文和其余字段已继续导出。",
+            unavailable.join("、")
+        )
+    })
+}
+
+fn merge_warning(existing: Option<String>, addition: Option<String>) -> Option<String> {
+    match (existing, addition) {
+        (Some(existing), Some(addition)) => Some(format!("{existing}；{addition}")),
+        (Some(existing), None) => Some(existing),
+        (None, Some(addition)) => Some(addition),
+        (None, None) => None,
+    }
+}
+
 fn property_type_matches(schema: &NotionDatabaseSchema, name: &str, expected: &str) -> bool {
     schema
         .properties
@@ -956,8 +1661,12 @@ fn meta_csv_values(document: &ExportDocument, key: &str) -> Vec<String> {
                 .split(',')
                 .map(str::trim)
                 .filter(|item| !item.is_empty())
-                .map(str::to_string)
-                .collect()
+                .fold(Vec::new(), |mut values, item| {
+                    if !values.iter().any(|existing| existing == item) {
+                        values.push(item.to_string());
+                    }
+                    values
+                })
         })
         .unwrap_or_default()
 }
@@ -1609,32 +2318,107 @@ fn rich_text_link(value: &str, url: &str) -> Vec<Value> {
     })]
 }
 
-fn notion_request(
+pub(crate) fn notion_client() -> Result<Client, String> {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(NOTION_CONNECT_TIMEOUT_SECONDS))
+        .timeout(Duration::from_secs(NOTION_REQUEST_TIMEOUT_SECONDS))
+        .user_agent(concat!(
+            env!("CARGO_PKG_NAME"),
+            "/",
+            env!("CARGO_PKG_VERSION")
+        ))
+        .build()
+        .map_err(|error| format!("初始化 Notion 网络客户端失败：{error}"))
+}
+
+fn notion_network_error(error: &reqwest::Error) -> String {
+    let reason = if error.is_timeout() {
+        "连接或等待响应超时"
+    } else if error.is_connect() {
+        "无法建立网络连接"
+    } else if error.is_request() {
+        "请求发送失败"
+    } else if error.is_body() {
+        "响应传输中断"
+    } else if error.is_decode() {
+        "响应内容无法解析"
+    } else {
+        "网络请求失败"
+    };
+    notion_network_error_message(reason, &error.to_string())
+}
+
+fn notion_network_error_message(reason: &str, diagnostic: &str) -> String {
+    format!(
+        "无法连接 Notion API（{reason}）。请检查网络、系统代理或 VPN 后重试。诊断：{diagnostic}"
+    )
+}
+
+pub(crate) fn notion_request(
     client: &Client,
     options: &NotionExportOptions,
     method: reqwest::Method,
     path: &str,
 ) -> reqwest::RequestBuilder {
+    notion_request_with_version(
+        client,
+        &options.token,
+        method,
+        path,
+        NOTION_LEGACY_API_VERSION,
+    )
+}
+
+pub(crate) fn notion_request_with_version(
+    client: &Client,
+    token: &str,
+    method: reqwest::Method,
+    path: &str,
+    notion_version: &'static str,
+) -> reqwest::RequestBuilder {
     client
         .request(method, format!("{NOTION_API_BASE}{path}"))
-        .bearer_auth(&options.token)
-        .header("Notion-Version", NOTION_API_VERSION)
+        .bearer_auth(token)
+        .header("Notion-Version", notion_version)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .timeout(std::time::Duration::from_secs(
             NOTION_REQUEST_TIMEOUT_SECONDS,
         ))
 }
 
-/// 发送 Notion 请求；命中 429 限流时按 Retry-After 退避后重试。
-/// 只重试 429（请求未被处理，重试安全），不重试网络错误或 5xx，
-/// 避免“结果未知”场景下重复创建页面。
-async fn send_notion_request(builder: reqwest::RequestBuilder) -> Result<Value, String> {
+/// 标准数据库创建专用请求。该路径必须保留“服务端明确拒绝”和“请求结果未知”的区别，
+/// 以便上层决定是否允许再次创建。
+async fn send_notion_database_create_request(
+    builder: reqwest::RequestBuilder,
+) -> Result<Value, NotionDatabaseCreateError> {
     let mut attempt: u32 = 0;
     loop {
         let request = builder
             .try_clone()
-            .ok_or_else(|| "Notion 请求构造失败。".to_string())?;
-        let response = request.send().await.map_err(|error| error.to_string())?;
+            .ok_or_else(|| NotionDatabaseCreateError {
+                code: "notion_database_create_request_invalid".to_string(),
+                message: "Notion 数据库创建请求构造失败。".to_string(),
+                retryable: false,
+                result_unknown: false,
+            })?;
+        let response = request.send().await.map_err(|error| {
+            let timed_out = error.is_timeout();
+            NotionDatabaseCreateError {
+                code: if timed_out {
+                    "notion_database_create_timeout"
+                } else {
+                    "notion_database_create_network_error"
+                }
+                .to_string(),
+                message: if timed_out {
+                    "创建 Notion 数据库请求超时，远端结果暂时无法确认。".to_string()
+                } else {
+                    format!("创建 Notion 数据库时网络中断，远端结果暂时无法确认：{error}")
+                },
+                retryable: true,
+                result_unknown: true,
+            }
+        })?;
         if response.status() == StatusCode::TOO_MANY_REQUESTS
             && attempt < NOTION_RATE_LIMIT_MAX_RETRIES
         {
@@ -1645,7 +2429,90 @@ async fn send_notion_request(builder: reqwest::RequestBuilder) -> Result<Value, 
             attempt += 1;
             continue;
         }
-        return parse_notion_response(response).await;
+
+        let status = response.status();
+        let payload = response.json::<Value>().await;
+        if status.is_success() {
+            return payload.map_err(|error| NotionDatabaseCreateError {
+                code: "notion_database_create_response_invalid".to_string(),
+                message: format!(
+                    "Notion 返回成功状态，但创建结果无法解析，远端结果暂时无法确认：{error}"
+                ),
+                retryable: false,
+                result_unknown: true,
+            });
+        }
+
+        return Err(notion_database_create_http_error(status, payload.ok()));
+    }
+}
+
+fn notion_database_create_http_error(
+    status: StatusCode,
+    payload: Option<Value>,
+) -> NotionDatabaseCreateError {
+    let api_message = payload
+        .as_ref()
+        .and_then(|value| value.get("message"))
+        .and_then(Value::as_str)
+        .unwrap_or("Notion API 请求失败");
+    let prefix = match status {
+        StatusCode::UNAUTHORIZED => "Notion Token 无效或已失效",
+        StatusCode::FORBIDDEN => "Notion Integration 没有访问目标页面的权限",
+        StatusCode::NOT_FOUND => "Notion 目标页面不存在，或尚未共享给 Integration",
+        StatusCode::TOO_MANY_REQUESTS => "Notion API 请求过于频繁",
+        _ if status.is_server_error() => "Notion 服务暂时异常，数据库创建结果无法确认",
+        _ => "Notion API 拒绝创建数据库",
+    };
+    let result_unknown = status.is_server_error() || !status.is_client_error();
+    NotionDatabaseCreateError {
+        code: if result_unknown {
+            "notion_database_create_result_unknown"
+        } else {
+            "notion_database_create_rejected"
+        }
+        .to_string(),
+        message: format!("{prefix}：{api_message}"),
+        retryable: status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error(),
+        result_unknown,
+    }
+}
+
+/// 发送 Notion 请求；命中 429 限流时按 Retry-After 退避后重试。
+/// 只重试 429（请求未被处理，重试安全），不重试网络错误或 5xx，
+/// 避免“结果未知”场景下重复创建页面。
+pub(crate) async fn send_notion_request(builder: reqwest::RequestBuilder) -> Result<Value, String> {
+    send_notion_request_typed(builder)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// 为需要在 mutation 后执行对账的调用保留结构化的“结果未知”语义。
+/// 网络中断、超时、成功响应无法解析以及非客户端 HTTP 状态均可能表示远端已处理请求。
+pub(crate) async fn send_notion_request_typed(
+    builder: reqwest::RequestBuilder,
+) -> Result<Value, NotionRequestError> {
+    let mut attempt: u32 = 0;
+    loop {
+        let request = builder.try_clone().ok_or_else(|| NotionRequestError {
+            message: "Notion 请求构造失败。".to_string(),
+            result_unknown: false,
+        })?;
+        let response = request.send().await.map_err(|error| NotionRequestError {
+            message: notion_network_error(&error),
+            result_unknown: true,
+        })?;
+        if response.status() == StatusCode::TOO_MANY_REQUESTS
+            && attempt < NOTION_RATE_LIMIT_MAX_RETRIES
+        {
+            let delay_seconds = retry_after_seconds(&response)
+                .unwrap_or(u64::from(attempt) + 1)
+                .clamp(1, NOTION_RATE_LIMIT_MAX_DELAY_SECONDS);
+            tokio::time::sleep(std::time::Duration::from_secs(delay_seconds)).await;
+            attempt += 1;
+            continue;
+        }
+        return parse_notion_response_typed(response).await;
     }
 }
 
@@ -1657,12 +2524,14 @@ fn retry_after_seconds(response: &reqwest::Response) -> Option<u64> {
         .and_then(|value| value.trim().parse::<u64>().ok())
 }
 
-async fn parse_notion_response(response: reqwest::Response) -> Result<Value, String> {
-    let status = response.status();
-    let payload = response
-        .json::<Value>()
-        .await
-        .map_err(|error| error.to_string())?;
+fn notion_request_error_from_parts(
+    status: StatusCode,
+    payload: Result<Value, String>,
+) -> Result<Value, NotionRequestError> {
+    let payload = payload.map_err(|error| NotionRequestError {
+        message: format!("Notion 响应内容无法解析：{error}"),
+        result_unknown: status.is_success() || !status.is_client_error(),
+    })?;
     if status.is_success() {
         return Ok(payload);
     }
@@ -1671,29 +2540,233 @@ async fn parse_notion_response(response: reqwest::Response) -> Result<Value, Str
         .get("message")
         .and_then(Value::as_str)
         .unwrap_or("Notion API 请求失败");
+    let code = payload
+        .get("code")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty());
     let prefix = match status {
         StatusCode::UNAUTHORIZED => "Notion Token 无效或已失效",
         StatusCode::FORBIDDEN => "Notion Integration 没有访问目标页面的权限",
         StatusCode::NOT_FOUND => "Notion 目标页面或数据库不存在，或尚未共享给 Integration",
         StatusCode::TOO_MANY_REQUESTS => "Notion API 请求过于频繁",
+        _ if status.is_server_error() => "Notion 服务暂时异常",
         _ => "Notion API 请求失败",
     };
-    Err(format!("{prefix}：{message}"))
+    let diagnostic = code
+        .map(|code| format!("（HTTP {}，code: {code}）", status.as_u16()))
+        .unwrap_or_else(|| format!("（HTTP {}）", status.as_u16()));
+    Err(NotionRequestError {
+        message: format!("{prefix}{diagnostic}：{message}"),
+        result_unknown: !status.is_client_error(),
+    })
+}
+
+async fn parse_notion_response_typed(
+    response: reqwest::Response,
+) -> Result<Value, NotionRequestError> {
+    let status = response.status();
+    let payload = response
+        .json::<Value>()
+        .await
+        .map_err(|error| error.to_string());
+    notion_request_error_from_parts(status, payload)
 }
 
 #[cfg(test)]
 mod tests {
     use crate::export::{
+        assets::{ExportAsset, ExportAssetKind},
         document::{ExportDocument, ExportSourceKind},
         targets::NotionParentType,
     };
 
     use super::{
-        create_page_payload, exported_at_to_notion_date, is_cover_related_error,
-        markdown_to_blocks, notion_object_id_and_url, reading_database_payload, split_text,
+        analyze_database_value, create_page_payload, exported_at_to_notion_date,
+        is_cover_related_error, mapped_property_name, markdown_to_blocks,
+        notion_database_create_http_error, notion_network_error_message, notion_object_id_and_url,
+        notion_request_error_from_parts, page_cover_contains_url, page_cover_is_empty,
+        page_files_property_contains_url, page_files_property_is_empty, property_mapping_warning,
+        reading_database_payload, schema_fingerprint, split_text,
         workspace_database_followup_blocks, workspace_homepage_payload, NotionDatabaseSchema,
-        NotionExportOptions, MAX_BLOCK_TEXT_LENGTH,
+        NotionExportOptions, NotionPropertyMapping, NotionPropertySummary, MAX_BLOCK_TEXT_LENGTH,
     };
+
+    #[test]
+    fn notion_network_errors_include_actionable_proxy_guidance() {
+        assert_eq!(
+            notion_network_error_message(
+                "无法建立网络连接",
+                "error sending request for url (https://api.notion.com/v1/databases/example)"
+            ),
+            "无法连接 Notion API（无法建立网络连接）。请检查网络、系统代理或 VPN 后重试。诊断：error sending request for url (https://api.notion.com/v1/databases/example)"
+        );
+    }
+
+    #[test]
+    fn database_create_http_errors_classify_known_and_unknown_results() {
+        let rejected = notion_database_create_http_error(
+            reqwest::StatusCode::BAD_REQUEST,
+            Some(serde_json::json!({ "message": "invalid parent" })),
+        );
+        assert!(!rejected.result_unknown);
+        assert!(!rejected.retryable);
+        assert_eq!(rejected.code, "notion_database_create_rejected");
+
+        let throttled = notion_database_create_http_error(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            Some(serde_json::json!({ "message": "rate limited" })),
+        );
+        assert!(!throttled.result_unknown);
+        assert!(throttled.retryable);
+
+        let server_error = notion_database_create_http_error(
+            reqwest::StatusCode::BAD_GATEWAY,
+            Some(serde_json::json!({ "message": "upstream failed" })),
+        );
+        assert!(server_error.result_unknown);
+        assert!(server_error.retryable);
+        assert_eq!(server_error.code, "notion_database_create_result_unknown");
+    }
+
+    #[test]
+    fn general_request_errors_preserve_unknown_result_semantics() {
+        let rejected = notion_request_error_from_parts(
+            reqwest::StatusCode::BAD_REQUEST,
+            Ok(serde_json::json!({
+                "code": "validation_error",
+                "message": "invalid configuration"
+            })),
+        )
+        .unwrap_err();
+        assert!(!rejected.result_unknown());
+        assert!(rejected.to_string().contains("HTTP 400"));
+        assert!(rejected.to_string().contains("validation_error"));
+
+        let server_error = notion_request_error_from_parts(
+            reqwest::StatusCode::BAD_GATEWAY,
+            Ok(serde_json::json!({ "message": "upstream failed" })),
+        )
+        .unwrap_err();
+        assert!(server_error.result_unknown());
+        assert!(server_error.to_string().contains("HTTP 502"));
+
+        let invalid_success = notion_request_error_from_parts(
+            reqwest::StatusCode::OK,
+            Err("unexpected end of JSON".to_string()),
+        )
+        .unwrap_err();
+        assert!(invalid_success.result_unknown());
+    }
+
+    #[test]
+    fn standard_database_payload_includes_files_cover_property() {
+        let payload = reading_database_payload("parent-page-id", "阅读成果库");
+
+        assert_eq!(
+            payload["properties"]["封面"],
+            serde_json::json!({ "files": {} })
+        );
+    }
+
+    #[test]
+    fn database_analysis_suggests_cover_files_mapping() {
+        let analysis = analyze_database_value(
+            "database-id",
+            &serde_json::json!({
+                "id": "database-id",
+                "title": [{ "plain_text": "阅读成果库" }],
+                "properties": {
+                    "名称": { "id": "title-id", "type": "title", "title": {} },
+                    "封面": { "id": "cover-id", "type": "files", "files": {} }
+                }
+            }),
+        );
+
+        assert!(analysis.suggested_mappings.iter().any(|mapping| {
+            mapping.logical_field == "cover"
+                && mapping.property_id == "cover-id"
+                && mapping.property_type == "files"
+                && mapping.enabled
+        }));
+    }
+
+    #[test]
+    fn page_create_payload_never_embeds_cover_mutations() {
+        let mut document = test_book_document(None);
+        document.cover = Some(ExportAsset {
+            kind: ExportAssetKind::Cover,
+            remote_url: Some("https://example.com/cover.jpg".to_string()),
+            local_path: None,
+            file_name: None,
+            mime_type: None,
+        });
+        let mut properties = test_template_schema_properties();
+        properties.insert(
+            "封面".to_string(),
+            serde_json::json!({ "type": "files", "files": {} }),
+        );
+        let schema = NotionDatabaseSchema {
+            title_property: Some("名称".to_string()),
+            properties,
+        };
+
+        let payload = create_page_payload(
+            &document,
+            &NotionExportOptions {
+                token: "secret".to_string(),
+                parent_id: "database-id".to_string(),
+                parent_type: NotionParentType::Database,
+                use_page_cover: true,
+                property_mappings: Vec::new(),
+            },
+            Some("名称"),
+            Some(&schema),
+        );
+
+        assert!(payload.get("cover").is_none());
+        assert!(payload["properties"].get("封面").is_none());
+    }
+
+    #[test]
+    fn page_cover_and_files_property_are_detected_independently() {
+        let page = serde_json::json!({
+            "cover": {
+                "type": "external",
+                "external": { "url": "https://example.com/page-cover.jpg" }
+            },
+            "properties": {
+                "封面": {
+                    "type": "files",
+                    "files": [{
+                        "name": "封面",
+                        "type": "external",
+                        "external": { "url": "https://example.com/property-cover.jpg" }
+                    }]
+                }
+            }
+        });
+
+        assert!(!page_cover_is_empty(&page));
+        assert!(!page_files_property_is_empty(&page, "封面"));
+        assert!(page_cover_contains_url(
+            &page,
+            "https://example.com/page-cover.jpg"
+        ));
+        assert!(!page_cover_contains_url(
+            &page,
+            "https://example.com/property-cover.jpg"
+        ));
+        assert!(page_files_property_contains_url(
+            &page,
+            "封面",
+            "https://example.com/property-cover.jpg"
+        ));
+        assert!(!page_files_property_contains_url(
+            &page,
+            "封面",
+            "https://example.com/page-cover.jpg"
+        ));
+    }
 
     #[test]
     fn markdown_headings_map_to_notion_heading_blocks() {
@@ -1779,6 +2852,7 @@ mod tests {
                 parent_id: "page-id".to_string(),
                 parent_type: NotionParentType::Page,
                 use_page_cover: true,
+                property_mappings: Vec::new(),
             },
             None,
             None,
@@ -1825,6 +2899,7 @@ mod tests {
                 parent_id: "database-id".to_string(),
                 parent_type: NotionParentType::Database,
                 use_page_cover: true,
+                property_mappings: Vec::new(),
             },
             Some("名称"),
             Some(&schema),
@@ -1890,6 +2965,87 @@ mod tests {
     }
 
     #[test]
+    fn database_payload_submits_new_tags_and_stably_deduplicates_values() {
+        let mut schema_properties = test_template_schema_properties();
+        schema_properties.insert(
+            "标签".to_string(),
+            serde_json::json!({
+                "type": "multi_select",
+                "multi_select": {
+                    "options": [
+                        { "name": "专注" },
+                        { "name": "复盘" }
+                    ]
+                }
+            }),
+        );
+        let schema = NotionDatabaseSchema {
+            title_property: Some("名称".to_string()),
+            properties: schema_properties,
+        };
+        let mut document = test_book_document(None);
+        document.front_matter = vec![meta("tagList", "专注, 行动,专注, ,复盘,行动")];
+
+        let payload = create_page_payload(
+            &document,
+            &NotionExportOptions {
+                token: "secret".to_string(),
+                parent_id: "database-id".to_string(),
+                parent_type: NotionParentType::Database,
+                use_page_cover: false,
+                property_mappings: Vec::new(),
+            },
+            Some("名称"),
+            Some(&schema),
+        );
+
+        assert_eq!(
+            payload["properties"]["标签"]["multi_select"],
+            serde_json::json!([
+                { "name": "专注" },
+                { "name": "行动" },
+                { "name": "复盘" }
+            ])
+        );
+    }
+
+    #[test]
+    fn database_payload_submits_tags_when_multi_select_has_no_options() {
+        let mut schema_properties = test_template_schema_properties();
+        schema_properties.insert(
+            "标签".to_string(),
+            serde_json::json!({
+                "type": "multi_select",
+                "multi_select": { "options": [] }
+            }),
+        );
+        let schema = NotionDatabaseSchema {
+            title_property: Some("名称".to_string()),
+            properties: schema_properties,
+        };
+        let mut document = test_book_document(None);
+        document.front_matter = vec![meta("tagList", "冒烟测试")];
+
+        let payload = create_page_payload(
+            &document,
+            &NotionExportOptions {
+                token: "secret".to_string(),
+                parent_id: "database-id".to_string(),
+                parent_type: NotionParentType::Database,
+                use_page_cover: false,
+                property_mappings: Vec::new(),
+            },
+            Some("名称"),
+            Some(&schema),
+        );
+
+        assert_eq!(
+            payload["properties"]["标签"]["multi_select"],
+            serde_json::json!([{ "name": "冒烟测试" }])
+        );
+    }
+
+    #[test]
     fn database_payload_skips_missing_template_properties() {
         let document = ExportDocument {
             source_kind: ExportSourceKind::BookNotes,
@@ -1917,6 +3073,7 @@ mod tests {
                 parent_id: "database-id".to_string(),
                 parent_type: NotionParentType::Database,
                 use_page_cover: true,
+                property_mappings: Vec::new(),
             },
             Some("Name"),
             Some(&schema),
@@ -1954,6 +3111,7 @@ mod tests {
                 parent_id: "database-id".to_string(),
                 parent_type: NotionParentType::Database,
                 use_page_cover: true,
+                property_mappings: Vec::new(),
             },
             Some("名称"),
             Some(&schema),
@@ -1994,6 +3152,7 @@ mod tests {
                 parent_id: "database-id".to_string(),
                 parent_type: NotionParentType::Database,
                 use_page_cover: true,
+                property_mappings: Vec::new(),
             },
             Some("名称"),
             Some(&schema),
@@ -2002,6 +3161,257 @@ mod tests {
         assert_eq!(
             payload["properties"]["微信读书"]["url"],
             "https://weread.qq.com/web/bookDetail/custom"
+        );
+    }
+
+    #[test]
+    fn property_id_mapping_survives_property_rename() {
+        let schema = NotionDatabaseSchema {
+            title_property: Some("书名（自定义）".to_string()),
+            properties: serde_json::json!({
+                "书名（自定义）": { "id": "title-id", "type": "title", "title": {} },
+                "作者（自定义）": { "id": "author-id", "type": "rich_text", "rich_text": {} },
+                "作者": { "id": "legacy-author-id", "type": "rich_text", "rich_text": {} }
+            })
+            .as_object()
+            .expect("schema properties should be an object")
+            .clone(),
+        };
+        let mappings = vec![
+            property_mapping("title", "title-id", "名称", "title", true),
+            property_mapping("author", "author-id", "作者", "rich_text", true),
+        ];
+        let document = test_book_document(Some("作者值"));
+
+        assert_eq!(
+            mapped_property_name(&schema, &mappings, "author"),
+            Some("作者（自定义）".to_string())
+        );
+        let payload = create_page_payload(
+            &document,
+            &NotionExportOptions {
+                token: "secret".to_string(),
+                parent_id: "database-id".to_string(),
+                parent_type: NotionParentType::Database,
+                use_page_cover: true,
+                property_mappings: mappings,
+            },
+            Some("书名（自定义）"),
+            Some(&schema),
+        );
+
+        assert_eq!(
+            payload["properties"]["作者（自定义）"]["rich_text"][0]["text"]["content"],
+            "作者值"
+        );
+        assert!(payload["properties"]["作者"].is_null());
+    }
+
+    #[test]
+    fn configured_mappings_do_not_fall_back_for_unmapped_fields() {
+        let mut properties = test_template_schema_properties();
+        properties
+            .get_mut("名称")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("title property should be an object")
+            .insert("id".to_string(), serde_json::json!("title-id"));
+        properties
+            .get_mut("作者")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("author property should be an object")
+            .insert("id".to_string(), serde_json::json!("author-id"));
+        let schema = NotionDatabaseSchema {
+            title_property: Some("名称".to_string()),
+            properties,
+        };
+        let mappings = vec![property_mapping("title", "title-id", "名称", "title", true)];
+        let document = test_book_document(Some("不应导出的作者"));
+
+        let payload = create_page_payload(
+            &document,
+            &NotionExportOptions {
+                token: "secret".to_string(),
+                parent_id: "database-id".to_string(),
+                parent_type: NotionParentType::Database,
+                use_page_cover: true,
+                property_mappings: mappings,
+            },
+            Some("名称"),
+            Some(&schema),
+        );
+
+        assert!(payload["properties"]["作者"].is_null());
+        assert!(payload["properties"]["Book ID"].is_null());
+        assert_eq!(
+            payload["properties"]["名称"]["title"][0]["text"]["content"],
+            "测试书籍"
+        );
+    }
+
+    #[test]
+    fn disabled_mapping_is_treated_as_do_not_export() {
+        let schema = NotionDatabaseSchema {
+            title_property: Some("名称".to_string()),
+            properties: serde_json::json!({
+                "名称": { "id": "title-id", "type": "title", "title": {} },
+                "作者": { "id": "author-id", "type": "rich_text", "rich_text": {} }
+            })
+            .as_object()
+            .expect("schema properties should be an object")
+            .clone(),
+        };
+        let mappings = vec![
+            property_mapping("title", "title-id", "名称", "title", true),
+            property_mapping("author", "author-id", "作者", "rich_text", false),
+        ];
+        let document = test_book_document(Some("不应导出的作者"));
+
+        let payload = create_page_payload(
+            &document,
+            &NotionExportOptions {
+                token: "secret".to_string(),
+                parent_id: "database-id".to_string(),
+                parent_type: NotionParentType::Database,
+                use_page_cover: true,
+                property_mappings: mappings,
+            },
+            Some("名称"),
+            Some(&schema),
+        );
+
+        assert!(payload["properties"]["作者"].is_null());
+    }
+
+    #[test]
+    fn optional_mapping_type_change_is_skipped_with_warning() {
+        let schema = NotionDatabaseSchema {
+            title_property: Some("名称".to_string()),
+            properties: serde_json::json!({
+                "名称": { "id": "title-id", "type": "title", "title": {} },
+                "作者": { "id": "author-id", "type": "number", "number": {} }
+            })
+            .as_object()
+            .expect("schema properties should be an object")
+            .clone(),
+        };
+        let mappings = vec![
+            property_mapping("title", "title-id", "名称", "title", true),
+            property_mapping("author", "author-id", "作者", "rich_text", true),
+        ];
+
+        assert_eq!(mapped_property_name(&schema, &mappings, "author"), None);
+        let warning = property_mapping_warning(&schema, &mappings)
+            .expect("type change should return a warning");
+        assert!(warning.contains("作者"));
+        assert!(warning.contains("已删除或类型发生变化"));
+    }
+
+    #[test]
+    fn optional_mapping_deletion_is_skipped_with_warning() {
+        let schema = NotionDatabaseSchema {
+            title_property: Some("名称".to_string()),
+            properties: serde_json::json!({
+                "名称": { "id": "title-id", "type": "title", "title": {} }
+            })
+            .as_object()
+            .expect("schema properties should be an object")
+            .clone(),
+        };
+        let mappings = vec![
+            property_mapping("title", "title-id", "名称", "title", true),
+            property_mapping("tags", "tags-id", "标签", "multi_select", true),
+        ];
+
+        let warning = property_mapping_warning(&schema, &mappings)
+            .expect("deleted mapping should return a warning");
+        assert!(warning.contains("标签"));
+    }
+
+    #[test]
+    fn title_mapping_type_change_cannot_resolve_title_property() {
+        let schema = NotionDatabaseSchema {
+            title_property: Some("名称".to_string()),
+            properties: serde_json::json!({
+                "名称": { "id": "title-id", "type": "rich_text", "rich_text": {} }
+            })
+            .as_object()
+            .expect("schema properties should be an object")
+            .clone(),
+        };
+        let mappings = vec![property_mapping("title", "title-id", "名称", "title", true)];
+
+        assert_eq!(mapped_property_name(&schema, &mappings, "title"), None);
+    }
+
+    #[test]
+    fn database_analysis_classifies_compatibility_and_suggests_mappings() {
+        let full = analyze_database_value(
+            "fallback-id",
+            &serde_json::json!({
+                "id": "database-id",
+                "url": "https://www.notion.so/database-id",
+                "title": [{ "plain_text": "自定义成果库" }],
+                "properties": {
+                    "Name": { "id": "title-id", "type": "title", "title": {} },
+                    "Author": { "id": "author-id", "type": "rich_text", "rich_text": {} },
+                    "Book ID": { "id": "book-id", "type": "rich_text", "rich_text": {} },
+                    "Progress": { "id": "progress-id", "type": "number", "number": {} },
+                    "Tags": { "id": "tags-id", "type": "multi_select", "multi_select": {} }
+                }
+            }),
+        );
+        assert_eq!(full.compatibility, "full");
+        assert_eq!(full.database_name.as_deref(), Some("自定义成果库"));
+        assert!(full
+            .suggested_mappings
+            .iter()
+            .any(|mapping| mapping.logical_field == "title" && mapping.property_id == "title-id"));
+
+        let invalid = analyze_database_value(
+            "database-id",
+            &serde_json::json!({
+                "properties": {
+                    "作者": { "id": "author-id", "type": "rich_text", "rich_text": {} }
+                }
+            }),
+        );
+        assert_eq!(invalid.compatibility, "invalid");
+        assert!(invalid
+            .issues
+            .iter()
+            .any(|issue| issue.code == "missing_title_property"));
+    }
+
+    #[test]
+    fn schema_fingerprint_ignores_property_names_and_input_order() {
+        let before = vec![
+            NotionPropertySummary {
+                id: "author-id".to_string(),
+                name: "作者".to_string(),
+                property_type: "rich_text".to_string(),
+            },
+            NotionPropertySummary {
+                id: "title-id".to_string(),
+                name: "名称".to_string(),
+                property_type: "title".to_string(),
+            },
+        ];
+        let after_rename_and_reorder = vec![
+            NotionPropertySummary {
+                id: "title-id".to_string(),
+                name: "书名".to_string(),
+                property_type: "title".to_string(),
+            },
+            NotionPropertySummary {
+                id: "author-id".to_string(),
+                name: "创作者".to_string(),
+                property_type: "rich_text".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            schema_fingerprint(&before),
+            schema_fingerprint(&after_rename_and_reorder)
         );
     }
 
@@ -2210,6 +3620,7 @@ mod tests {
                 parent_id: "database-id".to_string(),
                 parent_type: NotionParentType::Database,
                 use_page_cover: true,
+                property_mappings: Vec::new(),
             },
             Some("名称"),
             Some(&schema),
@@ -2231,6 +3642,36 @@ mod tests {
         ));
     }
 
+    fn test_book_document(author: Option<&str>) -> ExportDocument {
+        ExportDocument {
+            source_kind: ExportSourceKind::BookNotes,
+            source_id: "book-1".to_string(),
+            title: "测试书籍".to_string(),
+            author: author.map(str::to_string),
+            cover: None,
+            front_matter: vec![],
+            sections: vec![],
+            exported_at: "100".to_string(),
+            basis_notice: None,
+        }
+    }
+
+    fn property_mapping(
+        logical_field: &str,
+        property_id: &str,
+        property_name_snapshot: &str,
+        property_type: &str,
+        enabled: bool,
+    ) -> NotionPropertyMapping {
+        NotionPropertyMapping {
+            logical_field: logical_field.to_string(),
+            property_id: property_id.to_string(),
+            property_name_snapshot: property_name_snapshot.to_string(),
+            property_type: property_type.to_string(),
+            enabled,
+        }
+    }
+
     fn test_template_schema_properties() -> serde_json::Map<String, serde_json::Value> {
         serde_json::json!({
             "名称": { "type": "title", "title": {} },
@@ -2245,7 +3686,10 @@ mod tests {
             "周期": { "type": "select", "select": {} },
             "阅读阶段": { "type": "select", "select": {} },
             "进度": { "type": "number", "number": {} },
-            "标签": { "type": "multi_select", "multi_select": {} },
+            "标签": { "type": "multi_select", "multi_select": { "options": [
+                { "name": "专注" },
+                { "name": "行动" }
+            ] } },
             "微信读书": { "type": "url", "url": {} },
             "Obsidian 路径": { "type": "rich_text", "rich_text": {} },
             "行动数": { "type": "number", "number": {} },

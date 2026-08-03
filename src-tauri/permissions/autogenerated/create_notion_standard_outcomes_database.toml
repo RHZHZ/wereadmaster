@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-create-notion-standard-outcomes-database"
+description = "Enables the create_notion_standard_outcomes_database command without any pre-configured scope."
+commands.allow = ["create_notion_standard_outcomes_database"]
+
+[[permission]]
+identifier = "deny-create-notion-standard-outcomes-database"
+description = "Denies the create_notion_standard_outcomes_database command without any pre-configured scope."
+commands.deny = ["create_notion_standard_outcomes_database"]

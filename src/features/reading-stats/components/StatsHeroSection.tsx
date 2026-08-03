@@ -1,6 +1,7 @@
 import { Loader2, RefreshCw } from "lucide-react";
 import reportCardBg from "../../../assets/report-card-bg.png";
 import { formatDuration } from "../../../lib/formatters";
+import { TERMS } from "../../../lib/glossary";
 import type { ReadingStats } from "../../../lib/types";
 import {
   formatReadingStatsPeriodMetricLabel,
@@ -29,7 +30,7 @@ export function StatsHeroSection({
   isOverallMode,
   isReportEnabled,
   isSyncing,
-  reportActionLabel = "生成阅读报告",
+  reportActionLabel = TERMS.generateReportImage,
   reportDisabledReason,
   stats,
   syncDisabled,
@@ -76,6 +77,7 @@ export function StatsHeroSection({
             <button
               className="secondary-action"
               type="button"
+              data-testid="generate-report-image"
               onClick={onOpenReport}
               disabled={!hasStatsData}
               title={!hasStatsData ? reportDisabledReason : undefined}

@@ -35,7 +35,7 @@ export function buildBookNotesReviewStatus(notes: BookNotesReviewStatusInput): B
       primaryMetricValue: thoughtCount,
       secondaryMetricLabel: "划线",
       secondaryMetricValue: highlightCount,
-      nextActionLabel: "AI 复盘",
+      nextActionLabel: "书籍复盘",
       nextActionReason: "先把本书笔记整理成复盘文档，再决定是否标记已整理。",
       tone: "ready"
     };
@@ -51,7 +51,7 @@ export function buildBookNotesReviewStatus(notes: BookNotesReviewStatusInput): B
       secondaryMetricLabel: "可导出",
       secondaryMetricValue: exportableCount,
       nextActionLabel: "查看章节",
-      nextActionReason: "先确认哪些章节有材料；需要更完整时再补想法或进入 AI 复盘。",
+      nextActionReason: "先确认哪些章节有材料；需要更完整时再补想法或进入书籍复盘。",
       tone: "partial"
     };
   }

@@ -5,6 +5,8 @@ pub mod document;
 pub mod markdown;
 pub mod notion;
 pub mod notion_blocks;
+pub mod notion_tracker;
+pub mod notion_views;
 pub mod obsidian;
 pub mod targets;
 pub mod weread_link;

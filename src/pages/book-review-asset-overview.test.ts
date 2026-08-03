@@ -14,7 +14,7 @@ describe("book review asset overview", () => {
 
     expect(overview).toMatchObject({
       label: "复盘进行中",
-      title: "还有书可以生成阅读报告",
+      title: "还有书可以生成书籍复盘",
       generatedCount: 1,
       pendingCount: 2,
       feedbackCount: 1,

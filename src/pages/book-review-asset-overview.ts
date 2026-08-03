@@ -41,7 +41,7 @@ export function buildBookReviewAssetOverview({
   if (topCandidate) {
     return {
       label: "复盘进行中",
-      title: "还有书可以生成阅读报告",
+      title: "还有书可以生成书籍复盘",
       body: `已生成 ${generatedCount} 本，待整理 ${pendingCount} 本；先处理信号最强的一本，避免笔记停在列表里。`,
       generatedCount,
       pendingCount,

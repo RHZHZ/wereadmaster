@@ -83,6 +83,9 @@ import {
   getCommandErrorMessage
 } from "../lib/reading-api";
 
+export const LOCAL_READER_BACKUP_BOUNDARY_NOTICE =
+  "阅读进度属于 SQLite 备份；划线、想法、AI 提问和阅读器偏好等浏览器存储暂不包含在本地数据备份中。";
+
 type LocalReaderPageProps = {
   bookId: string;
   onBack: () => void;
@@ -1967,6 +1970,9 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
                 <h3>{book?.title ?? "本地图书"}</h3>
                 <small aria-label="阅读来源边界">
                   {book?.author || "未知作者"} · {book ? formatLocalReaderFormatLabel(book.format) : "TXT"} · 本地版本 · 与微信书架隔离
+                </small>
+                <small aria-label="本地阅读器备份边界">
+                  {LOCAL_READER_BACKUP_BOUNDARY_NOTICE}
                 </small>
               </div>
             </div>

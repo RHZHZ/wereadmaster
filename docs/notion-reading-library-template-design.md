@@ -24,11 +24,12 @@
 
 推荐结构：
 
-- 一个 Notion 父页面：`wxreadmaster`
-- 一个核心数据库：`阅读库`
+- 一个 Notion 父页面：由用户创建并共享给 Integration
+- 一个核心数据库：`阅读成果库`
 - 每本书或每个阅读资产是一条页面记录
 - 页面正文承载 Markdown 转换后的块内容
-- 页面封面承载书籍封面
+- 数据库 `封面` Files & media 属性承载 Gallery 卡片预览
+- Page cover 承载成果页顶部视觉封面
 
 这比拆成“书籍库、笔记库、复盘库、统计库”更符合 KISS 和 YAGNI。首版只维护一张数据库，降低用户配置成本和 API 出错面。
 
@@ -41,6 +42,7 @@
 | `名称` | Title | 是 | 页面标题，通常为书名或资产标题 |
 | `作者` | Rich text | 是 | 书籍作者 |
 | `Book ID` | Rich text | 是 | 微信读书 bookId 或本地 sourceId |
+| `封面` | Files & media | 有有效 HTTP(S) 封面时写入 | Gallery 卡片预览的稳定来源 |
 | `资产类型` | Select | 是 | 区分笔记、复盘、路线、统计、选书 |
 | `来源` | Select | 是 | 当前固定写入 `wxreadmaster` |
 | `导出时间` | Date | 是 | 本次导入时间 |
@@ -122,17 +124,21 @@
 数据库视图建议：
 
 - `全部资产`：按 `导出时间` 倒序。
+- `画廊`：使用 Gallery，Card preview 绑定数据库属性 `封面`，不要依赖 Page cover。
 - `书籍笔记`：过滤 `资产类型 = 书籍笔记`。
 - `复盘`：过滤 `资产类型 = 书籍复盘`。
 - `待读整理`：过滤 `导入状态 = 待整理`。
 
 单条页面建议结构：
 
-1. 页面封面：书籍封面。
-2. 顶部属性：作者、资产类型、Book ID、导出时间、导入状态。
-3. 正文：由 wxreadmaster Markdown 转为 Notion blocks。
+1. Gallery 卡片：读取 `封面` Files & media 属性。
+2. Page cover：在页面顶部展示书籍封面；与 Gallery 属性封面独立。
+3. 顶部属性：作者、资产类型、Book ID、导出时间、导入状态。
+4. 正文：由 wxreadmaster Markdown 转为 Notion blocks。
 
-当前 API 初始化先创建数据库和字段，不创建视图过滤器。Notion API 对视图控制有限，视图可在用户复制模板或后续 Notion API 能力成熟后补齐。
+当前标准库创建流程会在数据库连接保存后初始化四个最小 Table 视图：`最近导入`、`书籍笔记`、`待复盘`、`复盘与报告`。其中 `最近导入`复用并更新 Notion 自动生成的 `Default view`，其余三个视图按筛选和排序契约创建。该能力只作用于应用本次新建的标准库；用户已有数据库、旧标准库和第三方模板不会自动改造。视图初始化失败只进入可重试的 `partial`，不会回滚数据库连接，也不会重复创建数据库。
+
+Gallery 仍由用户按需手工创建，并把 Card preview 绑定数据库 `封面` 属性；应用不会自动创建或覆盖用户 Gallery 和其他未知视图。
 
 ## 6. 应用内 UI 设计
 
@@ -194,24 +200,74 @@ pub struct CreateNotionReadingLibraryTemplateResponse {
 
 ## 8. 导入写入策略
 
-当目标是模板数据库时，应用除了写 Title，还应尽量写入这些属性：
+当目标是标准成果数据库时，应用除了写 Title，还应尽量写入这些属性：
 
 - `作者`
 - `Book ID`
+- `封面`
 - `资产类型`
 - `来源`
 - `导出时间`
 - `导入状态`
 
+封面写入采用创建后双 PATCH：
+
+1. 先创建不带封面 mutation 的页面，取得 page ID。
+2. 独立 PATCH 数据库 `封面` Files & media 属性。
+3. 若封面模式允许，再独立 PATCH Page cover。
+4. 两次 PATCH 使用同一有效 HTTP(S) 封面 URL，但状态和错误彼此独立。
+5. 封面失败不阻断正文，也不得触发页面创建 POST 重发，避免重复成果页。
+6. mutation 超时或网络结果未知时读取页面最新状态做 reconciliation；确认目标 URL 已写入才视为成功。
+
+`contentImageOnly` 的兼容语义：
+
+- 禁用 Page cover。
+- 不禁用数据库 `封面` 属性；Gallery 仍应有稳定预览。
+
 兼容策略：
 
-- 如果用户删掉某个字段，导入不应失败。
+- 如果用户删掉某个可选字段，正文导入不应失败。
 - 写入前读取数据库 schema，只写存在且类型匹配的属性。
 - Title 字段继续自动识别，不强制叫 `名称`。
+- `cover` logical field 只允许映射到 `files`。
+- 唯一 `封面/files` 候选可复用；同名错误类型或多个候选时 fail-closed，不自动改名、删除或覆盖字段。
 
 这保持 DRY：模板字段和普通数据库导入共用同一套 schema 探测逻辑。
 
-## 9. 手动创建模板
+Notion 网络客户端与错误反馈契约：
+
+- 数据库分析、标准库创建、普通导出、Tracker、凭据校验和封面回填复用统一客户端配置，支持系统代理、rustls 和 SOCKS，并设置连接与请求总超时。
+- 网络发送失败按连接、超时、请求发送、响应传输和解析阶段保留结构化诊断；401、403、404、429 等已收到 HTTP 响应的 API 错误继续使用独立文案，不混同为网络故障。
+- 设置页数据库检查使用独立 45 秒前端门限，避免早于后端 30 秒请求超时而遮蔽真实分类。
+- Toast 只展示“检查网络、系统代理或 VPN”的可操作主文案；底层 URL 留在结构化诊断中，不进入主提示，也不得包含 Token。
+- 统一客户端不改变 mutation 安全策略：除 429 有界重试外，网络错误、超时和 5xx 不盲目重发创建或更新请求；结果未知时仍按原状态机或 reconciliation 处理。
+
+## 9. 现有成果页封面回填
+
+旧数据库或历史成果页不会因未来导出逻辑升级而自动获得属性封面，因此设置页提供独立维护流程：
+
+1. **预检**：固定 database ID、schema fingerprint、唯一 `封面/files` 字段方案和唯一 Book ID 字段。
+2. **显式确认**：没有 `confirm=true` 不允许执行。
+3. **本地查找**：只按 Book ID 读取本地缓存，优先级为 `notebook_books.cover`、`book_details.cover`、`shelf_entries.cover`；不访问微信读书远端，只接受 HTTP(S)。
+4. **只补空值**：处理每页前重新读取最新状态；已有属性封面或 Page cover 分别保留，绝不覆盖人工内容。
+5. **独立容错**：属性封面与 Page cover 分开更新；一个成功、一个失败记为 `partial`，单页失败不阻断整体。
+6. **取消与报告**：使用 operation ID 取消；已完成修改保留，不回滚；报告区分 updated、partial、preserved、skipped、failed、canceled。
+
+安全边界：
+
+- 回填不创建新数据库。
+- 回填不创建、删除或归档成果页。
+- schema 漂移、字段类型冲突、多个候选字段或 database ID 变化时停止执行并要求重新预检。
+- 回填状态与标准库 provisioning 状态机隔离，并使用单飞保护禁止并发任务。
+- 真实 Notion 回填必须在预检结果可见后再次取得用户明确确认；本地自动化测试不得代替该确认。
+
+真实验收记录（2026-08-03）：
+
+- 用户已在真实阅读成果库完成封面回填测试，并确认执行通过。
+- Gallery Card preview 已绑定 `封面` Files & media 属性，既有成果页可正常展示封面。
+- 本次确认作为真实 mutation 与视觉展示验收证据；后续再次回填仍需继续遵守预检、显式确认、只补空值和不覆盖人工封面的边界。
+
+## 10. 手动创建模板
 
 用户也可以手动创建一张 Notion 数据库，至少需要：
 
@@ -220,10 +276,17 @@ pub struct CreateNotionReadingLibraryTemplateResponse {
 
 然后把数据库共享给 Notion Integration，在应用设置中填数据库 ID，目标类型选 `数据库`。
 
-## 10. 验收标准
+## 11. 验收标准
 
-- 可在父页面下一键创建 `wxreadmaster 阅读库` 数据库。
+- 可在父页面下一键创建 `阅读成果库` 数据库，且默认包含 `封面` Files & media 属性。
 - 创建后应用自动切换 Notion 目标为新数据库。
+- database analysis 能给出 `cover -> 封面/files` 建议映射，并按 property ID 保存。
 - 单本笔记导入数据库时能写入标题、作者、Book ID、资产类型、来源、导出时间和导入状态。
+- 有有效封面时，数据库 `封面` 属性和 Page cover 可独立写入；`contentImageOnly` 仅禁用 Page cover。
+- 任一封面 PATCH 失败不导致正文失败，也不重发页面创建 POST。
+- Gallery Card preview 绑定 `封面` 后可显示新导出成果页封面。
+- 旧页回填只补空值，保留人工封面；缺本地封面时跳过并报告。
+- 回填支持预检、显式确认、进度、取消、结构化报告和防并发。
+- 字段冲突、Book ID 歧义或 schema 漂移时 fail-closed。
 - 用户删除推荐字段后，正文导入仍成功。
 - Notion Token 不进入普通配置、日志和导出内容。

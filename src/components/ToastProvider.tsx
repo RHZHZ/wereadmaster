@@ -1,20 +1,38 @@
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+  type ReactNode
+} from "react";
 import { AlertCircle, CheckCircle2, Info, X } from "lucide-react";
 
-type ToastTone = "success" | "warning" | "error" | "neutral";
+export type ToastTone = "success" | "warning" | "error" | "neutral";
 
-type ToastInput = {
+export type ToastInput = {
   message: string;
   tone?: ToastTone;
   durationMs?: number;
 };
 
-type ToastItem = Required<ToastInput> & {
-  id: number;
-};
-
 type ToastContextValue = {
   showToast: (toast: ToastInput) => void;
+};
+
+const ToastContext = createContext<ToastContextValue | undefined>(undefined);
+
+export function useToast(): ToastContextValue {
+  const context = useContext(ToastContext);
+  if (!context) {
+    throw new Error("useToast must be used within ToastProvider.");
+  }
+
+  return context;
+}
+
+type ToastItem = Required<ToastInput> & {
+  id: number;
 };
 
 const TOAST_DURATION_BY_TONE_MS: Record<ToastTone, number> = {
@@ -23,7 +41,6 @@ const TOAST_DURATION_BY_TONE_MS: Record<ToastTone, number> = {
   warning: 5000,
   error: 8000
 };
-const ToastContext = createContext<ToastContextValue | undefined>(undefined);
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
@@ -48,15 +65,6 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       </div>
     </ToastContext.Provider>
   );
-}
-
-export function useToast(): ToastContextValue {
-  const context = useContext(ToastContext);
-  if (!context) {
-    throw new Error("useToast must be used within ToastProvider.");
-  }
-
-  return context;
 }
 
 function ToastCard({

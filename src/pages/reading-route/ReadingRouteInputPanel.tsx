@@ -49,7 +49,7 @@ export function ReadingRouteInputPanel({
         <div>
           <p className="section-kicker">输入范围</p>
           <strong>{currentBook ? `当前书：${currentBook.title}` : "缺少当前书"}</strong>
-          <p>默认只用当前书；候选书只在需要生成跨书路线时纳入。</p>
+          <p>默认只用当前书；候选书只在需要生成阅读路线时纳入。</p>
         </div>
         <div className="reading-route-input-actions">
           <span>
@@ -74,7 +74,7 @@ export function ReadingRouteInputPanel({
               <div>
                 <p className="section-kicker">输入确认</p>
                 <h3 id={dialogTitleId}>调整阅读指南输入范围</h3>
-                <p>当前书固定纳入；候选书只在你明确选择后参与跨书路线图。</p>
+                <p>当前书固定纳入；候选书只在你明确选择后参与阅读路线。</p>
               </div>
               <button className="icon-button" type="button" aria-label="关闭" onClick={() => setIsDialogOpen(false)}>
                 <X aria-hidden="true" size={18} />
@@ -96,7 +96,7 @@ export function ReadingRouteInputPanel({
               <div className="reading-route-section-heading">
                 <div>
                   <p className="section-kicker">可选扩展</p>
-                  <h3>加入候选书，生成跨书路线</h3>
+                  <h3>加入候选书，生成阅读路线</h3>
                   <p>候选书来自发现页保存的本地候选，只保存在本机。</p>
                 </div>
                 <span>

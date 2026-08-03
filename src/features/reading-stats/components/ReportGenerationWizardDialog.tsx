@@ -321,7 +321,7 @@ export function ReportGenerationWizardDialog({
               {isTypeStep
                 ? "第一步先选择报告类型，周报、月报、年报和总计复盘会进入各自独立流程。"
                 : isTimeStep
-                  ? `第二步${isLifetimeReportMode ? "确认长期复盘范围" : `选择${activeReportOption?.label ?? "报告"}时间`}；确认后再生成预览。`
+                  ? `第二步${isLifetimeReportMode ? "确认全部历史范围" : `选择${activeReportOption?.label ?? "报告"}时间`}；确认后再生成预览。`
                 : "第三步检查预览效果，再选择竖版、轮播或横版导出。"}
             </p>
           </div>
@@ -370,7 +370,7 @@ export function ReportGenerationWizardDialog({
               <div className="monthly-report-overall-range">
                 <CalendarDays aria-hidden="true" size={24} />
                 <div>
-                  <strong>长期复盘默认覆盖全部历史</strong>
+                  <strong>全部历史报告覆盖全部历史</strong>
                   <span>这一类报告不需要选择具体年份或月份，会读取总计统计来生成长期成果视角。</span>
                 </div>
               </div>
@@ -475,9 +475,9 @@ export function ReportGenerationWizardDialog({
         {isPreviewStep ? (
         <div className="monthly-report-dialog-toolbar is-preview-step">
           {isLifetimeReportMode ? (
-            <div className="monthly-report-preview-tabs" role="tablist" aria-label="长期复盘预览类型">
+            <div className="monthly-report-preview-tabs" role="tablist" aria-label="全部历史报告预览类型">
               <button className="is-active" type="button" role="tab" aria-selected="true" disabled>
-                16:9 长期复盘
+                16:9 横版报告
               </button>
             </div>
           ) : (
@@ -538,7 +538,7 @@ export function ReportGenerationWizardDialog({
                       ? "正在读取总计统计"
                       : "正在读取报告数据"
                     : isLifetimeReportMode
-                      ? "暂时不能生成长期复盘"
+                      ? "暂时不能生成全部历史报告图片"
                       : "暂时不能生成这一期报告"}
                 </strong>
                 <p>
@@ -596,7 +596,7 @@ export function ReportGenerationWizardDialog({
                 onClick={handleGenerateReport}
               >
                 <CalendarDays aria-hidden="true" size={18} />
-                {isLifetimeReportMode ? "生成长期复盘预览" : "生成报告预览"}
+                {isLifetimeReportMode ? "生成全部历史报告预览" : "生成报告预览"}
               </button>
             </>
           ) : null}

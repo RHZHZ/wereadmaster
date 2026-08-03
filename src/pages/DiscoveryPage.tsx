@@ -23,8 +23,8 @@ import {
   getRecommendations,
   getSimilarBooks,
   listReadingItemStates,
+  patchReadingItemState,
   searchBooks,
-  upsertReadingItemState,
   type BookshelfResponse,
   type CommandErrorInfo,
   type ReadingStatsResponse
@@ -395,16 +395,21 @@ export function DiscoveryPage({
     setError(undefined);
 
     try {
-      await upsertReadingItemState({
-        itemId: normalizedBookId,
-        itemType: "candidate",
-        status: "toRead",
-        title: book.title,
-        author: book.author,
-        cover: book.cover,
-        category: book.category,
-        note: "发现页保存的本地候选"
-      });
+      await patchReadingItemState(
+        normalizedBookId,
+        {
+          isCandidate: true,
+          candidateSource: "weread",
+          sourceMeta: { savedFrom: "discovery" }
+        },
+        {
+          itemKind: "book",
+          title: book.title,
+          author: book.author,
+          cover: book.cover,
+          category: book.category
+        }
+      );
       setCandidateMap((current) => new Map(current).set(normalizedBookId, mapBookToCandidate(book)));
       showToast({ message: `已保存《${book.title}》到本地候选`, tone: "success" });
     } catch (candidateError) {

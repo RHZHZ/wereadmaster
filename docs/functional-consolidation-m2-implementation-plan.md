@@ -74,7 +74,7 @@ vitest 用例:决策表每行一例;primary 与 secondary 不重复 kind;今天�
 ### 2\.1 删除
 
 - "今日可做" panel(DashboardPage.tsx:682\-,含 aria\-label\="今日可做" 整块)及其动作聚合逻辑;"执行统计建议"项(:1387\-1398 一带)一并消失。
-- "本地队列" panel(:846\-,含继续读/待复盘/本地候选三列,:861\-887、:968\-1098 的三套本地规则在 M1 已改调 selectors,此处整块移除)。
+- "本地队列" panel(:846\-,含继续读/待整理/本地候选三列,:861\-887、:968\-1098 的三套本地规则在 M1 已改调 selectors,此处整块移除)。
 - "今日阅读工作台" panel(:1692\-)。
 - 配套退役:src/pages/dashboard\-workbench\-actions.ts(\+test)、dashboard\-daily\-card.ts(\+test)中仅服务上述模块的函数;`getNotebookReviewCandidates`(:1001\-1075)删除。
 
@@ -137,7 +137,7 @@ vitest 用例:决策表每行一例;primary 与 secondary 不重复 kind;今天�
 ### 5\.2 导航与状态清理
 
 - App.tsx:`readingReviewSubItems` 整个删除(:227\-231),侧边栏"成果"点击直达单视图(消灭 A6 的"点击只展开"特例之一);全局 `readingHubTab` 状态、`setReadingHubTab` 调用点(:483、:1069\-1073、:1891\-1894)删除,类型筛选降为页内本地状态。
-- 返回文案统一走 glossary("返回成果"),"返回复盘中心/阅读指南库/书籍成果详情"私有地名清除(A8)。
+- 返回文案统一走 glossary("返回成果"),"返回成果/成果/书籍成果详情"私有地名清除(A8)。
 
 ### 5\.3 验收
 

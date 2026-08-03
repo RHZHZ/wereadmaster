@@ -21,6 +21,7 @@ import { SkillUpgradeNotice } from "../components/SkillUpgradeNotice";
 import { findCurrentChapter } from "../lib/book-progress";
 import { useToast } from "../components/ToastProvider";
 import { formatUnixDate } from "../lib/formatters";
+import { TERMS } from "../lib/glossary";
 import { listLocalBooks } from "../lib/local-reader-api";
 import type { LocalBook } from "../lib/local-reader-types";
 import {
@@ -30,8 +31,7 @@ import {
   getPublicReviews,
   getReadReviews,
   getReadingItemState,
-  removeReadingItemState,
-  upsertReadingItemState,
+  patchReadingItemState,
   type BookDetailResponse,
   type CommandErrorInfo
 } from "../lib/reading-api";
@@ -81,7 +81,7 @@ type BookDetailPageProps = {
 };
 
 const localBookStatusOptions: Array<{ status: ReadingItemStatus; label: string; description: string }> = [
-  { status: "reviewing", label: "待复盘", description: "需要整理笔记" },
+  { status: "reviewing", label: TERMS.toOrganize, description: "需要整理笔记" },
   { status: "organized", label: "已整理", description: "整理完成" }
 ];
 
@@ -276,15 +276,17 @@ export function BookDetailPage({
     setStateError(undefined);
 
     try {
-      const nextState = await upsertReadingItemState({
-        itemId: detail.bookId || shelfEntry.id,
-        itemType: shelfEntry.type,
-        status,
-        title: detail.title || shelfEntry.title,
-        author: detail.author || shelfEntry.author,
-        cover: detail.cover || shelfEntry.cover,
-        category: detail.category || shelfEntry.category
-      });
+      const nextState = await patchReadingItemState(
+        detail.bookId || shelfEntry.id,
+        { organizeStatus: status === "organized" ? "organized" : "to_organize" },
+        {
+          itemKind: shelfEntry.type,
+          title: detail.title || shelfEntry.title,
+          author: detail.author || shelfEntry.author,
+          cover: detail.cover || shelfEntry.cover,
+          category: detail.category || shelfEntry.category
+        }
+      );
       setReadingState(nextState);
       showToast({ message: `已标记为「${statusLabel(status) ?? "本地整理状态"}」`, tone: "success" });
     } catch (updateError) {
@@ -308,16 +310,24 @@ export function BookDetailPage({
     setStateError(undefined);
 
     try {
-      const nextState = await upsertReadingItemState({
-        itemId: detail.bookId || shelfEntry.id,
-        itemType: "candidate",
-        status: "toRead",
-        title,
-        author: detail.author || shelfEntry.author,
-        cover: detail.cover || shelfEntry.cover,
-        category: detail.category || shelfEntry.category,
-        note: "书籍详情页保存的本地候选"
-      });
+      const nextState = await patchReadingItemState(
+        detail.bookId || shelfEntry.id,
+        {
+          isCandidate: true,
+          candidateSource: "weread",
+          sourceMeta: {
+            ...(readingState?.sourceMeta ?? {}),
+            savedFrom: "book_detail"
+          }
+        },
+        {
+          itemKind: shelfEntry.type,
+          title,
+          author: detail.author || shelfEntry.author,
+          cover: detail.cover || shelfEntry.cover,
+          category: detail.category || shelfEntry.category
+        }
+      );
       setReadingState(nextState);
       showToast({ message: `已保存《${title}》到本地候选`, tone: "success" });
     } catch (candidateError) {
@@ -339,8 +349,8 @@ export function BookDetailPage({
     setStateError(undefined);
 
     try {
-      await removeReadingItemState(itemId);
-      setReadingState(undefined);
+      const nextState = await patchReadingItemState(itemId, { organizeStatus: "none" });
+      setReadingState(nextState);
       showToast({ message: "已清除本地整理状态", tone: "success" });
     } catch (removeError) {
       const message = getCommandErrorMessage(removeError);
@@ -659,10 +669,17 @@ function BookActionPanel({
   onFindSimilar?: () => void;
   onOpenReadingRoute?: () => void;
 }) {
-  const selectedStatus = localBookStatusOptions.some((option) => option.status === readingState?.status)
-    ? readingState?.status
-    : undefined;
-  const isCandidate = readingState?.itemType === "candidate" && readingState.status === "toRead";
+  const selectedStatus =
+    readingState?.organizeStatus === "organized"
+      ? "organized"
+      : readingState?.organizeStatus === "to_organize"
+        ? "reviewing"
+        : localBookStatusOptions.some((option) => option.status === readingState?.status)
+          ? readingState?.status
+          : undefined;
+  const isCandidate =
+    readingState?.isCandidate ??
+    (readingState?.itemType === "candidate" && readingState.status === "toRead");
   const isFinished = detailResponse.progress.isFinished === true || shelfEntry.isFinished === true;
   const candidateCardTitle = isFinished ? "已读完" : isCandidate ? "已在候选" : "加入候选";
   const candidateCardDescription = isFinished
@@ -732,7 +749,7 @@ function BookActionPanel({
         />
         <ActionButton
           icon={<Sparkles aria-hidden="true" size={18} />}
-          title="AI 复盘"
+          title={TERMS.bookReview}
           description="整理划线和想法"
           onClick={onOpenAiSummary}
         />

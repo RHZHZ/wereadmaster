@@ -4,8 +4,6 @@ use tauri::AppHandle;
 
 use crate::{db, errors::AppError};
 
-const VALID_STATUSES: &[&str] = &["toRead", "reading", "reviewing", "organized"];
-const VALID_ITEM_TYPES: &[&str] = &["book", "album", "mp", "candidate"];
 const VALID_ITEM_KINDS: &[&str] = &["book", "album", "mp", "localBook"];
 const VALID_LIFE_STATUSES: &[&str] = &["none", "want", "reading", "paused", "finished", "dropped"];
 const VALID_ORGANIZE_STATUSES: &[&str] = &["none", "to_organize", "organized"];
@@ -33,19 +31,6 @@ pub struct ReadingItemState {
     pub note: Option<String>,
     pub created_at: String,
     pub updated_at: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReadingItemStateInput {
-    pub item_id: String,
-    pub item_type: String,
-    pub status: String,
-    pub title: Option<String>,
-    pub author: Option<String>,
-    pub cover: Option<String>,
-    pub category: Option<String>,
-    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -124,12 +109,6 @@ impl ReadingStateService {
         read_state(&connection, &normalized_item_id)
     }
 
-    pub fn upsert_state(&self, input: ReadingItemStateInput) -> Result<ReadingItemState, AppError> {
-        let normalized = normalize_input(input)?;
-        let connection = self.open_connection()?;
-        upsert_state(&connection, normalized)
-    }
-
     pub fn patch_state(
         &self,
         item_id: String,
@@ -190,56 +169,6 @@ fn read_state(
         )
         .optional()
         .map_err(AppError::from)
-}
-
-fn upsert_state(
-    connection: &rusqlite::Connection,
-    input: ReadingItemStateInput,
-) -> Result<ReadingItemState, AppError> {
-    let now = current_unix_seconds();
-    connection
-        .execute(
-            "
-            INSERT INTO reading_item_states (
-                item_id,
-                item_type,
-                status,
-                title,
-                author,
-                cover,
-                category,
-                note,
-                created_at,
-                updated_at
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
-            ON CONFLICT(item_id) DO UPDATE SET
-                item_type = excluded.item_type,
-                status = excluded.status,
-                title = excluded.title,
-                author = excluded.author,
-                cover = excluded.cover,
-                category = excluded.category,
-                note = excluded.note,
-                updated_at = excluded.updated_at
-            ",
-            rusqlite::params![
-                &input.item_id,
-                &input.item_type,
-                &input.status,
-                &input.title,
-                &input.author,
-                &input.cover,
-                &input.category,
-                &input.note,
-                &now
-            ],
-        )
-        .map_err(AppError::from)?;
-
-    read_state(connection, &input.item_id)?.ok_or_else(|| {
-        AppError::Storage("reading item state upsert did not return a row".to_string())
-    })
 }
 
 fn patch_state(
@@ -379,23 +308,6 @@ fn map_state_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReadingItemState> 
     })
 }
 
-fn normalize_input(input: ReadingItemStateInput) -> Result<ReadingItemStateInput, AppError> {
-    let item_id = normalize_required("itemId", &input.item_id, 128)?;
-    let item_type = normalize_choice("itemType", &input.item_type, VALID_ITEM_TYPES)?;
-    let status = normalize_choice("status", &input.status, VALID_STATUSES)?;
-
-    Ok(ReadingItemStateInput {
-        item_id,
-        item_type,
-        status,
-        title: normalize_optional(input.title, 160),
-        author: normalize_optional(input.author, 120),
-        cover: normalize_optional(input.cover, 500),
-        category: normalize_optional(input.category, 120),
-        note: normalize_optional(input.note, 500),
-    })
-}
-
 fn normalize_patch(patch: ReadingItemPatch) -> Result<ReadingItemPatch, AppError> {
     let life_status =
         normalize_optional_choice("lifeStatus", patch.life_status, VALID_LIFE_STATUSES)?;
@@ -513,8 +425,8 @@ mod tests {
     };
 
     use super::{
-        maybe_mark_weread_finished, patch_state, read_state, read_states, upsert_state,
-        ReadingItemMeta, ReadingItemPatch, ReadingItemStateInput,
+        maybe_mark_weread_finished, patch_state, read_state, read_states, ReadingItemMeta,
+        ReadingItemPatch,
     };
 
     fn open_test_connection() -> rusqlite::Connection {
@@ -533,25 +445,54 @@ mod tests {
         }
     }
 
+    fn insert_legacy_state(
+        connection: &rusqlite::Connection,
+        item_id: &str,
+        item_type: &str,
+        status: &str,
+        title: Option<&str>,
+        author: Option<&str>,
+        category: Option<&str>,
+        note: Option<&str>,
+    ) {
+        connection
+            .execute(
+                "
+                INSERT INTO reading_item_states (
+                    item_id,
+                    item_type,
+                    status,
+                    title,
+                    author,
+                    category,
+                    note,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, '100', '100')
+                ",
+                rusqlite::params![item_id, item_type, status, title, author, category, note],
+            )
+            .expect("legacy state fixture should insert");
+    }
+
     #[test]
-    fn reading_item_state_upserts_and_lists() {
+    fn legacy_state_rows_list_with_dimension_defaults() {
         let connection = open_test_connection();
-
-        let state = upsert_state(
+        insert_legacy_state(
             &connection,
-            ReadingItemStateInput {
-                item_id: "book-1".to_string(),
-                item_type: "book".to_string(),
-                status: "toRead".to_string(),
-                title: Some("深度工作".to_string()),
-                author: Some("卡尔".to_string()),
-                cover: None,
-                category: Some("效率".to_string()),
-                note: Some("先读前三章".to_string()),
-            },
-        )
-        .expect("state should upsert");
+            "book-1",
+            "book",
+            "toRead",
+            Some("深度工作"),
+            Some("卡尔"),
+            Some("效率"),
+            Some("先读前三章"),
+        );
 
+        let state = read_state(&connection, "book-1")
+            .expect("state should read")
+            .expect("state should exist");
         assert_eq!(state.item_id, "book-1");
         assert_eq!(state.status, "toRead");
         assert_eq!(
@@ -568,20 +509,16 @@ mod tests {
         }));
         replace_shelf_entries(&connection, &snapshot.entries, "100")
             .expect("shelf entries should persist");
-        upsert_state(
+        insert_legacy_state(
             &connection,
-            ReadingItemStateInput {
-                item_id: "book-1".to_string(),
-                item_type: "book".to_string(),
-                status: "reviewing".to_string(),
-                title: Some("深度工作".to_string()),
-                author: None,
-                cover: None,
-                category: None,
-                note: None,
-            },
-        )
-        .expect("state should upsert");
+            "book-1",
+            "book",
+            "reviewing",
+            Some("深度工作"),
+            None,
+            None,
+            None,
+        );
         let next_snapshot = map_shelf_response(&serde_json::json!({
             "books": [{ "bookId": "book-2", "title": "新书", "secret": 0 }]
         }));
@@ -602,22 +539,18 @@ mod tests {
     }
 
     #[test]
-    fn legacy_upsert_rows_read_with_dimension_defaults() {
+    fn legacy_rows_read_with_dimension_defaults() {
         let connection = open_test_connection();
-        upsert_state(
+        insert_legacy_state(
             &connection,
-            ReadingItemStateInput {
-                item_id: "cand-1".to_string(),
-                item_type: "candidate".to_string(),
-                status: "toRead".to_string(),
-                title: Some("候选书".to_string()),
-                author: None,
-                cover: None,
-                category: None,
-                note: None,
-            },
-        )
-        .expect("state should upsert");
+            "cand-1",
+            "candidate",
+            "toRead",
+            Some("候选书"),
+            None,
+            None,
+            None,
+        );
 
         let state = read_state(&connection, "cand-1")
             .expect("state should read")
@@ -853,9 +786,7 @@ mod tests {
             .expect("row should create");
         }
 
-        assert!(
-            maybe_mark_weread_finished(&connection, "book-1", "200").expect("mark should run")
-        );
+        assert!(maybe_mark_weread_finished(&connection, "book-1", "200").expect("mark should run"));
         let state = read_state(&connection, "book-1")
             .expect("state should read")
             .expect("state should exist");
@@ -876,9 +807,7 @@ mod tests {
             None,
         )
         .expect("manual patch should apply");
-        assert!(
-            !maybe_mark_weread_finished(&connection, "book-2", "200").expect("mark should run")
-        );
+        assert!(!maybe_mark_weread_finished(&connection, "book-2", "200").expect("mark should run"));
         let state = read_state(&connection, "book-2")
             .expect("state should read")
             .expect("state should exist");
@@ -894,9 +823,7 @@ mod tests {
             None,
         )
         .expect("dropped patch should apply");
-        assert!(
-            !maybe_mark_weread_finished(&connection, "book-3", "200").expect("mark should run")
-        );
+        assert!(!maybe_mark_weread_finished(&connection, "book-3", "200").expect("mark should run"));
 
         assert!(!maybe_mark_weread_finished(&connection, "missing", "200")
             .expect("missing row should be a no-op"));

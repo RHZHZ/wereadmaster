@@ -20,7 +20,7 @@ describe("reading guide prescription", () => {
         readingPurpose:
           "建立稳定长读习惯并完成整书复盘沉淀，避免碎片化阅读影响专注力训练。",
         estimatedEffort: "2 个 45 分钟阅读时段",
-        localStatus: "待复盘",
+        localStatus: "待整理",
         basis: "当前进度 42%，优先完成第 2 章到第 3 章的核心方法阅读。"
       }
     ],
@@ -83,7 +83,7 @@ describe("reading guide prescription", () => {
         bookId: "book-deep-work",
         title: "深度工作",
         author: "卡尔·纽波特",
-        localStatus: "待复盘"
+        localStatus: "待整理"
       },
       baseRoute
     );
@@ -151,7 +151,7 @@ describe("reading guide prescription", () => {
       {
         index: 1,
         title: "深度工作",
-        meta: "卡尔·纽波特 · 待复盘",
+        meta: "卡尔·纽波特 · 待整理",
         taskLabel: "核对依据",
         task: "围绕《深度工作》核对本轮阅读依据",
         effort: "2 个 45 分钟阅读时段",

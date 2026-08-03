@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 2,
+  "exportedAt": "1779592046",
+  "statsSyncState": null,
+  "shelfSyncState": { "section": "shelf", "status": "success" },
+  "notesSyncState": null,
+  "shelfEntries": [],
+  "shelfArchives": [],
+  "readingItemStates": [
+    {
+      "itemId": "legacy-candidate",
+      "itemType": "candidate",
+      "status": "toRead",
+      "title": "旧格式候选",
+      "note": "书籍详情页保存的本地候选",
+      "createdAt": "100",
+      "updatedAt": "101"
+    },
+    {
+      "itemId": "legacy-reviewing",
+      "itemType": "book",
+      "status": "reviewing",
+      "title": "旧格式待整理",
+      "createdAt": "100",
+      "updatedAt": "102"
+    }
+  ],
+  "notebookBooks": [],
+  "statsRows": [],
+  "reviewRows": []
+}

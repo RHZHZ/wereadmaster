@@ -1,6 +1,7 @@
 # WeReadMaster 功能收敛与重构蓝图(总体 \+ P0 详细设计)
 
-> **文档状态**\:current(现行) · 2026\-07\-26
+> **status: current** · 2026-08-04
+> **实施状态**：M1 三维状态、真实笔记门禁、基础 selectors、glossary、统一文档导出与 v1.0.17 发布收口已完成代码实施；M2-M4 仍按本文边界推进，不因 v1.0.17 发布视为已实现。
 > **依据**\:《WeReadMaster 功能设计问题分析》(2026\-07\-26,40 项问题,编号 A1\-A8 / B1\-B12 / C1\-C7 / D1\-D4 / E1\-E3 / F1\-F3 / G1\-G6,本文沿用该编号)
 > **裁决声明**\:凡与下列现行文档冲突处,以本文为准 —— reading\-management\-closure\-roadmap.md(总览动作条数)、daily\-reading\-workbench\-refactor\-plan.md(首屏动作规格)、reading\-outcomes\-product\-design.md(成果分类与入口)、ai\-feature\-plan.md(AI 命令形态与命名)。详见第 9 节冲突裁决表。
 
@@ -53,7 +54,7 @@
 
 要点:
 
-- 一级导航"复盘"更名为"**成果**",三个子 tab(书籍复盘/阅读指南/阅读报告)合并为**单一资产库视图**(按书分组 \+ 按类型筛选),消灭 books/guides 两套查看 UI 并行的问题(A1)。"复盘中心""阅读指南库"等私有地名随之消亡(A8)。
+- 一级导航"复盘"更名为"**成果**",三个子 tab(书籍复盘/阅读指南/阅读报告)合并为**单一资产库视图**(按书分组 \+ 按类型筛选),消灭 books/guides 两套查看 UI 并行的问题(A1)。"成果""成果"等私有地名随之消亡(A8)。
 - 移动端底部 5 tab:总览 / 书库 / 笔记 / 成果 / 我的;**删除汉堡抽屉**,统计、发现、设置从"我的"进入;高亮由唯一的 `view → tab` 映射表决定,不再随入口漂移。
 - 侧边栏一级项全部"点击即导航"(默认落到第一个子 tab),子 tab 在页内切换,消灭"点了没反应"的展开态(A6)。
 - 桌面侧边栏 7 项收为 6 项:总览、书库、笔记、成果、统计、发现(设置保持齿轮入口)。
@@ -100,7 +101,7 @@ Tauri 命令由"四件套 × 5 资产"(summarize\_\* / get\_latest\_\* / export\
 **对话层**\:AI 阅读助手是唯一对话入口。四项修复:
 
 - 本地阅读器选区问答并入助手线程(激活 `localReaderSelection` scope,废除独立的 `ask_local_reader_selection_question` 通道与 `AiQuestionDraftStorage`),消灭死 scope 与第三套问答历史(C6)。
-- 助手内跳转型 CTA("生成 AI 复盘"按钮跳到另一个页面)改为**就地生成 \+ 转存资产**\:助手回复中的生成动作直接调 `generate_ai_asset`,结果以卡片形式出现在对话里并同步入资产库。对话本身采用**收藏制**(已决事项 \#3):默认只保存在助手历史,用户对某条回答显式"转存为成果"才进入成果库——库中永远只有被用户认领过的内容。
+- 助手内跳转型 CTA("生成 书籍复盘"按钮跳到另一个页面)改为**就地生成 \+ 转存资产**\:助手回复中的生成动作直接调 `generate_ai_asset`,结果以卡片形式出现在对话里并同步入资产库。对话本身采用**收藏制**(已决事项 \#3):默认只保存在助手历史,用户对某条回答显式"转存为成果"才进入成果库——库中永远只有被用户认领过的内容。
 - 换页不再清空对话:scope 切换时保留当前线程,顶部显示"上下文已切换"提示条,用户可一键回到原上下文(C6)。
 - 上下文控制简化(C4、C5):10 类芯片收敛为三档预设——"仅当前对象 / 当前对象 \+ 我的阅读档案 / 自定义";"响应格式策略"从 composer 芯片移除(只在设置\-高级可见);`aiAssetSummary` 芯片改名"资产摘要",消灭与 `readingMemory` 的同名冲突;助手偏好只保留浮层一个入口,设置页改为跳转链接。
 
@@ -177,9 +178,9 @@ ALTER TABLE reading_item_states ADD COLUMN source_meta TEXT;          -- JSON,�
 | --- | --- | --- |
 | 发现页"保存候选"(DiscoveryPage:398\-406) | upsert candidate\+toRead\+note 文案 | patch { isCandidate:true, candidateSource:"weread" }, sourceMeta.savedFrom\="discovery" |
 | 详情页"加入候选"(BookDetailPage:311\-320) | 同上,覆盖已有状态 | patch { isCandidate:true },其余维度不动 |
-| 详情页"待复盘/已整理"(BookDetailPage:268\-297) | upsert 覆盖 itemType | patch { organizeStatus } |
+| 详情页"待整理/已整理"(BookDetailPage:268\-297) | upsert 覆盖 itemType | patch { organizeStatus } |
 | 详情页"清除状态"(BookDetailPage:332\-352) | 删除整条记录 | 改为"清除整理状态"\= patch { organizeStatus:"none" };删除记录移入更深的菜单 |
-| AI 复盘页"标记已整理"(BookAiSummaryPage:377\-404) | upsert 覆盖 note | patch { organizeStatus:"organized" },不碰 user\_note |
+| 书籍复盘页"标记已整理"(BookAiSummaryPage:377\-404) | upsert 覆盖 note | patch { organizeStatus:"organized" },不碰 user\_note |
 | 书架页 album/mp"保存候选"(BookshelfPage:268\-288) | upsert itemType\=album/mp | patch { isCandidate:true, candidateSource:"light" };book 类型不再静默 return,同样支持加候选 |
 | AI 助手加候选 ×3(ReadingAssistantPanel:1033\-1173) | upsert candidate\+note\=AI 理由 | patch { isCandidate:true, candidateSource:"ai\_unconfirmed"或"ai\_confirmed" }, sourceMeta.aiReason\=理由 |
 | (新增)详情页/书库生命周期控件 | 无 | patch { lifeStatus, finishedSource:"manual" } |
@@ -216,7 +217,7 @@ M1 只落两条唯一规则,供现有三处页面直接替换调用(完整 Today
 
 #### 5\.1.7 验收标准
 
-- [ ] 详情页把候选书标为"待复盘"后,候选书架与总览候选队列仍显示该书
+- [ ] 详情页把候选书标为"待整理"后,候选书架与总览候选队列仍显示该书
 - [ ] "加入候选"不改变已有 organize\_status;"标记已整理"不改变 is\_candidate 与 user\_note
 - [ ] 候选/本地书可手动标"读完",出现在待整理建议中;微信自动读完不覆盖手动值
 - [ ] 书架有声书保存候选后,总览候选队列可见(带轻管理徽章)
@@ -256,7 +257,7 @@ summarizeBookDecision({
 - BookAiSummaryPage 入场逻辑改三态:未知 → 先取真实笔记(listBookNotes)再判断;为 0 → 生成按钮禁用 \+ 空态引导("先同步笔记或在阅读器写想法");大于 0 → 正常。canGenerate 不再使用 `?? 1` 兜底。
 - "来源统计"仅在真实数据就绪后渲染;加载中显示占位,不显示编造数字(:1331\-1341 的 fallback 删除)。
 
-#### 5\.2.3 "推荐下一本"缓存语义修正(B10)
+#### 5\.2.3 "生成选书决策"缓存语义修正(B10)
 
 - `get_latest_book_decision` 收紧为 **inputHash 精确匹配才返回**;不匹配返回 null,前端直接进入生成流程(带 loading),删除结果页"当前候选书或目标与缓存输入不同…"警告分支(BookDecisionPage:462\-473)。
 - 命中缓存时,结果页显著展示"生成于 {时间}"徽章 \+ "重新生成"次按钮;按钮语义与行为从此一致。
@@ -266,23 +267,25 @@ summarizeBookDecision({
 - [ ] 勾选不同参考因子/窗口生成两次,请求体不同、inputHash 不同、输出 rationale 逐因子回应
 - [ ] 无笔记的书无法发起复盘生成,页面给出下一步引导;来源统计永不显示"划线 1 条"类占位假数
 - [ ] 决策结果页不再出现"缓存输入不同"警告;缓存命中有生成时间徽章
-- [ ] e2e:从详情页进入 AI 复盘页,来源统计与笔记页计数一致
+- [ ] e2e:从详情页进入 书籍复盘页,来源统计与笔记页计数一致
 
 ### 5\.3 P0\-C 命名词典与文档规范(A3、G1、G2)
 
 #### 5\.3.1 词典(唯一权威表)
 
-| 概念 | 唯一 UI 名 | 内部 feature | 淘汰词(禁用) |
-| --- | --- | --- | --- |
-| 单本书 AI 成果 | 书籍复盘 | book\_review(缓存层对 book\-notes\-summary 做读别名,新写入统一) | AI 总结、AI 复盘、(单本义)阅读报告 |
-| 单本推进建议 | 阅读指南 | reading\_guide | 本书阅读指南、(归档库义)阅读指南 |
-| 跨书排序建议 | 阅读路线 | reading\_route | 跨书路线图、跨书指南 |
-| 周期统计 AI 解读 | 周期复盘 | stats\_review | (页面义)阅读报告、AI 阅读复盘、长期复盘、生成长期复盘 |
-| 统计分享图 | 报告图片 | report\_image | 生成阅读报告、生成报告图、阅读报告 PNG |
-| 下一本取舍 | 选书决策 | book\_decision | (按钮)推荐下一本 → 改"生成选书决策" |
-| 对话入口 | AI 阅读助手 | assistant | 阅读助手、AI 助手(正文可用简称,导航/标题用全称) |
-| AI 产出集合 | 成果 | ai\_asset | 复盘中心、AI 资产库、阅读指南库 |
-| 本地整理状态 | 待整理 / 已整理 | to\_organize / organized | 待复盘(与"书籍复盘"歧义) |
+| 概念 | 唯一 UI 名 | 内部 feature |
+| --- | --- | --- |
+| 单本书 AI 成果 | 书籍复盘 | book\_review（缓存层对 book\-notes\-summary 做读别名，新写入统一） |
+| 单本推进建议 | 阅读指南 | reading\_guide |
+| 跨书排序建议 | 阅读路线 | reading\_route |
+| 周期统计 AI 解读 | 周期复盘 | stats\_review |
+| 统计分享图 | 报告图片 | report\_image |
+| 下一本取舍 | 选书决策 | book\_decision |
+| 对话入口 | AI 阅读助手 | assistant |
+| AI 产出集合 | 成果 | ai\_asset |
+| 本地整理状态 | 待整理 / 已整理 | to\_organize / organized |
+
+规范词、动作词和旧称迁移映射统一维护在 [`docs/GLOSSARY.md`](./GLOSSARY.md)；本文不复制第二份旧称表，避免双重事实源。
 
 #### 5\.3.2 落地机制
 
@@ -306,7 +309,7 @@ summarizeBookDecision({
 - **F2**\:aiProviderProbe 结果面板从 account 分支(SettingsPage:1390\-1433)移至 ai 分支"测试兼容性"按钮下方。
 - **C4 局部**\:`CONTEXT_LABELS.aiAssetSummary` 改"资产摘要",消灭双"阅读记忆"芯片。
 - **A7 局部**\:MinePage:66 `noteCount` 误取 bookCount 修正;"代理与网络诊断"入口文案改为与落点一致。
-- **B11**\:阅读阶段区间补齐 95\-100% 归属("收束整理"上限改 100%,或新增"收尾"段;文档与 readingStage 计算同步)。
+- **B11**\:阅读阶段边界固定为 69% 仍属“深入推进”，70% / 95% / 99% 属“收束整理”，100% 或 `finished=true` 属“完成归档”；文档、后端计算与边界测试保持一致。
 
 ## 6 实施顺序与切片
 
@@ -345,7 +348,7 @@ M1 建议 PR 切片(可直接建任务):PR\-1 db 迁移 \+ patch 命令 \+ cargo
 | 议题 | 旧口径 | 本文裁决 |
 | --- | --- | --- |
 | 总览首屏动作数量 | roadmap ≤5 条 / workbench 1\+2 / outcomes 4 类 | 1 主 \+ ≤3 备选 \+ 折叠队列(4.2) |
-| 本地追踪状态枚举 | audit:候选/在读/待复盘/已整理;ai\-feature\-plan:改"待整理"不强制迁移 | 三维模型(5.1.2);"待复盘"为淘汰词 |
+| 本地追踪状态枚举 | audit:候选/在读/待整理/已整理;ai\-feature\-plan:改"待整理"不强制迁移 | 三维模型(5.1.2);"待整理"为淘汰词 |
 | 统计页 AI 卡 | ai\-feature\-plan 保留大卡 / audit 已移除 | 并入统计"解读"tab(4.3) |
 | AI 命令形态 | 四件套 × 资产 | 泛型 6 命令(4.4) |
 | 移动端阅读边界 | concept\-plan 不做移动阅读器 / user\-guide 已支持 | 承认现状:移动端支持本地阅读,concept\-plan 标 superseded |

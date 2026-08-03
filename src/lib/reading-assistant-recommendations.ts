@@ -15,7 +15,9 @@ export function findExistingCandidateState(
   }
 
   return states.find((state) => {
-    if (state.itemType !== "candidate" || state.status !== "toRead") {
+    const isCandidate =
+      state.isCandidate ?? (state.itemType === "candidate" && state.status === "toRead");
+    if (!isCandidate) {
       return false;
     }
 

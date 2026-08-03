@@ -1,0 +1,30 @@
+{
+  "terms": {
+    "bookReview": "书籍复盘",
+    "readingGuide": "阅读指南",
+    "readingRoute": "阅读路线",
+    "statsReview": "周期复盘",
+    "reportImage": "报告图片",
+    "bookDecision": "选书决策",
+    "assistant": "AI 阅读助手",
+    "outcomes": "成果",
+    "toOrganize": "待整理",
+    "organized": "已整理",
+    "generateBookReview": "生成书籍复盘",
+    "generateBookDecision": "生成选书决策",
+    "generateReportImage": "生成报告图片"
+  },
+  "bannedTerms": [
+    { "banned": "AI 总结", "useInstead": "bookReview" },
+    { "banned": "AI 复盘", "useInstead": "bookReview" },
+    { "banned": "跨书路线图", "useInstead": "readingRoute" },
+    { "banned": "跨书指南", "useInstead": "readingRoute" },
+    { "banned": "长期复盘", "useInstead": "statsReview" },
+    { "banned": "生成阅读报告", "useInstead": "generateReportImage" },
+    { "banned": "生成报告图", "useInstead": "generateReportImage" },
+    { "banned": "推荐下一本", "useInstead": "generateBookDecision" },
+    { "banned": "复盘中心", "useInstead": "outcomes" },
+    { "banned": "阅读指南库", "useInstead": "outcomes" },
+    { "banned": "待复盘", "useInstead": "toOrganize" }
+  ]
+}

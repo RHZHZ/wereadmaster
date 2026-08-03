@@ -58,9 +58,30 @@ describe("reading assistant recommendation helpers", () => {
         createdAt: "1",
         updatedAt: "1",
       },
+      {
+        itemId: "candidate_2",
+        itemType: "book",
+        status: "organized",
+        itemKind: "book",
+        isCandidate: true,
+        candidateSource: "ai_confirmed",
+        lifeStatus: "reading",
+        organizeStatus: "organized",
+        title: "三维候选",
+        author: "作者乙",
+        createdAt: "1",
+        updatedAt: "1",
+      },
     ];
 
     expect(findExistingCandidateState(states, recommendedBook)?.itemId).toBe("candidate_1");
+    expect(
+      findExistingCandidateState(states, {
+        ...recommendedBook,
+        title: "三维候选",
+        author: "作者乙",
+      })?.itemId
+    ).toBe("candidate_2");
     expect(
       findExistingCandidateState(states, {
         ...recommendedBook,

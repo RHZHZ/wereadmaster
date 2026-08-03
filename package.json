@@ -1,7 +1,7 @@
 {
   "name": "personal-reading-app",
   "private": true,
-  "version": "1.0.16",
+  "version": "1.0.17",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,7 +9,8 @@
     "build:website": "tsc && vite build --config vite.website.config.ts",
     "preview": "vite preview",
     "export:reading-preview-data": "node ./scripts/export-reading-preview-data.mjs",
-    "test": "vitest run --dir src",
+    "test": "vitest run --dir src && node ./scripts/check-glossary.mjs",
+    "test:glossary": "node ./scripts/check-glossary.mjs",
     "e2e": "playwright test",
     "tauri": "node ./scripts/run-tauri.mjs",
     "android:dev": "node ./scripts/run-tauri.mjs android dev --force-ip-prompt"

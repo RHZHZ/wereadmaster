@@ -24,7 +24,7 @@ describe("dashboard local progress", () => {
     });
     expect(progress.metrics.map((metric) => [metric.label, metric.value])).toEqual([
       ["已整理", 2],
-      ["待复盘", 1],
+      ["待整理", 1],
       ["本地候选", 1],
       ["笔记书", 2]
     ]);
@@ -40,7 +40,7 @@ describe("dashboard local progress", () => {
 
     expect(progress.badge).toBe("待整理");
     expect(progress.subtitle).toBe("2 本书正在等你复盘，先处理最明确的一本。");
-    expect(progress.metrics.find((metric) => metric.label === "待复盘")?.value).toBe(2);
+    expect(progress.metrics.find((metric) => metric.label === "待整理")?.value).toBe(2);
     expect(progress.highlight).toMatchObject({
       title: "2 本书可整理",
       tone: "review"

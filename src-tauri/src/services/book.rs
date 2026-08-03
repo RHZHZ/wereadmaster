@@ -10,7 +10,10 @@ use crate::{
         ChapterRecord, ReadingProgressRecord,
     },
     repositories::cache::RawCacheRepository,
-    services::weread_gateway::{WereadApi, WereadGateway},
+    services::{
+        weread_deep_link::{build_weread_reading_link, normalize_book_id, open_deep_link},
+        weread_gateway::{WereadApi, WereadGateway},
+    },
 };
 
 const BOOK_CACHE_NAMESPACE: &str = "book";
@@ -120,8 +123,7 @@ impl BookService {
         book_id: String,
         chapter_uid: Option<i64>,
     ) -> Result<OpenBookLinkResult, AppError> {
-        let normalized_book_id = normalize_book_id(&book_id)?;
-        let deep_link = reading_deep_link(&normalized_book_id, chapter_uid);
+        let deep_link = build_weread_reading_link(&book_id, chapter_uid)?;
         let result = open_deep_link(&deep_link);
 
         Ok(OpenBookLinkResult {
@@ -259,82 +261,6 @@ fn replace_chapters(
     }
 
     Ok(())
-}
-
-fn normalize_book_id(book_id: &str) -> Result<String, AppError> {
-    let trimmed = book_id.trim();
-
-    if trimmed.is_empty() {
-        return Err(AppError::InvalidPayload("bookId 不能为空。".to_string()));
-    }
-
-    if !trimmed
-        .chars()
-        .all(|character| character.is_ascii_alphanumeric() || character == '_' || character == '-')
-    {
-        return Err(AppError::InvalidPayload(
-            "bookId 只能包含字母、数字、下划线或连字符。".to_string(),
-        ));
-    }
-
-    Ok(trimmed.to_string())
-}
-
-fn reading_deep_link(book_id: &str, chapter_uid: Option<i64>) -> String {
-    match chapter_uid {
-        Some(uid) => format!("weread://reading?bId={book_id}&chapterUid={uid}"),
-        None => format!("weread://reading?bId={book_id}"),
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn open_deep_link(deep_link: &str) -> Result<(), String> {
-    std::process::Command::new("rundll32")
-        .args(["url.dll,FileProtocolHandler", deep_link])
-        .status()
-        .map_err(|_| "无法打开微信读书，请确认已安装微信读书客户端。".to_string())
-        .and_then(|status| {
-            if status.success() {
-                Ok(())
-            } else {
-                Err("无法打开微信读书，请确认已安装微信读书客户端。".to_string())
-            }
-        })
-}
-
-#[cfg(target_os = "macos")]
-fn open_deep_link(deep_link: &str) -> Result<(), String> {
-    std::process::Command::new("open")
-        .arg(deep_link)
-        .status()
-        .map_err(|_| "无法打开微信读书，请确认已安装微信读书客户端。".to_string())
-        .and_then(|status| {
-            if status.success() {
-                Ok(())
-            } else {
-                Err("无法打开微信读书，请确认已安装微信读书客户端。".to_string())
-            }
-        })
-}
-
-#[cfg(target_os = "linux")]
-fn open_deep_link(deep_link: &str) -> Result<(), String> {
-    std::process::Command::new("xdg-open")
-        .arg(deep_link)
-        .status()
-        .map_err(|_| "无法打开微信读书，请确认已安装微信读书客户端。".to_string())
-        .and_then(|status| {
-            if status.success() {
-                Ok(())
-            } else {
-                Err("无法打开微信读书，请确认已安装微信读书客户端。".to_string())
-            }
-        })
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-fn open_deep_link(_deep_link: &str) -> Result<(), String> {
-    Err("当前系统暂不支持自动打开微信读书。".to_string())
 }
 
 fn current_unix_seconds() -> String {

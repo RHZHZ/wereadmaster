@@ -185,7 +185,7 @@ function resolveActionPreset(action: WorkbenchActionInput): WorkbenchActionPrese
     return {
       verb: "查看",
       reason: "已有或可生成的阅读报告需要处理",
-      outcome: "进入复盘中心查看和整理书籍报告",
+      outcome: "进入成果查看和整理书籍复盘",
       effort: "light",
       source: "review"
     };

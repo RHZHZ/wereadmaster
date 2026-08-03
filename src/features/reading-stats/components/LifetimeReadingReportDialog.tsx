@@ -64,7 +64,7 @@ export function LifetimeReadingReportDialog({
         aria-labelledby="lifetime-reading-report-dialog-title"
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <button className="dialog-close" type="button" onClick={onClose} aria-label="关闭长期复盘预览">
+        <button className="dialog-close" type="button" onClick={onClose} aria-label="关闭全部历史报告预览">
           <X aria-hidden="true" size={18} />
         </button>
 
@@ -80,13 +80,13 @@ export function LifetimeReadingReportDialog({
           </div>
         </div>
 
-        <div className="monthly-report-step-indicator" aria-label="长期复盘生成步骤">
+        <div className="monthly-report-step-indicator" aria-label="全部历史报告生成步骤">
           <span className={dialogStep === "select" ? "is-active" : ""}>1 确认范围</span>
           <span className={dialogStep === "preview" ? "is-active" : ""}>2 生成预览</span>
         </div>
 
         <div className="monthly-report-dialog-toolbar is-select-step lifetime-reading-report-toolbar">
-          <section className="monthly-report-period-selector" aria-label="长期复盘范围确认">
+          <section className="monthly-report-period-selector" aria-label="全部历史范围确认">
             <div className="monthly-report-period-selector-heading">
               <div>
                 <span>报告目标</span>
@@ -101,7 +101,7 @@ export function LifetimeReadingReportDialog({
         </div>
 
         {isSelectStep ? (
-          <section className="monthly-report-select-summary lifetime-reading-report-select-summary" aria-label="长期复盘生成前确认">
+          <section className="monthly-report-select-summary lifetime-reading-report-select-summary" aria-label="全部历史报告生成前确认">
             <CalendarDays aria-hidden="true" size={24} />
             <div>
               <strong>将生成：全部历史长期阅读成果报告</strong>
@@ -116,13 +116,13 @@ export function LifetimeReadingReportDialog({
             aria-busy={isDataLoading}
           >
             {!canPreview ? (
-              <section className="monthly-report-preview-empty" aria-label="长期复盘不可用">
+              <section className="monthly-report-preview-empty" aria-label="全部历史报告图片不可用">
                 {isDataLoading ? (
                   <Loader2 aria-hidden="true" size={24} className="spin" />
                 ) : (
                   <CalendarDays aria-hidden="true" size={24} />
                 )}
-                <strong>{isDataLoading ? "正在读取总计统计" : "暂时不能生成长期复盘"}</strong>
+                <strong>{isDataLoading ? "正在读取总计统计" : "暂时不能生成全部历史报告图片"}</strong>
                 <p>
                   {isDataLoading
                     ? "正在从本地统计缓存读取全部历史数据，完成后会自动刷新预览。"
@@ -142,7 +142,7 @@ export function LifetimeReadingReportDialog({
           {isSelectStep ? (
             <button className="secondary-action" type="button" onClick={handleGenerateReport}>
               <CalendarDays aria-hidden="true" size={18} />
-              生成长期复盘预览
+              生成全部历史报告预览
             </button>
           ) : (
             <button className="sync-button" type="button" onClick={() => setDialogStep("select")}>

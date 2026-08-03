@@ -28,7 +28,7 @@ import { useToast } from "../components/ToastProvider";
 import { copyTextToClipboard } from "../lib/clipboard";
 import {
   getCommandErrorMessage,
-  upsertReadingItemState,
+  patchReadingItemState,
   type BookshelfResponse,
   type CommandErrorInfo
 } from "../lib/reading-api";
@@ -271,16 +271,21 @@ export function BookshelfPage({
     }
 
     try {
-      await upsertReadingItemState({
-        itemId: entry.id,
-        itemType: entry.type,
-        status: "toRead",
-        title: entry.title,
-        author: entry.author,
-        cover: entry.cover,
-        category: entry.category,
-        note: `书架${filterLabels[entry.type]}保存的本地候选`
-      });
+      await patchReadingItemState(
+        entry.id,
+        {
+          isCandidate: true,
+          candidateSource: "light",
+          sourceMeta: { savedFrom: "bookshelf" }
+        },
+        {
+          itemKind: entry.type,
+          title: entry.title,
+          author: entry.author,
+          cover: entry.cover,
+          category: entry.category
+        }
+      );
       showToast({ message: `已保存《${entry.title}》到本地候选`, tone: "success" });
     } catch (candidateError) {
       showToast({ message: getCommandErrorMessage(candidateError), tone: "error" });

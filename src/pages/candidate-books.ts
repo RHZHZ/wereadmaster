@@ -1,5 +1,10 @@
+import { isCandidateQueueItem } from "../lib/reading-selectors";
 import type {
   BookDecisionCandidateInput,
+  ReadingItemCandidateSource,
+  ReadingItemLifeStatus,
+  ReadingItemOrganizeStatus,
+  ReadingItemSourceMeta,
   ReadingItemState,
   ReadingItemStateType,
   SearchResult
@@ -7,7 +12,11 @@ import type {
 
 export type LocalCandidateBook = SearchResult & {
   localType: ReadingItemStateType;
+  lifeStatus: ReadingItemLifeStatus;
+  organizeStatus: ReadingItemOrganizeStatus;
   localNote?: string;
+  candidateSource?: ReadingItemCandidateSource;
+  sourceMeta?: ReadingItemSourceMeta;
 };
 
 export type CandidateSourceFilter = "all" | "confirmed" | "unconfirmed" | "light";
@@ -44,10 +53,7 @@ const AI_RECOMMENDATION_NOTE_MARKER = "来自 AI 阅读助手推荐";
 const CONFIRMED_AI_RECOMMENDATION_NOTE_MARKER = "已通过微信读书搜索确认";
 
 export function isSavedCandidateState(state: ReadingItemState): boolean {
-  return (
-    state.status === "toRead" &&
-    (state.itemType === "candidate" || state.itemType === "album" || state.itemType === "mp")
-  );
+  return isCandidateQueueItem(state);
 }
 
 export function mapCandidateStateToSearchResult(state: ReadingItemState): LocalCandidateBook {
@@ -58,7 +64,11 @@ export function mapCandidateStateToSearchResult(state: ReadingItemState): LocalC
     cover: state.cover,
     category: state.category,
     localType: state.itemType,
-    localNote: state.note
+    lifeStatus: state.lifeStatus ?? "none",
+    organizeStatus: state.organizeStatus ?? "none",
+    localNote: state.userNote ?? state.note,
+    candidateSource: state.candidateSource,
+    sourceMeta: state.sourceMeta
   };
 }
 
@@ -66,13 +76,16 @@ export function buildCandidateMap(states: ReadingItemState[]): Map<string, Local
   return new Map(states.map((state) => [state.itemId, mapCandidateStateToSearchResult(state)]));
 }
 
-export function buildBookDecisionCandidates(books: SearchResult[]): BookDecisionCandidateInput[] {
+export function buildBookDecisionCandidates(
+  books: LocalCandidateBook[]
+): BookDecisionCandidateInput[] {
   return books.slice(0, 8).map((book) => ({
     bookId: book.bookId,
     title: book.title,
     author: book.author,
     category: book.category,
-    localStatus: "toRead"
+    lifeStatus: book.lifeStatus,
+    organizeStatus: book.organizeStatus
   }));
 }
 
@@ -176,7 +189,7 @@ export function resolveCandidateReplacement(
   result: SearchResult,
   existingState?: ReadingItemState
 ): CandidateReplacementResolution {
-  if (existingState && !(existingState.itemType === "candidate" && existingState.status === "toRead")) {
+  if (existingState && !isSavedCandidateState(existingState)) {
     return { status: "blocked" };
   }
 
@@ -192,12 +205,18 @@ export function resolveCandidateReplacement(
     replacement: {
       ...result,
       localType: "candidate",
+      lifeStatus: "none",
+      organizeStatus: "none",
       localNote: buildConfirmedCandidateReplacementNote(book)
     }
   };
 }
 
 export function isUnconfirmedAiCandidate(book: LocalCandidateBook): boolean {
+  if (book.candidateSource) {
+    return book.candidateSource === "ai_unconfirmed";
+  }
+
   return (
     book.localType === "candidate" &&
     (book.bookId.startsWith(AI_RECOMMENDED_CANDIDATE_PREFIX) ||
@@ -207,10 +226,28 @@ export function isUnconfirmedAiCandidate(book: LocalCandidateBook): boolean {
 }
 
 export function canOpenCandidateDetail(book: LocalCandidateBook): boolean {
-  return book.localType === "candidate" && !isUnconfirmedAiCandidate(book);
+  const isLightCandidate =
+    book.candidateSource === "light" || book.localType === "album" || book.localType === "mp";
+  return !isLightCandidate && !isUnconfirmedAiCandidate(book);
 }
 
 export function getCandidateSourceLabel(book: LocalCandidateBook): string {
+  if (book.candidateSource === "light") {
+    return book.localType === "mp" ? "文章收藏 · 轻管理候选" : "有声书 · 轻管理候选";
+  }
+
+  if (book.candidateSource === "ai_unconfirmed") {
+    return "AI 推荐 · 未确认书源";
+  }
+
+  if (book.candidateSource === "ai_confirmed") {
+    return "AI 推荐 · 微信读书已确认";
+  }
+
+  if (book.candidateSource === "weread") {
+    return "微信读书书目 · 本机候选";
+  }
+
   if (book.localType === "album") {
     return "有声书 · 轻管理候选";
   }
@@ -231,6 +268,14 @@ export function getCandidateSourceLabel(book: LocalCandidateBook): string {
 }
 
 export function getCandidateSourceTone(book: LocalCandidateBook): "confirmed" | "unconfirmed" | "light" {
+  if (book.candidateSource !== undefined) {
+    if (book.candidateSource === "light") {
+      return "light";
+    }
+
+    return book.candidateSource === "ai_unconfirmed" ? "unconfirmed" : "confirmed";
+  }
+
   if (book.localType === "album" || book.localType === "mp") {
     return "light";
   }

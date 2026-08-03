@@ -11,7 +11,9 @@ use crate::{
 
 use super::{
     document::ExportDocument,
-    notion::{export_document as export_notion_document, NotionExportOptions},
+    notion::{
+        export_document as export_notion_document, NotionExportOptions, NotionPropertyMapping,
+    },
     obsidian::{export_document as export_obsidian_document, ObsidianExportOptions},
     targets::{
         ExportTargetError, ExportTargetResult, ExportTargetStatus, ExternalExportTarget,
@@ -40,8 +42,34 @@ pub async fn export_document_targets_with_notion_blocks(
     request: &MultiTargetExportRequest,
     notion_blocks: Option<&[Value]>,
 ) -> Vec<ExportTargetResult> {
+    export_document_targets_with_context(
+        app,
+        document,
+        markdown,
+        file_stem,
+        request,
+        notion_blocks,
+        None,
+    )
+    .await
+}
+
+/// 在普通多目标导出基础上接受已成功的 Obsidian 文件路径。
+/// 批量精确重试 Notion 时可保留首次导出的关联元数据，而无需重复执行 Obsidian。
+pub async fn export_document_targets_with_context(
+    app: &AppHandle,
+    document: &ExportDocument,
+    markdown: &str,
+    file_stem: &str,
+    request: &MultiTargetExportRequest,
+    notion_blocks: Option<&[Value]>,
+    known_obsidian_path: Option<&str>,
+) -> Vec<ExportTargetResult> {
     let mut results = vec![None; request.targets.len()];
-    let mut obsidian_path = None;
+    let mut obsidian_path = known_obsidian_path
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(str::to_string);
 
     if let Some(obsidian_index) = obsidian_index_to_run_before_notion(request) {
         let result = export_single_target(
@@ -299,6 +327,30 @@ async fn export_notion_target(
         parent_id: parent_id.to_string(),
         parent_type,
         use_page_cover: integration.notion_cover_mode.as_deref() != Some("contentImageOnly"),
+        property_mappings: if parent_type == super::targets::NotionParentType::Database
+            && integration.notion_parent_id.as_deref() == Some(parent_id)
+        {
+            integration
+                .notion_database_connection
+                .as_ref()
+                .filter(|connection| connection.database_id == parent_id)
+                .map(|connection| {
+                    connection
+                        .mappings
+                        .iter()
+                        .map(|mapping| NotionPropertyMapping {
+                            logical_field: mapping.logical_field.clone(),
+                            property_id: mapping.property_id.clone(),
+                            property_name_snapshot: mapping.property_name_snapshot.clone(),
+                            property_type: mapping.property_type.clone(),
+                            enabled: mapping.enabled,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        },
     };
 
     match export_notion_document(document, markdown, &options, notion_blocks).await {

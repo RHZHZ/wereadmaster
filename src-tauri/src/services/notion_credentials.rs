@@ -6,7 +6,10 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
-use crate::platform::stronghold::{kdf::KeyDerivation, stronghold::Stronghold, Client};
+use crate::{
+    export::notion::notion_client,
+    platform::stronghold::{kdf::KeyDerivation, stronghold::Stronghold, Client},
+};
 
 const CLIENT_PATH: &[u8] = b"notion-export-credentials";
 const API_TOKEN_RECORD: &[u8] = b"notion-api-token";
@@ -53,7 +56,9 @@ impl NotionCredentialError {
             Self::InvalidCredential(message) => message.clone(),
             Self::MissingCredential => "还没有保存 Notion Integration Token。".to_string(),
             Self::RemovalNotConfirmed => "移除 Notion 凭据需要显式确认。".to_string(),
-            Self::Network(_) => "无法连接 Notion，请检查网络后重试。".to_string(),
+            Self::Network(_) => {
+                "无法连接 Notion API，请检查网络、系统代理或 VPN 后重试。".to_string()
+            }
             Self::Storage(_) => "Notion 凭据存储暂时不可用，请稍后重试。".to_string(),
         }
     }
@@ -150,7 +155,8 @@ impl NotionCredentialService {
         &self,
     ) -> Result<NotionCredentialStatus, NotionCredentialError> {
         let token = self.read_token()?;
-        let response = reqwest::Client::new()
+        let response = notion_client()
+            .map_err(NotionCredentialError::Network)?
             .get("https://api.notion.com/v1/users/me")
             .bearer_auth(&token)
             .header("Notion-Version", "2022-06-28")
@@ -241,7 +247,16 @@ fn is_valid_token_input(token: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_valid_token_input;
+    use super::{is_valid_token_input, NotionCredentialError};
+
+    #[test]
+    fn notion_credential_network_error_mentions_proxy_and_vpn() {
+        let error = NotionCredentialError::Network("connection refused".to_string());
+        assert_eq!(
+            error.user_message(),
+            "无法连接 Notion API，请检查网络、系统代理或 VPN 后重试。"
+        );
+    }
 
     #[test]
     fn notion_token_validation_rejects_short_values() {

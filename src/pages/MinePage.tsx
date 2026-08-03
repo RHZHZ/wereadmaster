@@ -63,7 +63,7 @@ export function MinePage({
     credentialStatus?.hasCredential === true ? "凭据已配置" : "等待配置凭据";
   const syncLabel = formatSyncState(bookshelf);
   const totalVisibleEntries = bookshelf?.snapshot.summary.totalVisibleEntries ?? 0;
-  const noteCount = bookshelf?.snapshot.summary.bookCount ?? 0;
+  const bookCount = bookshelf?.snapshot.summary.bookCount ?? 0;
   const shortcuts: MineShortcut[] = [
     {
       label: "统计",
@@ -153,8 +153,8 @@ export function MinePage({
       title: "本地安全",
       links: [
         {
-          label: "代理与网络诊断",
-          description: "排查 Android 微信读书同步网络问题",
+          label: "微信读书代理设置",
+          description: "配置 Android 微信读书同步代理",
           icon: Network,
           onClick: () => onOpenSettings("account"),
         },
@@ -187,7 +187,7 @@ export function MinePage({
           <StatusItem label="凭据" value={credentialLabel} />
           <StatusItem label="同步" value={syncLabel} />
           <StatusItem label="书架" value={`${totalVisibleEntries} 个条目`} />
-          <StatusItem label="书籍" value={`${noteCount} 本书`} />
+          <StatusItem label="书籍" value={`${bookCount} 本书`} />
         </div>
         <button
           type="button"

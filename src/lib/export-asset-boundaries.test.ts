@@ -7,7 +7,7 @@ describe("export asset boundaries", () => {
 
     expect(boundary.summary).toContain("本地已生成");
     expect(boundary.behavior).toContain("不会同步微信读书远端");
-    expect(boundary.behavior).toContain("不会自动生成新的 AI 复盘");
+    expect(boundary.behavior).toContain("不会自动生成新的书籍复盘");
     expect(boundary.excludes.join(" ")).toContain("API Key");
   });
 

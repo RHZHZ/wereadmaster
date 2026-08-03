@@ -19,25 +19,31 @@ describe("book asset status", () => {
     expect(
       buildBookAssetStatus({
         ...baseInput,
-        readingState: state("organized"),
+        readingState: {
+          ...state("reading"),
+          organizeStatus: "organized"
+        },
         progress: progress({ progressPercent: 100, isFinished: true })
       })
     ).toMatchObject({
       label: "已整理",
       title: "已经整理成阅读成果",
       progressLabel: "微信进度 已读完",
-      nextActionLabel: "AI 复盘",
+      nextActionLabel: "书籍复盘",
       tone: "organized"
     });
 
     expect(
       buildBookAssetStatus({
         ...baseInput,
-        readingState: state("reviewing"),
+        readingState: {
+          ...state("reading"),
+          organizeStatus: "to_organize"
+        },
         canOpenAiSummary: false
       })
     ).toMatchObject({
-      label: "待复盘",
+      label: "待整理",
       title: "下一步是整理这本书",
       nextActionLabel: "查看笔记",
       tone: "review"
@@ -47,7 +53,11 @@ describe("book asset status", () => {
   test("shows candidate state before generic progress states", () => {
     const status = buildBookAssetStatus({
       ...baseInput,
-      readingState: state("toRead", "candidate"),
+      readingState: {
+        ...state("reading", "book"),
+        isCandidate: true,
+        organizeStatus: "none"
+      },
       progress: progress({ progressPercent: 0, isStarted: false })
     });
 
@@ -69,7 +79,7 @@ describe("book asset status", () => {
     ).toMatchObject({
       label: "已读完",
       progressLabel: "微信进度 已读完",
-      nextActionLabel: "AI 复盘",
+      nextActionLabel: "书籍复盘",
       tone: "finished"
     });
 

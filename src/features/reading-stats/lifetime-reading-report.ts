@@ -147,21 +147,21 @@ export async function downloadLifetimeReadingReportWide(
   data: LifetimeReadingReportData
 ): Promise<ReportImageExportResult> {
   const canvas = await renderLifetimeReadingReportWideCanvas(data);
-  return exportCanvasAsReportImage(canvas, `${data.fileName}-16-9报告`, "生成长期复盘失败。");
+  return exportCanvasAsReportImage(canvas, `${data.fileName}-16-9报告`, "生成全部历史报告图片失败。");
 }
 
 export async function saveLifetimeReadingReportWide(
   data: LifetimeReadingReportData
 ): Promise<ImageArtifactDeliveryResult> {
   const canvas = await renderLifetimeReadingReportWideCanvas(data);
-  return saveCanvasAsPngToAlbum(canvas, `${data.fileName}-16-9报告`, "生成长期复盘失败。");
+  return saveCanvasAsPngToAlbum(canvas, `${data.fileName}-16-9报告`, "生成全部历史报告图片失败。");
 }
 
 export async function shareLifetimeReadingReportWide(
   data: LifetimeReadingReportData
 ): Promise<ImageArtifactDeliveryResult> {
   const canvas = await renderLifetimeReadingReportWideCanvas(data);
-  return shareCanvasAsPng(canvas, `${data.fileName}-16-9报告`, "生成长期复盘失败。");
+  return shareCanvasAsPng(canvas, `${data.fileName}-16-9报告`, "生成全部历史报告图片失败。");
 }
 
 async function renderLifetimeReadingReportWideCanvas(
@@ -170,7 +170,7 @@ async function renderLifetimeReadingReportWideCanvas(
   const canvas = document.createElement("canvas");
   const context = canvas.getContext("2d");
   if (!context) {
-    throw new Error("当前环境不支持长期复盘绘制。");
+    throw new Error("当前环境不支持全部历史报告图片绘制。");
   }
 
   canvas.width = 1920;
@@ -270,7 +270,7 @@ function drawLifetimeReportCover(
 
   context.fillStyle = palette.accentDeep;
   context.font = "800 30px Georgia, 'Noto Serif SC', 'Songti SC', serif";
-  context.fillText("wxreadmaster 长期复盘", x, 132);
+  context.fillText("wxreadmaster 全部历史报告", x, 132);
 
   context.fillStyle = "#1f2d33";
   context.font = "700 68px 'Noto Serif SC', 'Songti SC', 'SimSun', Georgia, serif";
@@ -1355,7 +1355,7 @@ function loadCanvasImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const image = new Image();
     image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error("加载长期复盘插画失败。"));
+    image.onerror = () => reject(new Error("加载全部历史报告插画失败。"));
     image.src = src;
   });
 }

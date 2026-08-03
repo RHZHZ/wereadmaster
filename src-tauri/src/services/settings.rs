@@ -14,13 +14,27 @@ use crate::{
     db::{self, DATABASE_FILE_NAME},
     errors::AppError,
     export::{
-        notion::{create_reading_library_template, create_reading_workspace_template},
+        notion::{
+            analyze_database, create_reading_library_template,
+            create_reading_library_template_typed, create_reading_workspace_template,
+            NotionDatabaseAnalysis,
+        },
+        notion_views::{
+            discover_database_context, reconcile_standard_views, view_results_complete,
+            NotionDefaultViewResult,
+        },
         targets::NotionParentType,
     },
     repositories::sync_state::{SyncStateRecord, SyncStateRepository},
     services::{
         credentials::{CredentialService, CredentialServiceError, CredentialStatus},
         notion_credentials::{NotionCredentialService, NotionCredentialStatus},
+        notion_provisioning::{
+            clear_provisioning, provisioning_path, read_provisioning,
+            try_begin_provisioning_operation, write_provisioning_atomic, NotionProvisioningError,
+            NotionStandardProvisioningPhase, NotionStandardProvisioningState,
+            NotionStandardProvisioningStatus,
+        },
         weread_gateway::normalize_weread_proxy_url,
     },
 };
@@ -144,6 +158,7 @@ pub struct NotionIntegrationState {
     pub parent_id: Option<String>,
     pub parent_type: Option<NotionParentType>,
     pub cover_mode: NotionCoverMode,
+    pub database_connection: Option<db::NotionDatabaseConnectionConfig>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -270,6 +285,31 @@ pub struct CreateNotionReadingWorkspaceTemplateResponse {
     pub title: String,
     pub warning: Option<String>,
     pub state: SettingsStateResponse,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum NotionStandardProvisioningResolution {
+    LinkCurrentConnection,
+    ConfirmNotCreated,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateNotionStandardDatabaseResponse {
+    pub provisioning_id: String,
+    pub phase: NotionStandardProvisioningPhase,
+    pub status: NotionStandardProvisioningStatus,
+    pub database_id: Option<String>,
+    pub data_source_id: Option<String>,
+    pub url: Option<String>,
+    pub title: String,
+    pub connection: Option<db::NotionDatabaseConnectionConfig>,
+    pub state: Option<SettingsStateResponse>,
+    pub views: Vec<NotionDefaultViewResult>,
+    pub view_initialization: String,
+    pub warnings: Vec<String>,
+    pub last_error: Option<NotionProvisioningError>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -448,24 +488,7 @@ impl SettingsService {
         let data_dir = db::active_data_dir(&self.app).map_err(AppError::Storage)?;
         fs::create_dir_all(&data_dir).map_err(|error| AppError::Storage(error.to_string()))?;
         let backup_dir = data_dir.join("backups").join(&backup_id);
-        fs::create_dir_all(&backup_dir).map_err(|error| AppError::Storage(error.to_string()))?;
-        let files = existing_database_file_manifest(&data_dir)?;
-
-        if files.is_empty() {
-            return Err(AppError::InvalidPayload(
-                "当前没有可备份的本地数据库。".to_string(),
-            ));
-        }
-
-        copy_named_files(&data_dir, &backup_dir, &files)?;
-        let manifest = BackupManifest {
-            kind: BACKUP_KIND.to_string(),
-            schema_version: BACKUP_SCHEMA_VERSION,
-            exported_at: exported_at.clone(),
-            database_file: DATABASE_FILE_NAME.to_string(),
-            files: files.clone(),
-        };
-        write_backup_manifest(&backup_dir, &manifest)?;
+        let files = create_database_backup(&data_dir, &backup_dir, &exported_at)?;
 
         Ok(ExportBackupResponse {
             backup_id,
@@ -765,6 +788,410 @@ impl SettingsService {
         self.settings_state()
     }
 
+    pub async fn analyze_notion_database(
+        &self,
+        database_id: String,
+    ) -> Result<NotionDatabaseAnalysis, AppError> {
+        let database_id = normalize_optional_string(Some(database_id)).ok_or_else(|| {
+            AppError::InvalidPayload("请填写 Notion 数据库链接或 ID。".to_string())
+        })?;
+        let token = NotionCredentialService::new(self.app.clone())
+            .read_token()
+            .map_err(|error| AppError::Authentication(error.user_message()))?;
+        analyze_database(&token, &database_id)
+            .await
+            .map_err(|error| classify_notion_analysis_error(&error))
+    }
+
+    pub fn save_notion_database_connection(
+        &self,
+        connection: db::NotionDatabaseConnectionConfig,
+    ) -> Result<SettingsStateResponse, AppError> {
+        validate_notion_database_connection(&connection)?;
+        let config_dir = db::default_data_dir(&self.app).map_err(AppError::Storage)?;
+        let mut integration =
+            db::read_integration_config(&config_dir).map_err(AppError::Storage)?;
+        integration.notion_parent_id = Some(connection.database_id.clone());
+        integration.notion_parent_type =
+            Some(NotionParentType::Database.as_config_value().to_string());
+        integration.notion_database_connection = Some(connection);
+        db::write_integration_config(&config_dir, &integration).map_err(AppError::Storage)?;
+        self.settings_state()
+    }
+
+    pub async fn create_notion_standard_outcomes_database(
+        &self,
+        parent_page_id: String,
+    ) -> Result<CreateNotionStandardDatabaseResponse, AppError> {
+        let parent_page_id = normalize_optional_string(Some(parent_page_id)).ok_or_else(|| {
+            AppError::InvalidPayload(
+                "请先填写已共享给 Integration 的 Notion 父页面 ID。".to_string(),
+            )
+        })?;
+        let token = NotionCredentialService::new(self.app.clone())
+            .read_token()
+            .map_err(|error| AppError::Authentication(error.user_message()))?;
+        let _operation = try_begin_provisioning_operation()?;
+        let config_dir = db::default_data_dir(&self.app).map_err(AppError::Storage)?;
+        let path = provisioning_path(&config_dir);
+
+        if let Some(existing) = read_provisioning(&path)? {
+            return self.provisioning_response(existing);
+        }
+
+        let mut provisioning = NotionStandardProvisioningState::creating(parent_page_id.clone());
+        write_provisioning_atomic(&path, &provisioning)?;
+
+        let output = match create_reading_library_template_typed(&token, &parent_page_id).await {
+            Ok(output) => output,
+            Err(error) if error.result_unknown => {
+                provisioning.last_error = Some(NotionProvisioningError {
+                    step: "createDatabase".to_string(),
+                    code: error.code,
+                    message: error.message,
+                    retryable: error.retryable,
+                    result_unknown: true,
+                });
+                provisioning.transition(NotionStandardProvisioningPhase::DatabaseCreateUnknown)?;
+                write_provisioning_atomic(&path, &provisioning)?;
+                return self.provisioning_response(provisioning);
+            }
+            Err(error) => {
+                clear_provisioning(&path)?;
+                return Err(AppError::Gateway(error.message));
+            }
+        };
+
+        provisioning.database_id = Some(output.database_id);
+        provisioning.database_url = Some(output.url);
+        provisioning.title = output.title;
+        provisioning.last_error = None;
+        provisioning.transition(NotionStandardProvisioningPhase::DatabaseCreated)?;
+        write_provisioning_atomic(&path, &provisioning)?;
+
+        self.continue_notion_standard_database_provisioning_inner(&token, &path, provisioning)
+            .await
+    }
+
+    pub fn get_notion_standard_database_provisioning(
+        &self,
+    ) -> Result<Option<CreateNotionStandardDatabaseResponse>, AppError> {
+        let config_dir = db::default_data_dir(&self.app).map_err(AppError::Storage)?;
+        let path = provisioning_path(&config_dir);
+        read_provisioning(&path)?
+            .map(|provisioning| self.provisioning_response(provisioning))
+            .transpose()
+    }
+
+    pub async fn continue_notion_standard_database_provisioning(
+        &self,
+        provisioning_id: String,
+    ) -> Result<CreateNotionStandardDatabaseResponse, AppError> {
+        let provisioning_id = normalize_optional_string(Some(provisioning_id))
+            .ok_or_else(|| AppError::InvalidPayload("缺少 provisioning ID。".to_string()))?;
+        let token = NotionCredentialService::new(self.app.clone())
+            .read_token()
+            .map_err(|error| AppError::Authentication(error.user_message()))?;
+        let _operation = try_begin_provisioning_operation()?;
+        let config_dir = db::default_data_dir(&self.app).map_err(AppError::Storage)?;
+        let path = provisioning_path(&config_dir);
+        let provisioning = read_provisioning(&path)?.ok_or_else(|| {
+            AppError::InvalidPayload("没有可继续的标准阅读成果库初始化任务。".to_string())
+        })?;
+        validate_provisioning_id(&provisioning, &provisioning_id)?;
+
+        if matches!(
+            provisioning.phase,
+            NotionStandardProvisioningPhase::Complete
+                | NotionStandardProvisioningPhase::CreatingDatabase
+                | NotionStandardProvisioningPhase::DatabaseCreateUnknown
+        ) {
+            return self.provisioning_response(provisioning);
+        }
+
+        self.continue_notion_standard_database_provisioning_inner(&token, &path, provisioning)
+            .await
+    }
+
+    pub async fn resolve_notion_standard_database_provisioning(
+        &self,
+        provisioning_id: String,
+        resolution: NotionStandardProvisioningResolution,
+        confirm: bool,
+    ) -> Result<Option<CreateNotionStandardDatabaseResponse>, AppError> {
+        let provisioning_id = normalize_optional_string(Some(provisioning_id))
+            .ok_or_else(|| AppError::InvalidPayload("缺少 provisioning ID。".to_string()))?;
+        let _operation = try_begin_provisioning_operation()?;
+        let config_dir = db::default_data_dir(&self.app).map_err(AppError::Storage)?;
+        let path = provisioning_path(&config_dir);
+        let mut provisioning = read_provisioning(&path)?.ok_or_else(|| {
+            AppError::InvalidPayload("没有可处理的标准阅读成果库初始化任务。".to_string())
+        })?;
+        validate_provisioning_id(&provisioning, &provisioning_id)?;
+
+        match resolution {
+            NotionStandardProvisioningResolution::ConfirmNotCreated => {
+                if !confirm {
+                    return Err(AppError::InvalidPayload(
+                        "重新开放创建前必须确认 Notion 中没有创建出该数据库。".to_string(),
+                    ));
+                }
+                if !matches!(
+                    provisioning.phase,
+                    NotionStandardProvisioningPhase::CreatingDatabase
+                        | NotionStandardProvisioningPhase::DatabaseCreateUnknown
+                ) {
+                    return Err(AppError::InvalidPayload(
+                        "当前任务已经保存数据库 ID，不能确认其未创建。".to_string(),
+                    ));
+                }
+                clear_provisioning(&path)?;
+                Ok(None)
+            }
+            NotionStandardProvisioningResolution::LinkCurrentConnection => {
+                let integration =
+                    db::read_integration_config(&config_dir).map_err(AppError::Storage)?;
+                let connection = integration.notion_database_connection.ok_or_else(|| {
+                    AppError::InvalidPayload(
+                        "请先检查并保存 Notion 数据库连接，再执行关联。".to_string(),
+                    )
+                })?;
+                let expected_database_id =
+                    provisioning.database_id.as_deref().ok_or_else(|| {
+                        AppError::InvalidPayload(
+                            "创建结果未知且没有 database ID，不能自动关联数据库。".to_string(),
+                        )
+                    })?;
+                if normalize_notion_id(&connection.database_id)
+                    != normalize_notion_id(expected_database_id)
+                {
+                    return Err(AppError::InvalidPayload(
+                        "当前已连接数据库与待恢复 database ID 不一致，已拒绝关联。".to_string(),
+                    ));
+                }
+                provisioning.connection_saved_at = Some(current_unix_seconds());
+                provisioning.last_error = None;
+                provisioning.transition(NotionStandardProvisioningPhase::ConnectionSaved)?;
+                write_provisioning_atomic(&path, &provisioning)?;
+                let token_for_resolution = NotionCredentialService::new(self.app.clone())
+                    .read_token()
+                    .map_err(|error| AppError::Authentication(error.user_message()))?;
+                self.continue_notion_standard_database_provisioning_inner(
+                    &token_for_resolution,
+                    &path,
+                    provisioning,
+                )
+                .await
+                .map(Some)
+            }
+        }
+    }
+
+    async fn continue_notion_standard_database_provisioning_inner(
+        &self,
+        token: &str,
+        path: &Path,
+        mut provisioning: NotionStandardProvisioningState,
+    ) -> Result<CreateNotionStandardDatabaseResponse, AppError> {
+        let database_id = provisioning.database_id.clone().ok_or_else(|| {
+            AppError::Storage(
+                "Notion provisioning 缺少 database ID，已停止继续初始化。".to_string(),
+            )
+        })?;
+
+        if provisioning.connection_saved_at.is_none() {
+            let analysis = match analyze_database(token, &database_id).await {
+                Ok(analysis) => analysis,
+                Err(error) => {
+                    provisioning.last_error = Some(NotionProvisioningError {
+                        step: "analyzeDatabase".to_string(),
+                        code: "notion_database_analysis_failed".to_string(),
+                        message: format!("标准成果库已创建，但读取字段失败：{error}"),
+                        retryable: true,
+                        result_unknown: false,
+                    });
+                    write_provisioning_atomic(path, &provisioning)?;
+                    return self.provisioning_response(provisioning);
+                }
+            };
+            let connection = match notion_connection_from_analysis(&analysis) {
+                Ok(connection) => connection,
+                Err(error) => {
+                    provisioning.last_error = Some(NotionProvisioningError {
+                        step: "buildConnection".to_string(),
+                        code: error.code().to_string(),
+                        message: error.user_message(),
+                        retryable: false,
+                        result_unknown: false,
+                    });
+                    write_provisioning_atomic(path, &provisioning)?;
+                    return self.provisioning_response(provisioning);
+                }
+            };
+
+            let config_dir = db::default_data_dir(&self.app).map_err(AppError::Storage)?;
+            let save_result = (|| {
+                let mut integration =
+                    db::read_integration_config(&config_dir).map_err(AppError::Storage)?;
+                integration.notion_parent_id = Some(connection.database_id.clone());
+                integration.notion_parent_type =
+                    Some(NotionParentType::Database.as_config_value().to_string());
+                integration.notion_database_connection = Some(connection.clone());
+                db::write_integration_config(&config_dir, &integration).map_err(AppError::Storage)
+            })();
+            if let Err(error) = save_result {
+                provisioning.last_error = Some(NotionProvisioningError {
+                    step: "saveConnection".to_string(),
+                    code: error.code().to_string(),
+                    message: error.user_message(),
+                    retryable: true,
+                    result_unknown: false,
+                });
+                write_provisioning_atomic(path, &provisioning)?;
+                return self.provisioning_response(provisioning);
+            }
+
+            provisioning.connection_saved_at = Some(current_unix_seconds());
+            provisioning.last_error = None;
+            provisioning.transition(NotionStandardProvisioningPhase::ConnectionSaved)?;
+            write_provisioning_atomic(path, &provisioning)?;
+        }
+
+        provisioning.last_error = None;
+        provisioning.transition(NotionStandardProvisioningPhase::ViewsInitializing)?;
+        write_provisioning_atomic(path, &provisioning)?;
+
+        let context = match discover_database_context(token, &database_id).await {
+            Ok(context) => context,
+            Err(error) => {
+                provisioning.last_error = Some(NotionProvisioningError {
+                    step: "discoverDataSource".to_string(),
+                    code: "notion_data_source_discovery_failed".to_string(),
+                    message: format!(
+                        "数据库连接已保存，可以正常导出；推荐视图初始化前读取 data source 失败：{error}"
+                    ),
+                    retryable: true,
+                    result_unknown: false,
+                });
+                provisioning.transition(NotionStandardProvisioningPhase::Partial)?;
+                write_provisioning_atomic(path, &provisioning)?;
+                return self.provisioning_response(provisioning);
+            }
+        };
+        provisioning.data_source_id = Some(context.data_source_id.clone());
+        write_provisioning_atomic(path, &provisioning)?;
+
+        let results = reconcile_standard_views(token, &context, &provisioning.views).await;
+        let complete = view_results_complete(&results);
+        provisioning.views = results;
+        if complete {
+            provisioning.initialized_at = Some(current_unix_seconds());
+            provisioning.last_error = None;
+            provisioning.transition(NotionStandardProvisioningPhase::Complete)?;
+        } else {
+            let result_unknown = provisioning.views.iter().any(|view| {
+                matches!(
+                    view.status,
+                    crate::export::notion_views::NotionDefaultViewStatus::Unknown
+                )
+            });
+            provisioning.last_error = Some(NotionProvisioningError {
+                step: "initializeViews".to_string(),
+                code: if result_unknown {
+                    "notion_view_initialization_result_unknown"
+                } else {
+                    "notion_view_initialization_partial"
+                }
+                .to_string(),
+                message:
+                    "数据库连接已保存，可以正常导出；部分推荐视图尚未初始化，可安全重试缺失视图。"
+                        .to_string(),
+                retryable: true,
+                result_unknown,
+            });
+            provisioning.transition(NotionStandardProvisioningPhase::Partial)?;
+        }
+        write_provisioning_atomic(path, &provisioning)?;
+        self.provisioning_response(provisioning)
+    }
+
+    fn provisioning_response(
+        &self,
+        provisioning: NotionStandardProvisioningState,
+    ) -> Result<CreateNotionStandardDatabaseResponse, AppError> {
+        let config_dir = db::default_data_dir(&self.app).map_err(AppError::Storage)?;
+        let connection_saved = provisioning.connection_saved_at.is_some()
+            && matches!(
+                provisioning.phase,
+                NotionStandardProvisioningPhase::ConnectionSaved
+                    | NotionStandardProvisioningPhase::ViewsInitializing
+                    | NotionStandardProvisioningPhase::Partial
+                    | NotionStandardProvisioningPhase::Complete
+            );
+        let connection = if connection_saved {
+            db::read_integration_config(&config_dir)
+                .map_err(AppError::Storage)?
+                .notion_database_connection
+                .filter(|connection| {
+                    provisioning
+                        .database_id
+                        .as_deref()
+                        .map(|database_id| {
+                            normalize_notion_id(&connection.database_id)
+                                == normalize_notion_id(database_id)
+                        })
+                        .unwrap_or(false)
+                })
+        } else {
+            None
+        };
+        let mut warnings = provisioning
+            .views
+            .iter()
+            .filter_map(|view| view.warning.clone())
+            .collect::<Vec<_>>();
+        warnings.sort();
+        warnings.dedup();
+        let state = if connection.is_some() {
+            match self.settings_state() {
+                Ok(state) => Some(state),
+                Err(error) => {
+                    warnings.push(format!(
+                        "导出连接已保存，但设置状态刷新失败：{}",
+                        error.user_message()
+                    ));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let view_initialization = match provisioning.phase {
+            NotionStandardProvisioningPhase::ViewsInitializing => "initializing",
+            NotionStandardProvisioningPhase::Partial => "partial",
+            NotionStandardProvisioningPhase::Complete => "complete",
+            _ => "notStarted",
+        }
+        .to_string();
+
+        let status = provisioning.status();
+        Ok(CreateNotionStandardDatabaseResponse {
+            provisioning_id: provisioning.provisioning_id,
+            phase: provisioning.phase,
+            status,
+            database_id: provisioning.database_id,
+            data_source_id: provisioning.data_source_id,
+            url: provisioning.database_url,
+            title: provisioning.title,
+            connection,
+            state,
+            views: provisioning.views,
+            view_initialization,
+            warnings,
+            last_error: provisioning.last_error,
+        })
+    }
+
     pub async fn create_notion_reading_library_template(
         &self,
         parent_page_id: String,
@@ -961,6 +1388,7 @@ impl SettingsService {
                 cover_mode: NotionCoverMode::from_config_value(
                     integration.notion_cover_mode.as_deref(),
                 ),
+                database_connection: integration.notion_database_connection,
             },
         })
     }
@@ -968,6 +1396,80 @@ impl SettingsService {
     fn open_connection(&self) -> Result<rusqlite::Connection, AppError> {
         db::open_connection(&self.app).map_err(AppError::Storage)
     }
+}
+
+fn validate_provisioning_id(
+    provisioning: &NotionStandardProvisioningState,
+    provisioning_id: &str,
+) -> Result<(), AppError> {
+    if provisioning.provisioning_id != provisioning_id {
+        return Err(AppError::InvalidPayload(
+            "provisioning ID 与当前恢复任务不一致。".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn normalize_notion_id(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_ascii_hexdigit())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn validate_notion_database_connection(
+    connection: &db::NotionDatabaseConnectionConfig,
+) -> Result<(), AppError> {
+    if connection.database_id.trim().is_empty()
+        || connection.title_property_id.trim().is_empty()
+        || connection.title_property_name_snapshot.trim().is_empty()
+        || connection.schema_checked_at.trim().is_empty()
+    {
+        return Err(AppError::InvalidPayload(
+            "Notion 数据库连接信息不完整，请重新检查数据库。".to_string(),
+        ));
+    }
+    let has_title_mapping = connection.mappings.iter().any(|mapping| {
+        mapping.enabled
+            && mapping.logical_field == "title"
+            && mapping.property_id == connection.title_property_id
+            && mapping.property_type == "title"
+    });
+    if !has_title_mapping {
+        return Err(AppError::InvalidPayload(
+            "Notion 数据库连接缺少有效的标题字段映射。".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn notion_connection_from_analysis(
+    analysis: &NotionDatabaseAnalysis,
+) -> Result<db::NotionDatabaseConnectionConfig, AppError> {
+    let title = analysis.title_property.as_ref().ok_or_else(|| {
+        AppError::InvalidPayload("Notion 数据库缺少 Title 属性，无法保存连接。".to_string())
+    })?;
+    Ok(db::NotionDatabaseConnectionConfig {
+        database_id: analysis.database_id.clone(),
+        database_name: analysis.database_name.clone(),
+        database_url: analysis.database_url.clone(),
+        title_property_id: title.id.clone(),
+        title_property_name_snapshot: title.name.clone(),
+        mappings: analysis
+            .suggested_mappings
+            .iter()
+            .map(|mapping| db::NotionPropertyMappingConfig {
+                logical_field: mapping.logical_field.clone(),
+                property_id: mapping.property_id.clone(),
+                property_name_snapshot: mapping.property_name_snapshot.clone(),
+                property_type: mapping.property_type.clone(),
+                enabled: mapping.enabled,
+            })
+            .collect(),
+        schema_checked_at: analysis.schema_checked_at.clone(),
+        schema_fingerprint: analysis.schema_fingerprint.clone(),
+    })
 }
 
 impl ObsidianAttachmentMode {
@@ -1114,6 +1616,34 @@ fn existing_database_file_manifest(data_dir: &Path) -> Result<Vec<String>, AppEr
         .collect::<Vec<_>>();
 
     Ok(local_backup_file_manifest(&existing))
+}
+
+fn create_database_backup(
+    data_dir: &Path,
+    backup_dir: &Path,
+    exported_at: &str,
+) -> Result<Vec<String>, AppError> {
+    fs::create_dir_all(backup_dir).map_err(|error| AppError::Storage(error.to_string()))?;
+    let files = existing_database_file_manifest(data_dir)?;
+    if files.is_empty() {
+        return Err(AppError::InvalidPayload(
+            "当前没有可备份的本地数据库。".to_string(),
+        ));
+    }
+
+    copy_named_files(data_dir, backup_dir, &files)?;
+    let manifest = BackupManifest {
+        kind: BACKUP_KIND.to_string(),
+        schema_version: BACKUP_SCHEMA_VERSION,
+        exported_at: exported_at.to_string(),
+        database_file: DATABASE_FILE_NAME.to_string(),
+        files: files.clone(),
+    };
+    write_backup_manifest(backup_dir, &manifest)?;
+    validate_backup_manifest(&manifest.files)?;
+    validate_backup_database(&backup_dir.join(DATABASE_FILE_NAME))?;
+
+    Ok(files)
 }
 
 fn validate_custom_data_directory(path: &Path) -> Result<(), AppError> {
@@ -1299,6 +1829,25 @@ fn validate_writable_directory(path: &Path, message: &str) -> Result<(), AppErro
     ));
     fs::write(&probe, b"ok").map_err(|_| AppError::InvalidPayload(message.to_string()))?;
     fs::remove_file(&probe).map_err(|error| AppError::Storage(error.to_string()))
+}
+
+fn classify_notion_analysis_error(error: &str) -> AppError {
+    let normalized = error.to_ascii_lowercase();
+    let is_network_error = normalized.contains("无法连接 notion api")
+        || normalized.contains("初始化 notion 网络客户端失败")
+        || normalized.contains("error sending request")
+        || normalized.contains("connection refused")
+        || normalized.contains("connection reset")
+        || normalized.contains("timed out")
+        || normalized.contains("timeout")
+        || normalized.contains("dns error")
+        || normalized.contains("tls error")
+        || normalized.contains("proxy error");
+    if is_network_error {
+        AppError::Network(format!("检查 Notion 数据库失败：{error}"))
+    } else {
+        AppError::Gateway(format!("检查 Notion 数据库失败：{error}"))
+    }
 }
 
 fn normalize_optional_string(value: Option<String>) -> Option<String> {
@@ -1709,16 +2258,38 @@ mod tests {
     };
 
     use super::{
-        build_export_data_state, clear_ai_output_cache, clear_cache_tables, current_unix_seconds,
-        decode_png_base64, local_backup_file_manifest, local_data_migration_file_manifest,
-        next_available_export_path, read_data_operation_state, sanitize_diagnostic_text,
-        sanitize_png_file_name, select_custom_data_directory, serialize_diagnostics_markdown,
-        table_count, validate_backup_manifest, validate_custom_data_directory,
-        write_data_operation_state, DataOperationState, ExportDataState, IntegrationDataState,
-        LocalDataState, NetworkState, NotionCoverMode, NotionCredentialStatus,
-        NotionIntegrationState, ObsidianAttachmentMode, ObsidianIntegrationState,
-        SettingsStateResponse, TableCountRecord,
+        build_export_data_state, classify_notion_analysis_error, clear_ai_output_cache,
+        clear_cache_tables, create_database_backup, current_unix_seconds, decode_png_base64,
+        local_backup_file_manifest, local_data_migration_file_manifest, next_available_export_path,
+        read_backup_manifest, read_data_operation_state, restore_backup_files,
+        sanitize_diagnostic_text, sanitize_png_file_name, select_custom_data_directory,
+        serialize_diagnostics_markdown, table_count, validate_backup_database,
+        validate_backup_manifest, validate_custom_data_directory, write_data_operation_state,
+        DataOperationState, ExportDataState, IntegrationDataState, LocalDataState, NetworkState,
+        NotionCoverMode, NotionCredentialStatus, NotionIntegrationState, ObsidianAttachmentMode,
+        ObsidianIntegrationState, SettingsStateResponse, TableCountRecord,
     };
+
+    #[test]
+    fn notion_analysis_network_failures_use_network_error_contract() {
+        let error = classify_notion_analysis_error(
+            "无法连接 Notion API（无法建立网络连接）。请检查网络、系统代理或 VPN 后重试。",
+        );
+        assert_eq!(error.code(), "gateway_network_error");
+        assert_eq!(
+            error.user_message(),
+            "无法连接 Notion API，请检查网络、系统代理或 VPN 后重试。"
+        );
+
+        let api_error = classify_notion_analysis_error("Notion Token 无效或已失效");
+        assert_eq!(api_error.code(), "gateway_error");
+        assert!(api_error.user_message().contains("Notion Token 无效"));
+
+        let business_error = classify_notion_analysis_error(
+            "Notion API 请求失败：database connection property is invalid",
+        );
+        assert_eq!(business_error.code(), "gateway_error");
+    }
 
     #[test]
     fn decode_png_base64_accepts_png_data_url_only() {
@@ -2000,6 +2571,7 @@ mod tests {
                     parent_id: None,
                     parent_type: None,
                     cover_mode: NotionCoverMode::PageCover,
+                    database_connection: None,
                 },
             },
             network: NetworkState {
@@ -2046,6 +2618,66 @@ mod tests {
                 "reading-cache.sqlite3-shm".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn database_backup_round_trip_restores_original_database() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "wxreadmaster-backup-round-trip-test-{}",
+            current_unix_seconds()
+        ));
+        let _ = fs::remove_dir_all(&temp_root);
+        let data_dir = temp_root.join("data");
+        let backup_dir = temp_root.join("backup");
+        fs::create_dir_all(&data_dir).expect("data dir should create");
+
+        let database_path = data_dir.join(db::DATABASE_FILE_NAME);
+        let connection = Connection::open(&database_path).expect("database should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        connection
+            .execute(
+                "INSERT INTO reading_item_states (
+                    item_id, item_type, status, title, created_at, updated_at
+                 ) VALUES ('book-1', 'book', 'reviewing', '原始书名', '100', '100')",
+                [],
+            )
+            .expect("reading item should insert");
+        connection
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+            .expect("database should checkpoint");
+        drop(connection);
+
+        let files = create_database_backup(&data_dir, &backup_dir, "100")
+            .expect("backup should be created and validated");
+        assert!(files.iter().any(|file| file == db::DATABASE_FILE_NAME));
+        let manifest = read_backup_manifest(&backup_dir).expect("manifest should read");
+        validate_backup_manifest(&manifest.files).expect("manifest should validate");
+        validate_backup_database(&backup_dir.join(db::DATABASE_FILE_NAME))
+            .expect("backup database should validate");
+
+        let connection = Connection::open(&database_path).expect("database should reopen");
+        connection
+            .execute(
+                "UPDATE reading_item_states SET title = '已修改书名' WHERE item_id = 'book-1'",
+                [],
+            )
+            .expect("reading item should change");
+        drop(connection);
+
+        restore_backup_files(&backup_dir, &data_dir, &manifest.files)
+            .expect("backup should restore");
+        let restored = Connection::open(&database_path).expect("restored database should open");
+        let title: String = restored
+            .query_row(
+                "SELECT title FROM reading_item_states WHERE item_id = 'book-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("restored row should read");
+        assert_eq!(title, "原始书名");
+        drop(restored);
+
+        fs::remove_dir_all(temp_root).expect("temporary backup fixture should be removed");
     }
 
     #[test]

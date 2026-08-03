@@ -61,7 +61,9 @@ import type {
   SearchResult,
   ShelfEntry
 } from "../lib/types";
+import { getCandidateQueue, getOrganizeQueue, type OrganizeCandidate } from "../lib/reading-selectors";
 import { hasReadingStatsData } from "../features/reading-stats/reading-stats-view-helpers";
+import { getCandidateSourceLabel, mapCandidateStateToSearchResult } from "./candidate-books";
 import {
   getLatestReadingStatsResponse,
   type ReadingStatsCache
@@ -143,14 +145,14 @@ export function DashboardPage({
   readingStatsCache,
   onReadingStatsCacheChange
 }: DashboardPageProps) {
-  const [readingStates, setReadingStates] = useState<ReadingItemState[]>([]);
+  const [readingStates, setReadingStates] = useState<ReadingItemState[]>();
   const [isLoadingReadingStates, setIsLoadingReadingStates] = useState(false);
   const [readingStateError, setReadingStateError] = useState<string>();
   const [statsError, setStatsError] = useState<CommandErrorInfo>();
   const [aiSettingsState, setAiSettingsState] = useState<AiSettingsState>();
   const [reviewSuggestion, setReviewSuggestion] = useState<ReadingStatsAiReviewResponse>();
   const [reviewSuggestionError, setReviewSuggestionError] = useState<string>();
-  const [bookReviewSummaries, setBookReviewSummaries] = useState<BookAiSummaryListItem[]>([]);
+  const [bookReviewSummaries, setBookReviewSummaries] = useState<BookAiSummaryListItem[]>();
   const [recommendedBooks, setRecommendedBooks] = useState<SearchResult[]>([]);
   const [recommendationSource, setRecommendationSource] = useState<"remote" | "candidate">("candidate");
   const [overviewProgressByBookId, setOverviewProgressByBookId] = useState<Record<string, ReadingProgress>>({});
@@ -170,24 +172,39 @@ export function DashboardPage({
   const recentEntries = useMemo(() => getRecentEntries(shelfEntries), [shelfEntries]);
   const overviewRecentEntries = useMemo(() => getRecentOverviewEntries(shelfEntries), [shelfEntries]);
   const continueItems = useMemo(() => buildContinueItems(recentEntries, onOpenShelfEntry), [recentEntries, onOpenShelfEntry]);
+  const organizeCandidates = useMemo(() => {
+    if (!readingStates) {
+      return [];
+    }
+
+    return getOrganizeQueue({
+      items: readingStates,
+      notebooks: bookReviewSummaries ? notesBooks : [],
+      reviewedBookIds: new Set(bookReviewSummaries?.map((item) => item.bookId) ?? []),
+      limit: 3
+    });
+  }, [readingStates, notesBooks, bookReviewSummaries]);
   const reviewItems = useMemo(
     () =>
       buildReviewItems({
-        readingStates,
-        notesBooks,
+        candidates: organizeCandidates,
+        readingStates: readingStates ?? [],
         shelfEntryMap,
         notesBookMap,
         onOpenShelfEntry,
         onOpenBookNotes,
         onOpenReadingReview
       }),
-    [readingStates, notesBooks, shelfEntryMap, notesBookMap, onOpenShelfEntry, onOpenBookNotes, onOpenReadingReview]
+    [organizeCandidates, readingStates, shelfEntryMap, notesBookMap, onOpenShelfEntry, onOpenBookNotes, onOpenReadingReview]
   );
-  const candidateItems = useMemo(() => buildCandidateItems(readingStates, onOpenCandidateBook), [readingStates, onOpenCandidateBook]);
+  const candidateItems = useMemo(
+    () => buildCandidateItems(readingStates ? getCandidateQueue(readingStates, 3) : [], onOpenCandidateBook),
+    [readingStates, onOpenCandidateBook]
+  );
   const insightItem = useMemo(
     () =>
       buildUnprocessedInsightItem({
-        summaries: bookReviewSummaries,
+        summaries: bookReviewSummaries ?? [],
         onOpenBookSummary,
         onOpenReadingReview
       }),
@@ -298,7 +315,7 @@ export function DashboardPage({
   const localProgress = useMemo(
     () =>
       buildDashboardLocalProgress({
-        readingStates,
+        readingStates: readingStates ?? [],
         reviewQueueCount: reviewItems.length,
         candidateQueueCount: candidateItems.length,
         notesBookCount: notesBooks.length
@@ -477,6 +494,8 @@ export function DashboardPage({
         return;
       }
 
+      setBookReviewSummaries(undefined);
+
       try {
         const summaries = await listBookNotesSummaries();
         if (isMounted) {
@@ -484,7 +503,7 @@ export function DashboardPage({
         }
       } catch {
         if (isMounted) {
-          setBookReviewSummaries([]);
+          setBookReviewSummaries(undefined);
         }
       }
     }
@@ -873,7 +892,7 @@ export function DashboardPage({
         <div className="activity-heading">
           <div>
             <p className="section-kicker">本地队列</p>
-            <h3>继续读、待复盘和候选书</h3>
+            <h3>继续读、待整理和候选书</h3>
             <p>只读取本机缓存和本地整理状态，不写回微信读书。</p>
           </div>
           <span>{continueItems.length + reviewItems.length + candidateItems.length} 项</span>
@@ -890,13 +909,13 @@ export function DashboardPage({
         <div className="dashboard-queue-grid">
           <DashboardQueueColumn title="继续读" count={continueItems.length} items={continueItems} emptyText={isLoading ? "正在读取书架缓存。" : "暂无最近阅读的电子书。"} emptyActionLabel="查看书架" onEmptyAction={onOpenBookshelf} />
           <DashboardQueueColumn
-            title="待复盘"
+            title="待整理"
             count={reviewItems.length}
             items={reviewItems}
             emptyText={
               isLoadingReadingStates
                 ? "正在读取本地整理状态。"
-                : "暂无本地待复盘书籍，可在详情页标记或先同步笔记。"
+                : "暂无本地待整理书籍，可在详情页标记或先同步笔记。"
             }
             emptyActionLabel="查看笔记"
             onEmptyAction={onOpenNotes}
@@ -1006,49 +1025,49 @@ function buildContinueItems(
 }
 
 function buildReviewItems({
+  candidates,
   readingStates,
-  notesBooks,
   shelfEntryMap,
   notesBookMap,
   onOpenShelfEntry,
   onOpenBookNotes,
   onOpenReadingReview
 }: {
+  candidates: OrganizeCandidate[];
   readingStates: ReadingItemState[];
-  notesBooks: NotebookBook[];
   shelfEntryMap: Map<string, ShelfEntry>;
   notesBookMap: Map<string, NotebookBook>;
   onOpenShelfEntry: (entry: ShelfEntry) => void;
   onOpenBookNotes: (book: NotebookBook) => void;
   onOpenReadingReview: () => void;
 }): DashboardQueueItem[] {
-  const localReviewStates = readingStates
-    .filter((state) => state.itemType === "book" && state.status === "reviewing")
-    .sort((left, right) => Number(right.updatedAt) - Number(left.updatedAt));
-  const localReviewIds = new Set(localReviewStates.map((state) => state.itemId));
-  const organizedBookIds = new Set(
-    readingStates
-      .filter((state) => state.itemType === "book" && state.status === "organized")
-      .map((state) => state.itemId)
-  );
-  const excludedReviewBookIds = new Set([...localReviewIds, ...organizedBookIds]);
-  const localItems = localReviewStates.map((state) => {
-    const notesBook = notesBookMap.get(state.itemId);
-    const shelfEntry = shelfEntryMap.get(state.itemId);
-    const title = state.title || notesBook?.title || shelfEntry?.title || "未命名书籍";
-    const cover = state.cover || notesBook?.cover || shelfEntry?.cover;
-    const author = state.author || notesBook?.author || shelfEntry?.author;
+  const stateByBookId = new Map(readingStates.map((state) => [state.itemId, state]));
+
+  return candidates.map((candidate) => {
+    const book = candidate.book;
+    const state = stateByBookId.get(book.bookId);
+    const notesBook = notesBookMap.get(book.bookId);
+    const shelfEntry = shelfEntryMap.get(book.bookId);
+    const title = state?.title || notesBook?.title || shelfEntry?.title || book.title || "未命名书籍";
+    const cover = state?.cover || notesBook?.cover || shelfEntry?.cover || book.cover;
+    const author = state?.author || notesBook?.author || shelfEntry?.author || book.author;
+    const sourceLabel = candidate.source === "manual" ? "手动" : "建议";
     const meta = notesBook
-      ? `${notesBook.reviewCount} 条想法 · ${calculateTotalNotes(notesBook)} 条笔记`
-      : [author, state.note || "本地标记待复盘"].filter(Boolean).join(" · ");
+      ? `${sourceLabel} · ${notesBook.reviewCount} 条想法 · ${calculateTotalNotes(notesBook)} 条笔记`
+      : [sourceLabel, author, candidate.reason].filter(Boolean).join(" · ");
 
     return {
-      id: `review-state-${state.itemId}`,
-      subjectKey: subjectKey(state.itemType, state.itemId),
+      id: `review-${candidate.source}-${book.bookId}`,
+      subjectKey: subjectKey(state?.itemType ?? "book", book.bookId),
       title,
       meta,
       cover,
-      icon: <Sparkles aria-hidden="true" size={18} />,
+      icon:
+        candidate.source === "manual" ? (
+          <Sparkles aria-hidden="true" size={18} />
+        ) : (
+          <BookMarked aria-hidden="true" size={18} />
+        ),
       actionLabel: notesBook ? "看笔记" : shelfEntry ? "详情" : "复盘",
       onClick: () => {
         if (notesBook) {
@@ -1065,60 +1084,25 @@ function buildReviewItems({
       }
     };
   });
-  const notesItems = getNotebookReviewCandidates(notesBooks, excludedReviewBookIds).map((book) => ({
-    id: `review-notes-${book.bookId}`,
-    subjectKey: subjectKey("book", book.bookId),
-    title: book.title,
-    meta: `${book.reviewCount} 条想法 · ${calculateTotalNotes(book)} 条笔记`,
-    cover: book.cover,
-    icon: <BookMarked aria-hidden="true" size={18} />,
-    actionLabel: "看笔记",
-    onClick: () => onOpenBookNotes(book)
-  }));
-
-  return [...localItems, ...notesItems].slice(0, 3);
-}
-
-function getNotebookReviewCandidates(books: NotebookBook[], excludedBookIds: Set<string>): NotebookBook[] {
-  return [...books]
-    .filter((book) => calculateTotalNotes(book) > 0 && !excludedBookIds.has(book.bookId))
-    .sort((left, right) => {
-      const thoughtDelta = right.reviewCount - left.reviewCount;
-      if (thoughtDelta !== 0) {
-        return thoughtDelta;
-      }
-
-      const noteDelta = calculateTotalNotes(right) - calculateTotalNotes(left);
-      if (noteDelta !== 0) {
-        return noteDelta;
-      }
-
-      return (right.sort ?? 0) - (left.sort ?? 0);
-    })
-    .slice(0, 2);
 }
 
 function buildCandidateItems(
-  readingStates: ReadingItemState[],
+  candidateStates: ReadingItemState[],
   onOpenCandidateBook: (book: SearchResult) => void
 ): DashboardQueueItem[] {
-  return readingStates
-    .filter((state) => state.itemType === "candidate" && state.status === "toRead")
-    .sort((left, right) => Number(right.updatedAt) - Number(left.updatedAt))
-    .slice(0, 3)
-    .map((state) => {
-      const book = mapCandidateStateToSearchResult(state);
-      return {
-        id: `candidate-${state.itemId}`,
-        subjectKey: subjectKey("candidate", state.itemId),
-        title: book.title,
-        meta: [book.author, book.category, "发现页保存"].filter(Boolean).join(" · "),
-        cover: book.cover,
-        icon: <Compass aria-hidden="true" size={18} />,
-        actionLabel: "详情",
-        onClick: () => onOpenCandidateBook(book)
-      };
-    });
+  return candidateStates.map((state) => {
+    const book = mapCandidateStateToSearchResult(state);
+    return {
+      id: `candidate-${state.itemId}`,
+      subjectKey: subjectKey("candidate", state.itemId),
+      title: book.title,
+      meta: [book.author, book.category, getCandidateSourceLabel(book)].filter(Boolean).join(" · "),
+      cover: book.cover,
+      icon: <Compass aria-hidden="true" size={18} />,
+      actionLabel: "详情",
+      onClick: () => onOpenCandidateBook(book)
+    };
+  });
 }
 
 function buildCandidateRecommendations(items: DashboardQueueItem[]): SearchResult[] {
@@ -1162,25 +1146,15 @@ export function buildUnprocessedInsightItem({
           author: latest.author,
           cover: latest.cover,
           reviewCount: 0,
-          noteCount: 1,
+          noteCount: 0,
           bookmarkCount: 0,
-          totalNoteCount: 1
+          totalNoteCount: 0
         });
         return;
       }
 
       onOpenReadingReview();
     }
-  };
-}
-
-function mapCandidateStateToSearchResult(state: ReadingItemState): SearchResult {
-  return {
-    bookId: state.itemId,
-    title: state.title || "未命名候选书",
-    author: state.author,
-    cover: state.cover,
-    category: state.category
   };
 }
 

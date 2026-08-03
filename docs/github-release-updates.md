@@ -31,7 +31,7 @@ Release 页面不要只写“修了什么”，还要先回答“这个产品解
 - GitHub 仓库地址已固定为 `RHZHZ/wereadmaster`。
 - updater 公钥已写入 `src-tauri/tauri.conf.json`。
 - Windows release workflow 会在安装包上传完成后，基于 release 资产地址和本地 `.sig` 文件手工生成 `latest.json`。
-- 首次正式发布前仍需把私钥配置到 GitHub Actions Secrets。
+- 首次正式发布所需的 updater 与 Android 签名 Secrets 已通过既有正式版本验证；每次发布仍必须由 workflow 实际签名并在 Release 资产层复验。
 
 ## 更新体验改造目标
 
@@ -243,42 +243,58 @@ type AppUpdateFlowState =
 
 ## 发布步骤
 
-1. 同步版本号，确保以下位置一致：
+1. 同步版本号与发布文档，确保以下位置一致：
 
    - `package.json`
+   - `package-lock.json`
    - `src-tauri/Cargo.toml`
+   - `src-tauri/Cargo.lock`
    - `src-tauri/tauri.conf.json`
+   - `README.md`
+   - 与标签同名的 `docs/release-notes-vX.Y.Z.json`
+
+   Release Notes JSON 的 `version` 必须与 Git tag 完全一致；workflow 会拒绝版本不匹配的发布。
 
 2. 本地验证：
 
    ```powershell
    npm test
+   npx tsc --noEmit
    npm run build
+   cargo fmt --check --manifest-path "src-tauri/Cargo.toml"
    cargo check --manifest-path "src-tauri/Cargo.toml"
+   cargo test --lib --manifest-path "src-tauri/Cargo.toml"
+   npm run e2e
+   git diff --check
    ```
 
-3. 创建并推送版本标签：
+3. 先提交并推送通过门禁的发布改动，再创建并推送版本标签：
 
    ```powershell
-   git tag v1.0.1
-   git push origin v1.0.1
+   git push origin main
+   git tag v1.0.17
+   git push origin v1.0.17
    ```
 
-4. GitHub Actions 会创建正式 release，并上传安装包和 updater 产物。
-5. Windows job 会显式生成并上传 `latest.json`，检查 release 中的安装包、`latest.json` 和签名产物。
-6. 如需补充说明，直接编辑 release notes。
+4. GitHub Actions 会读取 `docs/release-notes-v1.0.17.json`，创建正式 Release，并上传 Windows updater 与 Android 签名产物。
+5. Windows job 会生成并上传规范化安装包、安装包签名和 `latest.json`；Android job 会验证签名 APK 后上传到同一 Release。
+6. 发布完成后核对 Release 正文、正式状态和全部资产；不要只以 workflow 绿灯代替资产检查。
 
 ## 最小发布检查清单
 
 按这个顺序走，别再横向加需求：
 
-1. 版本号一致，且 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 同步。
-2. 本地回归通过：`npm test`、`npm run build`、`cargo check --manifest-path "src-tauri/Cargo.toml"`。
-3. 核心流程可用：同步书架、阅读指南、书籍复盘、版本历史、导出、设置页。
-4. 应用更新可见：设置页能检查到 GitHub Releases，能展示更新摘要。
-5. 发布产物齐全：安装包、`latest.json`、签名产物都在 draft release 中。
+1. npm、Cargo、Tauri、README 与 Release Notes JSON 的版本全部一致，JSON `version` 与待推送 tag 完全相同。
+2. Release Notes JSON 可解析，正文清楚区分已发布能力、未来计划、升级边界和回退限制。
+3. 本地门禁通过：Vitest、glossary、TypeScript、生产构建、Rust 格式/编译/单测、Playwright 和 `git diff --check`。
+4. 发布提交只包含审核过的产品源码、测试、配置和文档，不包含 `.env`、签名密钥、本地 memory、日志、备份、临时构建、补丁或 `.orig` 文件。
+5. 核心流程可用：同步书架、阅读状态、阅读指南、书籍复盘、统一导出、批量书籍复盘导出、Notion 目标和设置页。
+6. Release 为正式发布且正文来自 tag 对应 JSON；Windows 资产至少包含 `wereadmaster_<version>_x64-setup.exe`、对应 `.sig` 和 `latest.json`。
+7. `latest.json` 的版本、下载 URL、签名和平台键指向本次正式 Windows 资产，不能引用旧版本或草稿资产。
+8. Release 同时包含经过签名校验的 Android APK；不上传 unsigned 或 debug APK。
+9. 应用内更新页能读取正式摘要；Android 下载入口指向同一 Release。
 
-如果任何一项失败，先修阻塞，再继续发版。
+如果任何一项失败，先修阻塞，再继续发版。公开 tag 不强制移动；若 v1.0.17 已发布后发现产品缺陷，使用更高补丁版本修复。
 
 ## 首次发布建议
 

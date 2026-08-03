@@ -658,12 +658,32 @@ export type ReadingRouteResponse = {
   errorMessage?: string;
 };
 
+export type BookDecisionReferenceFactor = "recent" | "finished" | "habits";
+
+export type BookDecisionRecentReadingContext = {
+  finishedTitles: string[];
+  activeCategories: Array<{
+    name: string;
+    minutes: number;
+  }>;
+  averageDailyMinutes: number;
+};
+
 export type BookDecisionCandidateInput = {
   bookId: string;
   title: string;
   author?: string;
   category?: string;
-  localStatus?: string;
+  lifeStatus: ReadingItemLifeStatus;
+  organizeStatus: ReadingItemOrganizeStatus;
+};
+
+export type BookDecisionRequest = {
+  candidates: BookDecisionCandidateInput[];
+  goal?: string;
+  referenceFactors: BookDecisionReferenceFactor[];
+  recentReadingWindowDays?: number;
+  recentReadingContext: BookDecisionRecentReadingContext;
 };
 
 export type BookDecisionGoal =
@@ -705,6 +725,8 @@ export type BookDecision = {
   deferredCandidates: BookDecisionDeferredCandidate[];
   nextActions: string[];
   sourceStats: BookDecisionSourceStats;
+  referenceFactors?: BookDecisionReferenceFactor[];
+  recentReadingWindowDays?: number;
   generatedAt: string;
   promptVersion: string;
   responseFormat?: AiResponseFormatKind;
@@ -747,10 +769,69 @@ export type ReadingItemStatus = "toRead" | "reading" | "reviewing" | "organized"
 
 export type ReadingItemStateType = ShelfEntryType | "candidate";
 
+export type ReadingItemKind = ShelfEntryType | "localBook";
+
+export type ReadingItemCandidateSource =
+  | "weread"
+  | "ai_unconfirmed"
+  | "ai_confirmed"
+  | "light";
+
+export type ReadingItemLifeStatus =
+  | "none"
+  | "want"
+  | "reading"
+  | "paused"
+  | "finished"
+  | "dropped";
+
+export type ReadingItemFinishedSource = "weread_auto" | "manual";
+
+export type ReadingItemOrganizeStatus = "none" | "to_organize" | "organized";
+
+export type ReadingItemSourceMetaValue =
+  | string
+  | number
+  | boolean
+  | null
+  | ReadingItemSourceMetaValue[]
+  | { [key: string]: ReadingItemSourceMetaValue };
+
+export type ReadingItemSourceMeta = Record<string, ReadingItemSourceMetaValue>;
+
+export type ReadingItem = {
+  itemId: string;
+  itemKind: ReadingItemKind;
+  isCandidate: boolean;
+  candidateSource?: ReadingItemCandidateSource;
+  lifeStatus: ReadingItemLifeStatus;
+  finishedSource?: ReadingItemFinishedSource;
+  organizeStatus: ReadingItemOrganizeStatus;
+  userNote?: string;
+  sourceMeta?: ReadingItemSourceMeta;
+  title?: string;
+  author?: string;
+  cover?: string;
+  category?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/**
+ * 旧页面迁移期兼容类型。三维字段是事实源，itemType/status/note 仅供尚未迁移的读取点使用。
+ */
 export type ReadingItemState = {
   itemId: string;
   itemType: ReadingItemStateType;
   status: ReadingItemStatus;
+  itemKind?: ReadingItemKind;
+  isCandidate?: boolean;
+  candidateSource?: ReadingItemCandidateSource;
+  lifeStatus?: ReadingItemLifeStatus;
+  finishedSource?: ReadingItemFinishedSource;
+  organizeStatus?: ReadingItemOrganizeStatus;
+  userNote?: string;
+  sourceMeta?: ReadingItemSourceMeta;
   title?: string;
   author?: string;
   cover?: string;
@@ -760,15 +841,23 @@ export type ReadingItemState = {
   updatedAt: string;
 };
 
-export type ReadingItemStateInput = {
-  itemId: string;
-  itemType: ReadingItemStateType;
-  status: ReadingItemStatus;
+export type ReadingItemPatch = {
+  isCandidate?: boolean;
+  candidateSource?: ReadingItemCandidateSource;
+  lifeStatus?: ReadingItemLifeStatus;
+  finishedSource?: ReadingItemFinishedSource;
+  organizeStatus?: ReadingItemOrganizeStatus;
+  userNote?: string;
+  clearUserNote?: boolean;
+  sourceMeta?: ReadingItemSourceMeta;
+};
+
+export type ReadingItemMeta = {
+  itemKind: ReadingItemKind;
   title?: string;
   author?: string;
   cover?: string;
   category?: string;
-  note?: string;
 };
 
 export type ShelfEntry = {
@@ -855,6 +944,21 @@ export type NotebookBook = {
   readingProgress?: number;
   markedStatus?: number;
   sort?: number;
+};
+
+export type WereadSourceLocation = {
+  bookId: string;
+  chapterUid?: number;
+  range?: string;
+};
+
+export type WereadSourcePrecision = "range" | "chapter" | "book";
+
+export type OpenWereadSourceResult = {
+  opened: boolean;
+  deepLink: string;
+  precision: WereadSourcePrecision;
+  warning?: string;
 };
 
 export type Highlight = {
@@ -1024,6 +1128,8 @@ export type BulkExportRequest = {
 export type BulkExportResultItem = {
   bookId: string;
   title: string;
+  /** 作者，用于区分同名不同版本的书。 */
+  author?: string;
   status: BulkExportItemStatus;
   notesFile?: string;
   aiReviewFile?: string;
@@ -1223,6 +1329,254 @@ export type NotionParentType = "page" | "database";
 
 export type NotionCoverMode = "pageCover" | "contentImageOnly";
 
+export type NotionLogicalField =
+  | "title"
+  | "author"
+  | "cover"
+  | "bookId"
+  | "assetType"
+  | "source"
+  | "exportedAt"
+  | "importStatus"
+  | "readingStatus"
+  | "readingStage"
+  | "progress"
+  | "tags"
+  | "wereadUrl"
+  | "obsidianPath"
+  | "promptVersion"
+  | "inputHash"
+  | "scopeId"
+  | "period"
+  | "actionCount"
+  | "candidateCount"
+  | "highlightCount"
+  | "thoughtCount"
+  | "bookmarkCount"
+  | "exportableCount";
+
+export type NotionPropertyMapping = {
+  logicalField: NotionLogicalField;
+  propertyId: string;
+  propertyNameSnapshot: string;
+  propertyType: string;
+  enabled: boolean;
+};
+
+export type NotionPropertySummary = {
+  id: string;
+  name: string;
+  type: string;
+};
+
+export type NotionDatabaseConnection = {
+  databaseId: string;
+  databaseName?: string;
+  databaseUrl?: string;
+  titlePropertyId: string;
+  titlePropertyNameSnapshot: string;
+  mappings: NotionPropertyMapping[];
+  schemaCheckedAt: string;
+  schemaFingerprint?: string;
+};
+
+export type NotionDatabaseCompatibilityLevel = "full" | "basic" | "invalid";
+
+export type NotionDatabaseIssue = {
+  code: string;
+  message: string;
+  logicalField?: NotionLogicalField;
+  propertyId?: string;
+};
+
+export type AnalyzeNotionDatabaseResult = {
+  compatibility: NotionDatabaseCompatibilityLevel;
+  databaseId: string;
+  databaseName?: string;
+  databaseUrl?: string;
+  titleProperty?: NotionPropertySummary;
+  properties: NotionPropertySummary[];
+  suggestedMappings: NotionPropertyMapping[];
+  issues: NotionDatabaseIssue[];
+  schemaCheckedAt: string;
+  schemaFingerprint?: string;
+};
+
+export type NotionCoverPropertyAction = "reuse" | "create" | "conflict";
+
+export type NotionCoverPropertyPlan = {
+  action: NotionCoverPropertyAction;
+  propertyId?: string;
+  propertyName?: string;
+  propertyType?: string;
+  message: string;
+};
+
+export type NotionCoverBackfillPreflight = {
+  preflightId: string;
+  databaseId: string;
+  databaseName?: string;
+  schemaFingerprint: string;
+  connectionSchemaChanged: boolean;
+  coverProperty: NotionCoverPropertyPlan;
+  bookIdPropertyId?: string;
+  bookIdPropertyName?: string;
+  totalPages: number;
+  pagesWithBookId: number;
+  pagesWithLocalCover: number;
+  missingLocalCover: number;
+  missingCoverProperty: number;
+  missingPageCover: number;
+  preservedCoverProperty: number;
+  preservedPageCover: number;
+  eligiblePages: number;
+  canRun: boolean;
+  blockers: string[];
+  warnings: string[];
+};
+
+export type RunNotionCoverBackfillRequest = {
+  preflightId: string;
+  databaseId: string;
+  schemaFingerprint: string;
+  coverPropertyAction: NotionCoverPropertyAction;
+  confirm: boolean;
+};
+
+export type NotionCoverBackfillPhase =
+  | "validating"
+  | "upgradingSchema"
+  | "updatingPages"
+  | "canceling"
+  | "completed";
+
+export type NotionCoverBackfillItemStatus =
+  | "updated"
+  | "partial"
+  | "preserved"
+  | "skipped"
+  | "failed"
+  | "canceled";
+
+export type NotionCoverBackfillItemResult = {
+  pageId: string;
+  title: string;
+  bookId?: string;
+  status: NotionCoverBackfillItemStatus;
+  propertyUpdated: boolean;
+  pageCoverUpdated: boolean;
+  reason: string;
+};
+
+export type NotionCoverBackfillProgress = {
+  operationId: string;
+  phase: NotionCoverBackfillPhase;
+  total: number;
+  completed: number;
+  updated: number;
+  partial: number;
+  preserved: number;
+  skipped: number;
+  failed: number;
+  canceled: number;
+  currentPageId?: string;
+  currentTitle?: string;
+  message: string;
+};
+
+export type NotionCoverBackfillReport = {
+  operationId: string;
+  preflightId: string;
+  databaseId: string;
+  coverPropertyId: string;
+  coverPropertyName: string;
+  total: number;
+  completed: number;
+  updated: number;
+  partial: number;
+  preserved: number;
+  skipped: number;
+  failed: number;
+  canceled: number;
+  wasCanceled: boolean;
+  schemaUpgraded: boolean;
+  startedAt: string;
+  completedAt: string;
+  items: NotionCoverBackfillItemResult[];
+  warnings: string[];
+};
+
+export type NotionStandardProvisioningPhase =
+  | "creatingDatabase"
+  | "databaseCreateUnknown"
+  | "databaseCreated"
+  | "connectionSaved"
+  | "viewsInitializing"
+  | "partial"
+  | "complete";
+
+export type NotionStandardProvisioningStatus =
+  | "complete"
+  | "partial"
+  | "recoveryRequired"
+  | "unknown";
+
+export type NotionStandardViewKey = "recent" | "notes" | "reviewQueue" | "reviews";
+
+export type NotionDefaultViewStatus =
+  | "created"
+  | "updated"
+  | "reused"
+  | "skipped"
+  | "conflict"
+  | "failed"
+  | "unknown";
+
+export type NotionDefaultViewResult = {
+  key: NotionStandardViewKey;
+  name: string;
+  type: "table";
+  status: NotionDefaultViewStatus;
+  viewId?: string;
+  url?: string;
+  managedConfigFingerprint?: string;
+  warning?: string;
+};
+
+export type NotionViewInitializationStatus =
+  | "notStarted"
+  | "initializing"
+  | "partial"
+  | "complete";
+
+export type NotionStandardProvisioningResolution =
+  | "linkCurrentConnection"
+  | "confirmNotCreated";
+
+export type NotionProvisioningError = {
+  step: string;
+  code: string;
+  message: string;
+  retryable: boolean;
+  resultUnknown: boolean;
+};
+
+export type CreateNotionStandardDatabaseResult = {
+  provisioningId: string;
+  phase: NotionStandardProvisioningPhase;
+  status: NotionStandardProvisioningStatus;
+  databaseId?: string;
+  dataSourceId?: string;
+  url?: string;
+  title: string;
+  connection?: NotionDatabaseConnection;
+  state?: SettingsState;
+  views: NotionDefaultViewResult[];
+  viewInitialization: NotionViewInitializationStatus;
+  warnings: string[];
+  lastError?: NotionProvisioningError;
+};
+
 export type IntegrationDataState = {
   obsidian: {
     vaultDir?: string;
@@ -1235,6 +1589,7 @@ export type IntegrationDataState = {
     parentId?: string;
     parentType?: NotionParentType;
     coverMode: NotionCoverMode;
+    databaseConnection?: NotionDatabaseConnection;
   };
 };
 
@@ -1277,6 +1632,39 @@ export type MultiTargetExportResponse = {
   sourceId: string;
   exportedAt: string;
   results: ExportTargetResult[];
+};
+
+export type BookNotesSummaryTargetSelection = {
+  bookId: string;
+  targets: ExternalExportTarget[];
+  knownObsidianPath?: string;
+};
+
+export type BookNotesSummariesTargetExportRequest = {
+  items: BookNotesSummaryTargetSelection[];
+  options: BookNotesSummariesExportOptions;
+  obsidian?: MultiTargetExportRequest["obsidian"];
+  notion?: MultiTargetExportRequest["notion"];
+};
+
+export type BookNotesSummariesTargetExportItemResult = {
+  bookId: string;
+  title: string;
+  author?: string;
+  results: ExportTargetResult[];
+};
+
+export type BookReviewMarkdownBatchResult = {
+  path: string;
+  indexPath?: string;
+  warning?: string;
+};
+
+export type BookNotesSummariesTargetExportResponse = {
+  exportId: string;
+  exportedAt: string;
+  markdownBatch?: BookReviewMarkdownBatchResult;
+  items: BookNotesSummariesTargetExportItemResult[];
 };
 
 export type CreateNotionReadingLibraryTemplateResult = {

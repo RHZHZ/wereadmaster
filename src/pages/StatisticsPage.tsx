@@ -336,7 +336,7 @@ export function StatisticsPage({
         isOverallMode={isOverallMode}
         isReportEnabled={Boolean(stats)}
         isSyncing={isSyncing}
-        reportActionLabel={isOverallMode ? "生成长期复盘" : "生成阅读报告"}
+        reportActionLabel={isOverallMode ? "生成全部历史报告" : "生成报告图片"}
         reportDisabledReason={activeReportDisabledReason}
         stats={stats}
         syncDisabled={!hasCredential || isSyncing}
@@ -566,7 +566,7 @@ export function StatisticsPage({
       );
     } catch (posterError) {
       showToast({
-        message: posterError instanceof Error ? posterError.message : "生成阅读报告图片失败。",
+        message: posterError instanceof Error ? posterError.message : "生成报告图片失败。",
         tone: "error"
       });
     } finally {
@@ -590,7 +590,7 @@ export function StatisticsPage({
       );
     } catch (posterError) {
       showToast({
-        message: posterError instanceof Error ? posterError.message : "生成长期复盘图片失败。",
+        message: posterError instanceof Error ? posterError.message : "生成全部历史报告图片失败。",
         tone: "error"
       });
     } finally {
@@ -650,7 +650,7 @@ export function StatisticsPage({
       );
     } catch (posterError) {
       showToast({
-        message: posterError instanceof Error ? posterError.message : "分享长期复盘图片失败。",
+        message: posterError instanceof Error ? posterError.message : "分享全部历史报告图片失败。",
         tone: "error"
       });
     } finally {
@@ -820,7 +820,7 @@ function buildReportDisabledReason({
   }
 
   if (isLoadingData || !stats) {
-    return "正在读取本地统计缓存，读取完成后再生成阅读报告。";
+    return "正在读取本地统计缓存，读取完成后再生成报告图片。";
   }
 
   if (dataCompleteness === "unsynced") {
@@ -828,7 +828,7 @@ function buildReportDisabledReason({
   }
 
   if (dataCompleteness === "future_blocked") {
-    return "未来周期不能生成阅读报告。";
+    return "未来周期不能生成报告图片。";
   }
 
   return "当前周期没有可生成报告的阅读数据。";
@@ -850,14 +850,14 @@ function buildLifetimeReportDisabledReason({
   }
 
   if (isLoadingData || !stats) {
-    return "正在读取本地总计统计，读取完成后再生成长期复盘。";
+    return "正在读取本地总计统计，读取完成后再生成全部历史报告。";
   }
 
   if (dataCompleteness === "unsynced") {
     return "总计统计还没有本地缓存，请先同步总计统计。";
   }
 
-  return "全部历史暂时没有可生成长期复盘的阅读数据。";
+  return "全部历史暂时没有可生成报告的阅读数据。";
 }
 
 function isFutureReadingStatsPeriod(period: ReadingStatsPeriod): boolean {

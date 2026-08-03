@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 99,
+  "exportedAt": "1785740001",
+  "statsSyncState": null,
+  "shelfSyncState": { "section": "shelf", "status": "success" },
+  "notesSyncState": null,
+  "shelfEntries": [],
+  "shelfArchives": [],
+  "readingItemStates": [
+    {
+      "itemId": "future-enums",
+      "itemType": "unknown-type",
+      "status": "unknown-status",
+      "itemKind": "future-kind",
+      "isCandidate": "unexpected",
+      "candidateSource": "future-source",
+      "lifeStatus": "future-life",
+      "finishedSource": "future-finished-source",
+      "organizeStatus": "future-organize",
+      "sourceMeta": "not-json",
+      "title": "未来枚举示例",
+      "createdAt": "300",
+      "updatedAt": "301"
+    }
+  ],
+  "notebookBooks": [],
+  "statsRows": [],
+  "reviewRows": []
+}

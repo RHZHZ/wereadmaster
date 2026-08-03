@@ -26,6 +26,10 @@ import { buildAssetVersionChangeSummary } from "../lib/ai-asset-version-diff";
 import { buildActionItemAssistantDraft } from "../lib/action-item-drafts";
 import { buildFeedbackOutcomeAssistantDraft } from "../lib/feedback-outcome-drafts";
 import {
+  getOrganizeQueue,
+  type OrganizeCandidate
+} from "../lib/reading-selectors";
+import {
   buildAiActionItemId,
   buildAiReflectionQuestionId,
   deriveAiAssetActionItemFeedback,
@@ -50,6 +54,7 @@ import {
   getNotebookOverview,
   listAIAssetSummaries,
   listBookNotesSummaries,
+  listReadingItemStates,
   saveAiReviewFeedback,
   type CommandErrorInfo,
   type NotebookOverviewResponse,
@@ -61,6 +66,7 @@ import {
   type ReadingWorkflowTemplateTarget
 } from "../lib/reading-workflow-templates";
 import { formatAiResponseFormat, formatAiTimestamp } from "../lib/formatters";
+import { resolveExportPlatformMode } from "../lib/asset-export-dialog";
 import type {
   AIAssetDetail,
   AIAssetVersionDetail,
@@ -69,10 +75,10 @@ import type {
   AssetVersionRef,
   BookAiSummaryListItem,
   CredentialStatus,
-  ExportAiBulkMarkdownResponse,
   FeedbackOutcomeSummary,
   NotebookBook,
   AssistantContextScope,
+  ReadingItemState,
   ReadingStatsMode
 } from "../lib/types";
 import { buildBookReviewAssetOverview, type BookReviewAssetOverview } from "./book-review-asset-overview";
@@ -80,6 +86,7 @@ import { BookReviewExportDialog, filterBookAiSummaryItems } from "./BookReviewEx
 import { ReadingRouteResultPanel } from "./reading-route/ReadingRouteResultPanel";
 import { buildGuideActionText, buildGuideDetailSections } from "./reading-route/guide-prescription";
 import { ReadingReviewPage } from "./ReadingReviewPage";
+import type { SettingsCategoryId } from "./SettingsPage";
 import { type ReadingStatsCache } from "./reading-stats-period";
 
 type ReadingHubTab = "books" | "guides" | "report";
@@ -90,7 +97,7 @@ type ReadingHubPageProps = {
   credentialStatus?: CredentialStatus;
   cache: ReadingStatsCache;
   onCacheChange: (mode: ReadingStatsMode, response: ReadingStatsResponse) => void;
-  onOpenSettings: () => void;
+  onOpenSettings: (preferredCategory?: SettingsCategoryId) => void;
   activeTab: ReadingHubTab;
   onOpenBookSummary: (book: NotebookBook) => void;
   onPrepareAssetUpdate: (detail: AIAssetVersionDetail, book: AIAssetDetail) => void;
@@ -122,7 +129,8 @@ export function ReadingHubPage({
   notesOverview,
   onNotesOverviewChange
 }: ReadingHubPageProps) {
-  const [summaryItems, setSummaryItems] = useState<BookAiSummaryListItem[]>([]);
+  const [summaryItems, setSummaryItems] = useState<BookAiSummaryListItem[]>();
+  const [readingStates, setReadingStates] = useState<ReadingItemState[]>();
   const [assetSummaries, setAssetSummaries] = useState<AIAssetSummary[]>([]);
   const [selectedAssetBookId, setSelectedAssetBookId] = useState<string>();
   const [assetDetail, setAssetDetail] = useState<AIAssetDetail>();
@@ -137,7 +145,7 @@ export function ReadingHubPage({
   const [isLoadingAssetDetail, setIsLoadingAssetDetail] = useState(false);
   const [isLoadingAssetVersionDetail, setIsLoadingAssetVersionDetail] = useState(false);
   const [hasNotebookIndexLoadFailed, setHasNotebookIndexLoadFailed] = useState(false);
-  const [exportResult, setExportResult] = useState<ExportAiBulkMarkdownResponse>();
+  const [hasReadingStateLoadFailed, setHasReadingStateLoadFailed] = useState(false);
   const [isBookReviewExportDialogOpen, setIsBookReviewExportDialogOpen] = useState(false);
   const [error, setError] = useState<CommandErrorInfo>();
   const hasCredential = credentialStatus?.hasCredential === true;
@@ -151,6 +159,7 @@ export function ReadingHubPage({
 
     async function loadSummaries() {
       setIsLoadingSummaries(true);
+      setSummaryItems(undefined);
       setError(undefined);
 
       try {
@@ -170,6 +179,38 @@ export function ReadingHubPage({
     }
 
     void loadSummaries();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab !== "books") {
+      return;
+    }
+
+    let isMounted = true;
+
+    async function loadReadingStates() {
+      setReadingStates(undefined);
+      setHasReadingStateLoadFailed(false);
+
+      try {
+        const response = await listReadingItemStates();
+        if (isMounted) {
+          setReadingStates(response);
+        }
+      } catch (loadError) {
+        if (isMounted) {
+          setReadingStates(undefined);
+          setHasReadingStateLoadFailed(true);
+          setError(getCommandErrorInfo(loadError));
+        }
+      }
+    }
+
+    void loadReadingStates();
 
     return () => {
       isMounted = false;
@@ -334,16 +375,29 @@ export function ReadingHubPage({
     };
   }, [activeTab, notesOverview, hasCredential, onNotesOverviewChange]);
 
-  const filteredItems = filterBookAiSummaryItems(summaryItems, deferredQuery);
+  const resolvedSummaryItems = summaryItems ?? [];
+  const filteredItems = filterBookAiSummaryItems(resolvedSummaryItems, deferredQuery);
   const filteredAssetSummaries = filterAssetSummaries(assetSummaries, deferredQuery);
-  const shouldLoadCandidateIndex = activeTab === "books" && hasCredential && !notesOverview;
-  const isCandidateIndexLoading = shouldLoadCandidateIndex && !hasNotebookIndexLoadFailed;
-  const reviewCandidates = notesOverview ? getReviewCandidates(notesOverview.books, summaryItems) : [];
-  const latestSummaryTime = getLatestSummaryTime(summaryItems);
+  const shouldLoadCandidateIndex =
+    activeTab === "books" &&
+    ((!notesOverview && hasCredential) || readingStates === undefined);
+  const isCandidateIndexLoading =
+    shouldLoadCandidateIndex &&
+    !hasNotebookIndexLoadFailed &&
+    !hasReadingStateLoadFailed;
+  const reviewCandidates = readingStates
+    ? getOrganizeQueue({
+        items: readingStates,
+        notebooks: summaryItems && notesOverview ? notesOverview.books : [],
+        reviewedBookIds: new Set(resolvedSummaryItems.map((item) => item.bookId)),
+        limit: 3
+      })
+    : [];
+  const latestSummaryTime = getLatestSummaryTime(resolvedSummaryItems);
   const latestAssetTime = getLatestAssetTime(assetSummaries);
   const bookReviewAssetOverview = buildBookReviewAssetOverview({
-    summaries: summaryItems,
-    candidates: reviewCandidates,
+    summaries: resolvedSummaryItems,
+    candidates: reviewCandidates.map((candidate) => candidate.book),
     candidateIndexLoading: isCandidateIndexLoading
   });
 
@@ -373,15 +427,17 @@ export function ReadingHubPage({
 
   function handleOpenBookReviewOverviewAction() {
     if (bookReviewAssetOverview.nextActionTarget === "candidate") {
-      const candidate = reviewCandidates.find((book) => book.bookId === bookReviewAssetOverview.nextActionBookId);
+      const candidate = reviewCandidates.find(
+        (item) => item.book.bookId === bookReviewAssetOverview.nextActionBookId
+      );
       if (candidate) {
-        onOpenBookSummary(candidate);
+        onOpenBookSummary(candidate.book);
       }
       return;
     }
 
     if (bookReviewAssetOverview.nextActionTarget === "summary") {
-      const summary = summaryItems.find((item) => item.bookId === bookReviewAssetOverview.nextActionBookId);
+      const summary = resolvedSummaryItems.find((item) => item.bookId === bookReviewAssetOverview.nextActionBookId);
       if (summary) {
         handleOpenSummary(summary);
       }
@@ -433,7 +489,7 @@ export function ReadingHubPage({
   }
 
   return (
-    <section className="reading-hub-page" aria-label="复盘中心">
+    <section className="reading-hub-page" aria-label="成果">
       {activeTab === "books" ? (
         <section className="reading-hub-books" aria-label="书籍复盘列表">
           <div className="reading-hub-books-toolbar">
@@ -461,11 +517,8 @@ export function ReadingHubPage({
               <button
                 className="secondary-action"
                 type="button"
-                onClick={() => {
-                  setExportResult(undefined);
-                  setIsBookReviewExportDialogOpen(true);
-                }}
-                disabled={summaryItems.length === 0}
+                onClick={() => setIsBookReviewExportDialogOpen(true)}
+                disabled={resolvedSummaryItems.length === 0}
               >
                 <Download aria-hidden="true" size={16} />
                 导出书籍复盘
@@ -484,23 +537,14 @@ export function ReadingHubPage({
             </div>
           ) : null}
 
-          {exportResult ? (
-            <div className="status-message status-message--neutral" aria-label="复盘导出结果">
-              <Download aria-hidden="true" size={18} />
-              <span>
-                已导出 {exportResult.itemCount} 本书籍复盘，路径：{exportResult.path}
-              </span>
-            </div>
-          ) : null}
-
-          {isCandidateIndexLoading && summaryItems.length > 0 ? (
+          {isCandidateIndexLoading && resolvedSummaryItems.length > 0 ? (
             <div className="status-message status-message--neutral" aria-label="正在更新复盘候选">
               <Loader2 aria-hidden="true" size={18} className="spin" />
               <span>正在后台更新本地笔记索引，已先展示已生成复盘。</span>
             </div>
           ) : null}
 
-          {isCandidateIndexLoading && summaryItems.length === 0 ? (
+          {isCandidateIndexLoading && resolvedSummaryItems.length === 0 ? (
             <section className="book-detail-loading" aria-label="正在读取复盘候选">
               <Loader2 aria-hidden="true" size={26} className="spin" />
               <div>
@@ -536,7 +580,7 @@ export function ReadingHubPage({
                 </section>
               ) : null}
 
-              {!isLoadingSummaries && summaryItems.length === 0 ? (
+              {!isLoadingSummaries && summaryItems && resolvedSummaryItems.length === 0 ? (
                 <section className="empty-inline stats-empty" aria-label="暂无书籍复盘">
                   <Database aria-hidden="true" size={28} />
                   <h3>还没有书籍复盘</h3>
@@ -547,7 +591,7 @@ export function ReadingHubPage({
                 </section>
               ) : null}
 
-              {!isLoadingSummaries && summaryItems.length > 0 && filteredItems.length === 0 ? (
+              {!isLoadingSummaries && resolvedSummaryItems.length > 0 && filteredItems.length === 0 ? (
                 <section className="empty-inline stats-empty" aria-label="筛选无结果">
                   <SearchX aria-hidden="true" size={28} />
                   <h3>没有匹配的书籍复盘</h3>
@@ -594,8 +638,12 @@ export function ReadingHubPage({
               </div>
               {reviewCandidates.length > 0 ? (
                 <div className="review-candidate-grid">
-                  {reviewCandidates.map((book) => (
-                    <ReviewCandidateCard key={book.bookId} book={book} onOpen={onOpenBookSummary} />
+                  {reviewCandidates.map((candidate) => (
+                    <ReviewCandidateCard
+                      key={candidate.book.bookId}
+                      candidate={candidate}
+                      onOpen={onOpenBookSummary}
+                    />
                   ))}
                 </div>
               ) : isCandidateIndexLoading ? (
@@ -749,9 +797,10 @@ export function ReadingHubPage({
 
       {isBookReviewExportDialogOpen ? (
         <BookReviewExportDialog
-          items={summaryItems}
+          items={resolvedSummaryItems}
+          platformMode={resolveExportPlatformMode()}
           onClose={() => setIsBookReviewExportDialogOpen(false)}
-          onExportComplete={setExportResult}
+          onOpenSettings={() => onOpenSettings("export")}
         />
       ) : null}
     </section>
@@ -903,12 +952,13 @@ function getWorkflowTemplateIcon(target: ReadingWorkflowTemplateTarget) {
 }
 
 function ReviewCandidateCard({
-  book,
+  candidate,
   onOpen
 }: {
-  book: NotebookBook;
+  candidate: OrganizeCandidate;
   onOpen: (book: NotebookBook) => void;
 }) {
+  const { book, source } = candidate;
   const totalNotes = calculateTotalNotes(book);
   const thoughtRatio = totalNotes > 0 ? Math.round((book.reviewCount / totalNotes) * 100) : 0;
 
@@ -921,7 +971,7 @@ function ReviewCandidateCard({
         <strong>{book.title}</strong>
         <small>{book.author || "暂无作者信息"}</small>
         <span>
-          {book.reviewCount} 条想法 · {totalNotes} 条笔记 · 想法占比 {thoughtRatio}%
+          {source === "manual" ? "手动" : "建议"} · {book.reviewCount} 条想法 · {totalNotes} 条笔记 · 想法占比 {thoughtRatio}%
         </span>
         <b>去生成</b>
       </span>
@@ -985,7 +1035,7 @@ export function AIAssetDetailView({
       <div className="ai-asset-detail-hero">
         <button className="text-button" type="button" onClick={onBack}>
           <ChevronLeft aria-hidden="true" size={16} />
-          返回阅读指南库
+          返回成果
         </button>
         <div>
           <p className="section-kicker">书籍成果</p>
@@ -1738,7 +1788,7 @@ function AIAssetUpdateDialog({
   onPrepareUpdate?: (detail: AIAssetVersionDetail, book: AIAssetDetail) => void;
 }) {
   const label = detail.feature === "book-review" ? "准备更新书籍复盘" : "准备更新阅读指南";
-  const target = detail.feature === "book-review" ? "单本 AI 复盘页" : "本书阅读指南页";
+  const target = detail.feature === "book-review" ? "书籍复盘页" : "本书阅读指南页";
   const canPrepare = Boolean(assetBook && onPrepareUpdate);
   const checklist = buildRegenerationReviewItems(detail, previousDetail, summary);
   const hasFeedback = Boolean(summary && (summary.completed > 0 || summary.skipped > 0 || summary.notApplicable > 0 || summary.withNote > 0));
@@ -1893,7 +1943,7 @@ function BookReviewVersionContent({
 }) {
   return (
     <div className="ai-summary-content ai-asset-version-review">
-      <section className="ai-summary-overview" aria-label="AI 复盘概览">
+      <section className="ai-summary-overview" aria-label="书籍复盘概览">
         <Database aria-hidden="true" size={20} />
         <div>
           <h4>概览</h4>
@@ -1968,7 +2018,7 @@ function BookReviewVersionContent({
         labels={reflectionFeedbackLabels}
       />
 
-      <section className="ai-summary-source-card" aria-label="AI 复盘来源统计">
+      <section className="ai-summary-source-card" aria-label="书籍复盘来源统计">
         <div>
           <strong>来源统计</strong>
           <small>仅展示当前版本缓存记录里的统计信息。</small>
@@ -2195,28 +2245,4 @@ function historySourceLabel(source: AIAssetVersionSummary["source"]): string {
     default:
       return "本地缓存";
   }
-}
-
-function getReviewCandidates(
-  books: NotebookBook[],
-  summaryItems: BookAiSummaryListItem[]
-): NotebookBook[] {
-  const summarizedBookIds = new Set(summaryItems.map((item) => item.bookId));
-
-  return [...books]
-    .filter((book) => calculateTotalNotes(book) > 0 && !summarizedBookIds.has(book.bookId))
-    .sort((left, right) => {
-      const thoughtDelta = right.reviewCount - left.reviewCount;
-      if (thoughtDelta !== 0) {
-        return thoughtDelta;
-      }
-
-      const noteDelta = calculateTotalNotes(right) - calculateTotalNotes(left);
-      if (noteDelta !== 0) {
-        return noteDelta;
-      }
-
-      return (right.readingProgress ?? 0) - (left.readingProgress ?? 0);
-    })
-    .slice(0, 3);
 }

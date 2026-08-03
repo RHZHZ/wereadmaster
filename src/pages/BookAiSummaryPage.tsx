@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   AlertCircle,
   ArrowLeft,
@@ -19,6 +19,7 @@ import {
   Target
 } from "lucide-react";
 import { AiActionFeedbackChecklist } from "../components/AiActionFeedbackChecklist";
+import { AssetExportDialog } from "../components/export/AssetExportDialog";
 import { BookInsightSection } from "../components/BookInsightSection";
 import { reflectionFeedbackLabels } from "../components/AiActionFeedbackChecklist";
 import { SkillUpgradeNotice } from "../components/SkillUpgradeNotice";
@@ -43,12 +44,13 @@ import {
   getReadingItemState,
   getAiReviewFeedback,
   getAiSettingsState,
+  getBookNotes,
   getCommandErrorInfo,
   getCommandErrorMessage,
   getLatestBookNotesSummary,
   saveAiReviewFeedback,
   summarizeBookNotes,
-  upsertReadingItemState,
+  patchReadingItemState,
   type CommandErrorInfo
 } from "../lib/reading-api";
 import { formatAiResponseFormat, formatAiTimestamp } from "../lib/formatters";
@@ -56,12 +58,8 @@ import {
   formatArtifactCopiedMessage,
   type ReadingArtifactKind
 } from "../lib/reading-artifacts";
-import {
-  exportTargetLabel,
-  exportTargetsFromDestination,
-  formatMultiTargetExportToast,
-  type ExportDestination
-} from "../lib/export-targets";
+import { resolveExportPlatformMode } from "../lib/asset-export-dialog";
+import { formatMultiTargetExportToast } from "../lib/export-targets";
 import type {
   AiSettingsState,
   BookAiRepresentativeQuote,
@@ -71,22 +69,35 @@ import type {
   BookNotes,
   FeedbackOutcomeSummary,
   MultiTargetExportResponse,
+  ExternalExportTarget,
   NotebookBook,
   AiReviewFeedbackExport,
   PreparedAssetUpdate,
   ReadingItemState
 } from "../lib/types";
+import type { SettingsCategoryId } from "./SettingsPage";
 
 type BookAiSummaryPageProps = {
   book?: NotebookBook;
   bookId?: string;
   notes?: BookNotes;
-  onOpenSettings: () => void;
+  onNotesChange?: (bookId: string, notes: BookNotes) => void;
+  onOpenSettings: (preferredCategory?: SettingsCategoryId) => void;
   onBack: () => void;
   backLabel?: string;
   preparedUpdate?: PreparedAssetUpdate;
   onAskInsight?: (draft: string) => void;
 };
+
+type NotesInfo =
+  | { status: "unknown" }
+  | { status: "loading" }
+  | {
+      status: "ready";
+      notes: BookNotes;
+      exportableCount: number;
+      totalCount: number;
+    };
 
 type AiPageStatus =
   | "idle"
@@ -98,10 +109,13 @@ type AiPageStatus =
   | "error"
   | "empty-note";
 
+const inFlightBookNotesRequests = new Map<string, Promise<BookNotes>>();
+
 export function BookAiSummaryPage({
   book,
   bookId,
   notes,
+  onNotesChange,
   onOpenSettings,
   onBack,
   backLabel = "返回单本笔记",
@@ -115,28 +129,106 @@ export function BookAiSummaryPage({
   const [isLoadingSettings, setIsLoadingSettings] = useState(false);
   const [isLoadingSummaryCache, setIsLoadingSummaryCache] = useState(false);
   const [isLoadingReadingState, setIsLoadingReadingState] = useState(false);
-  const [isExporting, setIsExporting] = useState(false);
-  const [exportResult, setExportResult] = useState<MultiTargetExportResponse>();
-  const [exportDestination, setExportDestination] = useState<ExportDestination>("markdown");
+  const [isAssetExportOpen, setIsAssetExportOpen] = useState(false);
   const [reviewFeedback, setReviewFeedback] = useState<AiReviewFeedbackState>(createEmptyReviewFeedback);
   const [readingState, setReadingState] = useState<ReadingItemState>();
   const [readingStateError, setReadingStateError] = useState<string>();
+  const [notesInfo, setNotesInfo] = useState<NotesInfo>(() => notesInfoFromNotes(notes, targetBookId));
+  const [notesError, setNotesError] = useState<CommandErrorInfo>();
+  const [notesReloadToken, setNotesReloadToken] = useState(0);
+  const onNotesChangeRef = useRef(onNotesChange);
+  const activeNotesBookIdRef = useRef(targetBookId);
   const [error, setError] = useState<CommandErrorInfo>();
   const { showToast } = useToast();
-  const displayBook = notes?.book && notes.book.bookId === targetBookId ? notes.book : book ?? notes?.book;
-  const summary = summaryResponse?.summary;
-  const sourceStats = summary?.sourceStats ?? sourceStatsFromSource(notes, displayBook);
-  const hasSummary = Boolean(summary && summaryResponse?.source !== "empty");
+  const readyNotes =
+    notesInfo.status === "ready" && notesInfo.notes.bookId === targetBookId
+      ? notesInfo.notes
+      : undefined;
+  const hasReadyNotesForTarget = Boolean(readyNotes);
+  const displayBook =
+    readyNotes?.book && readyNotes.book.bookId === targetBookId
+      ? readyNotes.book
+      : book ?? readyNotes?.book;
+  const activeSummaryResponse =
+    summaryResponse?.bookId === targetBookId
+      ? summaryResponse
+      : undefined;
+  const summary = activeSummaryResponse?.summary;
+  const sourceStats = summary?.sourceStats ?? sourceStatsFromNotes(readyNotes);
+  const hasSourceStats = Boolean(summary || readyNotes);
+  const hasSummary = Boolean(summary && activeSummaryResponse?.source !== "empty");
   const canGenerate =
     Boolean(targetBookId) &&
-    sourceStats.highlightCount + sourceStats.thoughtCount > 0 &&
+    hasReadyNotesForTarget &&
+    notesInfo.status === "ready" &&
+    notesInfo.exportableCount > 0 &&
     aiState?.credential.hasCredential === true &&
     !isLoadingSettings &&
     !isLoadingSummaryCache &&
     status !== "generating";
-  const statusMeta = statusMetaFromState(status, Boolean(summaryResponse?.errorMessage));
-  const summaryInputHash = summaryResponse?.inputHash;
-  const isOrganized = readingState?.status === "organized";
+  const statusMeta = statusMetaFromState(
+    status,
+    Boolean(activeSummaryResponse?.errorMessage),
+    notesInfo.status
+  );
+  const summaryInputHash = activeSummaryResponse?.inputHash;
+  const isOrganized =
+    readingState?.organizeStatus === "organized" || readingState?.status === "organized";
+
+  useEffect(() => {
+    onNotesChangeRef.current = onNotesChange;
+  }, [onNotesChange]);
+
+  useEffect(() => {
+    let isMounted = true;
+    const matchingNotes = notes?.bookId === targetBookId ? notes : undefined;
+    const isBookChange = activeNotesBookIdRef.current !== targetBookId;
+    activeNotesBookIdRef.current = targetBookId;
+
+    async function loadNotesInfo() {
+      if (isBookChange) {
+        setSummaryResponse(undefined);
+      }
+      setNotesError(undefined);
+
+      if (!targetBookId) {
+        setNotesInfo({ status: "unknown" });
+        setStatus("error");
+        setNotesError({ message: "缺少书籍 ID，无法读取真实笔记。" });
+        return;
+      }
+
+      if (matchingNotes) {
+        setNotesInfo(createReadyNotesInfo(matchingNotes));
+        return;
+      }
+
+      setNotesInfo({ status: "loading" });
+      setStatus("idle");
+
+      try {
+        const response = await loadBookNotesOnce(targetBookId);
+        if (!isMounted) {
+          return;
+        }
+
+        const normalizedBookId = response.bookId || targetBookId;
+        setNotesInfo(createReadyNotesInfo(response));
+        onNotesChangeRef.current?.(normalizedBookId, response);
+      } catch (loadError) {
+        if (isMounted) {
+          setNotesInfo({ status: "unknown" });
+          setNotesError(getCommandErrorInfo(loadError));
+        }
+      }
+    }
+
+    void loadNotesInfo();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [targetBookId, notes, notesReloadToken]);
 
   useEffect(() => {
     let isMounted = true;
@@ -144,8 +236,14 @@ export function BookAiSummaryPage({
     async function loadAiState() {
       setIsLoadingSettings(true);
       setError(undefined);
-      setSummaryResponse(undefined);
-      setStatus((notes?.exportableCount ?? 1) > 0 ? "idle" : "empty-note");
+      setStatus((current) =>
+        current === "cached" ||
+        current === "generated" ||
+        current === "generating" ||
+        current === "loading-cache"
+          ? current
+          : statusFromAiState(undefined, notesInfo)
+      );
 
       try {
         const nextState = await getAiSettingsState();
@@ -160,7 +258,7 @@ export function BookAiSummaryPage({
           current === "generating" ||
           current === "loading-cache"
             ? current
-            : statusFromAiState(nextState, notes)
+            : statusFromAiState(nextState, notesInfo)
         );
       } catch (settingsError) {
         if (isMounted) {
@@ -179,7 +277,7 @@ export function BookAiSummaryPage({
     return () => {
       isMounted = false;
     };
-  }, [targetBookId, notes?.exportableCount]);
+  }, [targetBookId, notesInfo.status, notesInfo.status === "ready" ? notesInfo.exportableCount : undefined]);
 
   useEffect(() => {
     let isMounted = true;
@@ -269,8 +367,20 @@ export function BookAiSummaryPage({
     let isMounted = true;
 
     async function loadCachedSummary() {
-      if (!targetBookId || (notes?.exportableCount ?? 1) <= 0) {
+      if (
+        !targetBookId ||
+        notesInfo.status !== "ready" ||
+        notesInfo.notes.bookId !== targetBookId ||
+        notesInfo.exportableCount <= 0
+      ) {
         setIsLoadingSummaryCache(false);
+        if (
+          notesInfo.status === "ready" &&
+          notesInfo.notes.bookId === targetBookId &&
+          notesInfo.exportableCount <= 0
+        ) {
+          setStatus("empty-note");
+        }
         return;
       }
 
@@ -293,7 +403,7 @@ export function BookAiSummaryPage({
           return;
         }
 
-        setStatus(statusFromAiState(aiState, notes));
+        setStatus(statusFromAiState(aiState, notesInfo));
       } catch (cacheError) {
         if (isMounted) {
           setStatus("error");
@@ -311,16 +421,27 @@ export function BookAiSummaryPage({
     return () => {
       isMounted = false;
     };
-  }, [targetBookId, notes?.exportableCount]);
+  }, [
+    targetBookId,
+    notesInfo.status,
+    notesInfo.status === "ready" ? notesInfo.exportableCount : undefined
+  ]);
 
   async function handleGenerate(regenerate: boolean) {
     if (!targetBookId) {
       setStatus("error");
-      setError({ message: "缺少书籍 ID，无法生成 AI 复盘。" });
+      setError({ message: "缺少书籍 ID，无法生成 书籍复盘。" });
       return;
     }
 
-    if ((notes?.exportableCount ?? 1) <= 0) {
+    if (
+      notesInfo.status !== "ready" ||
+      notesInfo.notes.bookId !== targetBookId
+    ) {
+      return;
+    }
+
+    if (notesInfo.exportableCount <= 0) {
       setStatus("empty-note");
       return;
     }
@@ -332,7 +453,6 @@ export function BookAiSummaryPage({
 
     setStatus("generating");
     setError(undefined);
-    setExportResult(undefined);
 
     try {
       const response = await summarizeBookNotes({
@@ -351,27 +471,18 @@ export function BookAiSummaryPage({
     }
   }
 
-  async function handleExport() {
+  async function exportBookReview(
+    targets: ExternalExportTarget[]
+  ): Promise<MultiTargetExportResponse> {
     if (!targetBookId || !hasSummary) {
-      return;
+      throw new Error("当前没有可导出的书籍复盘。");
     }
 
-    setIsExporting(true);
-    setError(undefined);
-    setExportResult(undefined);
-
-    try {
-      const targets = exportTargetsFromDestination(exportDestination);
-      const response = await exportBookNotesSummaryTargets(targetBookId, reviewFeedback, {
-        targets: [...targets]
-      });
-      setExportResult(response);
-      showToast(formatMultiTargetExportToast(response));
-    } catch (exportError) {
-      setError(getCommandErrorInfo(exportError));
-    } finally {
-      setIsExporting(false);
-    }
+    const response = await exportBookNotesSummaryTargets(targetBookId, reviewFeedback, {
+      targets
+    });
+    showToast(formatMultiTargetExportToast(response));
+    return response;
   }
 
   async function handleMarkOrganized() {
@@ -383,15 +494,16 @@ export function BookAiSummaryPage({
     setReadingStateError(undefined);
 
     try {
-      const nextState = await upsertReadingItemState({
-        itemId: targetBookId,
-        itemType: "book",
-        status: "organized",
-        title: displayBook?.title,
-        author: displayBook?.author,
-        cover: displayBook?.cover,
-        note: "用户已确认吸收本书复盘"
-      });
+      const nextState = await patchReadingItemState(
+        targetBookId,
+        { organizeStatus: "organized" },
+        {
+          itemKind: "book",
+          title: displayBook?.title,
+          author: displayBook?.author,
+          cover: displayBook?.cover
+        }
+      );
       setReadingState(nextState);
       showToast({ message: "已标记为「已整理」", tone: "success" });
     } catch (stateError) {
@@ -431,9 +543,9 @@ export function BookAiSummaryPage({
       await copyTextToClipboard(
         formatFullSummary({
           book: displayBook,
-          providerModel: summaryResponse?.providerModel,
+          providerModel: activeSummaryResponse?.providerModel,
           reviewFeedback,
-          responseSource: summaryResponse?.source,
+          responseSource: activeSummaryResponse?.source,
           sourceStats,
           summary
         })
@@ -505,7 +617,7 @@ export function BookAiSummaryPage({
   }
 
   return (
-    <section className="ai-summary-page" aria-label="单本 AI 复盘">
+    <section className="ai-summary-page" aria-label="单本 书籍复盘">
       <button className="text-button back-button" type="button" onClick={onBack}>
         <ArrowLeft aria-hidden="true" size={16} />
         {backLabel}
@@ -516,8 +628,8 @@ export function BookAiSummaryPage({
           <Bot aria-hidden="true" size={24} />
         </div>
         <div>
-          <p className="section-kicker">本地 AI 复盘</p>
-          <h3>{displayBook?.title ? `《${displayBook.title}》AI 复盘` : "AI 复盘"}</h3>
+          <p className="section-kicker">本地 书籍复盘</p>
+          <h3>{displayBook?.title ? `《${displayBook.title}》书籍复盘` : "书籍复盘"}</h3>
           <p>读取已保存复盘；点击生成时使用当前书笔记。</p>
           {displayBook?.author ? <small>{displayBook.author}</small> : null}
         </div>
@@ -531,17 +643,20 @@ export function BookAiSummaryPage({
               type="button"
               onClick={() => void handleGenerate(false)}
               disabled={!canGenerate || hasSummary}
+              aria-busy={status === "generating" || isLoadingSummaryCache || notesInfo.status === "loading"}
             >
               {status === "generating" || isLoadingSummaryCache ? (
                 <Loader2 aria-hidden="true" size={18} className="spin" />
               ) : (
                 <Database aria-hidden="true" size={18} />
               )}
-              {status === "generating"
-                ? "生成中"
-                : isLoadingSummaryCache
-                  ? "读取缓存中"
-                  : "生成复盘"}
+              {notesInfo.status === "loading"
+                ? "读取笔记中"
+                : status === "generating"
+                  ? "生成中"
+                  : isLoadingSummaryCache
+                    ? "读取缓存中"
+                    : "生成复盘"}
             </button>
             <button
               className="secondary-action"
@@ -561,42 +676,25 @@ export function BookAiSummaryPage({
               <Copy aria-hidden="true" size={18} />
               复制完整复盘
             </button>
-            <label className="compact-export-select">
-              <span>导出到</span>
-              <select
-                value={exportDestination}
-                onChange={(event) => setExportDestination(event.target.value as ExportDestination)}
-                disabled={!hasSummary || isExporting || isLoadingSummaryCache || status === "generating"}
-              >
-                <option value="markdown">Markdown</option>
-                <option value="obsidian">Obsidian</option>
-                <option value="notion">Notion</option>
-                <option value="obsidianNotion">Obsidian + Notion</option>
-              </select>
-            </label>
             <button
               className="secondary-action"
               type="button"
-              onClick={() => void handleExport()}
-              disabled={!hasSummary || isExporting || isLoadingSummaryCache || status === "generating"}
+              onClick={() => setIsAssetExportOpen(true)}
+              disabled={!hasSummary || isLoadingSummaryCache || status === "generating"}
             >
-              {isExporting ? (
-                <Loader2 aria-hidden="true" size={18} className="spin" />
-              ) : (
-                <Download aria-hidden="true" size={18} />
-              )}
-              {isExporting ? "导出中" : "一键导出"}
+              <Download aria-hidden="true" size={18} />
+              导出书籍复盘
             </button>
           </div>
         </div>
       </section>
 
-      <section className="ai-summary-boundary-strip" aria-label="AI 复盘数据边界">
+      <section className="ai-summary-boundary-strip" aria-label="书籍复盘数据边界">
         <Database aria-hidden="true" size={18} />
         <div>
-          <strong>{summaryResponse ? sourceLabelFromResponse(summaryResponse.source) : "待生成"}</strong>
+          <strong>{activeSummaryResponse ? sourceLabelFromResponse(activeSummaryResponse.source) : "待生成"}</strong>
           <p>
-            {summaryResponse
+            {activeSummaryResponse
               ? "当前展示内容来自本机缓存或本次手动生成结果。"
               : "点击“生成复盘”时使用当前书笔记。"}
           </p>
@@ -622,6 +720,33 @@ export function BookAiSummaryPage({
         </section>
       ) : null}
 
+      {notesInfo.status === "loading" ? (
+        <div className="ai-summary-loading" aria-live="polite">
+          <Loader2 aria-hidden="true" size={20} className="spin" />
+          <span>正在读取当前书真实笔记</span>
+        </div>
+      ) : null}
+
+      {notesInfo.status === "unknown" && notesError ? (
+        <div className="ai-summary-callout" role="alert">
+          <AlertCircle aria-hidden="true" size={20} />
+          <div>
+            <strong>真实笔记读取失败</strong>
+            <p>{getCommandErrorMessage(notesError)}</p>
+          </div>
+          {targetBookId ? (
+            <button
+              className="secondary-action"
+              type="button"
+              onClick={() => setNotesReloadToken((current) => current + 1)}
+            >
+              <RefreshCw aria-hidden="true" size={18} />
+              重新读取笔记
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
       {status === "setup-required" ? (
         <div className="ai-summary-callout">
           <Settings aria-hidden="true" size={20} />
@@ -629,7 +754,7 @@ export function BookAiSummaryPage({
             <strong>需要先配置 AI Provider</strong>
             <p>AI Key 保存在本机安全存储中，页面不会显示已保存密钥。</p>
           </div>
-          <button className="secondary-action" type="button" onClick={onOpenSettings}>
+          <button className="secondary-action" type="button" onClick={() => onOpenSettings()}>
             去设置
           </button>
         </div>
@@ -640,7 +765,7 @@ export function BookAiSummaryPage({
           <AlertCircle aria-hidden="true" size={20} />
           <div>
             <strong>没有可总结的划线或想法</strong>
-            <p>当前书只有书签数量或暂无笔记内容，书签正文不会被微信读书接口返回。</p>
+            <p>请先同步这本书的笔记，或在本地阅读器中写下想法；书签正文不会被微信读书接口返回。</p>
           </div>
         </div>
       ) : null}
@@ -654,37 +779,6 @@ export function BookAiSummaryPage({
         </div>
       ) : null}
 
-      {exportResult ? (
-        <section className="export-result-list" aria-label="AI 复盘导出结果">
-          {exportResult.results.map((result) => (
-            <div
-              className={`status-message ${
-                result.status === "failed" ? "status-message--error" : "status-message--neutral"
-              }`}
-              key={result.target}
-            >
-              {result.status === "failed" ? (
-                <AlertCircle aria-hidden="true" size={18} />
-              ) : (
-                <Download aria-hidden="true" size={18} />
-              )}
-              <span>
-                <strong>{exportTargetLabel(result.target)}：</strong>
-                {result.status === "succeeded"
-                  ? result.path || result.url || "导出成功"
-                  : result.error?.message || "导出失败"}
-                {result.warning ? `（${result.warning}）` : ""}
-              </span>
-              {result.url ? (
-                <a href={result.url} target="_blank" rel="noreferrer">
-                  打开
-                </a>
-              ) : null}
-            </div>
-          ))}
-        </section>
-      ) : null}
-
       {isLoadingSettings ? (
         <div className="ai-summary-loading">
           <Loader2 aria-hidden="true" size={20} className="spin" />
@@ -695,13 +789,13 @@ export function BookAiSummaryPage({
       {isLoadingSummaryCache ? (
         <div className="ai-summary-loading">
           <Loader2 aria-hidden="true" size={20} className="spin" />
-          <span>正在读取本地 AI 复盘缓存</span>
+          <span>正在读取本地 书籍复盘缓存</span>
         </div>
       ) : null}
 
       {summary ? (
         <div className="ai-summary-content">
-          <section className="ai-summary-overview" aria-label="AI 复盘概览">
+          <section className="ai-summary-overview" aria-label="书籍复盘概览">
             <CheckCircle2 aria-hidden="true" size={20} />
             <div>
               <h4>概览</h4>
@@ -784,33 +878,46 @@ export function BookAiSummaryPage({
       ) : (
         <div className="ai-summary-placeholder">
           <Sparkles aria-hidden="true" size={20} />
-          <p>点击“生成复盘”后，会使用当前书笔记生成阅读报告。</p>
+          <p>点击“生成复盘”后，会使用当前书笔记生成书籍复盘。</p>
         </div>
       )}
 
-      <section className="ai-summary-source-card" aria-label="AI 复盘来源统计">
-        <div>
-          <strong>来源统计</strong>
-          <small>仅统计当前书本地笔记；书签只计数量，不含正文。</small>
-        </div>
-        <div className="ai-summary-stats">
-          <SummaryStat label="划线" value={sourceStats.highlightCount} />
-          <SummaryStat label="想法" value={sourceStats.thoughtCount} />
-          <SummaryStat label="书签" value={sourceStats.bookmarkCount} />
-          <SummaryStat label="章节" value={sourceStats.chapterCount} />
-          <SummaryStat label="纳入划线" value={sourceStats.includedHighlightCount} />
-          <SummaryStat label="纳入想法" value={sourceStats.includedThoughtCount} />
-        </div>
-      </section>
+      {hasSourceStats ? (
+        <section className="ai-summary-source-card" aria-label="书籍复盘来源统计">
+          <div>
+            <strong>来源统计</strong>
+            <small>仅统计当前书本地笔记；书签只计数量，不含正文。</small>
+          </div>
+          <div className="ai-summary-stats">
+            <SummaryStat label="划线" value={sourceStats.highlightCount} />
+            <SummaryStat label="想法" value={sourceStats.thoughtCount} />
+            <SummaryStat label="书签" value={sourceStats.bookmarkCount} />
+            <SummaryStat label="章节" value={sourceStats.chapterCount} />
+            <SummaryStat label="纳入划线" value={sourceStats.includedHighlightCount} />
+            <SummaryStat label="纳入想法" value={sourceStats.includedThoughtCount} />
+          </div>
+        </section>
+      ) : null}
 
       <div className="ai-summary-meta">
         <span>生成时间：{formatAiTimestamp(summary?.generatedAt) || "尚未生成"}</span>
         {summary?.responseFormat ? <span>{formatAiResponseFormat(summary.responseFormat)}</span> : null}
-        {summaryResponse?.providerModel ? <span>模型：{summaryResponse.providerModel}</span> : null}
-        {summaryResponse?.cachedUpdatedAt ? (
-          <span>缓存更新：{formatAiTimestamp(summaryResponse.cachedUpdatedAt)}</span>
+        {activeSummaryResponse?.providerModel ? <span>模型：{activeSummaryResponse.providerModel}</span> : null}
+        {activeSummaryResponse?.cachedUpdatedAt ? (
+          <span>缓存更新：{formatAiTimestamp(activeSummaryResponse.cachedUpdatedAt)}</span>
         ) : null}
       </div>
+
+      <AssetExportDialog
+        open={isAssetExportOpen}
+        ariaLabel="导出书籍复盘"
+        assetTitle="导出书籍复盘"
+        assetDescription={displayBook?.title ? `《${displayBook.title}》` : undefined}
+        platformMode={resolveExportPlatformMode()}
+        onExport={exportBookReview}
+        onOpenSettings={() => onOpenSettings("export")}
+        onClose={() => setIsAssetExportOpen(false)}
+      />
     </section>
   );
 
@@ -1073,7 +1180,7 @@ function formatFullSummary({
   sourceStats: BookAiSummarySourceStats;
   summary: BookAiSummary;
 }): string {
-  const title = book?.title ? `《${book.title}》AI 复盘` : "AI 复盘";
+  const title = book?.title ? `《${book.title}》书籍复盘` : "书籍复盘";
   const feedbackOutcomeMarkdown = formatFeedbackOutcomeSummary(summary.feedbackOutcomeSummary);
   const metaLines = [
     book?.author ? `作者：${book.author}` : undefined,
@@ -1328,18 +1435,23 @@ function statusFromSource(source: BookAiSummaryResponse["source"]): AiPageStatus
   return "generated";
 }
 
-function sourceStatsFromSource(notes?: BookNotes, book?: NotebookBook): BookAiSummarySourceStats {
-  if (!notes && book) {
-    return {
-      highlightCount: book.noteCount,
-      thoughtCount: book.reviewCount,
-      bookmarkCount: book.bookmarkCount,
-      chapterCount: 0,
-      includedHighlightCount: book.noteCount,
-      includedThoughtCount: book.reviewCount
-    };
+function loadBookNotesOnce(bookId: string): Promise<BookNotes> {
+  const existing = inFlightBookNotesRequests.get(bookId);
+  if (existing) {
+    return existing;
   }
 
+  const request = getBookNotes(bookId);
+  inFlightBookNotesRequests.set(bookId, request);
+  void request.finally(() => {
+    if (inFlightBookNotesRequests.get(bookId) === request) {
+      inFlightBookNotesRequests.delete(bookId);
+    }
+  }).catch(() => undefined);
+  return request;
+}
+
+function sourceStatsFromNotes(notes?: BookNotes): BookAiSummarySourceStats {
   return {
     highlightCount: notes?.highlights.length ?? 0,
     thoughtCount: notes?.thoughts.length ?? 0,
@@ -1350,7 +1462,36 @@ function sourceStatsFromSource(notes?: BookNotes, book?: NotebookBook): BookAiSu
   };
 }
 
-function statusMetaFromState(status: AiPageStatus, hasStaleCacheError: boolean) {
+function createReadyNotesInfo(notes: BookNotes): NotesInfo {
+  return {
+    status: "ready",
+    notes,
+    exportableCount: notes.exportableCount,
+    totalCount: notes.highlights.length + notes.thoughts.length + notes.bookmarkCount
+  };
+}
+
+function notesInfoFromNotes(notes: BookNotes | undefined, targetBookId: string | undefined): NotesInfo {
+  if (notes && notes.bookId === targetBookId) {
+    return createReadyNotesInfo(notes);
+  }
+
+  return { status: "unknown" };
+}
+
+function statusMetaFromState(
+  status: AiPageStatus,
+  hasStaleCacheError: boolean,
+  notesStatus: NotesInfo["status"]
+) {
+  if (notesStatus === "loading") {
+    return { label: "读取笔记中", tone: "neutral" };
+  }
+
+  if (notesStatus === "unknown" && status !== "error") {
+    return { label: "笔记未就绪", tone: "warning" };
+  }
+
   if (status === "setup-required") {
     return { label: "需要设置", tone: "warning" };
   }
@@ -1382,8 +1523,12 @@ function statusMetaFromState(status: AiPageStatus, hasStaleCacheError: boolean) 
   return { label: "待生成", tone: "neutral" };
 }
 
-function statusFromAiState(aiState: AiSettingsState | undefined, notes: BookNotes | undefined): AiPageStatus {
-  if ((notes?.exportableCount ?? 1) <= 0) {
+function statusFromAiState(aiState: AiSettingsState | undefined, notesInfo: NotesInfo): AiPageStatus {
+  if (notesInfo.status !== "ready") {
+    return "idle";
+  }
+
+  if (notesInfo.exportableCount <= 0) {
     return "empty-note";
   }
 

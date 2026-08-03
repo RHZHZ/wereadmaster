@@ -3,7 +3,10 @@ use tauri::AppHandle;
 
 use crate::{
     errors::AppError,
-    services::book::{BookDetailResponse, BookService, OpenBookLinkResult},
+    services::{
+        book::{BookDetailResponse, BookService, OpenBookLinkResult},
+        weread_deep_link::{open_weread_source, OpenWereadSourceResult, WereadSourceLocation},
+    },
 };
 
 #[derive(Debug, Serialize)]
@@ -44,4 +47,12 @@ pub fn open_book_in_weread(
     BookService::new(app)
         .open_book_link(book_id, chapter_uid)
         .map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn open_weread_note_source(
+    _app: AppHandle,
+    location: WereadSourceLocation,
+) -> Result<OpenWereadSourceResult, AppCommandError> {
+    open_weread_source(location).map_err(Into::into)
 }

@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import legacyWebPreviewFixture from "./fixtures/reading-preview-v2-legacy.json";
+import currentWebPreviewFixture from "./fixtures/reading-preview-v3-current.json";
+import futureWebPreviewFixture from "./fixtures/reading-preview-future-unknown.json";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn()
@@ -16,9 +19,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { check } from "@tauri-apps/plugin-updater";
 import {
+  analyzeNotionDatabase,
   clearAiOutputCache,
   checkForAppUpdate,
   chooseCustomExportDirectory,
+  cancelNotionCoverBackfill,
+  continueNotionStandardDatabaseProvisioning,
+  createNotionStandardOutcomesDatabase,
+  exportBookNotesSummariesTargets,
   exportReportImage,
   getAiSettingsState,
   getAiReviewFeedback,
@@ -31,6 +39,8 @@ import {
   getCommandErrorInfo,
   getCredentialStatus,
   getLatestReadingStatsReview,
+  getNotionStandardDatabaseProvisioning,
+  listenNotionCoverBackfillProgress,
   getNotebookOverview,
   getPublicReviews,
   getReadReviews,
@@ -44,9 +54,17 @@ import {
   listReadingAssistantThreads,
   listAiProviderModels,
   listReadingItemStates,
+  normalizeWebReadingPreviewData,
+  normalizeWebReadingPreviewItemStates,
+  openWereadNoteSource,
+  patchReadingItemState,
+  removeReadingItemState,
   probeAiProviderCapabilities,
+  preflightNotionCoverBackfill,
   resetCustomExportDirectory,
   resetWereadProxyUrl,
+  resolveNotionStandardDatabaseProvisioning,
+  runNotionCoverBackfill,
   saveAiSettings,
   saveAiReviewFeedback,
   saveCustomExportDirectory,
@@ -63,6 +81,101 @@ import {
 const invokeMock = vi.mocked(invoke);
 const listenMock = vi.mocked(listen);
 const checkMock = vi.mocked(check);
+
+describe("微信读书原文定位 API", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    vi.unstubAllGlobals();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  test("只向 Tauri 提交结构化定位参数", async () => {
+    vi.stubGlobal("__TAURI_INTERNALS__", {});
+    invokeMock.mockResolvedValue({
+      opened: true,
+      deepLink:
+        "weread://bestbookmark?bookId=book1&chapterUid=7&rangeStart=120&rangeEnd=160",
+      precision: "range"
+    });
+
+    const result = await openWereadNoteSource({
+      bookId: "book1",
+      chapterUid: 7,
+      range: "120-160"
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith("open_weread_note_source", {
+      location: {
+        bookId: "book1",
+        chapterUid: 7,
+        range: "120-160"
+      }
+    });
+    expect(result.precision).toBe("range");
+  });
+
+  test("Web 预览不执行自定义协议", async () => {
+    await expect(
+      openWereadNoteSource({ bookId: "book1", chapterUid: 7, range: "120-160" })
+    ).rejects.toThrow("定位微信读书原文需要在桌面应用中使用。");
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("book review bulk target export API", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    vi.unstubAllGlobals();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  test("submits the nested book-target request through the new command", async () => {
+    vi.stubGlobal("__TAURI_INTERNALS__", {});
+    const request = {
+      items: [
+        {
+          bookId: "book-1",
+          targets: ["notion" as const],
+          knownObsidianPath: "D:/Vault/书籍复盘/book-1.md"
+        }
+      ],
+      options: {
+        includeActionFeedback: true,
+        includeReflectionFeedback: false,
+        includeRepresentativeQuotes: true
+      }
+    };
+    invokeMock.mockResolvedValue({
+      exportId: "export-1",
+      exportedAt: "100",
+      items: []
+    });
+
+    await exportBookNotesSummariesTargets(request);
+
+    expect(invokeMock).toHaveBeenCalledWith("export_book_notes_summaries_targets", { request });
+  });
+
+  test("rejects bulk target export in Web readonly mode", async () => {
+    await expect(
+      exportBookNotesSummariesTargets({
+        items: [{ bookId: "book-1", targets: ["markdown"] }],
+        options: {
+          includeActionFeedback: true,
+          includeReflectionFeedback: true,
+          includeRepresentativeQuotes: true
+        }
+      })
+    ).rejects.toThrow("批量知识库导出需要在桌面应用中使用。");
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+});
 
 describe("settings export directory API", () => {
   beforeEach(() => {
@@ -138,6 +251,20 @@ describe("settings export directory API", () => {
     ).toBe(
       "微信读书接口暂时无法连接，请稍后重试。 诊断：error sending request for url (https://i.weread.qq.com/api/agent/gateway): operation timed out"
     );
+  });
+
+  test("keeps Notion network diagnostics out of the user-facing Toast message", () => {
+    const error = {
+      code: "gateway_network_error",
+      message: "无法连接 Notion API，请检查网络、系统代理或 VPN 后重试。",
+      detail:
+        "检查 Notion 数据库失败：error sending request for url (https://api.notion.com/v1/databases/example)"
+    };
+
+    expect(getCommandErrorMessage(error)).toBe(
+      "无法连接 Notion API，请检查网络、系统代理或 VPN 后重试。"
+    );
+    expect(getCommandErrorInfo(error)).toEqual(error);
   });
 
   test("keeps upgrade-required command errors structured", () => {
@@ -435,7 +562,7 @@ describe("settings export directory API", () => {
     invokeMock.mockResolvedValue({
       threadId: "thread_1",
       messageId: "msg_1",
-      answer: "这些重点适合进入单本 AI 复盘。",
+      answer: "这些重点适合进入书籍复盘。",
       suggestions: [],
       recommendedBooks: [],
       action: {
@@ -443,9 +570,7 @@ describe("settings export directory API", () => {
         payload: {
           bookId: "book_1",
           title: "富爸爸穷爸爸",
-          author: "罗伯特·清崎",
-          message: "这类笔记总结应进入单本 AI 复盘，不走阅读指南。",
-          ctaLabel: "生成 AI 复盘"
+          author: "罗伯特·清崎"
         }
       },
       usedContext: [],
@@ -462,7 +587,8 @@ describe("settings export directory API", () => {
           bookId: "book_1",
           title: "富爸爸穷爸爸",
           author: "罗伯特·清崎",
-          ctaLabel: "生成 AI 复盘"
+          message: "这类笔记总结应进入书籍复盘，不走阅读指南。",
+          ctaLabel: "生成书籍复盘"
         }
       }
     });
@@ -585,8 +711,8 @@ describe("settings export directory API", () => {
                 bookId: "book_1",
                 title: "富爸爸穷爸爸",
                 author: "罗伯特·清崎",
-                message: "这类笔记总结应进入单本 AI 复盘，不走阅读指南。",
-                ctaLabel: "生成 AI 复盘"
+                message: "这类笔记总结应进入书籍复盘，不走阅读指南。",
+                ctaLabel: "生成书籍复盘"
               }
             }
           },
@@ -613,7 +739,7 @@ describe("settings export directory API", () => {
               payload: {
                 bookId: "book_1",
                 title: "富爸爸穷爸爸",
-                ctaLabel: "生成 AI 复盘"
+                ctaLabel: "生成书籍复盘"
               }
             }
           }
@@ -641,6 +767,225 @@ describe("settings export directory API", () => {
     });
     await expect(listReadingAssistantThreads()).resolves.toEqual([]);
     expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  test("patches one reading dimension and centralizes sourceMeta JSON encoding", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    invokeMock.mockResolvedValue({
+      itemId: "book_1",
+      itemType: "candidate",
+      status: "toRead",
+      itemKind: "book",
+      isCandidate: true,
+      candidateSource: "ai_unconfirmed",
+      lifeStatus: "want",
+      organizeStatus: "none",
+      sourceMeta: JSON.stringify({
+        savedFrom: "assistant",
+        aiReason: "补充当前主题的实践视角"
+      }),
+      title: "示例书",
+      author: "示例作者",
+      createdAt: "100",
+      updatedAt: "101"
+    });
+
+    const result = await patchReadingItemState(
+      "book_1",
+      {
+        isCandidate: true,
+        candidateSource: "ai_unconfirmed",
+        sourceMeta: {
+          savedFrom: "assistant",
+          aiReason: "补充当前主题的实践视角"
+        }
+      },
+      {
+        itemKind: "book",
+        title: "示例书",
+        author: "示例作者"
+      }
+    );
+
+    expect(invokeMock).toHaveBeenCalledWith("patch_reading_item_state", {
+      itemId: "book_1",
+      patch: {
+        isCandidate: true,
+        candidateSource: "ai_unconfirmed",
+        sourceMeta: JSON.stringify({
+          savedFrom: "assistant",
+          aiReason: "补充当前主题的实践视角"
+        })
+      },
+      meta: {
+        itemKind: "book",
+        title: "示例书",
+        author: "示例作者"
+      }
+    });
+    expect(result).toMatchObject({
+      itemId: "book_1",
+      itemKind: "book",
+      isCandidate: true,
+      candidateSource: "ai_unconfirmed",
+      lifeStatus: "want",
+      organizeStatus: "none",
+      sourceMeta: {
+        savedFrom: "assistant",
+        aiReason: "补充当前主题的实践视角"
+      }
+    });
+  });
+
+  test("normalizes unknown reading enums conservatively and rejects malformed sourceMeta", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    invokeMock.mockResolvedValue({
+      itemId: "book_unknown",
+      itemType: "unknown-type",
+      status: "unknown-status",
+      itemKind: "unknown-kind",
+      isCandidate: "true",
+      candidateSource: "unknown-source",
+      lifeStatus: "unknown-life",
+      finishedSource: "unknown-finished-source",
+      organizeStatus: "unknown-organize",
+      sourceMeta: "not-json",
+      createdAt: "100",
+      updatedAt: "101"
+    });
+
+    await expect(
+      patchReadingItemState("book_unknown", { organizeStatus: "organized" })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        itemKind: "book",
+        isCandidate: true,
+        candidateSource: "weread",
+        lifeStatus: "none",
+        finishedSource: undefined,
+        organizeStatus: "none",
+        sourceMeta: undefined,
+        itemType: "book",
+        status: "toRead"
+      })
+    );
+  });
+
+  test("maps legacy reading rows into the three-dimensional model", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    invokeMock.mockResolvedValue([
+      {
+        itemId: "legacy_candidate",
+        itemType: "candidate",
+        status: "toRead",
+        note: "历史候选",
+        createdAt: "100",
+        updatedAt: "101"
+      },
+      {
+        itemId: "legacy_reviewing",
+        itemType: "book",
+        status: "reviewing",
+        createdAt: "100",
+        updatedAt: "101"
+      }
+    ]);
+
+    await expect(listReadingItemStates()).resolves.toEqual([
+      expect.objectContaining({
+        itemId: "legacy_candidate",
+        itemKind: "book",
+        isCandidate: true,
+        candidateSource: "weread",
+        lifeStatus: "want",
+        organizeStatus: "none"
+      }),
+      expect.objectContaining({
+        itemId: "legacy_reviewing",
+        itemKind: "book",
+        isCandidate: false,
+        lifeStatus: "none",
+        organizeStatus: "to_organize"
+      })
+    ]);
+  });
+
+  test("normalizes old, current and future Web Preview fixtures conservatively", async () => {
+    expect(normalizeWebReadingPreviewData(legacyWebPreviewFixture)?.schemaVersion).toBe(2);
+    expect(normalizeWebReadingPreviewData(currentWebPreviewFixture)?.schemaVersion).toBe(3);
+    expect(normalizeWebReadingPreviewData(futureWebPreviewFixture)?.schemaVersion).toBe(99);
+
+    const combinedFixture = {
+      ...currentWebPreviewFixture,
+      readingItemStates: [
+        ...legacyWebPreviewFixture.readingItemStates,
+        ...currentWebPreviewFixture.readingItemStates,
+        ...futureWebPreviewFixture.readingItemStates
+      ]
+    };
+    expect(normalizeWebReadingPreviewItemStates(combinedFixture)).toEqual([
+      expect.objectContaining({
+        itemId: "legacy-candidate",
+        isCandidate: true,
+        lifeStatus: "want",
+        organizeStatus: "none"
+      }),
+      expect.objectContaining({
+        itemId: "legacy-reviewing",
+        isCandidate: false,
+        lifeStatus: "none",
+        organizeStatus: "to_organize"
+      }),
+      expect.objectContaining({
+        itemId: "current-candidate",
+        isCandidate: true,
+        candidateSource: "ai_confirmed",
+        lifeStatus: "reading",
+        organizeStatus: "to_organize",
+        userNote: "保留用户自己的备注",
+        sourceMeta: {
+          savedFrom: "assistant",
+          aiReason: "延续当前主题"
+        }
+      }),
+      expect.objectContaining({
+        itemId: "future-enums",
+        itemKind: "book",
+        isCandidate: false,
+        candidateSource: undefined,
+        lifeStatus: "none",
+        finishedSource: undefined,
+        organizeStatus: "none",
+        sourceMeta: undefined,
+        itemType: "book",
+        status: "toRead"
+      })
+    ]);
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  test("keeps Web Preview state mutations fail-closed and never invokes Tauri", async () => {
+    await expect(
+      patchReadingItemState("current-candidate", { organizeStatus: "organized" })
+    ).rejects.toThrow("Web 预览为只读模式");
+    await expect(removeReadingItemState("current-candidate")).rejects.toThrow(
+      "Web 预览为只读模式"
+    );
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  test("keeps structured patch command errors unchanged", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    const error = {
+      code: "invalid_gateway_payload",
+      message: "该条目尚无本地记录，需要提供 meta 才能创建。",
+      detail: "itemId=missing"
+    };
+    invokeMock.mockRejectedValue(error);
+
+    await expect(
+      patchReadingItemState("missing", { lifeStatus: "reading" })
+    ).rejects.toBe(error);
   });
 
   test("book detail keeps returned deep link but does not fabricate fallback", async () => {
@@ -1026,6 +1371,494 @@ describe("settings export directory API", () => {
     });
     expect(probe.recommendedPolicy).toBe("noResponseFormatFirst");
     expect(models.models[0]?.id).toBe("deepseek-chat");
+  });
+
+  test("maps a safe Notion cover backfill preflight and command payloads", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    const preflight = {
+      preflightId: "cover-preflight-1",
+      databaseId: "01234567-89ab-cdef-0123-456789abcdef",
+      databaseName: "阅读成果库",
+      schemaFingerprint: "schema-v2",
+      connectionSchemaChanged: false,
+      coverProperty: {
+        action: "reuse",
+        propertyId: "cover-id",
+        propertyName: "封面",
+        propertyType: "files",
+        message: "将复用现有 Files & media 字段“封面”。"
+      },
+      bookIdPropertyId: "book-id",
+      bookIdPropertyName: "Book ID",
+      totalPages: 4,
+      pagesWithBookId: 4,
+      pagesWithLocalCover: 3,
+      missingLocalCover: 1,
+      missingCoverProperty: 2,
+      missingPageCover: 2,
+      preservedCoverProperty: 2,
+      preservedPageCover: 2,
+      eligiblePages: 3,
+      canRun: true,
+      blockers: [],
+      warnings: []
+    };
+    const report = {
+      operationId: "cover-backfill-1",
+      preflightId: preflight.preflightId,
+      databaseId: preflight.databaseId,
+      coverPropertyId: "cover-id",
+      coverPropertyName: "封面",
+      total: 4,
+      completed: 4,
+      updated: 2,
+      partial: 1,
+      preserved: 0,
+      skipped: 1,
+      failed: 0,
+      canceled: 0,
+      wasCanceled: false,
+      schemaUpgraded: false,
+      startedAt: "2026-08-03T00:00:00Z",
+      completedAt: "2026-08-03T00:01:00Z",
+      items: [],
+      warnings: []
+    };
+    invokeMock.mockResolvedValueOnce(preflight).mockResolvedValueOnce(report);
+
+    await expect(preflightNotionCoverBackfill()).resolves.toMatchObject({
+      preflightId: preflight.preflightId,
+      coverProperty: { action: "reuse", propertyType: "files" },
+      eligiblePages: 3
+    });
+    await expect(runNotionCoverBackfill({
+      preflightId: preflight.preflightId,
+      databaseId: preflight.databaseId,
+      schemaFingerprint: preflight.schemaFingerprint,
+      coverPropertyAction: "reuse",
+      confirm: true
+    })).resolves.toMatchObject({ operationId: "cover-backfill-1", partial: 1 });
+    await cancelNotionCoverBackfill("cover-backfill-1");
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "preflight_notion_cover_backfill");
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "run_notion_cover_backfill", {
+      request: {
+        preflightId: preflight.preflightId,
+        databaseId: preflight.databaseId,
+        schemaFingerprint: preflight.schemaFingerprint,
+        coverPropertyAction: "reuse",
+        confirm: true
+      }
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(3, "cancel_notion_cover_backfill", {
+      operationId: "cover-backfill-1"
+    });
+  });
+
+  test("fails closed when Notion cover preflight misses its safety identity", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    invokeMock.mockResolvedValue({
+      databaseId: "01234567-89ab-cdef-0123-456789abcdef",
+      schemaFingerprint: "schema-v2",
+      coverProperty: { action: "reuse" }
+    });
+
+    await expect(preflightNotionCoverBackfill()).rejects.toThrow(
+      "Notion 封面回填预检缺少安全字段，已拒绝执行。"
+    );
+  });
+
+  test("maps cover backfill progress events and rejects malformed events", async () => {
+    let listener: ((event: { payload: unknown }) => void) | undefined;
+    listenMock.mockImplementation(async (_event, callback) => {
+      listener = callback as (event: { payload: unknown }) => void;
+      return () => undefined;
+    });
+    const received: unknown[] = [];
+    await listenNotionCoverBackfillProgress((progress) => received.push(progress));
+    listener?.({
+      payload: {
+        operationId: "cover-backfill-1",
+        phase: "updatingPages",
+        total: 3,
+        completed: 1,
+        updated: 1,
+        partial: 0,
+        preserved: 0,
+        skipped: 0,
+        failed: 0,
+        canceled: 0,
+        currentPageId: "page-1",
+        currentTitle: "测试书籍",
+        message: "正在处理：测试书籍"
+      }
+    });
+    expect(received).toEqual([
+      expect.objectContaining({ operationId: "cover-backfill-1", phase: "updatingPages", completed: 1 })
+    ]);
+    expect(() => listener?.({ payload: { phase: "completed" } })).toThrow(
+      "Notion 封面回填进度缺少 operation ID 或 phase。"
+    );
+  });
+
+  test("maps a completed Notion provisioning result with its saved connection", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    const connection = {
+      databaseId: "01234567-89ab-cdef-0123-456789abcdef",
+      databaseName: "阅读成果库",
+      databaseUrl: "https://www.notion.so/0123456789abcdef0123456789abcdef",
+      titlePropertyId: "title-property-id",
+      titlePropertyNameSnapshot: "名称",
+      mappings: [
+        {
+          logicalField: "title",
+          propertyId: "title-property-id",
+          propertyNameSnapshot: "名称",
+          propertyType: "title",
+          enabled: true
+        }
+      ],
+      schemaCheckedAt: "1725955200",
+      schemaFingerprint: "schema-v1"
+    };
+    invokeMock.mockResolvedValue({
+      provisioningId: "provisioning-1",
+      phase: "complete",
+      status: "complete",
+      databaseId: connection.databaseId,
+      dataSourceId: "data-source-1",
+      url: connection.databaseUrl,
+      title: "阅读成果库",
+      connection,
+      state: {
+        credential: { hasCredential: true },
+        syncStates: [],
+        localData: {},
+        exportData: {},
+        integrationData: {
+          notion: {
+            credential: { hasCredential: true },
+            parentId: connection.databaseId,
+            parentType: "database",
+            coverMode: "pageCover",
+            databaseConnection: connection
+          }
+        }
+      },
+      views: [
+        {
+          key: "recent",
+          name: "最近导入",
+          type: "table",
+          status: "updated",
+          viewId: "view-recent"
+        },
+        {
+          key: "notes",
+          name: "书籍笔记",
+          type: "table",
+          status: "created",
+          viewId: "view-notes"
+        },
+        {
+          key: "reviewQueue",
+          name: "待复盘",
+          type: "table",
+          status: "created",
+          viewId: "view-review-queue"
+        },
+        {
+          key: "reviews",
+          name: "复盘与报告",
+          type: "table",
+          status: "reused",
+          viewId: "view-reviews"
+        }
+      ],
+      viewInitialization: "complete",
+      warnings: [],
+      lastError: null
+    });
+
+    await expect(
+      createNotionStandardOutcomesDatabase("fedcba98-7654-3210-fedc-ba9876543210")
+    ).resolves.toMatchObject({
+      provisioningId: "provisioning-1",
+      phase: "complete",
+      status: "complete",
+      databaseId: connection.databaseId,
+      dataSourceId: "data-source-1",
+      connection: {
+        databaseId: connection.databaseId,
+        titlePropertyId: "title-property-id"
+      },
+      viewInitialization: "complete",
+      views: [
+        expect.objectContaining({ key: "recent", status: "updated" }),
+        expect.objectContaining({ key: "notes", status: "created" }),
+        expect.objectContaining({ key: "reviewQueue", status: "created" }),
+        expect.objectContaining({ key: "reviews", status: "reused" })
+      ],
+      warnings: []
+    });
+    expect(invokeMock).toHaveBeenCalledWith("create_notion_standard_outcomes_database", {
+      parentPageId: "fedcba98-7654-3210-fedc-ba9876543210"
+    });
+  });
+
+  test("maps partial recommended view results without hiding the usable database connection", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    invokeMock.mockResolvedValue({
+      provisioningId: "provisioning-partial-views",
+      phase: "partial",
+      status: "partial",
+      databaseId: "01234567-89ab-cdef-0123-456789abcdef",
+      dataSourceId: "data-source-1",
+      title: "阅读成果库",
+      viewInitialization: "partial",
+      views: [
+        { key: "recent", name: "最近导入", type: "table", status: "updated" },
+        { key: "notes", name: "书籍笔记", type: "table", status: "created" },
+        {
+          key: "reviewQueue",
+          name: "待复盘",
+          type: "table",
+          status: "conflict",
+          warning: "发现同名自定义视图，已保留远端现状。"
+        },
+        {
+          key: "reviews",
+          name: "复盘与报告",
+          type: "table",
+          status: "unknown",
+          warning: "创建后无法确认结果。"
+        }
+      ],
+      warnings: ["发现同名自定义视图，已保留远端现状。"]
+    });
+
+    await expect(getNotionStandardDatabaseProvisioning()).resolves.toMatchObject({
+      status: "partial",
+      dataSourceId: "data-source-1",
+      viewInitialization: "partial",
+      views: [
+        expect.objectContaining({ key: "recent", status: "updated" }),
+        expect.objectContaining({ key: "notes", status: "created" }),
+        expect.objectContaining({ key: "reviewQueue", status: "conflict" }),
+        expect.objectContaining({ key: "reviews", status: "unknown" })
+      ]
+    });
+  });
+
+  test("fails closed when recommended view items are malformed or complete is missing four ready views", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    invokeMock
+      .mockResolvedValueOnce({
+        provisioningId: "provisioning-malformed-view",
+        phase: "partial",
+        status: "partial",
+        title: "阅读成果库",
+        viewInitialization: "partial",
+        views: [{ key: "recent", name: "最近导入", type: "gallery", status: "created" }],
+        warnings: []
+      })
+      .mockResolvedValueOnce({
+        provisioningId: "provisioning-incomplete-complete",
+        phase: "complete",
+        status: "complete",
+        title: "阅读成果库",
+        viewInitialization: "complete",
+        views: [
+          { key: "recent", name: "最近导入", type: "table", status: "updated" },
+          { key: "notes", name: "书籍笔记", type: "table", status: "created" }
+        ],
+        warnings: []
+      });
+
+    await expect(getNotionStandardDatabaseProvisioning()).rejects.toThrow(
+      "标准阅读成果库推荐视图状态不完整，已停止自动重试。"
+    );
+    await expect(getNotionStandardDatabaseProvisioning()).rejects.toThrow(
+      "标准阅读成果库完成状态缺少完整的四个推荐视图，已停止自动重试。"
+    );
+  });
+
+  test("accepts recoverable and unknown Notion provisioning results without a connection", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    invokeMock
+      .mockResolvedValueOnce({
+        provisioningId: "provisioning-recovery",
+        phase: "databaseCreated",
+        status: "recoveryRequired",
+        databaseId: "01234567-89ab-cdef-0123-456789abcdef",
+        url: "https://www.notion.so/0123456789abcdef0123456789abcdef",
+        title: "阅读成果库",
+        viewInitialization: "notStarted",
+        warnings: [],
+        lastError: {
+          step: "saveConnection",
+          code: "notion_schema_unavailable",
+          message: "读取数据库字段失败。",
+          retryable: true,
+          resultUnknown: false
+        }
+      })
+      .mockResolvedValueOnce({
+        provisioningId: "provisioning-unknown",
+        phase: "databaseCreateUnknown",
+        status: "unknown",
+        title: "阅读成果库",
+        viewInitialization: "notStarted",
+        warnings: [],
+        lastError: {
+          step: "createDatabase",
+          code: "notion_request_timeout",
+          message: "创建请求超时，结果未知。",
+          retryable: false,
+          resultUnknown: true
+        }
+      });
+
+    await expect(getNotionStandardDatabaseProvisioning()).resolves.toMatchObject({
+      provisioningId: "provisioning-recovery",
+      status: "recoveryRequired",
+      databaseId: "01234567-89ab-cdef-0123-456789abcdef",
+      connection: undefined,
+      lastError: {
+        retryable: true,
+        resultUnknown: false
+      }
+    });
+    await expect(getNotionStandardDatabaseProvisioning()).resolves.toMatchObject({
+      provisioningId: "provisioning-unknown",
+      status: "unknown",
+      databaseId: undefined,
+      connection: undefined,
+      lastError: {
+        resultUnknown: true
+      }
+    });
+  });
+
+  test("fails closed when a Notion provisioning response misses its safety identity", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    invokeMock.mockResolvedValue({
+      databaseId: "01234567-89ab-cdef-0123-456789abcdef",
+      title: "阅读成果库"
+    });
+
+    await expect(getNotionStandardDatabaseProvisioning()).rejects.toThrow(
+      "标准阅读成果库初始化状态不完整，已停止自动重试以避免重复创建。"
+    );
+  });
+
+  test("uses dedicated Notion provisioning commands and payloads", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    const recoveryResult = {
+      provisioningId: "provisioning-2",
+      phase: "databaseCreated",
+      status: "recoveryRequired",
+      databaseId: "01234567-89ab-cdef-0123-456789abcdef",
+      title: "阅读成果库",
+      viewInitialization: "notStarted",
+      warnings: []
+    };
+    invokeMock
+      .mockResolvedValueOnce(recoveryResult)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null);
+
+    await continueNotionStandardDatabaseProvisioning("provisioning-2");
+    await resolveNotionStandardDatabaseProvisioning({
+      provisioningId: "provisioning-2",
+      resolution: "linkCurrentConnection",
+      confirm: true
+    });
+    await resolveNotionStandardDatabaseProvisioning({
+      provisioningId: "provisioning-2",
+      resolution: "confirmNotCreated",
+      confirm: true
+    });
+
+    expect(invokeMock).toHaveBeenNthCalledWith(
+      1,
+      "continue_notion_standard_database_provisioning",
+      { provisioningId: "provisioning-2" }
+    );
+    expect(invokeMock).toHaveBeenNthCalledWith(
+      2,
+      "resolve_notion_standard_database_provisioning",
+      {
+        provisioningId: "provisioning-2",
+        resolution: "linkCurrentConnection",
+        confirm: true
+      }
+    );
+    expect(invokeMock).toHaveBeenNthCalledWith(
+      3,
+      "resolve_notion_standard_database_provisioning",
+      {
+        provisioningId: "provisioning-2",
+        resolution: "confirmNotCreated",
+        confirm: true
+      }
+    );
+  });
+
+  test("allows Notion provisioning commands to run beyond the regular settings timeout", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("__TAURI__", {});
+    invokeMock.mockImplementation(() => new Promise(() => undefined));
+
+    const promises = [
+      createNotionStandardOutcomesDatabase("fedcba98-7654-3210-fedc-ba9876543210"),
+      continueNotionStandardDatabaseProvisioning("provisioning-2"),
+      resolveNotionStandardDatabaseProvisioning({
+        provisioningId: "provisioning-2",
+        resolution: "confirmNotCreated",
+        confirm: true
+      })
+    ];
+    const expectations = promises.map((promise) =>
+      expect(promise).rejects.toThrow("本地设置保存超时")
+    );
+    const settled = [false, false, false];
+    promises.forEach((promise, index) => {
+      void promise.catch(() => undefined).finally(() => {
+        settled[index] = true;
+      });
+    });
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    await Promise.resolve();
+    expect(settled).toEqual([false, false, false]);
+
+    await vi.advanceTimersByTimeAsync(105_000);
+    await Promise.all(expectations);
+  });
+
+  test("allows Notion database analysis to outlive the regular settings timeout", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("__TAURI__", {});
+    invokeMock.mockImplementation(() => new Promise(() => undefined));
+
+    const analysisPromise = analyzeNotionDatabase(
+      "3b09daca-95bb-810b-b438-f10caca5f238"
+    );
+    const expectation = expect(analysisPromise).rejects.toThrow(
+      "检查 Notion 数据库超时，请检查网络、系统代理或 VPN 后重试。"
+    );
+    let settled = false;
+    void analysisPromise.catch(() => undefined).finally(() => {
+      settled = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    await expectation;
   });
 
   test("settings save commands fail fast when native invoke does not settle", async () => {

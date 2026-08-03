@@ -1,13 +1,20 @@
-//! 书籍笔记的 Notion 原生块构建器。
+//! 阅读成果的 Notion 原生块构建器。
 //!
-//! 按《notion-page-content-template-design》从结构化笔记直接生成块树，
-//! 不再经过 Markdown 中间态：划线用 quote、想法用 callout、次要元信息
-//! 以同块灰字呈现，划线与想法在章节内按位置混排（原文在前、想法紧随）。
+//! 按《notion-page-content-template-design》从结构化数据直接生成块树，
+//! 不再经过 Markdown 中间态：原文用 quote、自我文本用 callout、次要元信息
+//! 以同块灰字呈现；行动项用可勾选的 to_do，复盘问题用折叠块，空节省略，
+//! 元数据不重复正文输出（数据库属性已承载）。
 
 use chrono::{Datelike, Local, Timelike};
 use serde_json::{json, Value};
 
 use crate::mappers::notes::{BookNotesRecord, ChapterNoteGroup, HighlightRecord, ThoughtRecord};
+use crate::services::ai::{
+    AiFeedbackExportRecord, BookDecisionResponse, ReadingPersona, ReadingRouteResponse,
+    ReadingStatsAiReview, ReadingStatsAiReviewResponse,
+};
+
+use super::markdown::{format_duration, reading_review_anchor_label, reading_review_period_label};
 
 /// 章节数达到该值时在摘要后输出目录块。
 const TOC_MIN_CHAPTERS: usize = 4;
@@ -114,7 +121,9 @@ pub struct BookReviewBlocksInput<'a> {
     pub key_ideas: &'a [String],
     pub my_focus: &'a [String],
     pub action_items: &'a [String],
+    pub action_feedback: Option<&'a std::collections::HashMap<String, AiFeedbackExportRecord>>,
     pub reflection_questions: &'a [String],
+    pub reflection_feedback: Option<&'a std::collections::HashMap<String, AiFeedbackExportRecord>>,
     pub quotes: Vec<ReviewQuoteBlocksInput<'a>>,
     pub basis_notice: &'a str,
     pub error_message: Option<&'a str>,
@@ -197,13 +206,18 @@ pub fn build_book_review_blocks(input: &BookReviewBlocksInput<'_>) -> Vec<Value>
 
     if !input.action_items.is_empty() {
         blocks.push(heading_2_block("行动项"));
-        for item in input.action_items {
+        for (index, item) in input.action_items.iter().enumerate() {
+            let feedback = input
+                .action_feedback
+                .and_then(|feedback| feedback.get(&review_feedback_item_id(item, index)));
+            let mut runs = chunked_text_runs(&normalize_multiline(item));
+            append_review_feedback_runs(&mut runs, feedback, action_feedback_status_label);
             blocks.push(json!({
                 "object": "block",
                 "type": "to_do",
                 "to_do": {
-                    "rich_text": chunked_text_runs(&normalize_multiline(item)),
-                    "checked": false
+                    "rich_text": runs,
+                    "checked": feedback.is_some_and(|record| record.status == "completed")
                 }
             }));
         }
@@ -211,16 +225,40 @@ pub fn build_book_review_blocks(input: &BookReviewBlocksInput<'_>) -> Vec<Value>
 
     if !input.reflection_questions.is_empty() {
         blocks.push(heading_2_block("复盘问题"));
-        for question in input.reflection_questions {
+        for (index, question) in input.reflection_questions.iter().enumerate() {
+            let feedback = input
+                .reflection_feedback
+                .and_then(|feedback| feedback.get(&review_feedback_item_id(question, index)));
+            let answer = feedback
+                .and_then(|record| record.note.as_deref())
+                .map(str::trim)
+                .filter(|note| !note.is_empty())
+                .map(normalize_multiline)
+                .unwrap_or_else(|| "在这里写下你的回答。".to_string());
+            let mut children = vec![paragraph_block(vec![text_run(
+                &answer,
+                if feedback.is_some() {
+                    TextTone::Plain
+                } else {
+                    TextTone::Gray
+                },
+            )])];
+            if let Some(record) = feedback {
+                children.push(paragraph_block(vec![text_run(
+                    &format!(
+                        "状态：{} · 更新于 {}",
+                        reflection_feedback_status_label(&record.status),
+                        exported_at_label(&record.updated_at)
+                    ),
+                    TextTone::Gray,
+                )]));
+            }
             blocks.push(json!({
                 "object": "block",
                 "type": "toggle",
                 "toggle": {
                     "rich_text": chunked_text_runs(&normalize_multiline(question)),
-                    "children": [paragraph_block(vec![text_run(
-                        "在这里写下你的回答。",
-                        TextTone::Gray,
-                    )])]
+                    "children": children
                 }
             }));
         }
@@ -282,6 +320,555 @@ pub fn build_book_review_blocks(input: &BookReviewBlocksInput<'_>) -> Vec<Value>
         TextTone::Gray,
     )]));
     blocks
+}
+
+/// 从阅读统计复盘生成 Notion 页面正文块（黄色系）。
+pub fn build_reading_stats_review_blocks(
+    response: &ReadingStatsAiReviewResponse,
+    persona: Option<&ReadingPersona>,
+    exported_at: &str,
+) -> Vec<Value> {
+    let review = &response.review;
+    let mut blocks = Vec::new();
+
+    let mut overview_runs = chunked_text_runs(&normalize_multiline(&review.overview));
+    if overview_runs.is_empty() {
+        overview_runs.push(text_run("这次复盘没有生成概览。", TextTone::Plain));
+    }
+    let mut meta_parts = vec![
+        reading_review_period_label(&response.mode),
+        reading_review_anchor_label(&response.mode, response.base_time),
+        format!("生成于 {}", exported_at_label(&review.generated_at)),
+    ];
+    if let Some(model) = response
+        .provider_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    {
+        meta_parts.push(model.to_string());
+    }
+    overview_runs.push(text_run(
+        &format!("\n{}", meta_parts.join(" · ")),
+        TextTone::Gray,
+    ));
+    blocks.push(json!({
+        "object": "block",
+        "type": "callout",
+        "callout": {
+            "rich_text": overview_runs,
+            "icon": { "type": "emoji", "emoji": "📈" },
+            "color": "yellow_background"
+        }
+    }));
+
+    push_stats_tiles(&mut blocks, review);
+    push_review_list_section(
+        &mut blocks,
+        "节奏洞察",
+        &review.rhythm_insights,
+        "bulleted_list_item",
+    );
+    push_review_list_section(
+        &mut blocks,
+        "偏好洞察",
+        &review.preference_insights,
+        "bulleted_list_item",
+    );
+    push_review_list_section(
+        &mut blocks,
+        "重点内容",
+        &review.focus_items,
+        "bulleted_list_item",
+    );
+    push_to_do_section(&mut blocks, "下一步行动", &review.next_actions);
+    push_reading_persona_blocks(&mut blocks, persona);
+
+    blocks.push(divider_block());
+    blocks.push(notice_quote(&review.basis_notice));
+    if let Some(error_message) = response
+        .error_message
+        .as_deref()
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+    {
+        blocks.push(notice_quote(error_message));
+    }
+    blocks.push(paragraph_block(vec![text_run(
+        &format!(
+            "导出于 {} · Prompt {} · 趋势分桶 {} · 分类偏好 {}",
+            exported_at_label(exported_at),
+            review.prompt_version,
+            review.source_stats.bucket_count,
+            review.source_stats.category_count
+        ),
+        TextTone::Gray,
+    )]));
+    blocks
+}
+
+fn push_stats_tiles(blocks: &mut Vec<Value>, review: &ReadingStatsAiReview) {
+    let mut tiles = Vec::new();
+    if let Some(read_days) = review.source_stats.read_days.filter(|days| *days > 0) {
+        tiles.push(format!("🕘 阅读 {read_days} 天"));
+    }
+    if let Some(total) = review
+        .source_stats
+        .total_read_time_seconds
+        .filter(|value| *value > 0)
+    {
+        tiles.push(format!("📚 总时长 {}", format_duration(total)));
+    }
+    if let Some(average) = review
+        .source_stats
+        .day_average_read_time_seconds
+        .filter(|value| *value > 0)
+    {
+        tiles.push(format!("✍️ 日均 {}", format_duration(average)));
+    }
+    if tiles.is_empty() {
+        return;
+    }
+    if tiles.len() == 1 {
+        blocks.push(stat_tile_callout(&tiles[0]));
+        return;
+    }
+    let columns = tiles
+        .iter()
+        .map(|tile| {
+            json!({
+                "object": "block",
+                "type": "column",
+                "column": { "children": [stat_tile_callout(tile)] }
+            })
+        })
+        .collect::<Vec<_>>();
+    blocks.push(json!({
+        "object": "block",
+        "type": "column_list",
+        "column_list": { "children": columns }
+    }));
+}
+
+fn stat_tile_callout(text: &str) -> Value {
+    json!({
+        "object": "block",
+        "type": "callout",
+        "callout": {
+            "rich_text": vec![text_run(text, TextTone::Plain)],
+            "icon": { "type": "emoji", "emoji": "📊" },
+            "color": "gray_background"
+        }
+    })
+}
+
+fn push_reading_persona_blocks(blocks: &mut Vec<Value>, persona: Option<&ReadingPersona>) {
+    let Some(persona) = persona else {
+        return;
+    };
+    if persona.status == "insufficient" {
+        return;
+    }
+    let is_provisional = persona.status == "provisional";
+    blocks.push(heading_2_block(if is_provisional {
+        "阅读倾向（临时）"
+    } else {
+        "阅读人格"
+    }));
+
+    let mut runs = Vec::new();
+    if let Some(display_title) = persona
+        .display_title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        runs.extend(chunked_text_runs(display_title));
+    }
+    if let Some(summary) = persona
+        .summary
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let prefix = if runs.is_empty() { "" } else { "\n" };
+        runs.push(text_run(
+            &format!("{prefix}{}", normalize_multiline(summary)),
+            TextTone::Gray,
+        ));
+    }
+    if !runs.is_empty() {
+        blocks.push(json!({
+            "object": "block",
+            "type": "callout",
+            "callout": {
+                "rich_text": runs,
+                "icon": { "type": "emoji", "emoji": "🎭" },
+                "color": "gray_background"
+            }
+        }));
+    }
+
+    let dimensions = if is_provisional {
+        persona.dimensions.iter().take(2).collect::<Vec<_>>()
+    } else {
+        persona.dimensions.iter().collect::<Vec<_>>()
+    };
+    for dimension in dimensions {
+        let mut dimension_runs = chunked_text_runs(&normalize_multiline(&dimension.label));
+        dimension_runs.push(text_run(
+            &format!("\n{}", normalize_multiline(&dimension.basis)),
+            TextTone::Gray,
+        ));
+        blocks.push(json!({
+            "object": "block",
+            "type": "bulleted_list_item",
+            "bulleted_list_item": { "rich_text": dimension_runs }
+        }));
+    }
+
+    if let Some(suggestion) = persona
+        .suggestion
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        blocks.push(paragraph_block(vec![text_run(
+            &format!("温和建议：{}", normalize_multiline(suggestion)),
+            TextTone::Gray,
+        )]));
+    }
+}
+
+/// 从阅读路线/指南生成 Notion 页面正文块（橙色系）。
+pub fn build_reading_route_blocks(
+    response: &ReadingRouteResponse,
+    exported_at: &str,
+) -> Vec<Value> {
+    let route = &response.route;
+    let is_cross_book_route = route.source_stats.candidate_count > 0;
+    let mut blocks = Vec::new();
+
+    let mut overview_runs = chunked_text_runs(&normalize_multiline(&route.route_overview));
+    if overview_runs.is_empty() {
+        overview_runs.push(text_run("这次没有生成路线总览。", TextTone::Plain));
+    }
+    let mut meta_parts = vec![
+        if is_cross_book_route {
+            "跨书阅读路线".to_string()
+        } else {
+            "单书阅读指南".to_string()
+        },
+        format!("生成于 {}", exported_at_label(&route.generated_at)),
+    ];
+    if let Some(model) = response
+        .provider_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    {
+        meta_parts.push(model.to_string());
+    }
+    overview_runs.push(text_run(
+        &format!("\n{}", meta_parts.join(" · ")),
+        TextTone::Gray,
+    ));
+    blocks.push(json!({
+        "object": "block",
+        "type": "callout",
+        "callout": {
+            "rich_text": overview_runs,
+            "icon": { "type": "emoji", "emoji": "🗺️" },
+            "color": "orange_background"
+        }
+    }));
+
+    if !route.books.is_empty() {
+        blocks.push(heading_2_block("推进顺序"));
+        for step in &route.books {
+            let mut headline = format!("《{}》", step.title.trim());
+            if let Some(author) = step
+                .author
+                .as_deref()
+                .map(str::trim)
+                .filter(|author| !author.is_empty())
+            {
+                headline.push_str(&format!(" · {author}"));
+            }
+            let role = step.role.trim();
+            if !role.is_empty() {
+                headline.push_str(&format!(" · {role}"));
+            }
+            let effort = step.estimated_effort.trim();
+            if !effort.is_empty() {
+                headline.push_str(&format!(" · 预计 {effort}"));
+            }
+            let mut runs = chunked_text_runs(&headline);
+            let mut detail_parts = Vec::new();
+            let purpose = normalize_multiline(&step.reading_purpose);
+            if !purpose.is_empty() {
+                detail_parts.push(purpose);
+            }
+            if let Some(status) = step
+                .local_status
+                .as_deref()
+                .map(str::trim)
+                .filter(|status| !status.is_empty())
+            {
+                detail_parts.push(format!("本地状态 {status}"));
+            }
+            if !detail_parts.is_empty() {
+                runs.push(text_run(
+                    &format!("\n{}", detail_parts.join(" · ")),
+                    TextTone::Gray,
+                ));
+            }
+            blocks.push(json!({
+                "object": "block",
+                "type": "numbered_list_item",
+                "numbered_list_item": { "rich_text": runs }
+            }));
+        }
+    }
+
+    if is_cross_book_route && !route.dependencies.is_empty() {
+        blocks.push(heading_2_block("依赖关系"));
+        for dependency in &route.dependencies {
+            blocks.push(json!({
+                "object": "block",
+                "type": "bulleted_list_item",
+                "bulleted_list_item": {
+                    "rich_text": chunked_text_runs(&format!(
+                        "{} → {}：{}",
+                        dependency.from_book_id.trim(),
+                        dependency.to_book_id.trim(),
+                        normalize_multiline(&dependency.reason)
+                    ))
+                }
+            }));
+        }
+    }
+
+    if !route.review_checkpoints.is_empty() {
+        blocks.push(heading_2_block("复盘点"));
+        for checkpoint in &route.review_checkpoints {
+            let mut runs = chunked_text_runs(&format!(
+                "{}：{}",
+                checkpoint.timing.trim(),
+                normalize_multiline(&checkpoint.question)
+            ));
+            let suggested = normalize_multiline(&checkpoint.suggested_output);
+            if !suggested.is_empty() {
+                runs.push(text_run(&format!("\n建议输出 {suggested}"), TextTone::Gray));
+            }
+            blocks.push(json!({
+                "object": "block",
+                "type": "to_do",
+                "to_do": { "rich_text": runs, "checked": false }
+            }));
+        }
+    }
+
+    push_to_do_section(&mut blocks, "下一步行动", &route.next_actions);
+
+    blocks.push(divider_block());
+    blocks.push(notice_quote(&route.basis_notice));
+    if let Some(error_message) = response
+        .error_message
+        .as_deref()
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+    {
+        blocks.push(notice_quote(error_message));
+    }
+    blocks.push(paragraph_block(vec![text_run(
+        &format!(
+            "导出于 {} · Prompt {} · 当前书 {} · 候选书 {} · 已生成复盘 {}",
+            exported_at_label(exported_at),
+            route.prompt_version,
+            route.source_stats.current_book_count,
+            route.source_stats.candidate_count,
+            route.source_stats.summary_count
+        ),
+        TextTone::Gray,
+    )]));
+    blocks
+}
+
+/// 从选书决策生成 Notion 页面正文块（紫色系）。结论先行：
+/// 第一屏就是"选了哪本 + 依据"，论证与暂缓项在后。
+pub fn build_book_decision_blocks(
+    response: &BookDecisionResponse,
+    exported_at: &str,
+) -> Vec<Value> {
+    let decision = &response.decision;
+    let mut blocks = Vec::new();
+
+    let mut overview_runs = chunked_text_runs(&normalize_multiline(&decision.decision_overview));
+    if overview_runs.is_empty() {
+        overview_runs.push(text_run("这次没有生成推荐结论。", TextTone::Plain));
+    }
+    let mut meta_parts = vec![format!(
+        "生成于 {}",
+        exported_at_label(&decision.generated_at)
+    )];
+    if let Some(model) = response
+        .provider_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    {
+        meta_parts.push(model.to_string());
+    }
+    overview_runs.push(text_run(
+        &format!("\n{}", meta_parts.join(" · ")),
+        TextTone::Gray,
+    ));
+    blocks.push(json!({
+        "object": "block",
+        "type": "callout",
+        "callout": {
+            "rich_text": overview_runs,
+            "icon": { "type": "emoji", "emoji": "🧩" },
+            "color": "purple_background"
+        }
+    }));
+
+    if !decision.top_candidates.is_empty() {
+        blocks.push(heading_2_block("推荐顺序"));
+        for candidate in &decision.top_candidates {
+            let mut headline = format!("{}. 《{}》", candidate.rank.max(1), candidate.title.trim());
+            if let Some(author) = candidate
+                .author
+                .as_deref()
+                .map(str::trim)
+                .filter(|author| !author.is_empty())
+            {
+                headline.push_str(&format!(" · {author}"));
+            }
+            blocks.push(heading_3_block(&headline));
+
+            let mut why_runs = chunked_text_runs(&normalize_multiline(&candidate.why_now));
+            let mut tradeoff_parts = Vec::new();
+            let tradeoff = normalize_multiline(&candidate.tradeoff);
+            if !tradeoff.is_empty() {
+                tradeoff_parts.push(format!("取舍 {tradeoff}"));
+            }
+            let effort = candidate.estimated_effort.trim();
+            if !effort.is_empty() {
+                tradeoff_parts.push(format!("预计投入 {effort}"));
+            }
+            if !tradeoff_parts.is_empty() {
+                why_runs.push(text_run(
+                    &format!("\n{}", tradeoff_parts.join(" · ")),
+                    TextTone::Gray,
+                ));
+            }
+            if !why_runs.is_empty() {
+                blocks.push(paragraph_block(why_runs));
+            }
+
+            let prerequisite = normalize_multiline(&candidate.prerequisite_action);
+            if !prerequisite.is_empty() {
+                blocks.push(json!({
+                    "object": "block",
+                    "type": "to_do",
+                    "to_do": {
+                        "rich_text": chunked_text_runs(&format!("前置动作：{prerequisite}")),
+                        "checked": false
+                    }
+                }));
+            }
+            let trigger = normalize_multiline(&candidate.review_trigger);
+            if !trigger.is_empty() {
+                blocks.push(paragraph_block(vec![text_run(
+                    &format!("复盘触发：{trigger}"),
+                    TextTone::Gray,
+                )]));
+            }
+        }
+    }
+
+    if !decision.deferred_candidates.is_empty() {
+        let children = decision
+            .deferred_candidates
+            .iter()
+            .map(|candidate| {
+                json!({
+                    "object": "block",
+                    "type": "bulleted_list_item",
+                    "bulleted_list_item": {
+                        "rich_text": chunked_text_runs(&format!(
+                            "《{}》：{}",
+                            candidate.title.trim(),
+                            normalize_multiline(&candidate.reason)
+                        ))
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        blocks.push(json!({
+            "object": "block",
+            "type": "toggle",
+            "toggle": {
+                "rich_text": vec![text_run(
+                    &format!("暂缓候选（{} 本）", decision.deferred_candidates.len()),
+                    TextTone::Plain,
+                )],
+                "children": children
+            }
+        }));
+    }
+
+    push_to_do_section(&mut blocks, "下一步行动", &decision.next_actions);
+
+    blocks.push(divider_block());
+    blocks.push(notice_quote(&decision.basis_notice));
+    if let Some(error_message) = response
+        .error_message
+        .as_deref()
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+    {
+        blocks.push(notice_quote(error_message));
+    }
+    blocks.push(paragraph_block(vec![text_run(
+        &format!(
+            "导出于 {} · Prompt {} · 候选 {} · 参考复盘 {}",
+            exported_at_label(exported_at),
+            decision.prompt_version,
+            decision.source_stats.candidate_count,
+            decision.source_stats.summary_count
+        ),
+        TextTone::Gray,
+    )]));
+    blocks
+}
+
+fn push_to_do_section(blocks: &mut Vec<Value>, title: &str, items: &[String]) {
+    if items.is_empty() {
+        return;
+    }
+    blocks.push(heading_2_block(title));
+    for item in items {
+        let runs = chunked_text_runs(&normalize_multiline(item));
+        if runs.is_empty() {
+            continue;
+        }
+        blocks.push(json!({
+            "object": "block",
+            "type": "to_do",
+            "to_do": { "rich_text": runs, "checked": false }
+        }));
+    }
+}
+
+fn heading_3_block(title: &str) -> Value {
+    json!({
+        "object": "block",
+        "type": "heading_3",
+        "heading_3": { "rich_text": vec![text_run(title, TextTone::Plain)] }
+    })
 }
 
 fn push_review_list_section(blocks: &mut Vec<Value>, title: &str, items: &[String], kind: &str) {
@@ -488,6 +1075,52 @@ fn chunked_text_runs(content: &str) -> Vec<Value> {
         .collect()
 }
 
+fn append_review_feedback_runs(
+    runs: &mut Vec<Value>,
+    feedback: Option<&AiFeedbackExportRecord>,
+    status_label: fn(&str) -> &'static str,
+) {
+    let Some(feedback) = feedback else {
+        return;
+    };
+    let mut detail = format!("\n状态：{}", status_label(&feedback.status));
+    if let Some(note) = feedback
+        .note
+        .as_deref()
+        .map(str::trim)
+        .filter(|note| !note.is_empty())
+    {
+        detail.push_str(&format!(" · {}", normalize_multiline(note)));
+    }
+    detail.push_str(&format!(
+        " · 更新于 {}",
+        exported_at_label(&feedback.updated_at)
+    ));
+    runs.push(text_run(&detail, TextTone::Gray));
+}
+
+fn review_feedback_item_id(text: &str, index: usize) -> String {
+    format!("{index}:{}", normalize_multiline(text).replace('\n', " "))
+}
+
+fn action_feedback_status_label(status: &str) -> &'static str {
+    match status {
+        "completed" => "已完成",
+        "skipped" => "暂不做",
+        "notApplicable" => "不适合",
+        _ => "待处理",
+    }
+}
+
+fn reflection_feedback_status_label(status: &str) -> &'static str {
+    match status {
+        "completed" => "已回答",
+        "skipped" => "暂不答",
+        "notApplicable" => "不适合",
+        _ => "待思考",
+    }
+}
+
 fn normalize_multiline(value: &str) -> String {
     value
         .lines()
@@ -538,8 +1171,17 @@ mod tests {
         BookNotesRecord, ChapterNoteGroup, HighlightRecord, NotebookBookRecord, ThoughtRecord,
     };
 
+    use crate::services::ai::{
+        AiFeedbackExportRecord, BookAiSummarySource, BookDecision, BookDecisionDeferredCandidate,
+        BookDecisionResponse, BookDecisionSourceStats, BookDecisionTopCandidate, ReadingPersona,
+        ReadingRoute, ReadingRouteBookStep, ReadingRouteCheckpoint, ReadingRouteResponse,
+        ReadingRouteSourceStats, ReadingStatsAiReview, ReadingStatsAiReviewResponse,
+        ReadingStatsAiReviewSourceStats,
+    };
+
     use super::{
-        build_book_notes_blocks, build_book_review_blocks, range_sort_key, snippet,
+        build_book_decision_blocks, build_book_notes_blocks, build_book_review_blocks,
+        build_reading_route_blocks, build_reading_stats_review_blocks, range_sort_key, snippet,
         BookReviewBlocksInput, ReviewQuoteBlocksInput,
     };
 
@@ -714,7 +1356,9 @@ mod tests {
             key_ideas: &key_ideas,
             my_focus: &[],
             action_items: &action_items,
+            action_feedback: None,
             reflection_questions: &questions,
+            reflection_feedback: None,
             quotes: vec![ReviewQuoteBlocksInput {
                 quote: "灯灭不摸金。",
                 reason: "全书规矩体系的核心。",
@@ -790,6 +1434,82 @@ mod tests {
     }
 
     #[test]
+    fn review_blocks_include_saved_action_and_reflection_feedback() {
+        let action_items = vec!["整理师承关系图。".to_string()];
+        let questions = vec!["哪条规矩最值得借鉴到工作里？".to_string()];
+        let mut action_feedback = std::collections::HashMap::new();
+        action_feedback.insert(
+            "0:整理师承关系图。".to_string(),
+            AiFeedbackExportRecord {
+                status: "completed".to_string(),
+                note: Some("已经整理到知识库。".to_string()),
+                updated_at: "1785082496".to_string(),
+            },
+        );
+        let mut reflection_feedback = std::collections::HashMap::new();
+        reflection_feedback.insert(
+            "0:哪条规矩最值得借鉴到工作里？".to_string(),
+            AiFeedbackExportRecord {
+                status: "completed".to_string(),
+                note: Some("先定义边界，再提高执行速度。".to_string()),
+                updated_at: "1785082496".to_string(),
+            },
+        );
+
+        let blocks = build_book_review_blocks(&BookReviewBlocksInput {
+            author: Some("云峰"),
+            overview: "全书围绕规矩展开。",
+            theme_tags: &[],
+            key_ideas: &[],
+            my_focus: &[],
+            action_items: &action_items,
+            action_feedback: Some(&action_feedback),
+            reflection_questions: &questions,
+            reflection_feedback: Some(&reflection_feedback),
+            quotes: Vec::new(),
+            basis_notice: "基于本地笔记生成。",
+            error_message: None,
+            generated_at: "1784437649",
+            exported_at: "1785082496",
+            provider_model: None,
+            prompt_version: "book-notes-summary-v3",
+            highlight_count: 0,
+            included_highlight_count: 0,
+            thought_count: 0,
+            included_thought_count: 0,
+        });
+
+        let to_do = blocks
+            .iter()
+            .find(|block| block["type"] == "to_do")
+            .expect("to_do block");
+        assert_eq!(to_do["to_do"]["checked"], true);
+        let action_text = to_do["to_do"]["rich_text"]
+            .as_array()
+            .expect("action rich text")
+            .iter()
+            .filter_map(|run| run["text"]["content"].as_str())
+            .collect::<String>();
+        assert!(action_text.contains("状态：已完成"));
+        assert!(action_text.contains("已经整理到知识库"));
+
+        let toggle = blocks
+            .iter()
+            .find(|block| block["type"] == "toggle")
+            .expect("toggle block");
+        let answer = toggle["toggle"]["children"][0]["paragraph"]["rich_text"][0]["text"]
+            ["content"]
+            .as_str()
+            .expect("saved reflection answer");
+        assert_eq!(answer, "先定义边界，再提高执行速度。");
+        let status = toggle["toggle"]["children"][1]["paragraph"]["rich_text"][0]["text"]
+            ["content"]
+            .as_str()
+            .expect("reflection status");
+        assert!(status.contains("状态：已回答"));
+    }
+
+    #[test]
     fn review_blocks_skip_empty_sections() {
         let blocks = build_book_review_blocks(&BookReviewBlocksInput {
             author: None,
@@ -798,7 +1518,9 @@ mod tests {
             key_ideas: &[],
             my_focus: &[],
             action_items: &[],
+            action_feedback: None,
             reflection_questions: &[],
+            reflection_feedback: None,
             quotes: Vec::new(),
             basis_notice: "基于本地笔记生成。",
             error_message: None,
@@ -817,6 +1539,230 @@ mod tests {
             .all(|block| block["type"] != "heading_2" && block["type"] != "to_do"));
         assert_eq!(blocks[0]["type"], "callout");
         assert_eq!(blocks[1]["type"], "divider");
+    }
+
+    #[test]
+    fn stats_review_blocks_use_tiles_todos_and_persona() {
+        let response = ReadingStatsAiReviewResponse {
+            mode: "monthly".to_string(),
+            base_time: 1_752_940_800,
+            prompt_version: "reading-stats-review-v2".to_string(),
+            input_hash: "hash".to_string(),
+            provider_model: Some("deepseek-v4-flash".to_string()),
+            source: BookAiSummarySource::Cache,
+            review: ReadingStatsAiReview {
+                overview: "本月阅读节奏稳定。".to_string(),
+                rhythm_insights: vec!["晚间阅读占比高。".to_string()],
+                preference_insights: Vec::new(),
+                focus_items: Vec::new(),
+                next_actions: vec!["下月安排一次主题精读。".to_string()],
+                reading_persona: None,
+                source_stats: ReadingStatsAiReviewSourceStats {
+                    mode: "monthly".to_string(),
+                    base_time: 1_752_940_800,
+                    read_days: Some(21),
+                    total_read_time_seconds: Some(77_400),
+                    day_average_read_time_seconds: Some(3_685),
+                    bucket_count: 30,
+                    longest_item_count: 5,
+                    category_count: 6,
+                },
+                generated_at: "1784437649".to_string(),
+                prompt_version: "reading-stats-review-v2".to_string(),
+                response_format: None,
+                basis_notice: "基于本地统计缓存生成。".to_string(),
+            },
+            cached_updated_at: None,
+            error_message: None,
+        };
+        let persona = ReadingPersona {
+            status: "provisional".to_string(),
+            code: None,
+            label: None,
+            display_title: Some("夜间深读者".to_string()),
+            palette_group: None,
+            accent_tone: None,
+            basis_notice: "样本仍在积累。".to_string(),
+            dimensions: Vec::new(),
+            evidence: Vec::new(),
+            confidence: None,
+            summary: Some("更偏向连续长时段阅读。".to_string()),
+            suggestion: None,
+        };
+
+        let blocks = build_reading_stats_review_blocks(&response, Some(&persona), "1785082496");
+
+        assert_eq!(blocks[0]["type"], "callout");
+        assert_eq!(blocks[0]["callout"]["icon"]["emoji"], "📈");
+        assert_eq!(blocks[0]["callout"]["color"], "yellow_background");
+        assert_eq!(blocks[1]["type"], "column_list");
+        assert_eq!(
+            blocks[1]["column_list"]["children"]
+                .as_array()
+                .expect("columns")
+                .len(),
+            3
+        );
+        let types = blocks
+            .iter()
+            .map(|block| block["type"].as_str().unwrap_or_default().to_string())
+            .collect::<Vec<_>>();
+        assert!(types.contains(&"to_do".to_string()));
+        assert!(blocks.iter().any(|block| {
+            block["type"] == "heading_2"
+                && block["heading_2"]["rich_text"][0]["text"]["content"] == "阅读倾向（临时）"
+        }));
+    }
+
+    #[test]
+    fn route_blocks_order_books_and_checkpoint_todos() {
+        let response = ReadingRouteResponse {
+            book_id: "book-1".to_string(),
+            scope_id: "scope-1".to_string(),
+            prompt_version: "reading-route-v2.1".to_string(),
+            input_hash: "hash".to_string(),
+            provider_model: None,
+            source: BookAiSummarySource::Cache,
+            route: ReadingRoute {
+                route_overview: "先补背景，再进主线。".to_string(),
+                books: vec![ReadingRouteBookStep {
+                    book_id: "book-1".to_string(),
+                    title: "深度工作".to_string(),
+                    author: Some("卡尔·纽波特".to_string()),
+                    order: 1,
+                    role: "主线".to_string(),
+                    reading_purpose: "建立专注工作的框架。".to_string(),
+                    estimated_effort: "2 周".to_string(),
+                    local_status: Some("在读".to_string()),
+                    basis: "当前进度 40%。".to_string(),
+                }],
+                dependencies: Vec::new(),
+                review_checkpoints: vec![ReadingRouteCheckpoint {
+                    timing: "第 1 周末".to_string(),
+                    question: "深度时段是否稳定发生？".to_string(),
+                    suggested_output: "一页时间块复盘。".to_string(),
+                }],
+                next_actions: vec!["明早安排 90 分钟深度时段。".to_string()],
+                reading_stage: None,
+                source_stats: ReadingRouteSourceStats {
+                    current_book_count: 1,
+                    candidate_count: 0,
+                    summary_count: 1,
+                    stats_signal_count: 2,
+                    local_status_count: 1,
+                },
+                generated_at: "1784437649".to_string(),
+                prompt_version: "reading-route-v2.1".to_string(),
+                response_format: None,
+                basis_notice: "基于本地缓存生成。".to_string(),
+                feedback_outcome_summary: None,
+            },
+            cached_updated_at: None,
+            error_message: None,
+        };
+
+        let blocks = build_reading_route_blocks(&response, "1785082496");
+
+        assert_eq!(blocks[0]["callout"]["icon"]["emoji"], "🗺️");
+        assert_eq!(blocks[0]["callout"]["color"], "orange_background");
+        let step = blocks
+            .iter()
+            .find(|block| block["type"] == "numbered_list_item")
+            .expect("book step");
+        let step_text = step["numbered_list_item"]["rich_text"][0]["text"]["content"]
+            .as_str()
+            .expect("step text");
+        assert!(step_text.contains("《深度工作》"));
+        assert!(step_text.contains("预计 2 周"));
+        let checkpoint = blocks
+            .iter()
+            .find(|block| {
+                block["type"] == "to_do"
+                    && block["to_do"]["rich_text"][0]["text"]["content"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("第 1 周末"))
+            })
+            .expect("checkpoint to_do");
+        assert!(checkpoint["to_do"]["rich_text"][1]["text"]["content"]
+            .as_str()
+            .is_some_and(|text| text.contains("建议输出")));
+    }
+
+    #[test]
+    fn decision_blocks_lead_with_conclusion_and_fold_deferred() {
+        let response = BookDecisionResponse {
+            scope_id: "scope-1".to_string(),
+            prompt_version: "book-decision-v1".to_string(),
+            input_hash: "hash".to_string(),
+            provider_model: None,
+            source: BookAiSummarySource::Cache,
+            decision: BookDecision {
+                decision_overview: "下一本读《深度工作》。".to_string(),
+                top_candidates: vec![BookDecisionTopCandidate {
+                    book_id: "book-1".to_string(),
+                    title: "深度工作".to_string(),
+                    author: Some("卡尔·纽波特".to_string()),
+                    rank: 1,
+                    why_now: "与当前专注力议题直接相关。".to_string(),
+                    tradeoff: "牺牲一次休闲阅读窗口。".to_string(),
+                    estimated_effort: "2 周".to_string(),
+                    prerequisite_action: "清空周一晚的日程。".to_string(),
+                    review_trigger: "读完第三章后。".to_string(),
+                    basis: "近期统计显示晚间时段最稳定。".to_string(),
+                }],
+                deferred_candidates: vec![BookDecisionDeferredCandidate {
+                    book_id: "book-2".to_string(),
+                    title: "禅与摩托车维修艺术".to_string(),
+                    reason: "主题偏散，等专注议题收束后再读。".to_string(),
+                }],
+                next_actions: vec!["把《深度工作》加入本周计划。".to_string()],
+                source_stats: BookDecisionSourceStats {
+                    candidate_count: 2,
+                    summary_count: 1,
+                    stats_signal_count: 2,
+                    local_status_count: 2,
+                },
+                reference_factors: Some(vec!["recent".to_string(), "finished".to_string()]),
+                recent_reading_window_days: Some(60),
+                generated_at: "1784437649".to_string(),
+                prompt_version: "book-decision-v1".to_string(),
+                response_format: None,
+                basis_notice: "基于本地候选书架生成。".to_string(),
+            },
+            cached_updated_at: None,
+            error_message: None,
+        };
+
+        let blocks = build_book_decision_blocks(&response, "1785082496");
+
+        assert_eq!(blocks[0]["callout"]["icon"]["emoji"], "🧩");
+        assert_eq!(blocks[0]["callout"]["color"], "purple_background");
+        assert!(blocks.iter().any(|block| {
+            block["type"] == "heading_3"
+                && block["heading_3"]["rich_text"][0]["text"]["content"]
+                    .as_str()
+                    .is_some_and(|text| text.starts_with("1. 《深度工作》"))
+        }));
+        assert!(blocks.iter().any(|block| {
+            block["type"] == "to_do"
+                && block["to_do"]["rich_text"][0]["text"]["content"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("前置动作"))
+        }));
+        let toggle = blocks
+            .iter()
+            .find(|block| block["type"] == "toggle")
+            .expect("deferred toggle");
+        assert_eq!(
+            toggle["toggle"]["children"]
+                .as_array()
+                .expect("children")
+                .len(),
+            1
+        );
+        assert!(toggle["toggle"]["rich_text"][0]["text"]["content"]
+            .as_str()
+            .is_some_and(|text| text.contains("暂缓候选（1 本）")));
     }
 
     #[test]

@@ -1,10 +1,29 @@
 import { useEffect, useState } from "react";
-import { Bookmark, ChevronDown, ChevronRight, ListCollapse, ListTree, MessageSquareText } from "lucide-react";
+import {
+  Bookmark,
+  ChevronDown,
+  ChevronRight,
+  ListCollapse,
+  ListTree,
+  Loader2,
+  MessageSquareText,
+  Navigation
+} from "lucide-react";
 import { formatUnixDate } from "../lib/formatters";
 import type { ChapterNoteGroup, Highlight, Thought } from "../lib/types";
 
+type NoteSourceAction = {
+  id: string;
+  bookId: string;
+  chapterUid?: number;
+  range?: string;
+};
+
 type NoteListProps = {
   groups: ChapterNoteGroup[];
+  canOpenSource: boolean;
+  openingSourceId?: string;
+  onOpenSource: (location: NoteSourceAction) => void;
 };
 
 type ChapterFilter = "all" | "thoughts";
@@ -12,7 +31,12 @@ type ChapterFilter = "all" | "thoughts";
 const DEFAULT_EXPANDED_GROUP_COUNT = 1;
 const CHAPTER_DIRECTORY_PANEL_ID = "note-chapter-directory-panel";
 
-export function NoteList({ groups }: NoteListProps) {
+export function NoteList({
+  groups,
+  canOpenSource,
+  openingSourceId,
+  onOpenSource
+}: NoteListProps) {
   const [chapterFilter, setChapterFilter] = useState<ChapterFilter>("all");
   const [isDirectoryOpen, setIsDirectoryOpen] = useState(false);
   const [expandedGroupKeys, setExpandedGroupKeys] = useState<Set<string>>(() =>
@@ -199,7 +223,13 @@ export function NoteList({ groups }: NoteListProps) {
                       划线
                     </h4>
                     {group.highlights.map((highlight) => (
-                      <HighlightCard key={highlight.bookmarkId} highlight={highlight} />
+                      <HighlightCard
+                        key={highlight.bookmarkId}
+                        highlight={highlight}
+                        canOpenSource={canOpenSource}
+                        openingSourceId={openingSourceId}
+                        onOpenSource={onOpenSource}
+                      />
                     ))}
                   </div>
                 ) : null}
@@ -211,7 +241,13 @@ export function NoteList({ groups }: NoteListProps) {
                       想法/点评
                     </h4>
                     {group.thoughts.map((thought) => (
-                      <ThoughtCard key={thought.reviewId} thought={thought} />
+                      <ThoughtCard
+                        key={thought.reviewId}
+                        thought={thought}
+                        canOpenSource={canOpenSource}
+                        openingSourceId={openingSourceId}
+                        onOpenSource={onOpenSource}
+                      />
                     ))}
                   </div>
                 ) : null}
@@ -258,19 +294,56 @@ function getChapterScopeLabel(group: ChapterNoteGroup): string {
   return group.chapterUid ? "书内章节" : "全书";
 }
 
-function HighlightCard({ highlight }: { highlight: Highlight }) {
+function HighlightCard({
+  highlight,
+  canOpenSource,
+  openingSourceId,
+  onOpenSource
+}: {
+  highlight: Highlight;
+  canOpenSource: boolean;
+  openingSourceId?: string;
+  onOpenSource: (location: NoteSourceAction) => void;
+}) {
+  const sourceId = `highlight-${highlight.bookmarkId}`;
   return (
     <article className="highlight-card">
       <blockquote>{highlight.markText}</blockquote>
       <div className="note-meta">
-        {highlight.createTime ? <span>{formatUnixDate(highlight.createTime)}</span> : null}
-        {highlight.range ? <span>位置 {highlight.range}</span> : null}
+        <div className="note-meta-copy">
+          {highlight.createTime ? <span>{formatUnixDate(highlight.createTime)}</span> : null}
+          {highlight.range ? <span>位置 {highlight.range}</span> : null}
+        </div>
+        <SourceButton
+          canOpenSource={canOpenSource}
+          isOpening={openingSourceId === sourceId}
+          disabled={openingSourceId !== undefined}
+          onClick={() =>
+            onOpenSource({
+              id: sourceId,
+              bookId: highlight.bookId,
+              chapterUid: highlight.chapterUid,
+              range: highlight.range
+            })
+          }
+        />
       </div>
     </article>
   );
 }
 
-function ThoughtCard({ thought }: { thought: Thought }) {
+function ThoughtCard({
+  thought,
+  canOpenSource,
+  openingSourceId,
+  onOpenSource
+}: {
+  thought: Thought;
+  canOpenSource: boolean;
+  openingSourceId?: string;
+  onOpenSource: (location: NoteSourceAction) => void;
+}) {
+  const sourceId = `thought-${thought.reviewId}`;
   return (
     <article className="thought-card">
       {thought.abstractText ? (
@@ -278,12 +351,56 @@ function ThoughtCard({ thought }: { thought: Thought }) {
       ) : null}
       <p>{thought.content}</p>
       <div className="note-meta">
-        {thought.createTime ? <span>{formatUnixDate(thought.createTime)}</span> : null}
-        {thought.star !== undefined ? <span>{formatPersonalStar(thought.star)}</span> : null}
-        {thought.range ? <span>位置 {thought.range}</span> : null}
-        {thought.isFinish ? <span>读完点评</span> : null}
+        <div className="note-meta-copy">
+          {thought.createTime ? <span>{formatUnixDate(thought.createTime)}</span> : null}
+          {thought.star !== undefined ? <span>{formatPersonalStar(thought.star)}</span> : null}
+          {thought.range ? <span>位置 {thought.range}</span> : null}
+          {thought.isFinish ? <span>读完点评</span> : null}
+        </div>
+        <SourceButton
+          canOpenSource={canOpenSource}
+          isOpening={openingSourceId === sourceId}
+          disabled={openingSourceId !== undefined}
+          onClick={() =>
+            onOpenSource({
+              id: sourceId,
+              bookId: thought.bookId,
+              chapterUid: thought.chapterUid,
+              range: thought.range
+            })
+          }
+        />
       </div>
     </article>
+  );
+}
+
+function SourceButton({
+  canOpenSource,
+  isOpening,
+  disabled,
+  onClick
+}: {
+  canOpenSource: boolean;
+  isOpening: boolean;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      className="text-button note-source-button"
+      type="button"
+      title={canOpenSource ? "尝试在微信读书中定位原文" : "定位原文需要在桌面应用中使用"}
+      onClick={onClick}
+      disabled={!canOpenSource || disabled}
+    >
+      {isOpening ? (
+        <Loader2 aria-hidden="true" size={15} className="spin" />
+      ) : (
+        <Navigation aria-hidden="true" size={15} />
+      )}
+      {isOpening ? "打开中" : canOpenSource ? "定位原文" : "桌面版可用"}
+    </button>
   );
 }
 

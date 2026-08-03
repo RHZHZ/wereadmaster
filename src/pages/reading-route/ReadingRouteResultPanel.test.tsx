@@ -94,7 +94,7 @@ describe("reading route result panel", () => {
           route={createCrossBookRoute()}
           routeResponse={createRouteResponse(createCrossBookRoute())}
           isCrossBookRoute={true}
-          resultTitle="跨书路线图"
+          resultTitle="阅读路线"
         />
       </ToastProvider>
     );

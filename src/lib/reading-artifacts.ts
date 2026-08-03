@@ -25,7 +25,7 @@ export const readingArtifactLabels: Record<ReadingArtifactKind, string> = {
   "reading-route-markdown": "阅读处方",
   "book-decision-markdown": "下一本书决策",
   "period-report-image": "周期阅读报告",
-  "lifetime-report-image": "长期复盘报告"
+  "lifetime-report-image": "全部历史报告图片"
 };
 
 export function getReadingArtifactLabel(kind: ReadingArtifactKind): string {

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-notion-standard-database-provisioning"
+description = "Enables the get_notion_standard_database_provisioning command without any pre-configured scope."
+commands.allow = ["get_notion_standard_database_provisioning"]
+
+[[permission]]
+identifier = "deny-get-notion-standard-database-provisioning"
+description = "Denies the get_notion_standard_database_provisioning command without any pre-configured scope."
+commands.deny = ["get_notion_standard_database_provisioning"]

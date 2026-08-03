@@ -1,5 +1,8 @@
 # 每日阅读工作台改造规划
 
+> **status: superseded-by: functional-consolidation-blueprint.md**
+> 本文仅保留为历史方案参考；首屏动作规格与完整 TodayPlan 实施边界以现行功能收敛蓝图及 M2 计划为准。
+
 ## 开工摘要
 
 当前最推荐的第一步是 PR-1：只新增 `DailyWorkbenchAction` 纯前端模型和动作解释纯函数，不改 UI、不改样式、不改后端。

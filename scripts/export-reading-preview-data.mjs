@@ -118,6 +118,16 @@ const shelfArchives = runOptionalSqliteJson(
   `
 );
 
+const readingItemStateColumns = new Set(
+  runSqliteJson(dbPath, "PRAGMA table_info(reading_item_states);")
+    .map((column) => column.name)
+    .filter((name) => typeof name === "string")
+);
+const readingItemStateColumn = (columnName, alias) =>
+  readingItemStateColumns.has(columnName)
+    ? `${columnName} AS ${alias}`
+    : `NULL AS ${alias}`;
+
 const readingItemStates = runSqliteJson(
   dbPath,
   `
@@ -125,6 +135,14 @@ const readingItemStates = runSqliteJson(
       item_id AS itemId,
       item_type AS itemType,
       status,
+      ${readingItemStateColumn("item_kind", "itemKind")},
+      ${readingItemStateColumn("is_candidate", "isCandidate")},
+      ${readingItemStateColumn("candidate_source", "candidateSource")},
+      ${readingItemStateColumn("life_status", "lifeStatus")},
+      ${readingItemStateColumn("finished_source", "finishedSource")},
+      ${readingItemStateColumn("organize_status", "organizeStatus")},
+      ${readingItemStateColumn("user_note", "userNote")},
+      ${readingItemStateColumn("source_meta", "sourceMeta")},
       title,
       author,
       cover,
@@ -175,9 +193,8 @@ const reviewRows = runSqliteJson(
 );
 
 const payload = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   exportedAt: String(Math.floor(Date.now() / 1000)),
-  dbPath,
   statsSyncState,
   shelfSyncState,
   notesSyncState,

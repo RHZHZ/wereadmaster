@@ -20,12 +20,23 @@ import {
   Sparkles,
   X
 } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import emptyNotes from "../assets/empty-notes.png";
 import { CredentialSetupCard } from "../components/CredentialSetupCard";
 import { ExportFailurePanel } from "../components/ExportFailurePanel";
 import { SkillUpgradeNotice } from "../components/SkillUpgradeNotice";
 import { calculateTotalNotes } from "../lib/business-rules";
+import { copyTextToClipboard } from "../lib/clipboard";
 import { getExportAssetBoundary } from "../lib/export-asset-boundaries";
+import {
+  getOrganizeQueue,
+  type OrganizeCandidate
+} from "../lib/reading-selectors";
+import {
+  exportTargetLabel,
+  exportTargetsFromDestination,
+  type ExportDestination
+} from "../lib/export-targets";
 import { formatProgress } from "../lib/formatters";
 import {
   cancelBulkExport,
@@ -35,6 +46,7 @@ import {
   getNotebookOverview,
   listenBulkExportProgress,
   listBookNotesSummaries,
+  listReadingItemStates,
   preflightBulkExport,
   type CommandErrorInfo,
   type NotebookOverviewResponse
@@ -47,7 +59,10 @@ import type {
   BulkExportResponse,
   BulkExportStrategy,
   CredentialStatus,
-  NotebookBook
+  ExportTargetResult,
+  MultiTargetExportRequest,
+  NotebookBook,
+  ReadingItemState
 } from "../lib/types";
 import { useToast } from "../components/ToastProvider";
 
@@ -71,6 +86,7 @@ export function NotesPage({
   const deferredQuery = useDeferredValue(committedQuery);
   const isQueryComposingRef = useRef(false);
   const [summaryItems, setSummaryItems] = useState<BookAiSummaryListItem[]>();
+  const [readingStates, setReadingStates] = useState<ReadingItemState[]>();
   const [isLoadingSummaries, setIsLoadingSummaries] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<CommandErrorInfo>();
@@ -79,6 +95,7 @@ export function NotesPage({
   const [bulkResult, setBulkResult] = useState<BulkExportResponse>();
   const [bulkExportError, setBulkExportError] = useState<string>();
   const [bulkStrategy, setBulkStrategy] = useState<BulkExportStrategy>("localCachedOnly");
+  const [bulkDestination, setBulkDestination] = useState<ExportDestination>("markdown");
   const [bulkConcurrency, setBulkConcurrency] = useState(2);
   const [selectedBookIds, setSelectedBookIds] = useState<string[]>([]);
   const [bulkSearchQuery, setBulkSearchQuery] = useState("");
@@ -89,8 +106,17 @@ export function NotesPage({
   const hasCredential = credentialStatus?.hasCredential === true;
   const { showToast } = useToast();
   const books = overview?.books ?? [];
+  const hasBooks = books.length > 0;
+  const isFiltering = deferredQuery.trim().length > 0;
   const filteredBooks = filterBooks(books, deferredQuery);
-  const reviewCandidates = summaryItems ? getReviewCandidates(books, summaryItems) : [];
+  const reviewCandidates = readingStates
+    ? getOrganizeQueue({
+        items: readingStates,
+        notebooks: summaryItems ? books : [],
+        reviewedBookIds: new Set(summaryItems?.map((item) => item.bookId) ?? []),
+        limit: 3
+      })
+    : [];
   const totalHighlights = books.reduce((total, book) => total + book.noteCount, 0);
   const totalThoughts = books.reduce((total, book) => total + book.reviewCount, 0);
   const totalBookmarks = books.reduce((total, book) => total + book.bookmarkCount, 0);
@@ -136,6 +162,34 @@ export function NotesPage({
       isMounted = false;
     };
   }, [hasCredential, summaryItems]);
+
+  useEffect(() => {
+    if (!hasCredential || readingStates) {
+      return;
+    }
+
+    let isMounted = true;
+
+    async function loadReadingStates() {
+      try {
+        const response = await listReadingItemStates();
+        if (isMounted) {
+          setReadingStates(response);
+        }
+      } catch (readingStateError) {
+        if (isMounted) {
+          setReadingStates(undefined);
+          setError(getCommandErrorInfo(readingStateError));
+        }
+      }
+    }
+
+    void loadReadingStates();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [hasCredential, readingStates]);
 
   useEffect(() => {
     if (!isBulkWizardOpen) {
@@ -270,7 +324,8 @@ export function NotesPage({
         strategy: bulkStrategy,
         selectedBookIds: selectedIds,
         concurrency: bulkStrategy === "syncMissingNotes" ? bulkConcurrency : 2,
-        excludeWithoutExportableNotes
+        excludeWithoutExportableNotes,
+        targets: bulkTargetsRequest(bulkDestination)
       });
       setBulkResult(response);
       showToast({
@@ -301,7 +356,8 @@ export function NotesPage({
         strategy: "syncMissingNotes",
         selectedBookIds: [bookId],
         concurrency: 1,
-        excludeWithoutExportableNotes
+        excludeWithoutExportableNotes,
+        targets: bulkTargetsRequest(bulkDestination)
       });
       setBulkResult(response);
       showToast({
@@ -331,6 +387,25 @@ export function NotesPage({
     setBulkResult(undefined);
   }
 
+  async function handleOpenBulkTargetLink(url: string, fallbackLabel: string) {
+    try {
+      await openUrl(url);
+    } catch {
+      try {
+        await copyTextToClipboard(url);
+        showToast({
+          message: `外部浏览器打开失败，已复制${fallbackLabel}链接。`,
+          tone: "warning"
+        });
+      } catch {
+        showToast({
+          message: `外部浏览器打开失败，请手动访问${fallbackLabel}链接。`,
+          tone: "error"
+        });
+      }
+    }
+  }
+
   function toggleSelectedBook(bookId: string) {
     setSelectedBookIds((current) =>
       current.includes(bookId) ? current.filter((id) => id !== bookId) : [...current, bookId]
@@ -357,49 +432,51 @@ export function NotesPage({
       <div className="notes-hero">
         <div>
           <p className="section-kicker">个人笔记</p>
-          <h3>划线、想法和书签数量</h3>
-          <p>书签只纳入统计；正文内容只展示和导出划线、想法/点评。</p>
+          <h3>笔记中心</h3>
+          <p>同步微信读书的划线、想法和书签。</p>
         </div>
         {hasCredential ? (
-        <div className="notes-hero-actions" aria-label="笔记操作">
-          <button
-            className="sync-button"
-            type="button"
-            onClick={() => void loadOverview()}
-            disabled={!hasCredential || isLoading}
-          >
-            {isLoading ? (
-              <Loader2 aria-hidden="true" size={18} className="spin" />
-            ) : (
-              <RefreshCw aria-hidden="true" size={18} />
-            )}
-            {isLoading ? "同步中" : "同步笔记"}
-          </button>
-          <button
-            className="sync-button"
-            type="button"
-            onClick={() => void handleOpenBulkWizard()}
-            disabled={!hasCredential || isBulkPreflighting}
-          >
-            {isBulkPreflighting ? (
-              <Loader2 aria-hidden="true" size={18} className="spin" />
-            ) : (
-              <Download aria-hidden="true" size={18} />
-            )}
-            批量导出
-          </button>
-        </div>
+          <div className="notes-hero-actions" aria-label="笔记操作">
+            {hasBooks ? (
+              <button
+                className="notes-secondary-action"
+                type="button"
+                onClick={() => void handleOpenBulkWizard()}
+                disabled={isBulkPreflighting || isLoading}
+              >
+                {isBulkPreflighting ? (
+                  <Loader2 aria-hidden="true" size={18} className="spin" />
+                ) : (
+                  <Download aria-hidden="true" size={18} />
+                )}
+                批量导出
+              </button>
+            ) : null}
+            <button
+              className="notes-primary-action"
+              type="button"
+              onClick={() => void loadOverview()}
+              disabled={isLoading}
+            >
+              {isLoading ? (
+                <Loader2 aria-hidden="true" size={18} className="spin" />
+              ) : (
+                <RefreshCw aria-hidden="true" size={18} />
+              )}
+              {isLoading ? "同步中" : "同步笔记"}
+            </button>
+          </div>
         ) : null}
       </div>
 
-      {hasCredential ? (
-      <section className="shelf-summary-row" aria-label="笔记统计">
-        <SummaryPill label="有笔记书籍" value={overview?.summary.totalBookCount ?? books.length} />
-        <SummaryPill label="总笔记" value={overview?.summary.totalNoteCount ?? 0} />
-        <SummaryPill label="划线" value={totalHighlights} />
-        <SummaryPill label="想法/点评" value={totalThoughts} />
-        <SummaryPill label="书签" value={totalBookmarks} />
-      </section>
+      {hasCredential && hasBooks ? (
+        <section className="shelf-summary-row notes-summary-row" aria-label="笔记统计">
+          <SummaryPill label="有笔记书籍" value={overview?.summary.totalBookCount ?? books.length} />
+          <SummaryPill label="总笔记" value={overview?.summary.totalNoteCount ?? 0} />
+          <SummaryPill label="划线" value={totalHighlights} />
+          <SummaryPill label="想法" value={totalThoughts} />
+          <SummaryPill label="书签" value={totalBookmarks} />
+        </section>
       ) : null}
 
       {!hasCredential ? (
@@ -419,26 +496,8 @@ export function NotesPage({
         </div>
       ) : null}
 
-      {reviewCandidates.length > 0 ? (
-        <section className="notes-review-panel" aria-label="建议复盘">
-          <div className="notes-review-heading">
-            <div>
-              <p className="section-kicker">建议复盘</p>
-              <h3>优先整理这些有想法的书</h3>
-              <p>按本机笔记数量和已生成报告排序。</p>
-            </div>
-            <span>{reviewCandidates.length} 本</span>
-          </div>
-          <div className="notes-review-grid">
-            {reviewCandidates.map((book) => (
-              <ReviewSuggestionCard key={book.bookId} book={book} onOpen={onOpenBookNotes} />
-            ))}
-          </div>
-        </section>
-      ) : null}
-
-      {books.length > 0 ? (
-        <label className="search-field">
+      {hasBooks ? (
+        <label className="search-field notes-search-field">
           <Search aria-hidden="true" size={18} />
           <input
             value={query}
@@ -450,15 +509,38 @@ export function NotesPage({
         </label>
       ) : null}
 
+      {reviewCandidates.length > 0 ? (
+        <section className="notes-review-panel" aria-label="建议复盘">
+          <div className="notes-review-heading">
+            <div>
+              <p className="section-kicker">建议复盘</p>
+              <h3>优先整理这些有想法的书</h3>
+              <p>按本机笔记数量和已生成报告排序。</p>
+            </div>
+            <span>{reviewCandidates.length} 本</span>
+          </div>
+          <div className="notes-review-grid">
+            {reviewCandidates.map((candidate) => (
+              <ReviewSuggestionCard
+                key={candidate.book.bookId}
+                candidate={candidate}
+                onOpen={onOpenBookNotes}
+              />
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       {isLoading && books.length === 0 ? <NotesLoading /> : null}
 
-      {!isLoading && hasCredential && books.length === 0 ? (
-        <section className="empty-state" aria-label="笔记为空">
+      {!isLoading && hasCredential && !hasBooks ? (
+        <section className="empty-state notes-empty-state" aria-label="笔记为空">
           <img src={emptyNotes} alt="" />
           <div>
             <h3>还没有同步笔记</h3>
-            <p>同步后会显示有划线、想法或书签数量的书籍，并支持进入单本书查看内容。</p>
-            <button className="secondary-action" type="button" onClick={() => void loadOverview()}>
+            <p>同步后可按书查看划线、想法和书签。</p>
+            <button className="notes-primary-action" type="button" onClick={() => void loadOverview()}>
+              <RefreshCw aria-hidden="true" size={18} />
               同步笔记
             </button>
           </div>
@@ -477,11 +559,20 @@ export function NotesPage({
       ) : null}
 
       {filteredBooks.length > 0 ? (
-        <div className="notebook-grid" aria-label="有笔记的书">
-          {filteredBooks.map((book) => (
-            <NotebookBookCard key={book.bookId} book={book} onOpen={onOpenBookNotes} />
-          ))}
-        </div>
+        <section className="notes-library" aria-label="有笔记的书">
+          <div className="notes-section-heading">
+            <div>
+              <p className="section-kicker">{isFiltering ? "筛选结果" : "笔记书库"}</p>
+              <h3>{isFiltering ? "匹配的笔记书籍" : "全部笔记书籍"}</h3>
+            </div>
+            <span>共 {filteredBooks.length} 本</span>
+          </div>
+          <div className="notebook-grid">
+            {filteredBooks.map((book) => (
+              <NotebookBookCard key={book.bookId} book={book} onOpen={onOpenBookNotes} />
+            ))}
+          </div>
+        </section>
       ) : null}
 
       {isBulkWizardOpen ? (
@@ -491,6 +582,7 @@ export function NotesPage({
           exportError={bulkExportError}
           progress={bulkProgress}
           strategy={bulkStrategy}
+          destination={bulkDestination}
           concurrency={bulkConcurrency}
           excludeWithoutExportableNotes={excludeWithoutExportableNotes}
           selectedBookIds={selectedBookIds}
@@ -498,6 +590,8 @@ export function NotesPage({
           isPreflighting={isBulkPreflighting}
           isExporting={isBulkExporting}
           onStrategyChange={handleBulkStrategyChange}
+          onDestinationChange={setBulkDestination}
+          onOpenTargetLink={(url, label) => void handleOpenBulkTargetLink(url, label)}
           onConcurrencyChange={setBulkConcurrency}
           onExcludeWithoutExportableNotesChange={handleExcludeWithoutExportableNotesChange}
           onSearchQueryChange={setBulkSearchQuery}
@@ -520,6 +614,7 @@ function BulkExportWizard({
   exportError,
   progress,
   strategy,
+  destination,
   concurrency,
   excludeWithoutExportableNotes,
   selectedBookIds,
@@ -527,6 +622,8 @@ function BulkExportWizard({
   isPreflighting,
   isExporting,
   onStrategyChange,
+  onDestinationChange,
+  onOpenTargetLink,
   onConcurrencyChange,
   onExcludeWithoutExportableNotesChange,
   onSearchQueryChange,
@@ -543,6 +640,7 @@ function BulkExportWizard({
   exportError?: string;
   progress?: BulkExportProgress;
   strategy: BulkExportStrategy;
+  destination: ExportDestination;
   concurrency: number;
   excludeWithoutExportableNotes: boolean;
   selectedBookIds: string[];
@@ -550,6 +648,8 @@ function BulkExportWizard({
   isPreflighting: boolean;
   isExporting: boolean;
   onStrategyChange: (strategy: BulkExportStrategy) => void;
+  onDestinationChange: (destination: ExportDestination) => void;
+  onOpenTargetLink: (url: string, fallbackLabel: string) => void;
   onConcurrencyChange: (concurrency: number) => void;
   onExcludeWithoutExportableNotesChange: (checked: boolean) => void;
   onSearchQueryChange: (query: string) => void;
@@ -697,12 +797,26 @@ function BulkExportWizard({
                   value="selectedBooksOnly"
                   checked={strategy === "selectedBooksOnly"}
                   title="只导出选中的书"
-                  description="适合先缩小范围；仍遵守当前缓存边界，不自动生成 AI 复盘。"
+                  description="适合先缩小范围；仍遵守当前缓存边界，不自动生成书籍复盘。"
                   onChange={onStrategyChange}
                 />
               </section>
 
               <div className="bulk-export-toolbar">
+                <label className="bulk-export-concurrency bulk-export-target-select">
+                  <span>导出到</span>
+                  <select
+                    value={destination}
+                    onChange={(event) => onDestinationChange(event.target.value as ExportDestination)}
+                    disabled={isExporting}
+                  >
+                    <option value="markdown">仅 Markdown</option>
+                    <option value="obsidian">Markdown + Obsidian</option>
+                    <option value="notion">Markdown + Notion</option>
+                    <option value="obsidianNotion">Markdown + Obsidian + Notion</option>
+                  </select>
+                </label>
+
                 {strategy === "syncMissingNotes" ? (
                   <label className="bulk-export-concurrency">
                     <span>同步并发</span>
@@ -746,6 +860,12 @@ function BulkExportWizard({
                   <p className="bulk-export-selection-summary">已选择 {selectedCount} 本</p>
                 ) : null}
               </div>
+
+              {destination === "notion" || destination === "obsidianNotion" ? (
+                <p className="bulk-export-selection-summary">
+                  Notion 批量导入按书串行，可能较慢；单本失败不影响其他书，Markdown 始终保留在批量目录。
+                </p>
+              ) : null}
             </section>
 
             <section className="bulk-export-list" aria-label="批量导出书籍预检">
@@ -774,13 +894,21 @@ function BulkExportWizard({
             </div>
             <span>{result.files.length} 个文件</span>
             <div className="bulk-export-result-list">
-              {result.report.items.slice(0, 6).map((item) => (
+              {sortBulkResultItemsFailedFirst(result.report.items).slice(0, 6).map((item) => (
                 <article className="bulk-export-result-item" key={item.bookId}>
                   <p>
                     <strong>{item.title}</strong>
                     <span>{bulkStatusLabel(item.status)} · {item.reason}</span>
                   </p>
-                  {item.status === "failed" ? (
+                  {(item.targets ?? []).map((target) => (
+                    <BulkExportTargetLine
+                      key={`${item.bookId}-${target.target}`}
+                      target={target}
+                      onOpenLink={onOpenTargetLink}
+                    />
+                  ))}
+                  {item.status === "failed" ||
+                  (item.targets ?? []).some((target) => target.status === "failed") ? (
                     <button
                       className="text-button"
                       type="button"
@@ -839,6 +967,57 @@ function BulkExportWizard({
         </div>
       </section>
     </div>
+  );
+}
+
+function bulkTargetsRequest(destination: ExportDestination): MultiTargetExportRequest | undefined {
+  if (destination === "markdown") {
+    return undefined;
+  }
+  return { targets: exportTargetsFromDestination(destination) };
+}
+
+function sortBulkResultItemsFailedFirst(items: BulkExportResponse["report"]["items"]) {
+  return [...items].sort((left, right) => {
+    const leftFailed =
+      left.status === "failed" || (left.targets ?? []).some((target) => target.status === "failed");
+    const rightFailed =
+      right.status === "failed" ||
+      (right.targets ?? []).some((target) => target.status === "failed");
+    return Number(rightFailed) - Number(leftFailed);
+  });
+}
+
+function BulkExportTargetLine({
+  target,
+  onOpenLink
+}: {
+  target: ExportTargetResult;
+  onOpenLink: (url: string, fallbackLabel: string) => void;
+}) {
+  const label = exportTargetLabel(target.target);
+  return (
+    <p className="bulk-export-target-line">
+      <strong>{label}：</strong>
+      {target.status === "succeeded" ? (
+        target.url ? (
+          <button
+            className="text-button"
+            type="button"
+            onClick={() => onOpenLink(target.url!, `${label} 页面`)}
+          >
+            打开 {label} 页面
+          </button>
+        ) : (
+          <span>{target.path ?? "已完成"}</span>
+        )
+      ) : target.status === "failed" ? (
+        <span>{target.error?.message ?? "失败"}</span>
+      ) : (
+        <span>已跳过</span>
+      )}
+      {target.warning ? <small>{target.warning}</small> : null}
+    </p>
   );
 }
 
@@ -985,12 +1164,13 @@ function NotebookBookCard({
 }
 
 function ReviewSuggestionCard({
-  book,
+  candidate,
   onOpen
 }: {
-  book: NotebookBook;
+  candidate: OrganizeCandidate;
   onOpen: (book: NotebookBook) => void;
 }) {
+  const { book, source } = candidate;
   const totalNotes = calculateTotalNotes(book);
 
   return (
@@ -1001,7 +1181,7 @@ function ReviewSuggestionCard({
       <span>
         <strong>{book.title}</strong>
         <small>{book.author || "暂无作者信息"}</small>
-        <em>{book.reviewCount} 条想法 · {totalNotes} 条笔记</em>
+        <em>{source === "manual" ? "手动" : "建议"} · {book.reviewCount} 条想法 · {totalNotes} 条笔记</em>
       </span>
       <ChevronRight aria-hidden="true" size={17} />
     </button>
@@ -1182,28 +1362,4 @@ function filterBooks(books: NotebookBook[], query: string): NotebookBook[] {
     const author = book.author?.toLowerCase() ?? "";
     return title.includes(keyword) || author.includes(keyword);
   });
-}
-
-function getReviewCandidates(
-  books: NotebookBook[],
-  summaryItems: BookAiSummaryListItem[]
-): NotebookBook[] {
-  const summarizedBookIds = new Set(summaryItems.map((item) => item.bookId));
-
-  return [...books]
-    .filter((book) => calculateTotalNotes(book) > 0 && !summarizedBookIds.has(book.bookId))
-    .sort((left, right) => {
-      const thoughtDelta = right.reviewCount - left.reviewCount;
-      if (thoughtDelta !== 0) {
-        return thoughtDelta;
-      }
-
-      const noteDelta = calculateTotalNotes(right) - calculateTotalNotes(left);
-      if (noteDelta !== 0) {
-        return noteDelta;
-      }
-
-      return (right.sort ?? 0) - (left.sort ?? 0);
-    })
-    .slice(0, 3);
 }

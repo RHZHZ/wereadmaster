@@ -1,3 +1,4 @@
+mod atomic_file;
 mod commands;
 mod config;
 mod db;
@@ -58,6 +59,7 @@ pub fn run() {
             commands::ai::export_book_notes_summary_markdown,
             commands::ai::export_book_notes_summary_targets,
             commands::ai::export_book_notes_summaries_markdown,
+            commands::ai::export_book_notes_summaries_targets,
             commands::ai::list_book_notes_summaries,
             commands::ai::list_ai_asset_summaries,
             commands::ai::get_ai_asset_detail,
@@ -85,10 +87,12 @@ pub fn run() {
             commands::notion_credentials::get_notion_credential_status,
             commands::notion_credentials::save_notion_credential,
             commands::notion_credentials::remove_notion_credential,
+            commands::notion_credentials::validate_notion_credential,
             commands::shelf::sync_shelf,
             commands::shelf::get_bookshelf,
             commands::book::get_book_detail,
             commands::book::open_book_in_weread,
+            commands::book::open_weread_note_source,
             commands::notes::get_notebook_overview,
             commands::notes::get_book_notes,
             commands::notes::export_book_notes_markdown,
@@ -113,7 +117,6 @@ pub fn run() {
             commands::local_books::save_local_reading_progress,
             commands::reading_state::list_reading_item_states,
             commands::reading_state::get_reading_item_state,
-            commands::reading_state::upsert_reading_item_state,
             commands::reading_state::patch_reading_item_state,
             commands::reading_state::remove_reading_item_state,
             commands::settings::get_settings_state,
@@ -134,6 +137,15 @@ pub fn run() {
             commands::settings::choose_obsidian_vault_directory,
             commands::settings::save_obsidian_export_settings,
             commands::settings::save_notion_export_settings,
+            commands::settings::analyze_notion_database,
+            commands::settings::save_notion_database_connection,
+            commands::settings::preflight_notion_cover_backfill,
+            commands::settings::run_notion_cover_backfill,
+            commands::settings::cancel_notion_cover_backfill,
+            commands::settings::get_notion_standard_database_provisioning,
+            commands::settings::continue_notion_standard_database_provisioning,
+            commands::settings::resolve_notion_standard_database_provisioning,
+            commands::settings::create_notion_standard_outcomes_database,
             commands::settings::create_notion_reading_library_template,
             commands::settings::create_notion_reading_workspace_template
         ])

@@ -4,7 +4,8 @@ import {
   ReadingAssistantBookReviewAction,
   ReadingAssistantCategoryBooksAction,
   ReadingAssistantMarkdownLite,
-  ReadingAssistantRecommendedBookCard
+  ReadingAssistantRecommendedBookCard,
+  getReadingAssistantContextLabel
 } from "./ReadingAssistantPanel";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -20,24 +21,32 @@ vi.mock("@tauri-apps/plugin-updater", () => ({
 }));
 
 describe("ReadingAssistantBookReviewAction", () => {
-  it("renders the AI review target and action button", () => {
+  it("uses distinct labels for AI assets and reading memory", () => {
+    expect(getReadingAssistantContextLabel("aiAssetSummary")).toBe("资产摘要");
+    expect(getReadingAssistantContextLabel("readingMemory")).toBe("阅读记忆");
+    expect(getReadingAssistantContextLabel("aiAssetSummary")).not.toBe(
+      getReadingAssistantContextLabel("readingMemory")
+    );
+  });
+
+  it("renders the book review target and action button", () => {
     const markup = renderToStaticMarkup(
       <ReadingAssistantBookReviewAction
         action={{
           bookId: "book_1",
           title: "富爸爸穷爸爸",
           author: "罗伯特·清崎",
-          message: "这类笔记总结应进入单本 AI 复盘，不走阅读指南。",
-          ctaLabel: "生成 AI 复盘"
+          message: "这类笔记总结应进入书籍复盘，不走阅读指南。",
+          ctaLabel: "生成书籍复盘"
         }}
         onOpenBookReview={() => undefined}
       />
     );
 
-    expect(markup).toContain("这类笔记总结应进入单本 AI 复盘，不走阅读指南。");
+    expect(markup).toContain("这类笔记总结应进入书籍复盘，不走阅读指南。");
     expect(markup).toContain("富爸爸穷爸爸");
     expect(markup).toContain("罗伯特·清崎");
-    expect(markup).toContain("生成 AI 复盘");
+    expect(markup).toContain("生成书籍复盘");
     expect(markup).toContain("reading-assistant-book-review-button");
   });
 
@@ -47,8 +56,8 @@ describe("ReadingAssistantBookReviewAction", () => {
         action={{
           bookId: "book_1",
           title: "富爸爸穷爸爸",
-          message: "这类笔记总结应进入单本 AI 复盘，不走阅读指南。",
-          ctaLabel: "生成 AI 复盘"
+          message: "这类笔记总结应进入书籍复盘，不走阅读指南。",
+          ctaLabel: "生成书籍复盘"
         }}
       />
     );

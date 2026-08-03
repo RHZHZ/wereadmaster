@@ -13,7 +13,7 @@ describe("book notes review status", () => {
       primaryMetricValue: 2,
       secondaryMetricLabel: "划线",
       secondaryMetricValue: 3,
-      nextActionLabel: "AI 复盘",
+      nextActionLabel: "书籍复盘",
       tone: "ready"
     });
   });

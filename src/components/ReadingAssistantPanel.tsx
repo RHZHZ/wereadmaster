@@ -30,15 +30,13 @@ import {
   listReadingItemStates,
   listReadingAssistantThreads,
   listenReadingAssistantStream,
+  patchReadingItemState,
   saveReadingAssistantPreferences,
-  searchBooks,
-  upsertReadingItemState
+  searchBooks
 } from "../lib/reading-api";
 import { useConfirm } from "./ConfirmProvider";
 import {
-  buildAiRecommendationCandidateNote,
   buildAiRecommendedCandidateId,
-  buildConfirmedAiRecommendationCandidateNote,
   buildRecommendedBookSearchKeyword,
   dedupeRecommendedBookSearchResults,
   findExistingCandidateState,
@@ -50,6 +48,7 @@ import {
   type ReadingAssistantMarkdownBlock,
   type ReadingAssistantMarkdownInline
 } from "../lib/reading-assistant-markdown-lite";
+import { TERMS } from "../lib/glossary";
 import type {
   AiProviderPresetId,
   AiResponseFormatPolicy,
@@ -165,6 +164,12 @@ const DEFAULT_PREFERENCES: ReadingAssistantPreferences = {
   saveConversationHistory: true
 };
 
+export function getReadingAssistantContextLabel(
+  context: ReadingAssistantContextOption
+): string {
+  return CONTEXT_LABELS[context];
+}
+
 const CONTEXT_LABELS: Record<ReadingAssistantContextOption, string> = {
   currentBook: "当前书",
   bookNotesSummary: "复盘摘要",
@@ -173,7 +178,7 @@ const CONTEXT_LABELS: Record<ReadingAssistantContextOption, string> = {
   readingPersona: "阅读画像",
   candidateBooks: "候选书",
   bookExclusionList: "排除书目",
-  aiAssetSummary: "阅读记忆",
+  aiAssetSummary: "资产摘要",
   conversationHistory: "最近对话",
   readingMemory: "阅读记忆"
 };
@@ -243,7 +248,7 @@ export function ReadingAssistantBookReviewAction({
           onClick={() => onOpenBookReview(action.bookId, action.title, action.author)}
         >
           <Sparkles aria-hidden="true" size={14} />
-          {action.ctaLabel || "生成 AI 复盘"}
+          {action.ctaLabel || TERMS.generateBookReview}
         </button>
       ) : null}
     </div>
@@ -1035,14 +1040,24 @@ export function ReadingAssistantPanel({
         return;
       }
 
-      await upsertReadingItemState({
-        itemId: buildAiRecommendedCandidateId(book),
-        itemType: "candidate",
-        status: "toRead",
-        title: book.title,
-        author: book.author || undefined,
-        note: buildAiRecommendationCandidateNote(book)
-      });
+      await patchReadingItemState(
+        buildAiRecommendedCandidateId(book),
+        {
+          isCandidate: true,
+          candidateSource: "ai_unconfirmed",
+          sourceMeta: {
+            savedFrom: "reading_assistant_recommendation",
+            aiReason: book.reason,
+            aiFit: book.fit,
+            aiRisk: book.risk
+          }
+        },
+        {
+          itemKind: "book",
+          title: book.title,
+          author: book.author || undefined
+        }
+      );
       onCandidateAdded?.();
       setCandidateBookStates((current) => ({ ...current, [bookKey]: "added" }));
     } catch (error) {
@@ -1106,10 +1121,10 @@ export function ReadingAssistantPanel({
       const states = await listReadingItemStates();
       const existingState = findExistingReadingItemStateById(states, result.bookId);
       if (existingState) {
-        const nextState =
-          existingState.itemType === "candidate" && existingState.status === "toRead"
-            ? "exists"
-            : "inLibrary";
+        const isCandidate =
+          existingState.isCandidate ??
+          (existingState.itemType === "candidate" && existingState.status === "toRead");
+        const nextState = isCandidate ? "exists" : "inLibrary";
         setCandidateBookStates((current) => ({ ...current, [bookKey]: nextState }));
         return;
       }
@@ -1124,16 +1139,27 @@ export function ReadingAssistantPanel({
         return;
       }
 
-      await upsertReadingItemState({
-        itemId: result.bookId,
-        itemType: "candidate",
-        status: "toRead",
-        title: result.title,
-        author: result.author,
-        cover: result.cover,
-        category: result.category,
-        note: buildConfirmedAiRecommendationCandidateNote(book)
-      });
+      await patchReadingItemState(
+        result.bookId,
+        {
+          isCandidate: true,
+          candidateSource: "ai_confirmed",
+          sourceMeta: {
+            savedFrom: "reading_assistant_recommendation_search",
+            aiReason: book.reason,
+            aiFit: book.fit,
+            aiRisk: book.risk,
+            confirmedAt: new Date().toISOString()
+          }
+        },
+        {
+          itemKind: "book",
+          title: result.title,
+          author: result.author,
+          cover: result.cover,
+          category: result.category
+        }
+      );
       onCandidateAdded?.();
       setCandidateBookStates((current) => ({ ...current, [bookKey]: "added" }));
     } catch (error) {
@@ -1166,16 +1192,21 @@ export function ReadingAssistantPanel({
         return;
       }
 
-      await upsertReadingItemState({
-        itemId: result.bookId,
-        itemType: "candidate",
-        status: "toRead",
-        title: result.title,
-        author: result.author,
-        cover: result.cover,
-        category: result.category,
-        note: "来自 AI 阅读助手微信读书搜索确认。"
-      });
+      await patchReadingItemState(
+        result.bookId,
+        {
+          isCandidate: true,
+          candidateSource: "weread",
+          sourceMeta: { savedFrom: "reading_assistant_weread_search" }
+        },
+        {
+          itemKind: "book",
+          title: result.title,
+          author: result.author,
+          cover: result.cover,
+          category: result.category
+        }
+      );
       onCandidateAdded?.();
       setActionSearchResultStates((current) => ({ ...current, [resultKey]: "added" }));
     } catch (error) {
@@ -1269,7 +1300,7 @@ export function ReadingAssistantPanel({
           visibleContext.map((context) => (
             <span className="reading-assistant-chip" key={context}>
               <Database aria-hidden="true" size={13} />
-              {CONTEXT_LABELS[context]}
+              {getReadingAssistantContextLabel(context)}
             </span>
           ))
         ) : (

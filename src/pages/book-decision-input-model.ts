@@ -1,11 +1,12 @@
 import type {
   BookDecisionGoal,
+  BookDecisionReferenceFactor,
   BookDecisionResponse
 } from "../lib/types";
 import type { RecentReadingWindowMode } from "./book-decision-context";
 import type { LocalCandidateBook } from "./candidate-books";
 
-export type ReferenceFactor = "recent" | "finished" | "habits";
+export type ReferenceFactor = BookDecisionReferenceFactor;
 
 export type BookDecisionSession = {
   response: BookDecisionResponse;

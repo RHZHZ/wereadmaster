@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-resolve-notion-standard-database-provisioning"
+description = "Enables the resolve_notion_standard_database_provisioning command without any pre-configured scope."
+commands.allow = ["resolve_notion_standard_database_provisioning"]
+
+[[permission]]
+identifier = "deny-resolve-notion-standard-database-provisioning"
+description = "Denies the resolve_notion_standard_database_provisioning command without any pre-configured scope."
+commands.deny = ["resolve_notion_standard_database_provisioning"]

@@ -15,7 +15,10 @@ export type BookAssetStatus = {
 export type BookAssetStatusInput = {
   shelfEntry: Pick<ShelfEntry, "isFinished">;
   progress: Pick<ReadingProgress, "progressPercent" | "isStarted" | "isFinished">;
-  readingState?: Pick<ReadingItemState, "itemType" | "status">;
+  readingState?: Pick<
+    ReadingItemState,
+    "itemType" | "status" | "isCandidate" | "organizeStatus"
+  >;
   canOpenNotes: boolean;
   canOpenAiSummary: boolean;
   canOpenReadingRoute: boolean;
@@ -29,7 +32,10 @@ type SuggestedAction = {
 export function buildBookAssetStatus(input: BookAssetStatusInput): BookAssetStatus {
   const progressLabel = buildProgressLabel(input);
 
-  if (input.readingState?.status === "organized") {
+  if (
+    input.readingState?.organizeStatus === "organized" ||
+    input.readingState?.status === "organized"
+  ) {
     return {
       label: "已整理",
       title: "已经整理成阅读成果",
@@ -40,9 +46,12 @@ export function buildBookAssetStatus(input: BookAssetStatusInput): BookAssetStat
     };
   }
 
-  if (input.readingState?.status === "reviewing") {
+  if (
+    input.readingState?.organizeStatus === "to_organize" ||
+    input.readingState?.status === "reviewing"
+  ) {
     return {
-      label: "待复盘",
+      label: "待整理",
       title: "下一步是整理这本书",
       body: "适合先确认笔记范围，再把关键划线和想法整理成复盘文档。",
       progressLabel,
@@ -51,7 +60,10 @@ export function buildBookAssetStatus(input: BookAssetStatusInput): BookAssetStat
     };
   }
 
-  if (input.readingState?.itemType === "candidate" && input.readingState.status === "toRead") {
+  if (
+    input.readingState?.isCandidate === true ||
+    (input.readingState?.itemType === "candidate" && input.readingState.status === "toRead")
+  ) {
     return {
       label: "本地候选",
       title: "已进入候选池",
@@ -97,7 +109,7 @@ export function buildBookAssetStatus(input: BookAssetStatusInput): BookAssetStat
 function pickOrganizedAction(input: BookAssetStatusInput): SuggestedAction {
   if (input.canOpenAiSummary) {
     return {
-      nextActionLabel: "AI 复盘",
+      nextActionLabel: "书籍复盘",
       nextActionReason: "回看复盘文档、行动清单和复盘问题。"
     };
   }
@@ -115,7 +127,7 @@ function pickOrganizedAction(input: BookAssetStatusInput): SuggestedAction {
 function pickReviewAction(input: BookAssetStatusInput): SuggestedAction {
   if (input.canOpenAiSummary) {
     return {
-      nextActionLabel: "AI 复盘",
+      nextActionLabel: "书籍复盘",
       nextActionReason: "生成或回看这本书的结构化复盘。"
     };
   }
@@ -128,7 +140,7 @@ function pickReviewAction(input: BookAssetStatusInput): SuggestedAction {
   }
 
   return {
-    nextActionLabel: "标记待复盘",
+    nextActionLabel: "标记待整理",
     nextActionReason: "先把这本书放入本地整理队列。"
   };
 }

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-preflight-notion-cover-backfill"
+description = "Enables the preflight_notion_cover_backfill command without any pre-configured scope."
+commands.allow = ["preflight_notion_cover_backfill"]
+
+[[permission]]
+identifier = "deny-preflight-notion-cover-backfill"
+description = "Denies the preflight_notion_cover_backfill command without any pre-configured scope."
+commands.deny = ["preflight_notion_cover_backfill"]

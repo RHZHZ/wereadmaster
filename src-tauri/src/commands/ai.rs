@@ -9,7 +9,9 @@ use crate::{
         AiProviderModelListResponse, AiResponseFormatPolicy, AiReviewFeedbackExport,
         AiReviewFeedbackState, AiService, AiServiceError, AiSettingsState, BookAiSummaryListItem,
         BookAiSummaryResponse, BookAiSummaryUpdateContext, BookDecisionCandidateInput,
-        BookDecisionResponse, BookNotesSummariesExportOptions, ExportAiBulkMarkdownResponse,
+        BookDecisionRecentReadingContextInput, BookDecisionResponse,
+        BookNotesSummariesExportOptions, BookNotesSummariesTargetExportRequest,
+        BookNotesSummariesTargetExportResponse, ExportAiBulkMarkdownResponse,
         ExportAiMarkdownResponse, LocalReaderSelectionQuestionInput,
         LocalReaderSelectionQuestionResponse, ReadingAssistantAnswer, ReadingAssistantPreferences,
         ReadingAssistantRequest, ReadingAssistantStreamRequest, ReadingAssistantThreadDetail,
@@ -323,6 +325,17 @@ pub async fn export_book_notes_summary_targets(
 }
 
 #[tauri::command]
+pub async fn export_book_notes_summaries_targets(
+    app: AppHandle,
+    request: BookNotesSummariesTargetExportRequest,
+) -> Result<BookNotesSummariesTargetExportResponse, AiCommandError> {
+    AiService::new(app)
+        .export_book_notes_summaries_targets(request)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
 pub fn export_book_notes_summaries_markdown(
     app: AppHandle,
     book_ids: Option<Vec<String>>,
@@ -507,10 +520,20 @@ pub async fn summarize_book_decision(
     app: AppHandle,
     candidates: Vec<BookDecisionCandidateInput>,
     goal: Option<String>,
+    reference_factors: Vec<String>,
+    recent_reading_window_days: Option<i64>,
+    recent_reading_context: BookDecisionRecentReadingContextInput,
     regenerate: Option<bool>,
 ) -> Result<BookDecisionResponse, AiCommandError> {
     AiService::new(app)
-        .summarize_book_decision(candidates, goal, regenerate.unwrap_or(false))
+        .summarize_book_decision(
+            candidates,
+            goal,
+            reference_factors,
+            recent_reading_window_days,
+            recent_reading_context,
+            regenerate.unwrap_or(false),
+        )
         .await
         .map_err(Into::into)
 }
@@ -520,9 +543,18 @@ pub fn get_latest_book_decision(
     app: AppHandle,
     candidates: Vec<BookDecisionCandidateInput>,
     goal: Option<String>,
+    reference_factors: Vec<String>,
+    recent_reading_window_days: Option<i64>,
+    recent_reading_context: BookDecisionRecentReadingContextInput,
 ) -> Result<Option<BookDecisionResponse>, AiCommandError> {
     AiService::new(app)
-        .get_latest_book_decision(candidates, goal)
+        .get_latest_book_decision(
+            candidates,
+            goal,
+            reference_factors,
+            recent_reading_window_days,
+            recent_reading_context,
+        )
         .map_err(Into::into)
 }
 
@@ -531,9 +563,18 @@ pub fn export_book_decision_markdown(
     app: AppHandle,
     candidates: Vec<BookDecisionCandidateInput>,
     goal: Option<String>,
+    reference_factors: Vec<String>,
+    recent_reading_window_days: Option<i64>,
+    recent_reading_context: BookDecisionRecentReadingContextInput,
 ) -> Result<ExportAiMarkdownResponse, AiCommandError> {
     AiService::new(app)
-        .export_book_decision_markdown(candidates, goal)
+        .export_book_decision_markdown(
+            candidates,
+            goal,
+            reference_factors,
+            recent_reading_window_days,
+            recent_reading_context,
+        )
         .map_err(Into::into)
 }
 
@@ -542,10 +583,20 @@ pub async fn export_book_decision_targets(
     app: AppHandle,
     candidates: Vec<BookDecisionCandidateInput>,
     goal: Option<String>,
+    reference_factors: Vec<String>,
+    recent_reading_window_days: Option<i64>,
+    recent_reading_context: BookDecisionRecentReadingContextInput,
     request: MultiTargetExportRequest,
 ) -> Result<MultiTargetExportResponse, AiCommandError> {
     AiService::new(app)
-        .export_book_decision_targets(candidates, goal, request)
+        .export_book_decision_targets(
+            candidates,
+            goal,
+            reference_factors,
+            recent_reading_window_days,
+            recent_reading_context,
+            request,
+        )
         .await
         .map_err(Into::into)
 }

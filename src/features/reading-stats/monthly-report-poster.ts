@@ -293,21 +293,21 @@ export async function downloadMonthlyReportPoster(
   data: MonthlyReportPosterData
 ): Promise<ReportImageExportResult> {
   const canvas = await renderMonthlyReportPosterCanvas(data);
-  return exportCanvasAsReportImage(canvas, data.fileName, "生成阅读报告失败。");
+  return exportCanvasAsReportImage(canvas, data.fileName, "生成报告图片失败。");
 }
 
 export async function saveMonthlyReportPoster(
   data: MonthlyReportPosterData
 ): Promise<ImageArtifactDeliveryResult> {
   const canvas = await renderMonthlyReportPosterCanvas(data);
-  return saveCanvasAsPngToAlbum(canvas, data.fileName, "生成阅读报告失败。");
+  return saveCanvasAsPngToAlbum(canvas, data.fileName, "生成报告图片失败。");
 }
 
 export async function shareMonthlyReportPoster(
   data: MonthlyReportPosterData
 ): Promise<ImageArtifactDeliveryResult> {
   const canvas = await renderMonthlyReportPosterCanvas(data);
-  return shareCanvasAsPng(canvas, data.fileName, "生成阅读报告失败。");
+  return shareCanvasAsPng(canvas, data.fileName, "生成报告图片失败。");
 }
 
 export async function downloadMonthlyReportWideReport(

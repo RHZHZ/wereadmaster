@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { CheckCircle2, Compass, Lightbulb } from "lucide-react";
 import { PersonaIllustration } from "../../../components/PersonaIllustration";
 import { getPersonaVisual } from "../../../lib/persona-visuals";
@@ -10,6 +11,7 @@ type ReviewProfileSectionProps = {
 };
 
 export function ReviewProfileSection({ persona }: ReviewProfileSectionProps) {
+  const [isVisualTipOpen, setIsVisualTipOpen] = useState(false);
   const isInsufficient = persona.status === "insufficient";
   const isProvisional = persona.status === "provisional";
   const dimensions = isProvisional ? persona.dimensions.slice(0, 2) : persona.dimensions;
@@ -34,9 +36,11 @@ export function ReviewProfileSection({ persona }: ReviewProfileSectionProps) {
           aria-label={persona.displayTitle || "阅读人格"}
         >
           <button
-            className="review-profile-visual"
+            className={`review-profile-visual${isVisualTipOpen ? " is-tip-open" : ""}`}
             type="button"
             aria-label={visual.ariaLabel}
+            aria-expanded={isVisualTipOpen}
+            onClick={() => setIsVisualTipOpen((current) => !current)}
           >
             <PersonaIllustration visual={visual} />
             <span className="review-profile-visual-tip">

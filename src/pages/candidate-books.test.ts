@@ -4,6 +4,7 @@ import {
   buildCandidateFilteredEmptyState,
   buildConfirmedCandidateReplacementNote,
   buildCandidateSourceStats,
+  buildBookDecisionCandidates,
   canOpenCandidateDetail,
   filterCandidatesBySource,
   getCandidateSourceLabel,
@@ -45,6 +46,20 @@ describe("candidate books helpers", () => {
         updatedAt: "1"
       })
     ).toBe(false);
+    expect(
+      isSavedCandidateState({
+        itemId: "book_2",
+        itemType: "book",
+        status: "organized",
+        itemKind: "book",
+        isCandidate: true,
+        candidateSource: "weread",
+        lifeStatus: "reading",
+        organizeStatus: "organized",
+        createdAt: "1",
+        updatedAt: "1"
+      })
+    ).toBe(true);
   });
 
   test("maps reading item state to local candidate book", () => {
@@ -66,6 +81,46 @@ describe("candidate books helpers", () => {
       localType: "candidate",
       localNote: "发现页保存的本地候选"
     });
+
+    expect(
+      mapCandidateStateToSearchResult({
+        ...state,
+        itemType: "book",
+        itemKind: "book",
+        isCandidate: true,
+        candidateSource: "ai_confirmed",
+        lifeStatus: "reading",
+        organizeStatus: "organized",
+        sourceMeta: { aiReason: "延续已有主题" }
+      })
+    ).toMatchObject({
+      localType: "book",
+      candidateSource: "ai_confirmed",
+      lifeStatus: "reading",
+      organizeStatus: "organized",
+      sourceMeta: { aiReason: "延续已有主题" }
+    });
+  });
+
+  test("builds book decision candidates with real lifecycle and organize states", () => {
+    expect(
+      buildBookDecisionCandidates([
+        candidate({
+          bookId: "book_1",
+          lifeStatus: "reading",
+          organizeStatus: "to_organize"
+        })
+      ])
+    ).toEqual([
+      {
+        bookId: "book_1",
+        title: "可能性的艺术",
+        author: undefined,
+        category: undefined,
+        lifeStatus: "reading",
+        organizeStatus: "to_organize"
+      }
+    ]);
   });
 
   test("builds candidate confirmation search keyword from title and author", () => {
@@ -94,7 +149,8 @@ describe("candidate books helpers", () => {
   test("marks searched AI recommendations as confirmed WeRead books", () => {
     const book = candidate({
       bookId: "book_123",
-      localNote: "来自 AI 阅读助手推荐：适合继续读。\n已通过微信读书搜索确认。"
+      candidateSource: "ai_confirmed",
+      sourceMeta: { aiReason: "适合继续读。" }
     });
 
     expect(isUnconfirmedAiCandidate(book)).toBe(false);
@@ -184,6 +240,19 @@ describe("candidate books helpers", () => {
     expect(getCandidateSourceTone(album)).toBe("light");
   });
 
+  test("prefers structured candidate source over conflicting legacy note markers", () => {
+    const book = candidate({
+      bookId: "book-light",
+      localType: "book",
+      candidateSource: "light",
+      localNote: "来自 AI 阅读助手推荐：旧字段冲突。"
+    });
+
+    expect(isUnconfirmedAiCandidate(book)).toBe(false);
+    expect(getCandidateSourceLabel(book)).toBe("有声书 · 轻管理候选");
+    expect(getCandidateSourceTone(book)).toBe("light");
+  });
+
   test("builds source stats and filters candidate books by source", () => {
     const confirmed = candidate({ bookId: "book_1" });
     const unconfirmed = candidate({
@@ -264,6 +333,8 @@ function candidate(overrides: Partial<LocalCandidateBook>): LocalCandidateBook {
     bookId: "book_1",
     title: "可能性的艺术",
     localType: "candidate",
+    lifeStatus: "none",
+    organizeStatus: "none",
     ...overrides
   };
 }

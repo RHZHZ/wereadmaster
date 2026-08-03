@@ -1,6 +1,7 @@
 # M1 实施说明 —— 功能收敛第一里程碑(PR\-1 \~ PR\-7)
 
-> **status: current** · 2026\-07\-26
+> **status: current** · 2026-08-04
+> **实施状态**：PR-1 至 PR-7 对应的三维迁移、patch API、页面写入迁移、决策缓存、真实笔记门禁、selectors、glossary 与 P0-D 已完成；v1.0.17 正在执行正式发布门禁与资产验收。本文保留原实施规格与历史锚点。
 > 上游:docs/functional\-consolidation\-blueprint.md(第 5、6 节);问题编号沿用 docs 分析报告(B1、C2……)。
 > M1 出口条件:蓝图 5.1.7 / 5.2.4 / 5.3.4 验收全过;`npm test`、`cargo test --lib`、`npm run e2e` 全绿。
 > 本文所有行号与符号名以 2026\-07\-26 工作区为锚点,已逐一与源码核对。
@@ -218,7 +219,7 @@ vitest 用例:manual 恒排在 suggested 前;已生成复盘的书被排除(修 
 | --- | --- | --- | --- |
 | 1 | DiscoveryPage.tsx:398\-406 保存候选 | upsert candidate\+toRead\+note 文案 | `patch(itemId, {isCandidate:true, candidateSource:"weread", sourceMeta:{savedFrom:"discovery"}}, meta)` |
 | 2 | BookDetailPage.tsx:311\-320 加入候选 | upsert 覆盖整行 | `patch(itemId, {isCandidate:true, candidateSource:"weread", sourceMeta:{savedFrom:"detail"}}, meta)` —— 不碰 organize/life |
-| 3 | BookDetailPage.tsx:268\-297 标记待复盘/已整理 | upsert itemType\=shelfEntry.type(覆盖候选身份) | `patch(itemId, {organizeStatus:"to_organize"或"organized"}, meta)` |
+| 3 | BookDetailPage.tsx:268\-297 标记待整理/已整理 | upsert itemType\=shelfEntry.type(覆盖候选身份) | `patch(itemId, {organizeStatus:"to_organize"或"organized"}, meta)` |
 | 4 | BookDetailPage.tsx:332\-352 清除状态 | remove 整条记录 | `patch(itemId, {organizeStatus:"none"})`;"删除记录"移入溢出菜单保留 remove |
 | 5 | BookAiSummaryPage.tsx:377\-404 标记已整理 | upsert 覆盖 note 为固定文案 | `patch(bookId, {organizeStatus:"organized"})` —— user\_note 不再被碰 |
 | 6 | BookshelfPage.tsx:268\-288 有声书/文章保存候选 | upsert itemType\=album/mp;book 静默 return(:269\-271) | `patch(id, {isCandidate:true, candidateSource:"light", sourceMeta:{savedFrom:"shelf"}}, meta)`;book 类型开放同一菜单(candidateSource:"weread") |
@@ -243,7 +244,7 @@ vitest 用例:manual 恒排在 suggested 前;已生成复盘的书被排除(修 
 
 ### 4\.1 机制锚点
 
-services/ai.rs:`build_book_decision_input(&conn, candidates, goal)` 构造 payload → `stable_hash_json(&payload)` 即 inputHash(:3377\-3378);feature "book\-decision"(:50),`BOOK_DECISION_PROMPT_VERSION = "book-decision-v1"`(:43)。**因子进 payload 后,hash 自动覆盖,无需另做 hash v2 机制。**
+services/ai.rs:`build_book_decision_input(...)` 构造 payload → `stable_hash_json(&payload)` 得到 inputHash；feature 为 `book-decision`，T5 已将 `BOOK_DECISION_PROMPT_VERSION` 升级为 `book-decision-v2`。**因子、窗口和结构化上下文进入 payload 后，hash 自动覆盖，无需另做 hash v2 算法。**
 
 ### 4\.2 变更
 
@@ -305,39 +306,9 @@ services/ai.rs 两处 `latest_cached_output` 兜底删除:
 
 ## 6 PR\-6 词典落地(A3、G1)
 
-### 6\.1 src/lib/glossary.ts(初版)
+### 6\.1 词典单一事实源
 
-```ts
-export const TERMS = {
-  bookReview: "书籍复盘",
-  readingGuide: "阅读指南",
-  readingRoute: "阅读路线",
-  statsReview: "周期复盘",
-  reportImage: "报告图片",
-  bookDecision: "选书决策",
-  assistant: "AI 阅读助手",
-  outcomes: "成果",            // 一级导航,替代"复盘"
-  toOrganize: "待整理",
-  organized: "已整理",
-  generateBookReview: "生成书籍复盘",
-  generateBookDecision: "生成选书决策",
-  generateReportImage: "生成报告图片",
-} as const;
-
-export const BANNED_TERMS: ReadonlyArray<{ banned: string; useInstead: keyof typeof TERMS }> = [
-  { banned: "AI 总结", useInstead: "bookReview" },
-  { banned: "AI 复盘", useInstead: "bookReview" },
-  { banned: "跨书路线图", useInstead: "readingRoute" },
-  { banned: "跨书指南", useInstead: "readingRoute" },
-  { banned: "长期复盘", useInstead: "statsReview" },
-  { banned: "生成阅读报告", useInstead: "generateReportImage" },
-  { banned: "生成报告图", useInstead: "generateReportImage" },
-  { banned: "推荐下一本", useInstead: "generateBookDecision" },
-  { banned: "复盘中心", useInstead: "outcomes" },
-  { banned: "阅读指南库", useInstead: "outcomes" },
-  { banned: "待复盘", useInstead: "toOrganize" },
-];
-```
+规范词、动作词和旧称迁移映射统一维护在 `src/lib/glossary-data.json`；`src/lib/glossary.ts` 提供 TypeScript 类型化门面，`scripts/check-glossary.mjs` 读取同一 JSON，面向维护者的说明见 [`docs/GLOSSARY.md`](./GLOSSARY.md)。本文不复制第二份词表。
 
 ### 6\.2 scripts/check\-glossary.mjs
 
@@ -354,7 +325,7 @@ Node 脚本:遍历 `src/**/*.{ts,tsx}` 与 `docs/*.md`,对 BANNED\_TERMS 逐词�
 1. **F2** SettingsPage:aiProviderProbe 结果面板(:1390\-1433,现在 account 分支内)整块移至 ai 分支"测试兼容性"按钮(:1702)下方;验收:在 AI 设置内点探测能看到四项结果。
 2. **C4** ReadingAssistantPanel:175 `aiAssetSummary: "阅读记忆"` 改 `"资产摘要"`;验收:上下文芯片无重名。
 3. **A7** MinePage:66 `noteCount` 改取真实笔记数(或该统计格改为"书架书籍"并删除重复格);"代理与网络诊断"(:155\-160)文案改"账户与同步设置"或指向真实诊断区。
-4. **B11** 阶段区间:"收束整理"上限 70\-95% 改 70\-100%(读完由 finished 单独承载);同步修改 product\-audit.md 与 ai\-feature\-plan.md 中的区间表述及后端 readingStage 计算的对应边界。
+4. **B11** 阶段边界固定为：69% 为“深入推进”；70%、95%、99% 为“收束整理”；100% 或 `finished=true` 为“完成归档”。后端 `readingStage` 计算、边界测试和现行文档必须保持一致。
 
 ## 8 回滚与发布
 

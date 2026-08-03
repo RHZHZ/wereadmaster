@@ -3,10 +3,10 @@ import {
   AlertCircle,
   CalendarDays,
   Database,
-  Download,
   Loader2,
   Settings
 } from "lucide-react";
+import { AssetExportDialog } from "../components/export/AssetExportDialog";
 import { useToast } from "../components/ToastProvider";
 import { ReadingStatsPeriodJumpPicker } from "../components/ReadingStatsPeriodJumpPicker";
 import { ReadingStatsPeriodNavigator } from "../components/ReadingStatsPeriodNavigator";
@@ -62,12 +62,13 @@ import {
   formatArtifactSharedMessage,
   type ReadingArtifactKind
 } from "../lib/reading-artifacts";
-import { exportTargetLabel } from "../lib/export-targets";
 import type { ImageArtifactDeliveryResult } from "../lib/image-artifact-export";
 import { useImageArtifactCapabilities } from "../lib/use-image-artifact-capabilities";
 import type { CredentialStatus, ReadingStatsAiReviewResponse, ReadingStatsMode } from "../lib/types";
+import type { SettingsCategoryId } from "./SettingsPage";
 import {
   buildReadingStatsPeriod,
+  formatReadingStatsPeriodTitle,
   getCurrentReadingStatsAnchor,
   getReadingStatsRequestBaseTime,
   getReadingStatsResponse,
@@ -79,7 +80,7 @@ type ReadingReviewPageProps = {
   credentialStatus?: CredentialStatus;
   cache: ReadingStatsCache;
   onCacheChange: (mode: ReadingStatsMode, response: ReadingStatsResponse) => void;
-  onOpenSettings: () => void;
+  onOpenSettings: (preferredCategory?: SettingsCategoryId) => void;
 };
 
 const periodOptions: Array<{ mode: ReadingStatsMode; label: string; description: string }> = [
@@ -98,6 +99,7 @@ export function ReadingReviewPage({
   onOpenSettings
 }: ReadingReviewPageProps) {
   const [isJumpPickerOpen, setIsJumpPickerOpen] = useState(false);
+  const [isAssetExportOpen, setIsAssetExportOpen] = useState(false);
   const [isReportOpen, setIsReportOpen] = useState(false);
   const [isReportPreviewRequested, setIsReportPreviewRequested] = useState(false);
   const [isReportDownloading, setIsReportDownloading] = useState(false);
@@ -117,17 +119,14 @@ export function ReadingReviewPage({
     canStepForward,
     drillPeriods,
     error,
-    exportDestination,
-    exportResult,
+    exportReview,
     handleDrillPeriod,
-    handleExport,
     handleGenerate,
     handleModeChange,
     handleShiftPeriod,
     handleSyncStats,
     hasCredential,
     hasStatsData,
-    isExporting,
     isLoadingReviewCache,
     isLoadingStats,
     isPreviewReadonly,
@@ -142,8 +141,7 @@ export function ReadingReviewPage({
     status,
     statusMeta,
     timelineInsights,
-    topCategory,
-    setExportDestination
+    topCategory
   } = useReadingReviewPage({
     credentialStatus,
     cache,
@@ -359,23 +357,20 @@ export function ReadingReviewPage({
         activePeriod={activePeriod}
         canGenerate={canGenerate}
         exportDisabled={
-          isPreviewReadonly || !review || isExporting || isLoadingReviewCache || status === "generating"
+          !review || isLoadingReviewCache || status === "generating"
         }
-        exportDestination={exportDestination}
         hasReview={Boolean(review)}
-        isExporting={isExporting}
         isLoadingReviewCache={isLoadingReviewCache}
         isSyncing={isSyncing}
         review={review}
-        reportActionLabel={activePeriod.mode === "overall" ? "长期复盘图" : "生成报告图"}
+        reportActionLabel={activePeriod.mode === "overall" ? "生成全部历史报告" : "生成报告图片"}
         reportDisabled={Boolean(activeReportDisabledReason) || isLoadingStats}
         reportDisabledReason={activeReportDisabledReason}
         stats={stats}
         status={status}
         statusMeta={statusMeta}
         syncDisabled={!hasCredential || isSyncing}
-        onExportDestinationChange={setExportDestination}
-        onExport={() => void handleExport()}
+        onExport={() => setIsAssetExportOpen(true)}
         onGenerate={() => void handleGenerate(false)}
         onOpenReport={handleOpenReport}
         onRegenerate={() => void handleGenerate(true)}
@@ -403,6 +398,16 @@ export function ReadingReviewPage({
         open={isJumpPickerOpen}
         onClose={() => setIsJumpPickerOpen(false)}
         onSelectPeriod={handleDrillPeriod}
+      />
+      <AssetExportDialog
+        open={isAssetExportOpen}
+        ariaLabel="导出报告"
+        assetTitle="导出报告"
+        assetDescription={formatReadingStatsPeriodTitle(activePeriod, "review")}
+        platformMode={isPreviewReadonly ? "webReadonly" : "native"}
+        onExport={exportReview}
+        onOpenSettings={() => onOpenSettings("export")}
+        onClose={() => setIsAssetExportOpen(false)}
       />
       {isReportOpen ? (
         <ReportGenerationWizardDialog
@@ -433,7 +438,7 @@ export function ReadingReviewPage({
             <strong>需要先配置 AI Provider</strong>
             <p>复盘页只发送结构化统计，不发送笔记正文或书籍全文。</p>
           </div>
-          <button className="secondary-action" type="button" onClick={onOpenSettings}>
+          <button className="secondary-action" type="button" onClick={() => onOpenSettings()}>
             去设置
           </button>
         </div>
@@ -453,37 +458,6 @@ export function ReadingReviewPage({
           <Database aria-hidden="true" size={18} />
           <span>当前为 Web 只读预览：统计与已缓存复盘来自导出缓存，生成和导出请在桌面应用中执行。</span>
         </div>
-      ) : null}
-
-      {exportResult ? (
-        <section className="export-result-list" aria-label="阅读复盘导出结果">
-          {exportResult.results.map((result) => (
-            <div
-              className={`status-message ${
-                result.status === "failed" ? "status-message--error" : "status-message--neutral"
-              }`}
-              key={result.target}
-            >
-              {result.status === "failed" ? (
-                <AlertCircle aria-hidden="true" size={18} />
-              ) : (
-                <Download aria-hidden="true" size={18} />
-              )}
-              <span>
-                <strong>{exportTargetLabel(result.target)}：</strong>
-                {result.status === "succeeded"
-                  ? result.path || result.url || "导出成功"
-                  : result.error?.message || "导出失败"}
-                {result.warning ? `（${result.warning}）` : ""}
-              </span>
-              {result.url ? (
-                <a href={result.url} target="_blank" rel="noreferrer">
-                  打开
-                </a>
-              ) : null}
-            </div>
-          ))}
-        </section>
       ) : null}
 
       {isStaleCache && !error ? (
@@ -645,7 +619,7 @@ export function ReadingReviewPage({
       );
     } catch (posterError) {
       showToast({
-        message: posterError instanceof Error ? posterError.message : "生成阅读报告图片失败。",
+        message: posterError instanceof Error ? posterError.message : "生成报告图片失败。",
         tone: "error"
       });
     } finally {
@@ -669,7 +643,7 @@ export function ReadingReviewPage({
       );
     } catch (posterError) {
       showToast({
-        message: posterError instanceof Error ? posterError.message : "生成长期复盘图片失败。",
+        message: posterError instanceof Error ? posterError.message : "生成全部历史报告图片失败。",
         tone: "error"
       });
     } finally {
@@ -729,7 +703,7 @@ export function ReadingReviewPage({
       );
     } catch (posterError) {
       showToast({
-        message: posterError instanceof Error ? posterError.message : "分享长期复盘图片失败。",
+        message: posterError instanceof Error ? posterError.message : "分享全部历史报告图片失败。",
         tone: "error"
       });
     } finally {
@@ -899,7 +873,7 @@ function buildReportDisabledReason({
   }
 
   if (isLoadingData || !stats) {
-    return "正在读取本地统计缓存，读取完成后再生成阅读报告。";
+    return "正在读取本地统计缓存，读取完成后再生成报告图片。";
   }
 
   if (dataCompleteness === "unsynced") {
@@ -907,7 +881,7 @@ function buildReportDisabledReason({
   }
 
   if (dataCompleteness === "future_blocked") {
-    return "未来周期不能生成阅读报告。";
+    return "未来周期不能生成报告图片。";
   }
 
   return "当前周期没有可生成报告的阅读数据。";
@@ -929,14 +903,14 @@ function buildLifetimeReportDisabledReason({
   }
 
   if (isLoadingData || !stats) {
-    return "正在读取本地总计统计，读取完成后再生成长期复盘。";
+    return "正在读取本地总计统计，读取完成后再生成全部历史报告。";
   }
 
   if (dataCompleteness === "unsynced") {
     return "总计统计还没有本地缓存，请先同步总计统计。";
   }
 
-  return "全部历史暂时没有可生成长期复盘的阅读数据。";
+  return "全部历史暂时没有可生成报告的阅读数据。";
 }
 
 function isFutureReadingStatsPeriod(period: ReadingStatsPeriod): boolean {

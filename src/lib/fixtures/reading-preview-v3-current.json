@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 3,
+  "exportedAt": "1785740000",
+  "statsSyncState": null,
+  "shelfSyncState": { "section": "shelf", "status": "success" },
+  "notesSyncState": null,
+  "shelfEntries": [],
+  "shelfArchives": [],
+  "readingItemStates": [
+    {
+      "itemId": "current-candidate",
+      "itemType": "book",
+      "status": "organized",
+      "itemKind": "book",
+      "isCandidate": 1,
+      "candidateSource": "ai_confirmed",
+      "lifeStatus": "reading",
+      "finishedSource": null,
+      "organizeStatus": "to_organize",
+      "userNote": "保留用户自己的备注",
+      "sourceMeta": "{\"savedFrom\":\"assistant\",\"aiReason\":\"延续当前主题\"}",
+      "title": "三维状态示例",
+      "note": "旧字段只用于兼容，不应覆盖三维字段",
+      "createdAt": "200",
+      "updatedAt": "201"
+    }
+  ],
+  "notebookBooks": [],
+  "statsRows": [],
+  "reviewRows": []
+}

@@ -1,16 +1,57 @@
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use rusqlite::{Connection, OptionalExtension, Result as SqliteResult};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
+use crate::atomic_file;
+
 pub const DATABASE_FILE_NAME: &str = "reading-cache.sqlite3";
 pub const DATA_DIRECTORY_CONFIG_FILE_NAME: &str = "local-data-directory.json";
 const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
+const READING_STATE_PRE_MIGRATION_BACKUP_DIR: &str = "reading-state-v1-pre-migration";
+const LOCAL_DATA_BACKUP_MANIFEST_FILE: &str = "manifest.json";
+const LOCAL_DATA_BACKUP_KIND: &str = "wxreadmaster-local-data-backup";
+const LOCAL_DATA_BACKUP_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalDataBackupManifest {
+    kind: String,
+    schema_version: u32,
+    exported_at: String,
+    database_file: String,
+    files: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotionPropertyMappingConfig {
+    pub logical_field: String,
+    pub property_id: String,
+    pub property_name_snapshot: String,
+    pub property_type: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotionDatabaseConnectionConfig {
+    pub database_id: String,
+    pub database_name: Option<String>,
+    pub database_url: Option<String>,
+    pub title_property_id: String,
+    pub title_property_name_snapshot: String,
+    #[serde(default)]
+    pub mappings: Vec<NotionPropertyMappingConfig>,
+    pub schema_checked_at: String,
+    pub schema_fingerprint: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -24,6 +65,7 @@ struct DataDirectoryConfig {
     notion_parent_id: Option<String>,
     notion_parent_type: Option<String>,
     notion_cover_mode: Option<String>,
+    notion_database_connection: Option<NotionDatabaseConnectionConfig>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -34,6 +76,7 @@ pub struct IntegrationConfig {
     pub notion_parent_id: Option<String>,
     pub notion_parent_type: Option<String>,
     pub notion_cover_mode: Option<String>,
+    pub notion_database_connection: Option<NotionDatabaseConnectionConfig>,
 }
 
 pub fn default_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -143,6 +186,7 @@ pub fn read_integration_config(config_dir: &Path) -> Result<IntegrationConfig, S
         notion_parent_id: config.notion_parent_id,
         notion_parent_type: config.notion_parent_type,
         notion_cover_mode: config.notion_cover_mode,
+        notion_database_connection: config.notion_database_connection,
     })
 }
 
@@ -157,6 +201,7 @@ pub fn write_integration_config(
     config.notion_parent_id = integration.notion_parent_id.clone();
     config.notion_parent_type = integration.notion_parent_type.clone();
     config.notion_cover_mode = integration.notion_cover_mode.clone();
+    config.notion_database_connection = integration.notion_database_connection.clone();
     write_data_directory_config(config_dir, config)
 }
 
@@ -186,6 +231,7 @@ fn write_data_directory_config(
         && config.notion_parent_id.is_none()
         && config.notion_parent_type.is_none()
         && config.notion_cover_mode.is_none()
+        && config.notion_database_connection.is_none()
     {
         if config_path.exists() {
             fs::remove_file(config_path).map_err(|error| error.to_string())?;
@@ -194,15 +240,130 @@ fn write_data_directory_config(
     }
 
     let content = serde_json::to_string_pretty(&config).map_err(|error| error.to_string())?;
-    fs::write(config_path, content).map_err(|error| error.to_string())
+    atomic_file::write_bytes(&config_path, content.as_bytes()).map_err(|error| error.to_string())
 }
 
 pub fn open_connection(app: &AppHandle) -> Result<Connection, String> {
     let path = database_path(app)?;
-    let connection = Connection::open(path).map_err(|error| error.to_string())?;
+    let connection = Connection::open(&path).map_err(|error| error.to_string())?;
+    ensure_reading_state_pre_migration_backup(&path, &connection)?;
     initialize_schema(&connection).map_err(|error| error.to_string())?;
 
     Ok(connection)
+}
+
+fn ensure_reading_state_pre_migration_backup(
+    database_path: &Path,
+    connection: &Connection,
+) -> Result<Option<PathBuf>, String> {
+    if !reading_state_dimensions_need_migration(connection).map_err(|error| error.to_string())? {
+        return Ok(None);
+    }
+
+    let data_dir = database_path
+        .parent()
+        .ok_or_else(|| "本地数据库路径缺少父目录。".to_string())?;
+    let backup_dir = data_dir
+        .join("backups")
+        .join(READING_STATE_PRE_MIGRATION_BACKUP_DIR);
+    let backup_database_path = backup_dir.join(DATABASE_FILE_NAME);
+    let manifest_path = backup_dir.join(LOCAL_DATA_BACKUP_MANIFEST_FILE);
+
+    if backup_dir.exists() {
+        if backup_database_path.is_file() && manifest_path.is_file() {
+            validate_pre_migration_backup(&backup_dir)?;
+            return Ok(Some(backup_dir));
+        }
+        return Err("阅读状态迁移前备份目录已存在但内容不完整，已停止迁移以避免覆盖。".to_string());
+    }
+
+    fs::create_dir_all(&backup_dir).map_err(|error| error.to_string())?;
+    connection
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+        .map_err(|error| error.to_string())?;
+    fs::copy(database_path, &backup_database_path).map_err(|error| error.to_string())?;
+    let manifest = LocalDataBackupManifest {
+        kind: LOCAL_DATA_BACKUP_KIND.to_string(),
+        schema_version: LOCAL_DATA_BACKUP_SCHEMA_VERSION,
+        exported_at: current_unix_seconds_string(),
+        database_file: DATABASE_FILE_NAME.to_string(),
+        files: vec![DATABASE_FILE_NAME.to_string()],
+    };
+    let content = serde_json::to_string_pretty(&manifest).map_err(|error| error.to_string())?;
+    fs::write(&manifest_path, content).map_err(|error| error.to_string())?;
+    validate_pre_migration_backup(&backup_dir)?;
+
+    Ok(Some(backup_dir))
+}
+
+fn reading_state_dimensions_need_migration(connection: &Connection) -> SqliteResult<bool> {
+    let table_exists: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type = 'table' AND name = 'reading_item_states'
+        )",
+        [],
+        |row| row.get(0),
+    )?;
+    if !table_exists {
+        return Ok(false);
+    }
+
+    let columns = table_columns(connection, "reading_item_states")?;
+    if !columns.iter().any(|column| column == "life_status") {
+        return Ok(true);
+    }
+
+    connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM reading_item_states WHERE life_status IS NULL
+        )",
+        [],
+        |row| row.get(0),
+    )
+}
+
+fn validate_pre_migration_backup(backup_dir: &Path) -> Result<(), String> {
+    let manifest_content = fs::read_to_string(backup_dir.join(LOCAL_DATA_BACKUP_MANIFEST_FILE))
+        .map_err(|error| error.to_string())?;
+    let manifest = serde_json::from_str::<LocalDataBackupManifest>(&manifest_content)
+        .map_err(|error| error.to_string())?;
+    if manifest.kind != LOCAL_DATA_BACKUP_KIND
+        || manifest.schema_version != LOCAL_DATA_BACKUP_SCHEMA_VERSION
+        || manifest.database_file != DATABASE_FILE_NAME
+        || manifest.files != vec![DATABASE_FILE_NAME.to_string()]
+    {
+        return Err("阅读状态迁移前备份 manifest 不合法。".to_string());
+    }
+
+    let backup_database_path = backup_dir.join(DATABASE_FILE_NAME);
+    if !backup_database_path.is_file() {
+        return Err("阅读状态迁移前备份缺少数据库文件。".to_string());
+    }
+    let backup = Connection::open(&backup_database_path).map_err(|error| error.to_string())?;
+    let table_exists: bool = backup
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table' AND name = 'reading_item_states'
+            )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if !table_exists {
+        return Err("阅读状态迁移前备份缺少 reading_item_states。".to_string());
+    }
+
+    Ok(())
+}
+
+fn current_unix_seconds_string() -> String {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
+        .to_string()
 }
 
 pub fn initialize_schema(connection: &Connection) -> SqliteResult<()> {
@@ -729,6 +890,21 @@ pub(crate) struct ReadingItemDimensionBackfill {
     pub source_meta: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingStateMigrationSummary {
+    pub total_rows_before: u64,
+    pub pending_rows: u64,
+    pub scanned: u64,
+    pub updated: u64,
+    pub unchanged: u64,
+    pub backup_rows: u64,
+    pub by_legacy_type: BTreeMap<String, u64>,
+    pub by_life_status: BTreeMap<String, u64>,
+    pub by_organize_status: BTreeMap<String, u64>,
+    pub invalid_rows: u64,
+}
+
 const AI_RECOMMENDATION_NOTE_MARKER: &str = "来自 AI 阅读助手推荐";
 const AI_CONFIRMED_NOTE_MARKER: &str = "已通过微信读书搜索确认";
 const ABSORBED_REVIEW_NOTE: &str = "用户已确认吸收本书复盘";
@@ -836,41 +1012,59 @@ pub(crate) fn derive_reading_item_dimensions(
 }
 
 fn ensure_reading_item_dimensions(connection: &Connection) -> SqliteResult<()> {
+    migrate_reading_item_dimensions(connection).map(|_| ())
+}
+
+fn migrate_reading_item_dimensions(
+    connection: &Connection,
+) -> SqliteResult<ReadingStateMigrationSummary> {
     add_column_if_missing(connection, "reading_item_states", "item_kind", "TEXT")?;
     add_column_if_missing(connection, "reading_item_states", "is_candidate", "INTEGER")?;
-    add_column_if_missing(connection, "reading_item_states", "candidate_source", "TEXT")?;
+    add_column_if_missing(
+        connection,
+        "reading_item_states",
+        "candidate_source",
+        "TEXT",
+    )?;
     add_column_if_missing(connection, "reading_item_states", "life_status", "TEXT")?;
     add_column_if_missing(connection, "reading_item_states", "finished_source", "TEXT")?;
     add_column_if_missing(connection, "reading_item_states", "organize_status", "TEXT")?;
     add_column_if_missing(connection, "reading_item_states", "user_note", "TEXT")?;
     add_column_if_missing(connection, "reading_item_states", "source_meta", "TEXT")?;
 
-    let pending_count: i64 = connection.query_row(
-        "SELECT COUNT(*) FROM reading_item_states WHERE life_status IS NULL",
-        [],
-        |row| row.get(0),
-    )?;
+    let total_rows_before = count_reading_item_rows(connection, None)?;
+    let pending_rows = count_reading_item_rows(connection, Some("life_status IS NULL"))?;
+    let existing_backup_rows = existing_reading_state_backup_rows(connection)?;
+    let backup_existed = existing_backup_rows.is_some();
+    let mut summary = ReadingStateMigrationSummary {
+        total_rows_before,
+        pending_rows,
+        scanned: 0,
+        updated: 0,
+        unchanged: 0,
+        backup_rows: existing_backup_rows.unwrap_or(0),
+        by_legacy_type: BTreeMap::new(),
+        by_life_status: BTreeMap::new(),
+        by_organize_status: BTreeMap::new(),
+        invalid_rows: 0,
+    };
 
-    if pending_count == 0 {
-        return Ok(());
+    if pending_rows == 0 {
+        return Ok(summary);
     }
 
     connection.execute_batch(
         "CREATE TABLE IF NOT EXISTS reading_item_states_backup_v1 AS
          SELECT * FROM reading_item_states WHERE 0",
     )?;
-    let backup_count: i64 = connection.query_row(
-        "SELECT COUNT(*) FROM reading_item_states_backup_v1",
-        [],
-        |row| row.get(0),
-    )?;
-    if backup_count == 0 {
+    if !backup_existed {
         connection.execute(
             "INSERT INTO reading_item_states_backup_v1
              SELECT * FROM reading_item_states WHERE life_status IS NULL",
             [],
         )?;
     }
+    summary.backup_rows = count_reading_item_rows_in_backup(connection)?;
 
     struct LegacyReadingItemRow {
         item_id: String,
@@ -894,8 +1088,40 @@ fn ensure_reading_item_dimensions(connection: &Connection) -> SqliteResult<()> {
         .collect::<SqliteResult<Vec<_>>>()?;
     drop(statement);
 
-    let migration: SqliteResult<()> = (|| {
+    summary.scanned = legacy_rows.len() as u64;
+    for row in &legacy_rows {
+        *summary
+            .by_legacy_type
+            .entry(row.item_type.clone())
+            .or_default() += 1;
+        let dimensions = derive_reading_item_dimensions(
+            &row.item_id,
+            &row.item_type,
+            &row.status,
+            row.note.as_deref(),
+        );
+        *summary
+            .by_life_status
+            .entry(dimensions.life_status.clone())
+            .or_default() += 1;
+        *summary
+            .by_organize_status
+            .entry(dimensions.organize_status.clone())
+            .or_default() += 1;
+        if !is_valid_reading_item_backfill(&dimensions) {
+            summary.invalid_rows += 1;
+        }
+    }
+
+    let pending_item_ids = legacy_rows
+        .iter()
+        .map(|row| row.item_id.clone())
+        .collect::<Vec<_>>();
+    assert_reading_state_migration_preconditions(&summary, connection, &pending_item_ids)?;
+
+    let migration: SqliteResult<u64> = (|| {
         connection.execute_batch("BEGIN IMMEDIATE;")?;
+        let mut updated = 0_u64;
         for row in &legacy_rows {
             let dimensions = derive_reading_item_dimensions(
                 &row.item_id,
@@ -903,7 +1129,7 @@ fn ensure_reading_item_dimensions(connection: &Connection) -> SqliteResult<()> {
                 &row.status,
                 row.note.as_deref(),
             );
-            connection.execute(
+            updated += connection.execute(
                 "UPDATE reading_item_states SET
                     item_kind = ?2,
                     is_candidate = ?3,
@@ -912,7 +1138,7 @@ fn ensure_reading_item_dimensions(connection: &Connection) -> SqliteResult<()> {
                     organize_status = ?6,
                     user_note = ?7,
                     source_meta = ?8
-                 WHERE item_id = ?1",
+                 WHERE item_id = ?1 AND life_status IS NULL",
                 rusqlite::params![
                     &row.item_id,
                     &dimensions.item_kind,
@@ -923,17 +1149,147 @@ fn ensure_reading_item_dimensions(connection: &Connection) -> SqliteResult<()> {
                     &dimensions.user_note,
                     &dimensions.source_meta
                 ],
-            )?;
+            )? as u64;
         }
+        assert_reading_state_migration_postconditions(
+            connection,
+            summary.total_rows_before,
+            summary.scanned,
+            updated,
+        )?;
         connection.execute_batch("COMMIT;")?;
-        Ok(())
+        Ok(updated)
     })();
 
-    if migration.is_err() {
-        let _ = connection.execute_batch("ROLLBACK;");
+    match migration {
+        Ok(updated) => summary.updated = updated,
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK;");
+            return Err(error);
+        }
+    }
+    summary.unchanged = summary.scanned.saturating_sub(summary.updated);
+
+    Ok(summary)
+}
+
+fn count_reading_item_rows(connection: &Connection, condition: Option<&str>) -> SqliteResult<u64> {
+    let sql = match condition {
+        Some(condition) => format!("SELECT COUNT(*) FROM reading_item_states WHERE {condition}"),
+        None => "SELECT COUNT(*) FROM reading_item_states".to_string(),
+    };
+    connection
+        .query_row(&sql, [], |row| row.get::<_, i64>(0))
+        .map(|count| count.max(0) as u64)
+}
+
+fn existing_reading_state_backup_rows(connection: &Connection) -> SqliteResult<Option<u64>> {
+    let exists: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type = 'table' AND name = 'reading_item_states_backup_v1'
+        )",
+        [],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        return Ok(None);
+    }
+    count_reading_item_rows_in_backup(connection).map(Some)
+}
+
+fn count_reading_item_rows_in_backup(connection: &Connection) -> SqliteResult<u64> {
+    connection
+        .query_row(
+            "SELECT COUNT(*) FROM reading_item_states_backup_v1",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|count| count.max(0) as u64)
+}
+
+fn is_valid_reading_item_backfill(dimensions: &ReadingItemDimensionBackfill) -> bool {
+    matches!(
+        dimensions.item_kind.as_str(),
+        "book" | "album" | "mp" | "localBook"
+    ) && matches!(
+        dimensions.life_status.as_str(),
+        "none" | "want" | "reading" | "paused" | "finished" | "dropped"
+    ) && matches!(
+        dimensions.organize_status.as_str(),
+        "none" | "to_organize" | "organized"
+    ) && (!dimensions.is_candidate || dimensions.candidate_source.is_some())
+        && dimensions.source_meta.as_deref().map_or(true, |value| {
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(value).is_ok()
+        })
+}
+
+fn assert_reading_state_migration_preconditions(
+    summary: &ReadingStateMigrationSummary,
+    connection: &Connection,
+    pending_item_ids: &[String],
+) -> SqliteResult<()> {
+    if summary.pending_rows != summary.scanned {
+        return Err(migration_invariant_error("pendingRows must equal scanned"));
+    }
+    if summary.invalid_rows != 0 {
+        return Err(migration_invariant_error("invalidRows must be zero"));
+    }
+    if summary.backup_rows != summary.pending_rows {
+        return Err(migration_invariant_error(
+            "backupRows must equal pendingRows",
+        ));
     }
 
-    migration
+    for item_id in pending_item_ids {
+        let exists: bool = connection.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM reading_item_states_backup_v1 WHERE item_id = ?1
+            )",
+            [item_id],
+            |record| record.get(0),
+        )?;
+        if !exists {
+            return Err(migration_invariant_error(
+                "backup must cover every pending itemId",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn assert_reading_state_migration_postconditions(
+    connection: &Connection,
+    total_rows_before: u64,
+    scanned: u64,
+    updated: u64,
+) -> SqliteResult<()> {
+    let total_rows_after = count_reading_item_rows(connection, None)?;
+    if total_rows_after != total_rows_before {
+        return Err(migration_invariant_error(
+            "reading item row count changed during migration",
+        ));
+    }
+    let unchanged = scanned.saturating_sub(updated);
+    if scanned != updated + unchanged {
+        return Err(migration_invariant_error(
+            "scanned must equal updated plus unchanged",
+        ));
+    }
+    let pending_rows_after = count_reading_item_rows(connection, Some("life_status IS NULL"))?;
+    if pending_rows_after != 0 {
+        return Err(migration_invariant_error(
+            "pending rows must be zero after migration",
+        ));
+    }
+    Ok(())
+}
+
+fn migration_invariant_error(message: &str) -> rusqlite::Error {
+    rusqlite::Error::InvalidParameterName(format!(
+        "reading item state migration invariant failed: {message}"
+    ))
 }
 
 fn add_column_if_missing(
@@ -985,9 +1341,11 @@ mod tests {
     use rusqlite::Connection;
 
     use super::{
-        derive_reading_item_dimensions, ensure_reading_item_dimensions, initialize_schema,
-        read_custom_export_directory_config, table_columns, write_custom_export_directory_config,
-        SQLITE_BUSY_TIMEOUT_MS,
+        derive_reading_item_dimensions, ensure_reading_item_dimensions,
+        ensure_reading_state_pre_migration_backup, initialize_schema,
+        migrate_reading_item_dimensions, read_custom_export_directory_config,
+        reading_state_dimensions_need_migration, table_columns,
+        write_custom_export_directory_config, DATABASE_FILE_NAME, SQLITE_BUSY_TIMEOUT_MS,
     };
 
     #[test]
@@ -1024,6 +1382,25 @@ mod tests {
         assert_eq!(table_count, 16);
     }
 
+    fn create_legacy_reading_item_schema(connection: &Connection) {
+        connection
+            .execute_batch(
+                "CREATE TABLE reading_item_states (
+                    item_id TEXT PRIMARY KEY NOT NULL,
+                    item_type TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    title TEXT,
+                    author TEXT,
+                    cover TEXT,
+                    category TEXT,
+                    note TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );",
+            )
+            .expect("legacy reading item schema should create");
+    }
+
     fn insert_legacy_reading_item(
         connection: &Connection,
         item_id: &str,
@@ -1039,6 +1416,162 @@ mod tests {
                 rusqlite::params![item_id, item_type, status, note],
             )
             .expect("legacy reading item should insert");
+    }
+
+    #[test]
+    fn reading_state_pre_migration_backup_is_created_once_and_contains_legacy_rows() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "wxreadmaster-reading-state-pre-migration-{}",
+            super::current_unix_seconds_string()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_root);
+        std::fs::create_dir_all(&temp_root).expect("temporary data dir should create");
+        let database_path = temp_root.join(DATABASE_FILE_NAME);
+        let connection = Connection::open(&database_path).expect("legacy database should open");
+        create_legacy_reading_item_schema(&connection);
+        insert_legacy_reading_item(&connection, "c1", "candidate", "toRead", None);
+        assert!(reading_state_dimensions_need_migration(&connection)
+            .expect("migration need should be detected"));
+
+        let first_backup = ensure_reading_state_pre_migration_backup(&database_path, &connection)
+            .expect("pre-migration backup should create")
+            .expect("backup path should be returned");
+        let first_backup_size = std::fs::metadata(first_backup.join(DATABASE_FILE_NAME))
+            .expect("backup database should exist")
+            .len();
+        let second_backup = ensure_reading_state_pre_migration_backup(&database_path, &connection)
+            .expect("existing backup should validate")
+            .expect("existing backup path should return");
+        assert_eq!(second_backup, first_backup);
+        assert_eq!(
+            std::fs::metadata(first_backup.join(DATABASE_FILE_NAME))
+                .expect("backup database should still exist")
+                .len(),
+            first_backup_size
+        );
+
+        let backup = Connection::open(first_backup.join(DATABASE_FILE_NAME))
+            .expect("backup database should open");
+        let backup_title: String = backup
+            .query_row(
+                "SELECT title FROM reading_item_states WHERE item_id = 'c1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("legacy backup row should read");
+        assert_eq!(backup_title, "书");
+        drop(backup);
+        drop(connection);
+        std::fs::remove_dir_all(temp_root).expect("temporary data dir should remove");
+    }
+
+    #[test]
+    fn reading_state_pre_migration_backup_skips_current_schema() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "wxreadmaster-reading-state-current-schema-{}",
+            super::current_unix_seconds_string()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_root);
+        std::fs::create_dir_all(&temp_root).expect("temporary data dir should create");
+        let database_path = temp_root.join(DATABASE_FILE_NAME);
+        let connection = Connection::open(&database_path).expect("database should open");
+        initialize_schema(&connection).expect("schema should initialize");
+
+        let backup = ensure_reading_state_pre_migration_backup(&database_path, &connection)
+            .expect("current schema check should succeed");
+
+        assert!(backup.is_none());
+        drop(connection);
+        std::fs::remove_dir_all(temp_root).expect("temporary data dir should remove");
+    }
+
+    #[test]
+    fn reading_state_pre_migration_backup_rejects_incomplete_existing_directory() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "wxreadmaster-reading-state-incomplete-backup-{}",
+            super::current_unix_seconds_string()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_root);
+        std::fs::create_dir_all(&temp_root).expect("temporary data dir should create");
+        let database_path = temp_root.join(DATABASE_FILE_NAME);
+        let connection = Connection::open(&database_path).expect("legacy database should open");
+        create_legacy_reading_item_schema(&connection);
+        insert_legacy_reading_item(&connection, "c1", "candidate", "toRead", None);
+        let backup_dir = temp_root
+            .join("backups")
+            .join(super::READING_STATE_PRE_MIGRATION_BACKUP_DIR);
+        std::fs::create_dir_all(&backup_dir).expect("incomplete backup dir should create");
+        std::fs::write(backup_dir.join("unexpected.tmp"), b"partial")
+            .expect("partial marker should write");
+
+        let error = ensure_reading_state_pre_migration_backup(&database_path, &connection)
+            .expect_err("incomplete backup must stop migration");
+
+        assert!(error.contains("内容不完整"));
+        assert!(!backup_dir.join(DATABASE_FILE_NAME).exists());
+        drop(connection);
+        std::fs::remove_dir_all(temp_root).expect("temporary data dir should remove");
+    }
+
+    #[test]
+    fn reading_state_pre_migration_backup_can_restore_and_reupgrade_legacy_database() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "wxreadmaster-reading-state-restore-reupgrade-{}",
+            super::current_unix_seconds_string()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_root);
+        std::fs::create_dir_all(&temp_root).expect("temporary data dir should create");
+        let database_path = temp_root.join(DATABASE_FILE_NAME);
+        let connection = Connection::open(&database_path).expect("legacy database should open");
+        create_legacy_reading_item_schema(&connection);
+        insert_legacy_reading_item(
+            &connection,
+            "c1",
+            "candidate",
+            "toRead",
+            Some("发现页保存的本地候选"),
+        );
+        let backup_dir = ensure_reading_state_pre_migration_backup(&database_path, &connection)
+            .expect("pre-migration backup should create")
+            .expect("backup path should return");
+        initialize_schema(&connection).expect("first upgrade should succeed");
+        let first_life_status: String = connection
+            .query_row(
+                "SELECT life_status FROM reading_item_states WHERE item_id = 'c1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("upgraded row should read");
+        assert_eq!(first_life_status, "want");
+        drop(connection);
+
+        std::fs::copy(backup_dir.join(DATABASE_FILE_NAME), &database_path)
+            .expect("legacy database should restore from backup");
+        let restored = Connection::open(&database_path).expect("restored database should open");
+        assert!(reading_state_dimensions_need_migration(&restored)
+            .expect("restored database should need migration"));
+        let restored_columns = table_columns(&restored, "reading_item_states")
+            .expect("restored legacy columns should read");
+        assert!(!restored_columns
+            .iter()
+            .any(|column| column == "life_status"));
+        let reused_backup = ensure_reading_state_pre_migration_backup(&database_path, &restored)
+            .expect("existing backup should be reused")
+            .expect("backup path should return");
+        assert_eq!(reused_backup, backup_dir);
+        initialize_schema(&restored).expect("restored database should re-upgrade");
+        let reupgraded: (String, String) = restored
+            .query_row(
+                "SELECT life_status, organize_status
+                 FROM reading_item_states WHERE item_id = 'c1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("re-upgraded row should read");
+        assert_eq!(reupgraded, ("want".to_string(), "none".to_string()));
+
+        drop(restored);
+        std::fs::remove_dir_all(temp_root).expect("temporary data dir should remove");
     }
 
     #[test]
@@ -1087,7 +1620,9 @@ mod tests {
         assert_eq!(is_candidate, 1);
         assert_eq!(candidate_source.as_deref(), Some("weread"));
         assert_eq!(life_status, "want");
-        assert!(source_meta.expect("source meta should exist").contains("discovery"));
+        assert!(source_meta
+            .expect("source meta should exist")
+            .contains("discovery"));
 
         let light_source: Option<String> = connection
             .query_row(
@@ -1140,7 +1675,19 @@ mod tests {
         initialize_schema(&connection).expect("schema should initialize");
         insert_legacy_reading_item(&connection, "c1", "candidate", "toRead", None);
 
-        ensure_reading_item_dimensions(&connection).expect("first backfill should run");
+        let first_summary =
+            migrate_reading_item_dimensions(&connection).expect("first backfill should run");
+        assert_eq!(first_summary.total_rows_before, 1);
+        assert_eq!(first_summary.pending_rows, 1);
+        assert_eq!(first_summary.scanned, 1);
+        assert_eq!(first_summary.updated, 1);
+        assert_eq!(first_summary.unchanged, 0);
+        assert_eq!(first_summary.backup_rows, 1);
+        assert_eq!(first_summary.invalid_rows, 0);
+        assert_eq!(first_summary.by_legacy_type.get("candidate"), Some(&1));
+        assert_eq!(first_summary.by_life_status.get("want"), Some(&1));
+        assert_eq!(first_summary.by_organize_status.get("none"), Some(&1));
+
         connection
             .execute(
                 "UPDATE reading_item_states SET organize_status = 'organized' WHERE item_id = 'c1'",
@@ -1148,7 +1695,14 @@ mod tests {
             )
             .expect("manual update should apply");
 
-        ensure_reading_item_dimensions(&connection).expect("second run should be a no-op");
+        let second_summary =
+            migrate_reading_item_dimensions(&connection).expect("second run should be a no-op");
+        assert_eq!(second_summary.total_rows_before, 1);
+        assert_eq!(second_summary.pending_rows, 0);
+        assert_eq!(second_summary.scanned, 0);
+        assert_eq!(second_summary.updated, 0);
+        assert_eq!(second_summary.unchanged, 0);
+        assert_eq!(second_summary.backup_rows, 1);
 
         let organize_status: String = connection
             .query_row(
@@ -1166,6 +1720,62 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("backup table should read");
+        assert_eq!(backup_count, 1);
+    }
+
+    #[test]
+    fn reading_item_dimensions_backfill_rejects_stale_backup_without_pending_coverage() {
+        let connection = Connection::open_in_memory().expect("in-memory database should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        insert_legacy_reading_item(&connection, "c1", "candidate", "toRead", None);
+        connection
+            .execute_batch(
+                "CREATE TABLE reading_item_states_backup_v1 AS
+                 SELECT * FROM reading_item_states WHERE 0",
+            )
+            .expect("stale backup table should create");
+
+        let error = migrate_reading_item_dimensions(&connection)
+            .expect_err("empty existing backup must not be overwritten silently");
+
+        assert!(error
+            .to_string()
+            .contains("backupRows must equal pendingRows"));
+        let life_status: Option<String> = connection
+            .query_row(
+                "SELECT life_status FROM reading_item_states WHERE item_id = 'c1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("legacy row should remain readable");
+        assert!(life_status.is_none());
+    }
+
+    #[test]
+    fn reading_item_dimensions_backfill_rejects_unknown_item_type_without_updates() {
+        let connection = Connection::open_in_memory().expect("in-memory database should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        insert_legacy_reading_item(&connection, "x1", "futureType", "toRead", None);
+
+        let error = migrate_reading_item_dimensions(&connection)
+            .expect_err("unknown item kind must stop the migration");
+
+        assert!(error.to_string().contains("invalidRows must be zero"));
+        let life_status: Option<String> = connection
+            .query_row(
+                "SELECT life_status FROM reading_item_states WHERE item_id = 'x1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("legacy row should remain readable");
+        assert!(life_status.is_none());
+        let backup_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM reading_item_states_backup_v1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("backup row should exist for recovery");
         assert_eq!(backup_count, 1);
     }
 

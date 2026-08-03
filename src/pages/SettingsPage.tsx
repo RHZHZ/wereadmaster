@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -6,7 +6,6 @@ import {
   Bot,
   ChevronDown,
   CheckCircle2,
-  Copy,
   Database,
   Download,
   Eye,
@@ -19,11 +18,9 @@ import {
   KeyRound,
   Loader2,
   MessageSquare,
-  PanelTop,
   RefreshCw,
   ShieldCheck,
   Sparkles,
-  Target,
   Trash2,
   X,
   type LucideIcon,
@@ -35,8 +32,7 @@ import { AppUpdateNotes } from "../components/AppUpdateNotes";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { useToast } from "../components/ToastProvider";
 import { copyTextToClipboard } from "../lib/clipboard";
-import { formatUnixDate } from "../lib/formatters";
-import { parseNotionPageId } from "../lib/notion-page-id";
+import { parseNotionObjectId } from "../lib/notion-page-id";
 import {
   APP_UPDATE_RELEASE_AUTHOR,
   APP_UPDATE_RELEASE_AUTHOR_URL,
@@ -60,28 +56,37 @@ import {
   clearAiOutputCache,
   clearLocalCache,
   clearReadingAssistantHistory,
-  createNotionReadingLibraryTemplate,
-  createNotionReadingWorkspaceTemplate,
+  analyzeNotionDatabase,
+  cancelNotionCoverBackfill,
+  continueNotionStandardDatabaseProvisioning,
+  createNotionStandardOutcomesDatabase,
   exportLocalDataBackup,
   exportDiagnostics,
   getCommandErrorMessage,
   getAiSettingsState,
   getReadingAssistantPreferences,
   getSettingsState,
+  getNotionStandardDatabaseProvisioning,
+  listenNotionCoverBackfillProgress,
   listAiProviderModels,
   migrateLocalDataDirectory,
   probeAiProviderCapabilities,
+  preflightNotionCoverBackfill,
   removeAiCredential,
   removeCredential,
   removeNotionCredential,
   resetCustomExportDirectory,
   resetWereadProxyUrl,
+  resolveNotionStandardDatabaseProvisioning,
   restoreLocalDataBackup,
+  runNotionCoverBackfill,
   saveCustomExportDirectory,
   saveAiSettings,
   saveCredential,
   saveNotionCredential,
+  saveNotionDatabaseConnection,
   saveNotionExportSettings,
+  validateNotionCredential,
   saveObsidianExportSettings,
   saveReadingAssistantPreferences,
   saveWereadProxyUrl,
@@ -100,11 +105,20 @@ import type {
   AiSettingsState,
   AppUpdateStatus,
   CredentialStatus,
+  AnalyzeNotionDatabaseResult,
+  CreateNotionStandardDatabaseResult,
   ExportBackupResult,
   ReadingAssistantPreferences,
   SettingsState,
   NotionCoverMode,
+  NotionCoverBackfillPreflight,
+  NotionCoverBackfillProgress,
+  NotionCoverBackfillReport,
+  NotionDatabaseConnection,
+  NotionDefaultViewStatus,
+  NotionLogicalField,
   NotionParentType,
+  NotionPropertyMapping,
   ObsidianAttachmentMode,
   SyncState,
 } from "../lib/types";
@@ -137,16 +151,15 @@ type PendingAction =
   | "restoreBackup"
   | "migrateDataDirectory"
   | "installUpdate"
-  | "replaceNotionExportTarget";
+  | "replaceNotionExportTarget"
+  | "confirmNotionCoverBackfill"
+  | "confirmNotionDatabaseNotCreated";
 type PendingStorageMigration = {
   targetDir: string;
 };
-type NotionInitializationMode = "existingTemplate" | "workspace";
-type NotionTemplateCreationResult = {
-  databaseUrl: string;
-  mode: NotionInitializationMode;
-  title: string;
-  warning?: string;
+type NotionConnectionView = {
+  analysis: AnalyzeNotionDatabaseResult;
+  mappings: NotionPropertyMapping[];
 };
 export type SettingsCategoryId =
   | "account"
@@ -165,13 +178,144 @@ type SettingsCategory = {
 };
 
 const WEREAD_SKILL_API_KEY_URL = "https://weread.qq.com/r/weread-skills";
-const NOTION_RECOMMENDED_TEMPLATE_URL = "https://www.notion.com/templates/books-tracker-by-vpm";
-const NOTION_VIEW_RECIPE = [
-  "最近导入：表格视图，按导出时间倒序。",
-  "书籍复盘：画廊视图，筛选资产类型为书籍复盘，按导出时间倒序。",
-  "待整理：列表视图，筛选导入状态为待整理，按导出时间倒序。",
-  "行动优先：列表视图，筛选行动数大于 0，按行动数和导出时间倒序。",
-].join("\n");
+
+const NOTION_LOGICAL_FIELD_LABELS: Record<NotionLogicalField, string> = {
+  title: "标题",
+  author: "作者",
+  cover: "封面",
+  bookId: "Book ID",
+  assetType: "资产类型",
+  source: "来源",
+  exportedAt: "导出时间",
+  importStatus: "导入状态",
+  readingStatus: "阅读状态",
+  readingStage: "阅读阶段",
+  progress: "阅读进度",
+  tags: "标签",
+  wereadUrl: "微信读书链接",
+  obsidianPath: "Obsidian 路径",
+  promptVersion: "Prompt 版本",
+  inputHash: "输入哈希",
+  scopeId: "范围 ID",
+  period: "统计周期",
+  actionCount: "行动数",
+  candidateCount: "候选数",
+  highlightCount: "划线数",
+  thoughtCount: "想法数",
+  bookmarkCount: "书签数",
+  exportableCount: "可导出数",
+};
+
+const NOTION_PRIMARY_MAPPING_FIELDS: NotionLogicalField[] = [
+  "title",
+  "author",
+  "cover",
+  "bookId",
+  "assetType",
+  "source",
+  "exportedAt",
+  "importStatus",
+  "readingStatus",
+  "readingStage",
+  "progress",
+  "tags",
+  "wereadUrl",
+  "obsidianPath",
+  "actionCount",
+  "highlightCount",
+  "thoughtCount",
+  "bookmarkCount",
+];
+
+const NOTION_LOGICAL_FIELD_TYPES: Record<NotionLogicalField, string[]> = {
+  title: ["title"],
+  author: ["rich_text"],
+  cover: ["files"],
+  bookId: ["rich_text"],
+  assetType: ["select", "status"],
+  source: ["select", "status", "rich_text"],
+  exportedAt: ["date"],
+  importStatus: ["select", "status"],
+  readingStatus: ["select", "status"],
+  readingStage: ["select", "status"],
+  progress: ["number"],
+  tags: ["multi_select"],
+  wereadUrl: ["url"],
+  obsidianPath: ["rich_text"],
+  promptVersion: ["rich_text"],
+  inputHash: ["rich_text"],
+  scopeId: ["rich_text"],
+  period: ["select", "status"],
+  actionCount: ["number"],
+  candidateCount: ["number"],
+  highlightCount: ["number"],
+  thoughtCount: ["number"],
+  bookmarkCount: ["number"],
+  exportableCount: ["number"],
+};
+
+function notionDefaultViewStatusLabel(status: NotionDefaultViewStatus): string {
+  switch (status) {
+    case "created":
+      return "已创建";
+    case "updated":
+      return "已更新";
+    case "reused":
+      return "已复用";
+    case "skipped":
+      return "已跳过";
+    case "conflict":
+      return "配置冲突";
+    case "failed":
+      return "初始化失败";
+    case "unknown":
+      return "结果待确认";
+  }
+}
+
+function notionConnectionSnapshot(
+  connection: NotionDatabaseConnection,
+): NotionConnectionView {
+  const properties = Array.from(
+    new Map(
+      connection.mappings.map((mapping) => [
+        mapping.propertyId,
+        {
+          id: mapping.propertyId,
+          name: mapping.propertyNameSnapshot,
+          type: mapping.propertyType,
+        },
+      ]),
+    ).values(),
+  );
+  const titleProperty = properties.find(
+    (property) => property.id === connection.titlePropertyId,
+  ) ?? {
+    id: connection.titlePropertyId,
+    name: connection.titlePropertyNameSnapshot,
+    type: "title",
+  };
+
+  return {
+    analysis: {
+      compatibility: connection.mappings.filter(
+        (mapping) => mapping.enabled && mapping.logicalField !== "title",
+      ).length >= 4
+        ? "full"
+        : "basic",
+      databaseId: connection.databaseId,
+      databaseName: connection.databaseName,
+      databaseUrl: connection.databaseUrl,
+      titleProperty,
+      properties,
+      suggestedMappings: connection.mappings,
+      issues: [],
+      schemaCheckedAt: connection.schemaCheckedAt,
+      schemaFingerprint: connection.schemaFingerprint,
+    },
+    mappings: connection.mappings,
+  };
+}
 
 const settingsCategories: SettingsCategory[] = [
   {
@@ -314,16 +458,38 @@ export function SettingsPage({
     useState<ObsidianAttachmentMode>("siblingAssets");
   const [obsidianOpenAfterExport, setObsidianOpenAfterExport] = useState(false);
   const [notionToken, setNotionToken] = useState("");
-  const [notionTemplateParentPageId, setNotionTemplateParentPageId] = useState("");
-  const [notionInitializationMode, setNotionInitializationMode] =
-    useState<NotionInitializationMode>("existingTemplate");
-  const [notionTemplateCreationResult, setNotionTemplateCreationResult] =
-    useState<NotionTemplateCreationResult>();
+  const [notionDatabaseInput, setNotionDatabaseInput] = useState("");
+  const [notionConnectionView, setNotionConnectionView] =
+    useState<NotionConnectionView>();
+  const [notionStandardParentPageInput, setNotionStandardParentPageInput] =
+    useState("");
+  const [notionCreatedDatabaseUrl, setNotionCreatedDatabaseUrl] = useState<string>();
+  const [notionProvisioning, setNotionProvisioning] =
+    useState<CreateNotionStandardDatabaseResult>();
+  const [isResolvingNotionProvisioning, setIsResolvingNotionProvisioning] =
+    useState(false);
   const [notionParentId, setNotionParentId] = useState("");
   const [notionParentType, setNotionParentType] = useState<NotionParentType>("page");
   const [notionCoverMode, setNotionCoverMode] = useState<NotionCoverMode>("pageCover");
+  const [notionCoverBackfillPreflight, setNotionCoverBackfillPreflight] =
+    useState<NotionCoverBackfillPreflight>();
+  const [notionCoverBackfillProgress, setNotionCoverBackfillProgress] =
+    useState<NotionCoverBackfillProgress>();
+  const [notionCoverBackfillReport, setNotionCoverBackfillReport] =
+    useState<NotionCoverBackfillReport>();
+  const [isPreflightingNotionCoverBackfill, setIsPreflightingNotionCoverBackfill] =
+    useState(false);
+  const [isRunningNotionCoverBackfill, setIsRunningNotionCoverBackfill] =
+    useState(false);
+  const [isCancelingNotionCoverBackfill, setIsCancelingNotionCoverBackfill] =
+    useState(false);
   const [isSavingIntegrations, setIsSavingIntegrations] = useState(false);
-  const [isCreatingNotionTemplate, setIsCreatingNotionTemplate] = useState(false);
+  const [isAnalyzingNotionDatabase, setIsAnalyzingNotionDatabase] = useState(false);
+  const [isSavingNotionDatabaseConnection, setIsSavingNotionDatabaseConnection] =
+    useState(false);
+  const [isCreatingNotionStandardDatabase, setIsCreatingNotionStandardDatabase] =
+    useState(false);
+  const [isValidatingNotionToken, setIsValidatingNotionToken] = useState(false);
   const [wereadProxyInput, setWereadProxyInput] = useState("");
   const [isSavingWereadProxy, setIsSavingWereadProxy] = useState(false);
   const [isResettingWereadProxy, setIsResettingWereadProxy] = useState(false);
@@ -337,6 +503,7 @@ export function SettingsPage({
   );
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [error, setError] = useState<string>();
+  const lastToastErrorRef = useRef<string>();
   const { showToast } = useToast();
   const credential = state?.credential ?? credentialStatus;
   const activeCategoryConfig =
@@ -368,15 +535,6 @@ export function SettingsPage({
 
   function handleOpenWereadSkill() {
     void handleOpenExternalLink(WEREAD_SKILL_API_KEY_URL, "技能页面");
-  }
-
-  async function handleCopyNotionViewRecipe() {
-    try {
-      await copyTextToClipboard(NOTION_VIEW_RECIPE);
-      showToast({ message: "已复制 Notion 关联视图配方。", tone: "success" });
-    } catch {
-      showToast({ message: "视图配方复制失败，请稍后重试。", tone: "warning" });
-    }
   }
 
   function applyAiProviderSettings(provider: AiProviderSettings) {
@@ -449,28 +607,89 @@ export function SettingsPage({
     onViewAppUpdate?.();
   }, [activeCategory, onViewAppUpdate, open]);
 
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listenNotionCoverBackfillProgress((progress) => {
+      if (!disposed) {
+        setNotionCoverBackfillProgress(progress);
+      }
+    })
+      .then((dispose) => {
+        if (disposed) {
+          dispose();
+        } else {
+          unlisten = dispose;
+        }
+      })
+      .catch((listenError) => {
+        if (!disposed) {
+          setError(getCommandErrorMessage(listenError));
+        }
+      });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!error) {
+      lastToastErrorRef.current = undefined;
+      return;
+    }
+    if (lastToastErrorRef.current === error) {
+      return;
+    }
+
+    lastToastErrorRef.current = error;
+    showToast({ message: error, tone: "error" });
+  }, [error, showToast]);
+
   async function loadState() {
     setIsLoading(true);
     setError(undefined);
 
     try {
-      const [nextState, nextAiState, nextReadingAssistantPreferences] = await Promise.all([
+      const [
+        nextState,
+        nextAiState,
+        nextReadingAssistantPreferences,
+        nextNotionProvisioning,
+      ] = await Promise.all([
         getSettingsState(),
         getAiSettingsState(),
         getReadingAssistantPreferences(),
+        getNotionStandardDatabaseProvisioning(),
       ]);
       setState(nextState);
       setAiState(nextAiState);
       setReadingAssistantPreferences(nextReadingAssistantPreferences);
+      setNotionProvisioning(nextNotionProvisioning);
       applyAiProviderSettings(nextAiState.provider);
       setExportDirectoryInput(nextState.exportData.exportDir);
       setObsidianVaultInput(nextState.integrationData.obsidian.vaultDir ?? "");
       setObsidianAttachmentMode(nextState.integrationData.obsidian.attachmentMode);
       setObsidianOpenAfterExport(nextState.integrationData.obsidian.openAfterExport);
+      const savedNotionConnection = nextState.integrationData.notion.databaseConnection;
       setNotionParentId(nextState.integrationData.notion.parentId ?? "");
-      setNotionTemplateParentPageId("");
       setNotionParentType(nextState.integrationData.notion.parentType ?? "page");
       setNotionCoverMode(nextState.integrationData.notion.coverMode);
+      setNotionDatabaseInput(
+        savedNotionConnection?.databaseUrl ?? savedNotionConnection?.databaseId ?? "",
+      );
+      setNotionConnectionView(
+        savedNotionConnection
+          ? notionConnectionSnapshot(savedNotionConnection)
+          : undefined,
+      );
+      setNotionStandardParentPageInput("");
+      setNotionCreatedDatabaseUrl(nextNotionProvisioning?.url);
       setWereadProxyInput(nextState.network.wereadProxyUrl ?? "");
       onCredentialChange(nextState.credential);
     } catch (loadError) {
@@ -1017,7 +1236,7 @@ export function SettingsPage({
         coverMode: notionCoverMode,
       });
       setState(nextState);
-      showToast({ message: "Notion 导入设置已保存。", tone: "success" });
+      showToast({ message: "Notion 高级导出设置已保存。", tone: "success" });
     } catch (saveError) {
       setError(getCommandErrorMessage(saveError));
     } finally {
@@ -1025,90 +1244,376 @@ export function SettingsPage({
     }
   }
 
-  function handleRequestCreateNotionTemplate() {
-    const parentPageId = parseNotionPageId(notionTemplateParentPageId);
-    if (!parentPageId) {
-      setError("请输入已共享给 Integration 的 Notion 页面链接或页面 ID。");
+  async function savePendingNotionToken() {
+    if (!notionToken.trim()) {
+      return;
+    }
+    await saveNotionCredential(notionToken);
+    setNotionToken("");
+  }
+
+  async function handleAnalyzeNotionDatabase() {
+    const databaseId = parseNotionObjectId(notionDatabaseInput);
+    if (!databaseId) {
+      setError("请输入唯一且有效的 Notion 数据库链接或数据库 ID。");
       return;
     }
 
+    setIsAnalyzingNotionDatabase(true);
+    setError(undefined);
+    try {
+      await savePendingNotionToken();
+      const analysis = await analyzeNotionDatabase(databaseId);
+      setNotionDatabaseInput(analysis.databaseUrl ?? analysis.databaseId);
+      setNotionConnectionView({
+        analysis,
+        mappings: analysis.suggestedMappings,
+      });
+      showToast({
+        message:
+          analysis.compatibility === "invalid"
+            ? "数据库检查完成，但缺少可用的标题字段。"
+            : "数据库检查完成，可确认字段映射后保存连接。",
+        tone: analysis.compatibility === "invalid" ? "warning" : "success",
+      });
+    } catch (analysisError) {
+      setError(getCommandErrorMessage(analysisError));
+    } finally {
+      setIsAnalyzingNotionDatabase(false);
+    }
+  }
+
+  function handleNotionMappingChange(
+    logicalField: NotionLogicalField,
+    propertyId: string,
+  ) {
+    setNotionConnectionView((current) => {
+      if (!current) {
+        return current;
+      }
+      const property = current.analysis.properties.find(
+        (candidate) => candidate.id === propertyId,
+      );
+      const nextMapping = property
+        ? {
+            logicalField,
+            propertyId: property.id,
+            propertyNameSnapshot: property.name,
+            propertyType: property.type,
+            enabled: true,
+          }
+        : undefined;
+      return {
+        ...current,
+        mappings: [
+          ...current.mappings.filter(
+            (mapping) => mapping.logicalField !== logicalField,
+          ),
+          ...(nextMapping ? [nextMapping] : []),
+        ],
+      };
+    });
+  }
+
+  async function handleSaveNotionDatabaseConnection() {
+    const current = notionConnectionView;
+    const titleMapping = current?.mappings.find(
+      (mapping) => mapping.logicalField === "title" && mapping.enabled,
+    );
+    if (!current || current.analysis.compatibility === "invalid" || !titleMapping) {
+      setError("请先检查数据库，并确认有效的标题字段映射。");
+      return;
+    }
+
+    setIsSavingNotionDatabaseConnection(true);
+    setError(undefined);
+    try {
+      const connection: NotionDatabaseConnection = {
+        databaseId: current.analysis.databaseId,
+        databaseName: current.analysis.databaseName,
+        databaseUrl: current.analysis.databaseUrl,
+        titlePropertyId: titleMapping.propertyId,
+        titlePropertyNameSnapshot: titleMapping.propertyNameSnapshot,
+        mappings: current.mappings,
+        schemaCheckedAt: current.analysis.schemaCheckedAt,
+        schemaFingerprint: current.analysis.schemaFingerprint,
+      };
+      const nextState = await saveNotionDatabaseConnection(connection);
+      setState(nextState);
+      setNotionParentId(connection.databaseId);
+      setNotionParentType("database");
+      setNotionConnectionView(notionConnectionSnapshot(connection));
+      showToast({
+        message: "Notion 数据库连接已保存，后续导出将按字段 ID 写入。",
+        tone: "success",
+      });
+    } catch (saveError) {
+      setError(getCommandErrorMessage(saveError));
+    } finally {
+      setIsSavingNotionDatabaseConnection(false);
+    }
+  }
+
+  function handleRequestCreateNotionStandardDatabase() {
+    const parentPageId = parseNotionObjectId(notionStandardParentPageInput);
+    if (!parentPageId) {
+      setError("请输入已共享给 Integration 的 Notion 父页面链接或页面 ID。");
+      return;
+    }
     if (state?.integrationData.notion.parentId) {
       setPendingAction("replaceNotionExportTarget");
       return;
     }
-
-    void handleCreateNotionTemplate(parentPageId);
+    void handleCreateNotionStandardDatabase(parentPageId);
   }
 
-  function applyNotionTemplateCreation(result: {
-    databaseId: string;
-    databaseUrl: string;
-    mode: NotionInitializationMode;
-    state: SettingsState;
-    title: string;
-    warning?: string;
-  }) {
-    setState(result.state);
-    setNotionParentId(result.databaseId);
-    setNotionParentType("database");
-    setNotionCoverMode(result.state.integrationData.notion.coverMode);
-    setNotionTemplateParentPageId("");
-    setNotionTemplateCreationResult({
-      databaseUrl: result.databaseUrl,
-      mode: result.mode,
-      title: result.title,
-      warning: result.warning,
-    });
-    showToast({
-      message:
-        result.warning ||
-        (result.mode === "existingTemplate"
-          ? "阅读成果库已创建，并设为默认 Notion 导出目标。"
-          : `Notion 工作台已创建：${result.title}`),
-      tone: result.warning ? "warning" : "success",
-    });
+  function applyNotionProvisioningResult(
+    result: CreateNotionStandardDatabaseResult,
+  ) {
+    setNotionProvisioning(result);
+    setNotionCreatedDatabaseUrl(result.url);
+    if (result.state) {
+      setState(result.state);
+      setNotionCoverMode(result.state.integrationData.notion.coverMode);
+    }
+    if (result.connection) {
+      setNotionConnectionView(notionConnectionSnapshot(result.connection));
+      setNotionDatabaseInput(
+        result.connection.databaseUrl ?? result.connection.databaseId,
+      );
+    } else if (result.url || result.databaseId) {
+      setNotionDatabaseInput(result.url ?? result.databaseId ?? "");
+    }
+    if (result.databaseId) {
+      setNotionParentId(result.databaseId);
+      setNotionParentType("database");
+    }
   }
 
-  async function handleCreateNotionTemplate(parentPageId: string) {
+  async function refreshNotionProvisioningAfterUncertainCommand() {
+    const recovered = await getNotionStandardDatabaseProvisioning();
+    if (recovered) {
+      applyNotionProvisioningResult(recovered);
+      return recovered;
+    }
+    return undefined;
+  }
+
+  async function handleCreateNotionStandardDatabase(parentPageId: string) {
     setPendingAction(undefined);
-
-    setIsCreatingNotionTemplate(true);
+    setIsCreatingNotionStandardDatabase(true);
     setError(undefined);
     try {
-      if (notionToken.trim()) {
-        await saveNotionCredential(notionToken);
-        setNotionToken("");
-      }
-      if (notionInitializationMode === "existingTemplate") {
-        const result = await createNotionReadingLibraryTemplate(parentPageId);
-        applyNotionTemplateCreation({
-          databaseId: result.databaseId,
-          databaseUrl: result.url,
-          mode: notionInitializationMode,
-          state: result.state,
-          title: result.title,
+      await savePendingNotionToken();
+      const result = await createNotionStandardOutcomesDatabase(parentPageId);
+      applyNotionProvisioningResult(result);
+      setNotionStandardParentPageInput("");
+      if (result.status === "complete") {
+        showToast({
+          message: "标准阅读成果库已创建，4 个推荐视图已初始化。",
+          tone: "success",
+        });
+      } else if (result.status === "partial" && result.connection) {
+        showToast({
+          message: "数据库连接已保存，可以正常导出；部分推荐视图尚未初始化。",
+          tone: "warning",
         });
       } else {
-        const result = await createNotionReadingWorkspaceTemplate(parentPageId);
-        applyNotionTemplateCreation({
-          databaseId: result.databaseId,
-          databaseUrl: result.databaseUrl,
-          mode: notionInitializationMode,
-          state: result.state,
-          title: result.title,
-          warning: result.warning,
+        showToast({
+          message: "已保存创建状态，请按恢复提示完成初始化。",
+          tone: "warning",
         });
       }
     } catch (createError) {
       const message = getCommandErrorMessage(createError);
-      const hasUnknownResult = /timeout|timed out|network|网络|连接|connection/i.test(message);
-      setError(
-        hasUnknownResult
-          ? `${message}。结果可能未知，请先在 Notion 检查是否已有“阅读成果库”，再决定是否重试。`
-          : message,
-      );
+      try {
+        const recovered = await refreshNotionProvisioningAfterUncertainCommand();
+        setError(
+          recovered
+            ? `${message}。已从本地恢复创建状态，请按下方提示处理，应用不会重复创建数据库。`
+            : message,
+        );
+      } catch (recoveryError) {
+        setError(`${message}。读取本地恢复状态失败：${getCommandErrorMessage(recoveryError)}`);
+      }
     } finally {
-      setIsCreatingNotionTemplate(false);
+      setIsCreatingNotionStandardDatabase(false);
+    }
+  }
+
+  async function handleContinueNotionProvisioning() {
+    if (!notionProvisioning) {
+      return;
+    }
+    setIsResolvingNotionProvisioning(true);
+    setError(undefined);
+    try {
+      const result = await continueNotionStandardDatabaseProvisioning(
+        notionProvisioning.provisioningId,
+      );
+      applyNotionProvisioningResult(result);
+      showToast({
+        message:
+          result.status === "complete"
+            ? "4 个推荐视图已初始化，标准阅读成果库可以正常使用。"
+            : result.status === "partial" && result.connection
+              ? "数据库连接可正常导出；仍有推荐视图需要重试或人工处理。"
+              : "已更新恢复状态，请查看下一步提示。",
+        tone:
+          result.status === "complete"
+            ? "success"
+            : result.status === "partial" && result.connection
+              ? "warning"
+              : "warning",
+      });
+    } catch (continueError) {
+      const message = getCommandErrorMessage(continueError);
+      try {
+        await refreshNotionProvisioningAfterUncertainCommand();
+      } catch {
+        // Preserve the original command error when the recovery query also fails.
+      }
+      setError(message);
+    } finally {
+      setIsResolvingNotionProvisioning(false);
+    }
+  }
+
+  async function handleLinkCurrentNotionConnection() {
+    if (!notionProvisioning) {
+      return;
+    }
+    setIsResolvingNotionProvisioning(true);
+    setError(undefined);
+    try {
+      const result = await resolveNotionStandardDatabaseProvisioning({
+        provisioningId: notionProvisioning.provisioningId,
+        resolution: "linkCurrentConnection",
+        confirm: true,
+      });
+      if (result) {
+        applyNotionProvisioningResult(result);
+      }
+      showToast({ message: "已关联同一数据库的现有连接。", tone: "success" });
+    } catch (resolveError) {
+      setError(getCommandErrorMessage(resolveError));
+    } finally {
+      setIsResolvingNotionProvisioning(false);
+    }
+  }
+
+  async function handleConfirmNotionDatabaseNotCreated() {
+    if (!notionProvisioning) {
+      return;
+    }
+    setIsResolvingNotionProvisioning(true);
+    setError(undefined);
+    try {
+      await resolveNotionStandardDatabaseProvisioning({
+        provisioningId: notionProvisioning.provisioningId,
+        resolution: "confirmNotCreated",
+        confirm: true,
+      });
+      setNotionProvisioning(undefined);
+      setNotionCreatedDatabaseUrl(undefined);
+      setPendingAction(undefined);
+      showToast({
+        message: "已清除未知创建状态，可以重新发起创建。",
+        tone: "success",
+      });
+    } catch (resolveError) {
+      setError(getCommandErrorMessage(resolveError));
+    } finally {
+      setIsResolvingNotionProvisioning(false);
+    }
+  }
+
+  async function handlePreflightNotionCoverBackfill() {
+    setIsPreflightingNotionCoverBackfill(true);
+    setNotionCoverBackfillPreflight(undefined);
+    setNotionCoverBackfillProgress(undefined);
+    setNotionCoverBackfillReport(undefined);
+    setError(undefined);
+    try {
+      const preflight = await preflightNotionCoverBackfill();
+      setNotionCoverBackfillPreflight(preflight);
+      showToast({
+        message: preflight.canRun
+          ? `封面预检完成：${preflight.eligiblePages} 个页面可安全回填。`
+          : "封面预检未通过，请先处理字段冲突或连接问题。",
+        tone: preflight.canRun ? "success" : "warning",
+      });
+    } catch (preflightError) {
+      setError(getCommandErrorMessage(preflightError));
+    } finally {
+      setIsPreflightingNotionCoverBackfill(false);
+    }
+  }
+
+  function handleRequestRunNotionCoverBackfill() {
+    if (!notionCoverBackfillPreflight?.canRun) {
+      setError("请先完成并通过封面回填预检。");
+      return;
+    }
+    setPendingAction("confirmNotionCoverBackfill");
+  }
+
+  async function handleRunNotionCoverBackfill() {
+    const preflight = notionCoverBackfillPreflight;
+    if (!preflight?.canRun) {
+      setPendingAction(undefined);
+      setError("封面回填预检已失效，请重新预检。");
+      return;
+    }
+    setPendingAction(undefined);
+    setIsRunningNotionCoverBackfill(true);
+    setNotionCoverBackfillProgress(undefined);
+    setNotionCoverBackfillReport(undefined);
+    setError(undefined);
+    try {
+      const report = await runNotionCoverBackfill({
+        preflightId: preflight.preflightId,
+        databaseId: preflight.databaseId,
+        schemaFingerprint: preflight.schemaFingerprint,
+        coverPropertyAction: preflight.coverProperty.action,
+        confirm: true,
+      });
+      setNotionCoverBackfillReport(report);
+      setNotionCoverBackfillPreflight(undefined);
+      showToast({
+        message: report.wasCanceled
+          ? "封面回填已取消，已完成的修改已保留。"
+          : `封面回填完成：更新 ${report.updated}，部分成功 ${report.partial}，失败 ${report.failed}。`,
+        tone: report.wasCanceled || report.failed || report.partial ? "warning" : "success",
+      });
+      if (report.schemaUpgraded) {
+        void loadState();
+      }
+    } catch (runError) {
+      setError(getCommandErrorMessage(runError));
+    } finally {
+      setIsRunningNotionCoverBackfill(false);
+      setIsCancelingNotionCoverBackfill(false);
+    }
+  }
+
+  async function handleCancelNotionCoverBackfill() {
+    const operationId = notionCoverBackfillProgress?.operationId;
+    if (!operationId) {
+      setError("尚未收到封面回填 operation ID，暂时无法安全取消。");
+      return;
+    }
+    setIsCancelingNotionCoverBackfill(true);
+    setError(undefined);
+    try {
+      await cancelNotionCoverBackfill(operationId);
+      showToast({
+        message: "已请求取消；当前页面处理结束后将停止，已完成修改不会回滚。",
+        tone: "warning",
+      });
+    } catch (cancelError) {
+      setError(getCommandErrorMessage(cancelError));
+      setIsCancelingNotionCoverBackfill(false);
     }
   }
 
@@ -1129,6 +1634,30 @@ export function SettingsPage({
       setError(getCommandErrorMessage(removeError));
     } finally {
       setIsSavingIntegrations(false);
+    }
+  }
+
+  async function handleValidateNotionCredential() {
+    setIsValidatingNotionToken(true);
+    setError(undefined);
+    try {
+      if (notionToken.trim()) {
+        await saveNotionCredential(notionToken);
+        setNotionToken("");
+      }
+      const credential = await validateNotionCredential();
+      setState((current) => current ? {
+        ...current,
+        integrationData: {
+          ...current.integrationData,
+          notion: { ...current.integrationData.notion, credential },
+        },
+      } : current);
+      showToast({ message: "Notion Token 验证通过。", tone: "success" });
+    } catch (validationError) {
+      setError(getCommandErrorMessage(validationError));
+    } finally {
+      setIsValidatingNotionToken(false);
     }
   }
 
@@ -1256,13 +1785,6 @@ export function SettingsPage({
             </div>
           </section>
 
-          {error ? (
-            <div className="status-message status-message--error">
-              <AlertCircle aria-hidden="true" size={18} />
-              <span>{error}</span>
-            </div>
-          ) : null}
-
           <div className="settings-main">
             {activeCategory === "account" ? (
               <SettingsSection title="账户与同步">
@@ -1387,50 +1909,6 @@ export function SettingsPage({
                   <p className="credential-help-note">
                     Android 代理工具通常会提供 HTTP 或 SOCKS 本地端口；如系统代理不生效，可在这里填写对应地址。
                   </p>
-                  {aiProviderProbe ? (
-                    <section
-                      className="ai-provider-probe"
-                      aria-label="AI Provider 兼容性探测结果"
-                    >
-                      <dl className="settings-dl">
-                        <div>
-                          <dt>基础连通</dt>
-                          <dd>
-                            {formatAiProviderCapabilityStatus(
-                              aiProviderProbe.basic,
-                            )}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt>通用 JSON</dt>
-                          <dd>
-                            {formatAiProviderCapabilityStatus(
-                              aiProviderProbe.jsonObject,
-                            )}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt>严格结构</dt>
-                          <dd>
-                            {formatAiProviderCapabilityStatus(
-                              aiProviderProbe.jsonSchema,
-                            )}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt>建议模式</dt>
-                          <dd>
-                            {formatAiResponseFormatPolicyLabel(
-                              aiProviderProbe.recommendedPolicy,
-                            )}
-                          </dd>
-                        </div>
-                      </dl>
-                      {aiProviderProbe.message ? (
-                        <p>{aiProviderProbe.message}</p>
-                      ) : null}
-                    </section>
-                  ) : null}
                   <div className="settings-actions settings-card-actions">
                     <button
                       className="secondary-action"
@@ -1736,6 +2214,50 @@ export function SettingsPage({
                       移除 AI Key
                     </button>
                   </div>
+                  {aiProviderProbe ? (
+                    <section
+                      className="ai-provider-probe"
+                      aria-label="AI Provider 兼容性探测结果"
+                    >
+                      <dl className="settings-dl">
+                        <div>
+                          <dt>基础连通</dt>
+                          <dd>
+                            {formatAiProviderCapabilityStatus(
+                              aiProviderProbe.basic,
+                            )}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>通用 JSON</dt>
+                          <dd>
+                            {formatAiProviderCapabilityStatus(
+                              aiProviderProbe.jsonObject,
+                            )}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>严格结构</dt>
+                          <dd>
+                            {formatAiProviderCapabilityStatus(
+                              aiProviderProbe.jsonSchema,
+                            )}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>建议模式</dt>
+                          <dd>
+                            {formatAiResponseFormatPolicyLabel(
+                              aiProviderProbe.recommendedPolicy,
+                            )}
+                          </dd>
+                        </div>
+                      </dl>
+                      {aiProviderProbe.message ? (
+                        <p>{aiProviderProbe.message}</p>
+                      ) : null}
+                    </section>
+                  ) : null}
                 </section>
                 <section
                   className="settings-card settings-panel settings-control-panel reading-assistant-settings-card"
@@ -2070,29 +2592,65 @@ export function SettingsPage({
                   obsidianAttachmentMode={obsidianAttachmentMode}
                   obsidianOpenAfterExport={obsidianOpenAfterExport}
                   notionToken={notionToken}
-                  notionTemplateParentPageId={notionTemplateParentPageId}
-                  notionInitializationMode={notionInitializationMode}
-                  notionTemplateCreationResult={notionTemplateCreationResult}
+                  notionDatabaseInput={notionDatabaseInput}
+                  notionConnectionView={notionConnectionView}
+                  notionProvisioning={notionProvisioning}
+                  notionStandardParentPageInput={notionStandardParentPageInput}
+                  notionCreatedDatabaseUrl={notionCreatedDatabaseUrl}
                   notionParentId={notionParentId}
                   notionParentType={notionParentType}
                   notionCoverMode={notionCoverMode}
-                  isCreatingNotionTemplate={isCreatingNotionTemplate}
+                  notionCoverBackfillPreflight={notionCoverBackfillPreflight}
+                  notionCoverBackfillProgress={notionCoverBackfillProgress}
+                  notionCoverBackfillReport={notionCoverBackfillReport}
+                  isPreflightingNotionCoverBackfill={isPreflightingNotionCoverBackfill}
+                  isRunningNotionCoverBackfill={isRunningNotionCoverBackfill}
+                  isCancelingNotionCoverBackfill={isCancelingNotionCoverBackfill}
+                  isAnalyzingNotionDatabase={isAnalyzingNotionDatabase}
+                  isSavingNotionDatabaseConnection={isSavingNotionDatabaseConnection}
+                  isCreatingNotionStandardDatabase={isCreatingNotionStandardDatabase}
+                  isResolvingNotionProvisioning={isResolvingNotionProvisioning}
+                  isValidatingNotionToken={isValidatingNotionToken}
                   onObsidianVaultInputChange={setObsidianVaultInput}
                   onObsidianAttachmentModeChange={setObsidianAttachmentMode}
                   onObsidianOpenAfterExportChange={setObsidianOpenAfterExport}
                   onNotionTokenChange={setNotionToken}
-                  onNotionTemplateParentPageIdChange={setNotionTemplateParentPageId}
-                  onNotionInitializationModeChange={setNotionInitializationMode}
+                  onNotionDatabaseInputChange={(value) => {
+                    setNotionDatabaseInput(value);
+                    setNotionConnectionView(undefined);
+                  }}
+                  onNotionStandardParentPageInputChange={setNotionStandardParentPageInput}
+                  onNotionMappingChange={handleNotionMappingChange}
                   onNotionParentIdChange={setNotionParentId}
                   onNotionParentTypeChange={setNotionParentType}
                   onNotionCoverModeChange={setNotionCoverMode}
                   onChooseObsidianVault={() => void handleChooseObsidianVault()}
                   onSaveObsidian={() => void handleSaveObsidianSettings()}
                   onSaveNotion={() => void handleSaveNotionSettings()}
-                  onCreateNotionTemplate={handleRequestCreateNotionTemplate}
+                  onAnalyzeNotionDatabase={() => void handleAnalyzeNotionDatabase()}
+                  onSaveNotionDatabaseConnection={() =>
+                    void handleSaveNotionDatabaseConnection()
+                  }
+                  onCreateNotionStandardDatabase={handleRequestCreateNotionStandardDatabase}
+                  onContinueNotionProvisioning={() =>
+                    void handleContinueNotionProvisioning()
+                  }
+                  onLinkCurrentNotionConnection={() =>
+                    void handleLinkCurrentNotionConnection()
+                  }
+                  onConfirmNotionDatabaseNotCreated={() =>
+                    setPendingAction("confirmNotionDatabaseNotCreated")
+                  }
+                  onPreflightNotionCoverBackfill={() =>
+                    void handlePreflightNotionCoverBackfill()
+                  }
+                  onRunNotionCoverBackfill={handleRequestRunNotionCoverBackfill}
+                  onCancelNotionCoverBackfill={() =>
+                    void handleCancelNotionCoverBackfill()
+                  }
                   onOpenExternalLink={(url, fallbackLabel) => void handleOpenExternalLink(url, fallbackLabel)}
-                  onCopyNotionViewRecipe={() => void handleCopyNotionViewRecipe()}
                   onRemoveNotionCredential={() => void handleRemoveNotionCredential()}
+                  onValidateNotionToken={() => void handleValidateNotionCredential()}
                 />
               </SettingsSection>
             ) : null}
@@ -2452,11 +3010,20 @@ export function SettingsPage({
                       <h3>本地数据备份</h3>
                     </div>
                   </div>
-                  <p>
-                    备份只包含本地 SQLite 数据库及 WAL/SHM
-                    辅助文件，不包含微信读书 API Key、AI API Key
-                    或安全存储文件。
-                  </p>
+                  <div aria-label="本地备份数据边界">
+                    <p>
+                      <strong>包含：</strong>本地 SQLite 数据库，以及存在时的 WAL/SHM
+                      辅助文件。
+                    </p>
+                    <p>
+                      <strong>不包含：</strong>微信读书 API Key、AI API Key、Notion
+                      凭据或其他安全存储文件。
+                    </p>
+                    <p>
+                      <strong>暂不包含浏览器存储：</strong>
+                      本地划线、想法、AI 提问草稿和记录、阅读器偏好，以及微信版本与本地版本的人工关联。
+                    </p>
+                  </div>
                   <dl className="settings-dl">
                     <div className="wide-row">
                       <dt>最近备份</dt>
@@ -2809,20 +3376,40 @@ export function SettingsPage({
             onConfirm={() => void handleInstallUpdate()}
           />
           <ConfirmDialog
+            open={pendingAction === "confirmNotionCoverBackfill"}
+            title="确认回填现有 Notion 成果页封面？"
+            description={`将仅处理预检确认的数据库，为最多 ${notionCoverBackfillPreflight?.eligiblePages ?? 0} 个可匹配页面补空的“封面”属性和空的页面封面。已有人工封面不会覆盖，不会创建、删除或归档成果页；已完成的修改无法自动回滚。`}
+            confirmLabel="确认开始回填"
+            isBusy={isRunningNotionCoverBackfill}
+            onCancel={() => setPendingAction(undefined)}
+            onConfirm={() => void handleRunNotionCoverBackfill()}
+          />
+          <ConfirmDialog
+            open={pendingAction === "confirmNotionDatabaseNotCreated"}
+            title="确认 Notion 中没有创建出数据库？"
+            description="只有在你已到 Notion 父页面核对，并确认没有出现本次“阅读成果库”时才能继续。确认后仅清除本地未知状态，不会自动创建；你需要再次手动点击创建按钮。"
+            confirmLabel="确认未创建"
+            isBusy={isResolvingNotionProvisioning}
+            onCancel={() => setPendingAction(undefined)}
+            onConfirm={() => void handleConfirmNotionDatabaseNotCreated()}
+          />
+          <ConfirmDialog
             open={pendingAction === "replaceNotionExportTarget"}
-            title="切换 Notion 导出目标？"
-            description="这会在所选页面下创建新的阅读成果库，并将后续 Notion 导出切换到该数据库。现有数据库和已导出内容不会被删除。"
+            title="创建并切换 Notion 导出目标？"
+            description="这会在所选父页面下创建新的标准阅读成果库，并将后续 Notion 导出切换到该数据库。现有数据库和已导出内容不会被删除。"
             confirmLabel="创建并切换"
-            isBusy={isCreatingNotionTemplate}
+            isBusy={isCreatingNotionStandardDatabase}
             onCancel={() => setPendingAction(undefined)}
             onConfirm={() => {
-              const parentPageId = parseNotionPageId(notionTemplateParentPageId);
+              const parentPageId = parseNotionObjectId(
+                notionStandardParentPageInput,
+              );
               if (!parentPageId) {
                 setPendingAction(undefined);
-                setError("请输入已共享给 Integration 的 Notion 页面链接或页面 ID。");
+                setError("请输入已共享给 Integration 的 Notion 父页面链接或页面 ID。");
                 return;
               }
-              void handleCreateNotionTemplate(parentPageId);
+              void handleCreateNotionStandardDatabase(parentPageId);
             }}
           />
         </div>
@@ -2919,29 +3506,50 @@ function IntegrationExportSettings({
   obsidianAttachmentMode,
   obsidianOpenAfterExport,
   notionToken,
-  notionTemplateParentPageId,
-  notionInitializationMode,
-  notionTemplateCreationResult,
+  notionDatabaseInput,
+  notionConnectionView,
+  notionProvisioning,
+  notionStandardParentPageInput,
+  notionCreatedDatabaseUrl,
   notionParentId,
   notionParentType,
   notionCoverMode,
-  isCreatingNotionTemplate,
+  notionCoverBackfillPreflight,
+  notionCoverBackfillProgress,
+  notionCoverBackfillReport,
+  isPreflightingNotionCoverBackfill,
+  isRunningNotionCoverBackfill,
+  isCancelingNotionCoverBackfill,
+  isAnalyzingNotionDatabase,
+  isSavingNotionDatabaseConnection,
+  isCreatingNotionStandardDatabase,
+  isResolvingNotionProvisioning,
+  isValidatingNotionToken,
   onObsidianVaultInputChange,
   onObsidianAttachmentModeChange,
   onObsidianOpenAfterExportChange,
   onNotionTokenChange,
-  onNotionTemplateParentPageIdChange,
-  onNotionInitializationModeChange,
+  onNotionDatabaseInputChange,
+  onNotionStandardParentPageInputChange,
+  onNotionMappingChange,
   onNotionParentIdChange,
   onNotionParentTypeChange,
   onNotionCoverModeChange,
   onChooseObsidianVault,
   onSaveObsidian,
   onSaveNotion,
-  onCreateNotionTemplate,
+  onAnalyzeNotionDatabase,
+  onSaveNotionDatabaseConnection,
+  onCreateNotionStandardDatabase,
+  onContinueNotionProvisioning,
+  onLinkCurrentNotionConnection,
+  onConfirmNotionDatabaseNotCreated,
+  onPreflightNotionCoverBackfill,
+  onRunNotionCoverBackfill,
+  onCancelNotionCoverBackfill,
   onOpenExternalLink,
-  onCopyNotionViewRecipe,
   onRemoveNotionCredential,
+  onValidateNotionToken,
 }: {
   state?: SettingsState;
   isSaving: boolean;
@@ -2949,44 +3557,92 @@ function IntegrationExportSettings({
   obsidianAttachmentMode: ObsidianAttachmentMode;
   obsidianOpenAfterExport: boolean;
   notionToken: string;
-  notionTemplateParentPageId: string;
-  notionInitializationMode: NotionInitializationMode;
-  notionTemplateCreationResult?: NotionTemplateCreationResult;
+  notionDatabaseInput: string;
+  notionConnectionView?: NotionConnectionView;
+  notionProvisioning?: CreateNotionStandardDatabaseResult;
+  notionStandardParentPageInput: string;
+  notionCreatedDatabaseUrl?: string;
   notionParentId: string;
   notionParentType: NotionParentType;
   notionCoverMode: NotionCoverMode;
-  isCreatingNotionTemplate: boolean;
+  notionCoverBackfillPreflight?: NotionCoverBackfillPreflight;
+  notionCoverBackfillProgress?: NotionCoverBackfillProgress;
+  notionCoverBackfillReport?: NotionCoverBackfillReport;
+  isPreflightingNotionCoverBackfill: boolean;
+  isRunningNotionCoverBackfill: boolean;
+  isCancelingNotionCoverBackfill: boolean;
+  isAnalyzingNotionDatabase: boolean;
+  isSavingNotionDatabaseConnection: boolean;
+  isCreatingNotionStandardDatabase: boolean;
+  isResolvingNotionProvisioning: boolean;
+  isValidatingNotionToken: boolean;
   onObsidianVaultInputChange: (value: string) => void;
   onObsidianAttachmentModeChange: (value: ObsidianAttachmentMode) => void;
   onObsidianOpenAfterExportChange: (value: boolean) => void;
   onNotionTokenChange: (value: string) => void;
-  onNotionTemplateParentPageIdChange: (value: string) => void;
-  onNotionInitializationModeChange: (mode: NotionInitializationMode) => void;
+  onNotionDatabaseInputChange: (value: string) => void;
+  onNotionStandardParentPageInputChange: (value: string) => void;
+  onNotionMappingChange: (
+    logicalField: NotionLogicalField,
+    propertyId: string,
+  ) => void;
   onNotionParentIdChange: (value: string) => void;
   onNotionParentTypeChange: (value: NotionParentType) => void;
   onNotionCoverModeChange: (value: NotionCoverMode) => void;
   onChooseObsidianVault: () => void;
   onSaveObsidian: () => void;
   onSaveNotion: () => void;
-  onCreateNotionTemplate: () => void;
+  onAnalyzeNotionDatabase: () => void;
+  onSaveNotionDatabaseConnection: () => void;
+  onCreateNotionStandardDatabase: () => void;
+  onContinueNotionProvisioning: () => void;
+  onLinkCurrentNotionConnection: () => void;
+  onConfirmNotionDatabaseNotCreated: () => void;
+  onPreflightNotionCoverBackfill: () => void;
+  onRunNotionCoverBackfill: () => void;
+  onCancelNotionCoverBackfill: () => void;
   onOpenExternalLink: (url: string, fallbackLabel: string) => void;
-  onCopyNotionViewRecipe: () => void;
   onRemoveNotionCredential: () => void;
+  onValidateNotionToken: () => void;
 }) {
-  const hasNotionCredential = state?.integrationData.notion.credential.hasCredential ?? false;
+  const hasNotionCredential =
+    state?.integrationData.notion.credential.hasCredential ?? false;
+  const savedNotionConnection = state?.integrationData.notion.databaseConnection;
   const hasNotionTarget = Boolean(state?.integrationData.notion.parentId);
-  const notionTemplateFields = [
-    "驾驶舱",
-    "成果入口",
-    "视图配方",
-    "整理清单",
-    "名称",
-    "资产类型",
-    "导出时间",
-    "导入状态",
-    "行动数",
-  ];
-  const notionOutcomeEntrances = ["书籍笔记", "书籍复盘", "阅读路线", "统计复盘", "选书决策"];
+  const backfillBusy = isPreflightingNotionCoverBackfill || isRunningNotionCoverBackfill;
+  const analysis = notionConnectionView?.analysis;
+  const titleMapping = notionConnectionView?.mappings.find(
+    (mapping) => mapping.logicalField === "title" && mapping.enabled,
+  );
+  const compatibilityLabel =
+    analysis?.compatibility === "full"
+      ? "完整兼容"
+      : analysis?.compatibility === "basic"
+        ? "基础兼容"
+        : "不可连接";
+  const readyViewStatuses: NotionDefaultViewStatus[] = ["created", "updated", "reused"];
+  const readyViewCount = notionProvisioning?.views.filter((view) =>
+    readyViewStatuses.includes(view.status),
+  ).length ?? 0;
+  const provisioningTitle = notionProvisioning?.status === "complete"
+    ? "数据库和 4 个推荐视图已就绪"
+    : notionProvisioning?.status === "partial"
+      ? "数据库已连接，推荐视图未全部就绪"
+      : notionProvisioning?.status === "recoveryRequired"
+        ? "数据库已创建，需要继续初始化"
+        : "创建结果尚未确认";
+  const provisioningSummary = notionProvisioning?.status === "complete"
+    ? "4 个推荐视图均已初始化。"
+    : notionProvisioning?.status === "partial"
+      ? `数据库连接可正常导出；推荐视图已就绪 ${readyViewCount}/4。`
+      : notionProvisioning?.status === "recoveryRequired"
+        ? notionProvisioning.lastError?.message ??
+          "已保存 database ID，不会重复创建数据库。"
+        : notionProvisioning?.lastError?.message ??
+          "应用已暂停再次创建，请先到 Notion 核对结果。";
+  const canContinueProvisioning = notionProvisioning?.status === "recoveryRequired" ||
+    (notionProvisioning?.status === "partial" &&
+      notionProvisioning.viewInitialization !== "complete");
 
   return (
     <>
@@ -3029,164 +3685,570 @@ function IntegrationExportSettings({
       </section>
       <section
         className="settings-card settings-panel settings-control-panel notion-template-card"
-        aria-label="Notion 导入设置"
+        aria-label="Notion 导出设置"
       >
         <div className="settings-card-heading">
-          <span className="settings-icon"><Database aria-hidden="true" size={20} /></span>
-          <div><p className="section-kicker">Notion</p><h3>阅读库导入</h3></div>
+          <span className="settings-icon">
+            <Database aria-hidden="true" size={20} />
+          </span>
+          <div>
+            <p className="section-kicker">Notion 导出</p>
+            <h3>连接你的数据库</h3>
+          </div>
         </div>
+        <p>
+          选择你已有的 Notion 数据库，应用只检查字段并写入阅读成果，不会修改数据库结构、视图或公式。
+        </p>
         <div className="notion-status-strip" aria-label="Notion 配置状态">
           <span className={hasNotionCredential ? "is-ready" : ""}>
             <ShieldCheck aria-hidden="true" size={16} />
             {hasNotionCredential ? "Token 已保存" : "Token 未保存"}
           </span>
-          <span className={hasNotionTarget ? "is-ready" : ""}>
+          <span className={savedNotionConnection ? "is-ready" : ""}>
             <Database aria-hidden="true" size={16} />
-            {hasNotionTarget ? "目标已配置" : "目标未配置"}
+            {savedNotionConnection ? "数据库已连接" : "数据库未连接"}
           </span>
         </div>
         <div className="settings-control-row notion-token-row">
           <label className="credential-input">
             <span>Integration Token</span>
-            <input type="password" value={notionToken} placeholder={state?.integrationData.notion.credential.hasCredential ? "已保存，留空则保持不变" : "secret_..."} onChange={(event) => onNotionTokenChange(event.target.value)} />
+            <input
+              type="password"
+              value={notionToken}
+              placeholder={
+                hasNotionCredential
+                  ? "已保存，留空则保持不变"
+                  : "ntn_ 或 secret_ 开头"
+              }
+              onChange={(event) => onNotionTokenChange(event.target.value)}
+              disabled={backfillBusy}
+            />
           </label>
+          <button
+            className="text-button"
+            type="button"
+            onClick={onValidateNotionToken}
+            disabled={
+              isValidatingNotionToken ||
+              backfillBusy ||
+              (!notionToken.trim() && !hasNotionCredential)
+            }
+          >
+            {isValidatingNotionToken ? "验证中" : "验证连接"}
+          </button>
         </div>
-        <div className="notion-template-panel">
-          <div className="notion-template-copy">
-            <p className="section-kicker">推荐模板</p>
-            <h4>Books Tracker + 阅读成果库</h4>
-            <p>模板负责书架和阅读仪表盘，wxreadmaster 将笔记、复盘、路线、统计和决策写入独立的阅读成果库。</p>
-            <button
-              className="credential-help-link notion-template-link"
-              type="button"
-              onClick={() => onOpenExternalLink(NOTION_RECOMMENDED_TEMPLATE_URL, "Notion 模板")}
-            >
-              <ExternalLink aria-hidden="true" size={15} />复制 Books Tracker 模板
-            </button>
-            <div className="notion-initialization-mode" role="group" aria-label="Notion 初始化方式">
-              <button
-                className="notion-initialization-option"
-                type="button"
-                aria-pressed={notionInitializationMode === "existingTemplate"}
-                onClick={() => onNotionInitializationModeChange("existingTemplate")}
-              >
-                <strong>接入现有模板</strong>
-                <small>保留模板首页，只创建阅读成果库。</small>
-              </button>
-              <button
-                className="notion-initialization-option"
-                type="button"
-                aria-pressed={notionInitializationMode === "workspace"}
-                onClick={() => onNotionInitializationModeChange("workspace")}
-              >
-                <strong>创建基础工作台</strong>
-                <small>没有模板时，创建首页和阅读成果库。</small>
-              </button>
+
+        <section className="notion-database-connect" aria-label="连接已有数据库">
+          <div className="notion-advanced-heading">
+            <div>
+              <p className="section-kicker">主路径</p>
+              <h4>连接已有数据库</h4>
             </div>
-            <div className="notion-field-preview" aria-label="模板字段预览">
-              {notionTemplateFields.map((field) => (
-                <span key={field}>{field}</span>
-              ))}
-            </div>
-            <div className="notion-template-preview" aria-label="Notion 工作台预览">
-              <div className="notion-preview-cover" aria-hidden="true" />
-              <div className="notion-preview-title">
-                <span>📚 阅读仪表盘</span>
-                <small>模板书架 + wxreadmaster 阅读成果库</small>
-              </div>
-              <div className="notion-preview-hero">
-                <PanelTop aria-hidden="true" size={16} />
-                <strong>微信读书导入</strong>
-                <small>最近导入 / 待读整理 / 行动优先</small>
-              </div>
-              <div className="notion-preview-entrances">
-                {notionOutcomeEntrances.map((item) => (
-                  <span key={item}>{item}</span>
-                ))}
-              </div>
-              <div className="notion-preview-database">
-                <Database aria-hidden="true" size={16} />
-                <div>
-                  <strong>阅读成果库</strong>
-                  <small>一次导出一条成果记录</small>
-                </div>
-              </div>
-              <div className="notion-preview-checklist">
-                <span><CheckCircle2 aria-hidden="true" size={14} />整理状态</span>
-                <span><Target aria-hidden="true" size={14} />行动数优先</span>
-              </div>
-            </div>
+            <span>先把数据库共享给 Integration</span>
           </div>
-          <div className="notion-template-action">
+          <div className="notion-database-input-row">
             <label className="credential-input">
-              <span>父页面链接或 ID</span>
+              <span>数据库链接或 ID</span>
               <input
-                value={notionTemplateParentPageId}
-                placeholder="粘贴模板页面链接或 ID"
-                onChange={(event) => onNotionTemplateParentPageIdChange(event.target.value)}
+                value={notionDatabaseInput}
+                placeholder="粘贴 Notion 数据库链接或 32 位 ID"
+                onChange={(event) =>
+                  onNotionDatabaseInputChange(event.target.value)
+                }
+                disabled={backfillBusy}
               />
             </label>
-            <p className="notion-template-help">
-              {notionInitializationMode === "existingTemplate"
-                ? "应用只会新增阅读成果库，不会修改模板原有书库、公式或视图。"
-                : "应用会创建微信读书知识库首页和阅读成果库。"}
-            </p>
             <button
               className="sync-button"
               type="button"
-              onClick={onCreateNotionTemplate}
-              disabled={isSaving || isCreatingNotionTemplate || !notionTemplateParentPageId.trim()}
+              onClick={onAnalyzeNotionDatabase}
+              disabled={
+                isAnalyzingNotionDatabase ||
+                backfillBusy ||
+                !notionDatabaseInput.trim() ||
+                (!notionToken.trim() && !hasNotionCredential)
+              }
             >
-              {isCreatingNotionTemplate ? (
+              {isAnalyzingNotionDatabase ? (
                 <Loader2 aria-hidden="true" size={18} className="spin" />
               ) : (
-                <Database aria-hidden="true" size={18} />
+                <RefreshCw aria-hidden="true" size={18} />
               )}
-              {isCreatingNotionTemplate
-                ? notionInitializationMode === "existingTemplate" ? "创建成果库中" : "创建基础工作台中"
-                : notionInitializationMode === "existingTemplate" ? "在模板中创建阅读成果库" : "创建基础 Notion 工作台"}
+              {isAnalyzingNotionDatabase ? "检查中" : "检查数据库"}
             </button>
           </div>
-        </div>
-        {notionTemplateCreationResult ? (
-          <div className="notion-template-result" role="status">
-            <div>
-              <CheckCircle2 aria-hidden="true" size={18} />
+
+          {analysis ? (
+            <div
+              className={`notion-compatibility-card is-${analysis.compatibility}`}
+              role="status"
+              aria-live="polite"
+            >
+              <div className="notion-compatibility-heading">
+                {analysis.compatibility === "invalid" ? (
+                  <AlertCircle aria-hidden="true" size={19} />
+                ) : (
+                  <CheckCircle2 aria-hidden="true" size={19} />
+                )}
+                <div>
+                  <strong>{compatibilityLabel}</strong>
+                  <small>
+                    {analysis.databaseName || "未命名数据库"} · 标题字段：
+                    {analysis.titleProperty?.name || "缺失"}
+                  </small>
+                </div>
+              </div>
+              <small>检查时间：{formatTimestamp(analysis.schemaCheckedAt)}</small>
+              {analysis.issues.length ? (
+                <ul className="notion-issue-list">
+                  {analysis.issues.map((issue) => (
+                    <li key={`${issue.code}-${issue.propertyId || issue.logicalField || "database"}`}>
+                      {issue.message}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+          ) : null}
+
+          {analysis && analysis.compatibility !== "invalid" ? (
+            <section className="notion-mapping-panel" aria-label="字段映射">
+              <div className="notion-advanced-heading">
+                <div>
+                  <p className="section-kicker">字段映射</p>
+                  <h4>按属性 ID 保存</h4>
+                </div>
+                <span>字段改名后仍可继续导出</span>
+              </div>
+              <div className="notion-mapping-list">
+                {NOTION_PRIMARY_MAPPING_FIELDS.map((logicalField) => {
+                  const mapping = notionConnectionView?.mappings.find(
+                    (candidate) => candidate.logicalField === logicalField,
+                  );
+                  const acceptedTypes = NOTION_LOGICAL_FIELD_TYPES[logicalField];
+                  const properties = analysis.properties.filter((property) =>
+                    acceptedTypes.includes(property.type),
+                  );
+                  return (
+                    <label className="notion-mapping-row" key={logicalField}>
+                      <span>
+                        <strong>
+                          {NOTION_LOGICAL_FIELD_LABELS[logicalField]}
+                        </strong>
+                        <small>
+                          {logicalField === "title" ? "必填" : "可选"}
+                        </small>
+                      </span>
+                      <select
+                        value={mapping?.propertyId ?? ""}
+                        onChange={(event) =>
+                          onNotionMappingChange(logicalField, event.target.value)
+                        }
+                      >
+                        {logicalField !== "title" ? (
+                          <option value="">不导出</option>
+                        ) : (
+                          <option value="" disabled>
+                            选择标题字段
+                          </option>
+                        )}
+                        {properties.map((property) => (
+                          <option key={property.id} value={property.id}>
+                            {property.name} · {property.type}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  );
+                })}
+              </div>
+              <div className="settings-actions settings-card-actions">
+                <button
+                  className="secondary-action"
+                  type="button"
+                  onClick={onSaveNotionDatabaseConnection}
+                  disabled={
+                    isSavingNotionDatabaseConnection || backfillBusy || !titleMapping
+                  }
+                >
+                  {isSavingNotionDatabaseConnection ? (
+                    <Loader2 aria-hidden="true" size={18} className="spin" />
+                  ) : (
+                    <ShieldCheck aria-hidden="true" size={18} />
+                  )}
+                  {isSavingNotionDatabaseConnection
+                    ? "保存中"
+                    : "保存数据库连接"}
+                </button>
+                {analysis.databaseUrl ? (
+                  <button
+                    className="sync-button"
+                    type="button"
+                    onClick={() =>
+                      onOpenExternalLink(analysis.databaseUrl!, "Notion 数据库")
+                    }
+                  >
+                    <ExternalLink aria-hidden="true" size={16} />
+                    打开数据库
+                  </button>
+                ) : null}
+              </div>
+            </section>
+          ) : null}
+        </section>
+
+        <section className="notion-standard-database" aria-label="标准阅读成果库">
+          <div>
+            <p className="section-kicker">可选兜底</p>
+            <h4>没有现成数据库？创建标准阅读成果库</h4>
+            <p>
+              应用会在指定父页面下新建一个带推荐字段的数据库，自动保存字段映射，并初始化四个推荐 Table 视图；不会创建额外工作台。各视图的实际名称和状态会在创建结果中列出。
+            </p>
+          </div>
+          {notionProvisioning ? (
+            <div
+              className={`notion-provisioning-result is-${notionProvisioning.status}`}
+              role="status"
+              aria-live="polite"
+            >
               <div>
-                <strong>{notionTemplateCreationResult.mode === "existingTemplate" ? "阅读成果库已接入模板" : "基础工作台已创建"}</strong>
-                <small>{notionTemplateCreationResult.warning || "后续 Notion 导出将自动写入此阅读成果库。"}</small>
+                {notionProvisioning.status === "complete" ||
+                notionProvisioning.status === "partial" ? (
+                  <CheckCircle2 aria-hidden="true" size={18} />
+                ) : (
+                  <AlertCircle aria-hidden="true" size={18} />
+                )}
+                <div>
+                  <strong>{provisioningTitle}</strong>
+                  <small>{provisioningSummary}</small>
+                  {notionProvisioning.views.length ? (
+                    <ul className="notion-view-status-list" aria-label="推荐视图初始化状态">
+                      {notionProvisioning.views.map((view) => (
+                        <li key={view.key} className={`is-${view.status}`}>
+                          <span>{view.name}</span>
+                          <small>{notionDefaultViewStatusLabel(view.status)}</small>
+                          {view.warning ? <small>{view.warning}</small> : null}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                  {notionProvisioning.warnings.length ? (
+                    <ul className="notion-issue-list is-warning">
+                      {notionProvisioning.warnings.map((warning) => (
+                        <li key={warning}>{warning}</li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </div>
+              </div>
+              <div className="settings-actions settings-card-actions">
+                {canContinueProvisioning ? (
+                  <button
+                    className="secondary-action"
+                    type="button"
+                    onClick={onContinueNotionProvisioning}
+                    disabled={isResolvingNotionProvisioning}
+                  >
+                    {isResolvingNotionProvisioning
+                      ? "处理中"
+                      : notionProvisioning.status === "partial"
+                        ? "重试缺失视图"
+                        : "继续初始化"}
+                  </button>
+                ) : null}
+                {notionProvisioning.databaseId && savedNotionConnection ? (
+                  <button
+                    className="secondary-action"
+                    type="button"
+                    onClick={onLinkCurrentNotionConnection}
+                    disabled={isResolvingNotionProvisioning}
+                  >
+                    关联当前连接
+                  </button>
+                ) : null}
+                {notionProvisioning.status === "unknown" ? (
+                  <button
+                    className="text-button"
+                    type="button"
+                    onClick={onConfirmNotionDatabaseNotCreated}
+                    disabled={isResolvingNotionProvisioning}
+                  >
+                    我已确认未创建
+                  </button>
+                ) : null}
+                {notionProvisioning.url ? (
+                  <button
+                    className="sync-button"
+                    type="button"
+                    onClick={() =>
+                      onOpenExternalLink(notionProvisioning.url!, "阅读成果库")
+                    }
+                  >
+                    <ExternalLink aria-hidden="true" size={16} />
+                    打开成果库
+                  </button>
+                ) : null}
               </div>
             </div>
-            <div className="notion-template-result-actions">
-              <button className="secondary-action" type="button" onClick={() => onOpenExternalLink(notionTemplateCreationResult.databaseUrl, "阅读成果库")}>
-                <ExternalLink aria-hidden="true" size={16} />打开成果库
-              </button>
-              <button className="secondary-action" type="button" onClick={onCopyNotionViewRecipe}>
-                <Copy aria-hidden="true" size={16} />复制视图配方
+          ) : null}
+          {!notionProvisioning ? (
+            <div className="notion-database-input-row">
+              <label className="credential-input">
+                <span>已共享的父页面链接或 ID</span>
+                <input
+                  value={notionStandardParentPageInput}
+                  placeholder="粘贴父页面链接或 ID"
+                  onChange={(event) =>
+                    onNotionStandardParentPageInputChange(event.target.value)
+                  }
+                />
+              </label>
+              <button
+                className="sync-button"
+                type="button"
+                onClick={onCreateNotionStandardDatabase}
+                disabled={
+                  isCreatingNotionStandardDatabase ||
+                  backfillBusy ||
+                  !notionStandardParentPageInput.trim() ||
+                  (!notionToken.trim() && !hasNotionCredential)
+                }
+              >
+                {isCreatingNotionStandardDatabase ? (
+                  <Loader2 aria-hidden="true" size={18} className="spin" />
+                ) : (
+                  <Database aria-hidden="true" size={18} />
+                )}
+                {isCreatingNotionStandardDatabase
+                  ? "创建中"
+                  : "创建标准阅读成果库"}
               </button>
             </div>
-          </div>
-        ) : null}
-        <div className="notion-advanced-panel">
+          ) : null}
+          {notionCreatedDatabaseUrl && !notionProvisioning ? (
+            <div className="notion-template-result" role="status">
+              <div>
+                <CheckCircle2 aria-hidden="true" size={18} />
+                <div>
+                  <strong>标准阅读成果库已创建</strong>
+                  <small>后续 Notion 导出将写入此数据库。</small>
+                </div>
+              </div>
+              <button
+                className="secondary-action"
+                type="button"
+                onClick={() =>
+                  onOpenExternalLink(notionCreatedDatabaseUrl, "阅读成果库")
+                }
+              >
+                <ExternalLink aria-hidden="true" size={16} />
+                打开成果库
+              </button>
+            </div>
+          ) : null}
+        </section>
+
+        <section className="notion-cover-backfill" aria-label="现有成果页封面回填">
           <div className="notion-advanced-heading">
-            <p className="section-kicker">高级目标</p>
-            <span>已有页面或数据库可直接填写</span>
+            <div>
+              <p className="section-kicker">安全维护</p>
+              <h4>补齐现有成果页封面</h4>
+            </div>
+            <span>只补空值，不覆盖人工内容</span>
           </div>
+          <p>
+            按 Book ID 从本地缓存查找 HTTP(S) 封面，同时补空的“封面” Files &amp; media 属性和空的页面封面。不会访问微信读书远端，也不会创建、删除或归档成果页。
+          </p>
+
+          {notionCoverBackfillPreflight ? (
+            <div
+              className={`notion-backfill-preflight ${notionCoverBackfillPreflight.canRun ? "is-ready" : "is-blocked"}`}
+              role="status"
+              aria-live="polite"
+            >
+              <div className="notion-compatibility-heading">
+                {notionCoverBackfillPreflight.canRun ? (
+                  <CheckCircle2 aria-hidden="true" size={19} />
+                ) : (
+                  <AlertCircle aria-hidden="true" size={19} />
+                )}
+                <div>
+                  <strong>
+                    {notionCoverBackfillPreflight.canRun ? "预检通过" : "预检未通过"}
+                  </strong>
+                  <small>{notionCoverBackfillPreflight.coverProperty.message}</small>
+                </div>
+              </div>
+              <dl className="notion-backfill-metrics">
+                <div><dt>成果页</dt><dd>{notionCoverBackfillPreflight.totalPages}</dd></div>
+                <div><dt>可回填</dt><dd>{notionCoverBackfillPreflight.eligiblePages}</dd></div>
+                <div><dt>缺本地封面</dt><dd>{notionCoverBackfillPreflight.missingLocalCover}</dd></div>
+                <div><dt>保留属性封面</dt><dd>{notionCoverBackfillPreflight.preservedCoverProperty}</dd></div>
+                <div><dt>保留页面封面</dt><dd>{notionCoverBackfillPreflight.preservedPageCover}</dd></div>
+              </dl>
+              {notionCoverBackfillPreflight.blockers.length ? (
+                <ul className="notion-issue-list">
+                  {notionCoverBackfillPreflight.blockers.map((blocker) => (
+                    <li key={blocker}>{blocker}</li>
+                  ))}
+                </ul>
+              ) : null}
+              {notionCoverBackfillPreflight.warnings.length ? (
+                <ul className="notion-issue-list is-warning">
+                  {notionCoverBackfillPreflight.warnings.map((warning) => (
+                    <li key={warning}>{warning}</li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+          ) : null}
+
+          {isRunningNotionCoverBackfill || notionCoverBackfillProgress ? (
+            <div className="notion-backfill-progress" role="status" aria-live="polite">
+              <div>
+                <strong>{notionCoverBackfillProgress?.message || "正在启动封面回填…"}</strong>
+                <span>
+                  {notionCoverBackfillProgress?.completed ?? 0} / {notionCoverBackfillProgress?.total ?? notionCoverBackfillPreflight?.totalPages ?? 0}
+                </span>
+              </div>
+              <progress
+                max={Math.max(1, notionCoverBackfillProgress?.total ?? notionCoverBackfillPreflight?.totalPages ?? 1)}
+                value={notionCoverBackfillProgress?.completed ?? 0}
+              />
+              {notionCoverBackfillProgress ? (
+                <small>
+                  更新 {notionCoverBackfillProgress.updated} · 部分成功 {notionCoverBackfillProgress.partial} · 保留 {notionCoverBackfillProgress.preserved} · 跳过 {notionCoverBackfillProgress.skipped} · 失败 {notionCoverBackfillProgress.failed}
+                </small>
+              ) : null}
+            </div>
+          ) : null}
+
+          {notionCoverBackfillReport ? (
+            <div className={`notion-backfill-report ${notionCoverBackfillReport.wasCanceled || notionCoverBackfillReport.failed || notionCoverBackfillReport.partial ? "has-warning" : ""}`} role="status">
+              <div className="notion-compatibility-heading">
+                {notionCoverBackfillReport.wasCanceled || notionCoverBackfillReport.failed ? (
+                  <AlertCircle aria-hidden="true" size={19} />
+                ) : (
+                  <CheckCircle2 aria-hidden="true" size={19} />
+                )}
+                <div>
+                  <strong>{notionCoverBackfillReport.wasCanceled ? "回填已取消" : "回填报告"}</strong>
+                  <small>
+                    更新 {notionCoverBackfillReport.updated} · 部分成功 {notionCoverBackfillReport.partial} · 保留 {notionCoverBackfillReport.preserved} · 跳过 {notionCoverBackfillReport.skipped} · 失败 {notionCoverBackfillReport.failed} · 取消 {notionCoverBackfillReport.canceled}
+                  </small>
+                </div>
+              </div>
+              <small>完成时间：{formatTimestamp(notionCoverBackfillReport.completedAt)}</small>
+              {notionCoverBackfillReport.warnings.length ? (
+                <ul className="notion-issue-list is-warning">
+                  {notionCoverBackfillReport.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+                </ul>
+              ) : null}
+            </div>
+          ) : null}
+
+          <div className="settings-actions settings-card-actions">
+            <button
+              className="secondary-action"
+              type="button"
+              onClick={onPreflightNotionCoverBackfill}
+              disabled={backfillBusy || !savedNotionConnection || !hasNotionCredential}
+            >
+              {isPreflightingNotionCoverBackfill ? (
+                <Loader2 aria-hidden="true" size={18} className="spin" />
+              ) : (
+                <RefreshCw aria-hidden="true" size={18} />
+              )}
+              {isPreflightingNotionCoverBackfill ? "预检中" : "预检封面回填"}
+            </button>
+            {isRunningNotionCoverBackfill ? (
+              <button
+                className="text-button"
+                type="button"
+                onClick={onCancelNotionCoverBackfill}
+                disabled={isCancelingNotionCoverBackfill || !notionCoverBackfillProgress?.operationId}
+              >
+                {isCancelingNotionCoverBackfill ? "取消请求中" : "取消回填"}
+              </button>
+            ) : (
+              <button
+                className="sync-button"
+                type="button"
+                onClick={onRunNotionCoverBackfill}
+                disabled={!notionCoverBackfillPreflight?.canRun || notionCoverBackfillPreflight.eligiblePages === 0}
+              >
+                <ShieldCheck aria-hidden="true" size={18} />
+                确认后开始回填
+              </button>
+            )}
+          </div>
+        </section>
+
+        <details className="notion-advanced-panel">
+          <summary>高级兼容设置</summary>
+          <p className="notion-template-help">
+            仅在需要直接导出到普通页面，或兼容旧配置时使用。数据库主路径请优先使用上方连接流程。
+          </p>
           <div className="settings-control-row notion-target-grid">
-            <label className="credential-input"><span>目标 ID</span><input value={notionParentId} onChange={(event) => onNotionParentIdChange(event.target.value)} /></label>
-          <label className="credential-input">
-            <span>目标类型</span>
-            <select value={notionParentType} onChange={(event) => onNotionParentTypeChange(event.target.value as NotionParentType)}><option value="page">页面</option><option value="database">数据库</option></select>
-          </label>
-          <label className="credential-input">
-            <span>封面策略</span>
-            <select value={notionCoverMode} onChange={(event) => onNotionCoverModeChange(event.target.value as NotionCoverMode)}><option value="pageCover">页面封面</option><option value="contentImageOnly">仅正文图片</option></select>
-          </label>
+            <label className="credential-input">
+              <span>目标 ID</span>
+              <input
+                value={notionParentId}
+                onChange={(event) => onNotionParentIdChange(event.target.value)}
+              />
+            </label>
+            <label className="credential-input">
+              <span>目标类型</span>
+              <select
+                value={notionParentType}
+                onChange={(event) =>
+                  onNotionParentTypeChange(
+                    event.target.value as NotionParentType,
+                  )
+                }
+              >
+                <option value="page">页面</option>
+                <option value="database">数据库</option>
+              </select>
+            </label>
+            <label className="credential-input">
+              <span>封面策略</span>
+              <select
+                value={notionCoverMode}
+                onChange={(event) =>
+                  onNotionCoverModeChange(
+                    event.target.value as NotionCoverMode,
+                  )
+                }
+              >
+                <option value="pageCover">页面封面</option>
+                <option value="contentImageOnly">仅正文图片</option>
+              </select>
+            </label>
           </div>
-        </div>
+          <button
+            className="sync-button"
+            type="button"
+            onClick={onSaveNotion}
+            disabled={isSaving || backfillBusy || (!notionParentId.trim() && !notionToken.trim())}
+          >
+            {isSaving ? "保存中" : "保存高级设置"}
+          </button>
+        </details>
         <div className="settings-actions settings-card-actions">
-          <button className="sync-button" type="button" onClick={onSaveNotion} disabled={isSaving || (!notionParentId.trim() && !notionToken.trim())}>{isSaving ? "保存中" : "保存 Notion 设置"}</button>
-          <button className="secondary-action" type="button" onClick={onRemoveNotionCredential} disabled={isSaving || !state?.integrationData.notion.credential.hasCredential}>移除 Token</button>
+          <button
+            className="secondary-action"
+            type="button"
+            onClick={onRemoveNotionCredential}
+            disabled={isSaving || backfillBusy || !hasNotionCredential}
+          >
+            移除 Token
+          </button>
+          {hasNotionTarget ? (
+            <span className="credential-help-note">
+              切换数据库不会删除原数据库或已导出的内容。
+            </span>
+          ) : null}
         </div>
       </section>
     </>
@@ -3217,13 +4279,25 @@ function formatSkillUpgradeSyncError(message: string): string {
     : `微信读书 Skill 需要升级：${message}`;
 }
 
-function formatTimestamp(value?: string): string {
+export function formatTimestamp(value?: string): string {
   if (!value) {
     return "暂无";
   }
 
-  const timestamp = Number(value);
-  return formatUnixDate(timestamp) || value;
+  const numericValue = Number(value);
+  const date = Number.isFinite(numericValue)
+    ? new Date(numericValue * 1000)
+    : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "暂无";
+  }
+
+  const year = date.getFullYear();
+  const month = date.getMonth() + 1;
+  const day = date.getDate();
+  const hour = String(date.getHours()).padStart(2, "0");
+  const minute = String(date.getMinutes()).padStart(2, "0");
+  return `${year}年${month}月${day}日 ${hour}:${minute}`;
 }
 
 function formatAiProviderCapabilityStatus(

@@ -19,12 +19,14 @@ import type {
   AiSettingsState,
   AiReviewFeedbackExport,
   AiReviewFeedbackFeature,
-  BookDecisionCandidateInput,
+  BookDecisionRequest,
   BookDecisionResponse,
   BookAiSummaryUpdateContext,
   BookAiSummaryListItem,
   BookAiSummaryResponse,
   BookNotesSummariesExportOptions,
+  BookNotesSummariesTargetExportRequest,
+  BookNotesSummariesTargetExportResponse,
   BulkExportPreflight,
   BulkExportPreflightItem,
   BulkExportItemStatus,
@@ -56,19 +58,49 @@ import type {
   ExportTargetResult,
   Highlight,
   LocalDataState,
+  AnalyzeNotionDatabaseResult,
+  CreateNotionStandardDatabaseResult,
   NotionCoverMode,
+  NotionCoverBackfillItemResult,
+  NotionCoverBackfillItemStatus,
+  NotionCoverBackfillPhase,
+  NotionCoverBackfillPreflight,
+  NotionCoverBackfillProgress,
+  NotionCoverBackfillReport,
+  NotionCoverPropertyAction,
+  RunNotionCoverBackfillRequest,
+  NotionDatabaseConnection,
+  NotionDefaultViewResult,
+  NotionDefaultViewStatus,
+  NotionLogicalField,
   NotionParentType,
+  NotionPropertyMapping,
+  NotionPropertySummary,
+  NotionStandardProvisioningPhase,
+  NotionStandardProvisioningResolution,
+  NotionStandardProvisioningStatus,
+  NotionStandardViewKey,
+  NotionViewInitializationStatus,
   ObsidianAttachmentMode,
   MigrateDataDirectoryResult,
   MultiTargetExportRequest,
   MultiTargetExportResponse,
   NotebookBook,
+  OpenWereadSourceResult,
   PublicReview,
   PublicReviewAuthor,
   PublicReviewBook,
   PublicReviewsResult,
+  ReadingItem,
+  ReadingItemCandidateSource,
+  ReadingItemFinishedSource,
+  ReadingItemKind,
+  ReadingItemLifeStatus,
+  ReadingItemMeta,
+  ReadingItemOrganizeStatus,
+  ReadingItemPatch,
+  ReadingItemSourceMeta,
   ReadingItemState,
-  ReadingItemStateInput,
   ReadingItemStateType,
   ReadingItemStatus,
   ReadingCategory,
@@ -120,7 +152,8 @@ import type {
   BestBookmark,
   BestBookmarksResult,
   SaveWereadProxyResult,
-  Thought
+  Thought,
+  WereadSourceLocation
 } from "./types";
 import { calculateTotalNotes } from "./business-rules";
 import type {
@@ -129,6 +162,10 @@ import type {
 } from "./local-reader-ai-requests";
 
 const SETTINGS_COMMAND_TIMEOUT_MS = 15_000;
+const NOTION_DATABASE_ANALYSIS_TIMEOUT_MS = 45_000;
+const NOTION_PROVISIONING_COMMAND_TIMEOUT_MS = 120_000;
+const NOTION_COVER_PREFLIGHT_TIMEOUT_MS = 120_000;
+const NOTION_COVER_BACKFILL_TIMEOUT_MS = 30 * 60_000;
 
 const DEFAULT_READING_ASSISTANT_PREFERENCES: ReadingAssistantPreferences = {
   usePersonalizedContext: true,
@@ -318,6 +355,7 @@ type BulkExportPreflightRecord = {
 type BulkExportResultItemRecord = {
   bookId?: unknown;
   title?: unknown;
+  author?: unknown;
   status?: unknown;
   notesFile?: unknown;
   aiReviewFile?: unknown;
@@ -586,6 +624,7 @@ type SettingsStateResponseRecord = {
       parentId?: unknown;
       parentType?: unknown;
       coverMode?: unknown;
+      databaseConnection?: unknown;
     };
   };
   network?: {
@@ -676,6 +715,14 @@ type ReadingItemStateRecord = {
   itemId?: unknown;
   itemType?: unknown;
   status?: unknown;
+  itemKind?: unknown;
+  isCandidate?: unknown;
+  candidateSource?: unknown;
+  lifeStatus?: unknown;
+  finishedSource?: unknown;
+  organizeStatus?: unknown;
+  userNote?: unknown;
+  sourceMeta?: unknown;
   title?: unknown;
   author?: unknown;
   cover?: unknown;
@@ -684,6 +731,13 @@ type ReadingItemStateRecord = {
   createdAt?: unknown;
   updatedAt?: unknown;
 };
+
+type ReadingItemPatchCommand = Omit<ReadingItemPatch, "sourceMeta"> & {
+  sourceMeta?: string;
+};
+
+type NormalizedReadingItemState = ReadingItem &
+  Pick<ReadingItemState, "itemType" | "status" | "note">;
 
 type ReadingAssistantRecommendedBookRecord = {
   title?: unknown;
@@ -1239,6 +1293,19 @@ export async function exportBookNotesSummariesMarkdown(
   });
 }
 
+export async function exportBookNotesSummariesTargets(
+  request: BookNotesSummariesTargetExportRequest
+): Promise<BookNotesSummariesTargetExportResponse> {
+  if (!hasTauriRuntime()) {
+    throw new Error("批量知识库导出需要在桌面应用中使用。");
+  }
+
+  return invoke<BookNotesSummariesTargetExportResponse>(
+    "export_book_notes_summaries_targets",
+    { request }
+  );
+}
+
 export async function listBookNotesSummaries(): Promise<BookAiSummaryListItem[]> {
   return invoke<BookAiSummaryListItem[]>("list_book_notes_summaries");
 }
@@ -1406,45 +1473,61 @@ export async function exportReadingRouteTargets(
 export async function summarizeBookDecision({
   candidates,
   goal,
+  referenceFactors,
+  recentReadingWindowDays,
+  recentReadingContext,
   regenerate = false
-}: {
-  candidates: BookDecisionCandidateInput[];
-  goal?: string;
-  regenerate?: boolean;
-}): Promise<BookDecisionResponse> {
-  return invoke<BookDecisionResponse>("summarize_book_decision", { candidates, goal, regenerate });
+}: BookDecisionRequest & { regenerate?: boolean }): Promise<BookDecisionResponse> {
+  return invoke<BookDecisionResponse>("summarize_book_decision", {
+    candidates,
+    goal,
+    referenceFactors,
+    recentReadingWindowDays,
+    recentReadingContext,
+    regenerate
+  });
 }
 
-export async function getLatestBookDecision(
-  candidates: BookDecisionCandidateInput[],
-  goal?: string
-): Promise<BookDecisionResponse | undefined> {
+export async function getLatestBookDecision({
+  candidates,
+  goal,
+  referenceFactors,
+  recentReadingWindowDays,
+  recentReadingContext
+}: BookDecisionRequest): Promise<BookDecisionResponse | undefined> {
   const response = await invoke<BookDecisionResponse | null>("get_latest_book_decision", {
     candidates,
-    goal
+    goal,
+    referenceFactors,
+    recentReadingWindowDays,
+    recentReadingContext
   });
 
   return response ?? undefined;
 }
 
-export async function exportBookDecisionMarkdown(
-  candidates: BookDecisionCandidateInput[],
-  goal?: string
-): Promise<ExportAiMarkdownResponse> {
+export async function exportBookDecisionMarkdown({
+  candidates,
+  goal,
+  referenceFactors,
+  recentReadingWindowDays,
+  recentReadingContext
+}: BookDecisionRequest): Promise<ExportAiMarkdownResponse> {
   return invoke<ExportAiMarkdownResponse>("export_book_decision_markdown", {
     candidates,
-    goal
+    goal,
+    referenceFactors,
+    recentReadingWindowDays,
+    recentReadingContext
   });
 }
 
 export async function exportBookDecisionTargets(
-  candidates: BookDecisionCandidateInput[],
-  goal: string | undefined,
+  decisionRequest: BookDecisionRequest,
   request: MultiTargetExportRequest
 ): Promise<MultiTargetExportResponse> {
   return invoke<MultiTargetExportResponse>("export_book_decision_targets", {
-    candidates,
-    goal,
+    ...decisionRequest,
     request
   });
 }
@@ -1527,6 +1610,16 @@ export async function openBookInWeread(
   return invoke<OpenBookLinkResult>("open_book_in_weread", { bookId, chapterUid });
 }
 
+export async function openWereadNoteSource(
+  location: WereadSourceLocation
+): Promise<OpenWereadSourceResult> {
+  if (!hasTauriRuntime()) {
+    throw new Error("定位微信读书原文需要在桌面应用中使用。");
+  }
+
+  return invoke<OpenWereadSourceResult>("open_weread_note_source", { location });
+}
+
 export async function listReadingItemStates(): Promise<ReadingItemState[]> {
   const preview = await loadWebReadingPreviewData();
   if (preview) {
@@ -1542,7 +1635,7 @@ export async function listReadingItemStates(): Promise<ReadingItemState[]> {
   }
 
   const response = await invoke<ReadingItemStateRecord[]>("list_reading_item_states");
-  return response.map(mapReadingItemState).filter((state): state is ReadingItemState => Boolean(state));
+  return response.map(mapReadingItemState).filter(isDefined);
 }
 
 export async function getReadingItemState(itemId: string): Promise<ReadingItemState | undefined> {
@@ -1550,16 +1643,37 @@ export async function getReadingItemState(itemId: string): Promise<ReadingItemSt
   return response ? mapReadingItemState(response) : undefined;
 }
 
-export async function upsertReadingItemState(input: ReadingItemStateInput): Promise<ReadingItemState> {
-  const response = await invoke<ReadingItemStateRecord>("upsert_reading_item_state", { input });
-  return mapReadingItemState(response) ?? {
-    ...input,
-    createdAt: "",
-    updatedAt: ""
+export async function patchReadingItemState(
+  itemId: string,
+  patch: ReadingItemPatch,
+  meta?: ReadingItemMeta
+): Promise<ReadingItem & Pick<ReadingItemState, "itemType" | "status" | "note">> {
+  if (!hasTauriRuntime()) {
+    throw createWebPreviewReadonlyError();
+  }
+
+  const commandPatch: ReadingItemPatchCommand = {
+    ...patch,
+    sourceMeta: encodeReadingItemSourceMeta(patch.sourceMeta)
   };
+  const response = await invoke<ReadingItemStateRecord>("patch_reading_item_state", {
+    itemId,
+    patch: commandPatch,
+    meta
+  });
+  const state = mapReadingItemState(response);
+  if (!state) {
+    throw new Error("本地阅读状态返回缺少 itemId，无法完成更新。");
+  }
+
+  return state;
 }
 
 export async function removeReadingItemState(itemId: string): Promise<ReadingItemState | undefined> {
+  if (!hasTauriRuntime()) {
+    throw createWebPreviewReadonlyError();
+  }
+
   const response = await invoke<ReadingItemStateRecord | null>("remove_reading_item_state", { itemId });
   return response ? mapReadingItemState(response) : undefined;
 }
@@ -1857,6 +1971,280 @@ export async function saveNotionExportSettings({
     { parentId, parentType, coverMode }
   );
   return mapSettingsState(response);
+}
+
+export async function analyzeNotionDatabase(
+  databaseId: string
+): Promise<AnalyzeNotionDatabaseResult> {
+  const response = await invokeSettingsCommand<Record<string, unknown>>(
+    "analyze_notion_database",
+    { databaseId },
+    NOTION_DATABASE_ANALYSIS_TIMEOUT_MS,
+    "检查 Notion 数据库超时，请检查网络、系统代理或 VPN 后重试。"
+  );
+  const properties = (Array.isArray(response.properties) ? response.properties : [])
+    .map(mapNotionPropertySummary)
+    .filter(isDefined);
+  const titleProperty = mapNotionPropertySummary(response.titleProperty);
+  const suggestedMappings = (
+    Array.isArray(response.suggestedMappings) ? response.suggestedMappings : []
+  )
+    .map(mapNotionPropertyMapping)
+    .filter(isDefined);
+  const compatibility =
+    response.compatibility === "full"
+      ? "full"
+      : response.compatibility === "basic"
+        ? "basic"
+        : "invalid";
+
+  return {
+    compatibility,
+    databaseId: stringValue(response.databaseId) || databaseId,
+    databaseName: stringValue(response.databaseName),
+    databaseUrl: stringValue(response.databaseUrl),
+    titleProperty,
+    properties,
+    suggestedMappings,
+    issues: (Array.isArray(response.issues) ? response.issues : []).flatMap((issue) => {
+      const record = asUnknownRecord(issue);
+      const code = stringValue(record?.code);
+      const message = stringValue(record?.message);
+      if (!code || !message) {
+        return [];
+      }
+      return [{
+        code,
+        message,
+        logicalField: notionLogicalFieldValue(record?.logicalField),
+        propertyId: stringValue(record?.propertyId)
+      }];
+    }),
+    schemaCheckedAt: stringValue(response.schemaCheckedAt) || "",
+    schemaFingerprint: stringValue(response.schemaFingerprint)
+  };
+}
+
+export async function saveNotionDatabaseConnection(
+  connection: NotionDatabaseConnection
+): Promise<SettingsState> {
+  const response = await invokeSettingsCommand<SettingsStateResponseRecord>(
+    "save_notion_database_connection",
+    { connection }
+  );
+  return mapSettingsState(response);
+}
+
+export async function preflightNotionCoverBackfill(): Promise<NotionCoverBackfillPreflight> {
+  const response = await invokeSettingsCommand<Record<string, unknown>>(
+    "preflight_notion_cover_backfill",
+    undefined,
+    NOTION_COVER_PREFLIGHT_TIMEOUT_MS
+  );
+  return mapNotionCoverBackfillPreflight(response);
+}
+
+export async function runNotionCoverBackfill(
+  request: RunNotionCoverBackfillRequest
+): Promise<NotionCoverBackfillReport> {
+  const response = await invokeSettingsCommand<Record<string, unknown>>(
+    "run_notion_cover_backfill",
+    { request },
+    NOTION_COVER_BACKFILL_TIMEOUT_MS
+  );
+  return mapNotionCoverBackfillReport(response);
+}
+
+export async function cancelNotionCoverBackfill(operationId: string): Promise<void> {
+  await invoke("cancel_notion_cover_backfill", { operationId });
+}
+
+export async function listenNotionCoverBackfillProgress(
+  handler: (progress: NotionCoverBackfillProgress) => void
+): Promise<() => void> {
+  return listen<unknown>("notion-cover-backfill-progress", (event) => {
+    handler(mapNotionCoverBackfillProgress(event.payload));
+  });
+}
+
+export async function createNotionStandardOutcomesDatabase(
+  parentPageId: string
+): Promise<CreateNotionStandardDatabaseResult> {
+  const response = await invokeSettingsCommand<Record<string, unknown>>(
+    "create_notion_standard_outcomes_database",
+    { parentPageId },
+    NOTION_PROVISIONING_COMMAND_TIMEOUT_MS
+  );
+  return mapNotionStandardProvisioningResult(response);
+}
+
+export async function getNotionStandardDatabaseProvisioning(): Promise<
+  CreateNotionStandardDatabaseResult | undefined
+> {
+  const response = await invokeSettingsCommand<Record<string, unknown> | null>(
+    "get_notion_standard_database_provisioning"
+  );
+  return response ? mapNotionStandardProvisioningResult(response) : undefined;
+}
+
+export async function continueNotionStandardDatabaseProvisioning(
+  provisioningId: string
+): Promise<CreateNotionStandardDatabaseResult> {
+  const response = await invokeSettingsCommand<Record<string, unknown>>(
+    "continue_notion_standard_database_provisioning",
+    { provisioningId },
+    NOTION_PROVISIONING_COMMAND_TIMEOUT_MS
+  );
+  return mapNotionStandardProvisioningResult(response);
+}
+
+export async function resolveNotionStandardDatabaseProvisioning({
+  provisioningId,
+  resolution,
+  confirm
+}: {
+  provisioningId: string;
+  resolution: NotionStandardProvisioningResolution;
+  confirm: boolean;
+}): Promise<CreateNotionStandardDatabaseResult | undefined> {
+  const response = await invokeSettingsCommand<Record<string, unknown> | null>(
+    "resolve_notion_standard_database_provisioning",
+    { provisioningId, resolution, confirm },
+    NOTION_PROVISIONING_COMMAND_TIMEOUT_MS
+  );
+  return response ? mapNotionStandardProvisioningResult(response) : undefined;
+}
+
+function mapNotionStandardProvisioningResult(
+  response: Record<string, unknown>
+): CreateNotionStandardDatabaseResult {
+  const provisioningId = stringValue(response.provisioningId);
+  const phase = notionStandardProvisioningPhaseValue(response.phase);
+  const status = notionStandardProvisioningStatusValue(response.status);
+  if (!provisioningId || !phase || !status) {
+    throw new Error("标准阅读成果库初始化状态不完整，已停止自动重试以避免重复创建。");
+  }
+
+  const connection = mapNotionDatabaseConnection(response.connection);
+  const stateRecord = asUnknownRecord(response.state);
+  const errorRecord = asUnknownRecord(response.lastError);
+  const errorMessage = stringValue(errorRecord?.message);
+  const viewInitialization = notionViewInitializationStatusValue(response.viewInitialization);
+  if (!viewInitialization) {
+    throw new Error("标准阅读成果库视图初始化状态无效，已停止自动重试。");
+  }
+  const views = Array.isArray(response.views)
+    ? response.views.map(mapNotionDefaultViewResult)
+    : [];
+  if (status === "complete" && (viewInitialization !== "complete" || !completeViewSet(views))) {
+    throw new Error("标准阅读成果库完成状态缺少完整的四个推荐视图，已停止自动重试。");
+  }
+  return {
+    provisioningId,
+    phase,
+    status,
+    databaseId: stringValue(response.databaseId) || connection?.databaseId,
+    dataSourceId: stringValue(response.dataSourceId),
+    url: stringValue(response.url) || connection?.databaseUrl,
+    title: stringValue(response.title) || connection?.databaseName || "阅读成果库",
+    connection,
+    state: stateRecord ? mapSettingsState(stateRecord) : undefined,
+    views,
+    viewInitialization,
+    warnings: toStringArray(response.warnings),
+    lastError: errorRecord && errorMessage
+      ? {
+          step: stringValue(errorRecord.step) || "unknown",
+          code: stringValue(errorRecord.code) || "notion_provisioning_failed",
+          message: errorMessage,
+          retryable: booleanValue(errorRecord.retryable),
+          resultUnknown: booleanValue(errorRecord.resultUnknown)
+        }
+      : undefined
+  };
+}
+
+function notionStandardProvisioningPhaseValue(
+  value: unknown
+): NotionStandardProvisioningPhase | undefined {
+  return value === "creatingDatabase" ||
+    value === "databaseCreateUnknown" ||
+    value === "databaseCreated" ||
+    value === "connectionSaved" ||
+    value === "viewsInitializing" ||
+    value === "partial" ||
+    value === "complete"
+    ? value
+    : undefined;
+}
+
+function notionStandardProvisioningStatusValue(
+  value: unknown
+): NotionStandardProvisioningStatus | undefined {
+  return value === "complete" ||
+    value === "partial" ||
+    value === "recoveryRequired" ||
+    value === "unknown"
+    ? value
+    : undefined;
+}
+
+function notionViewInitializationStatusValue(
+  value: unknown
+): NotionViewInitializationStatus | undefined {
+  return value === "notStarted" ||
+    value === "initializing" ||
+    value === "partial" ||
+    value === "complete"
+    ? value
+    : undefined;
+}
+
+function mapNotionDefaultViewResult(value: unknown): NotionDefaultViewResult {
+  const record = asUnknownRecord(value);
+  const key = notionStandardViewKeyValue(record?.key);
+  const status = notionDefaultViewStatusValue(record?.status);
+  const name = stringValue(record?.name);
+  if (!record || !key || !status || !name || record.type !== "table") {
+    throw new Error("标准阅读成果库推荐视图状态不完整，已停止自动重试。");
+  }
+  return {
+    key,
+    name,
+    type: "table",
+    status,
+    viewId: stringValue(record.viewId),
+    url: stringValue(record.url),
+    managedConfigFingerprint: stringValue(record.managedConfigFingerprint),
+    warning: stringValue(record.warning)
+  };
+}
+
+function notionStandardViewKeyValue(value: unknown): NotionStandardViewKey | undefined {
+  return value === "recent" || value === "notes" || value === "reviewQueue" || value === "reviews"
+    ? value
+    : undefined;
+}
+
+function notionDefaultViewStatusValue(value: unknown): NotionDefaultViewStatus | undefined {
+  return value === "created" ||
+    value === "updated" ||
+    value === "reused" ||
+    value === "skipped" ||
+    value === "conflict" ||
+    value === "failed" ||
+    value === "unknown"
+    ? value
+    : undefined;
+}
+
+function completeViewSet(views: NotionDefaultViewResult[]): boolean {
+  const readyStatuses: NotionDefaultViewStatus[] = ["created", "updated", "reused"];
+  return (
+    views.length === 4 &&
+    new Set(views.map((view) => view.key)).size === 4 &&
+    views.every((view) => readyStatuses.includes(view.status))
+  );
 }
 
 export async function createNotionReadingLibraryTemplate(
@@ -2268,7 +2656,7 @@ async function fetchWebReadingPreviewData(
   }
 }
 
-function normalizeWebReadingPreviewData(value: unknown): WebReadingPreviewData | undefined {
+export function normalizeWebReadingPreviewData(value: unknown): WebReadingPreviewData | undefined {
   const record = asUnknownRecord(value);
   if (!record) {
     return undefined;
@@ -2370,6 +2758,14 @@ function normalizeWebPreviewReadingItemStateRecord(
     itemId,
     itemType,
     status,
+    itemKind: record.itemKind ?? record.item_kind,
+    isCandidate: record.isCandidate ?? record.is_candidate,
+    candidateSource: record.candidateSource ?? record.candidate_source,
+    lifeStatus: record.lifeStatus ?? record.life_status,
+    finishedSource: record.finishedSource ?? record.finished_source,
+    organizeStatus: record.organizeStatus ?? record.organize_status,
+    userNote: record.userNote ?? record.user_note,
+    sourceMeta: record.sourceMeta ?? record.source_meta,
     title: stringValue(record.title),
     author: stringValue(record.author),
     cover: stringValue(record.cover),
@@ -2493,9 +2889,12 @@ function buildWebPreviewBookshelfResponse(preview: WebReadingPreviewData): Books
 }
 
 function buildWebPreviewReadingItemStates(preview: WebReadingPreviewData): ReadingItemState[] {
-  return preview.readingItemStates
-    .map(mapReadingItemState)
-    .filter((state): state is ReadingItemState => Boolean(state));
+  return preview.readingItemStates.map(mapReadingItemState).filter(isDefined);
+}
+
+export function normalizeWebReadingPreviewItemStates(value: unknown): ReadingItemState[] {
+  const preview = normalizeWebReadingPreviewData(value);
+  return preview ? buildWebPreviewReadingItemStates(preview) : [];
 }
 
 function buildWebPreviewNotebookOverviewResponse(
@@ -2897,9 +3296,16 @@ function createMissingWebPreviewDataError(section: string): Error {
   return new Error(`Web 预览未找到${section}预览数据，请先运行 npm run export:reading-preview-data。`);
 }
 
+function createWebPreviewReadonlyError(): Error {
+  return new Error("Web 预览为只读模式，状态修改请在桌面或移动应用中执行。");
+}
+
 export function getCommandErrorMessage(error: unknown): string {
   const info = getCommandErrorInfo(error);
-  return info.detail && info.detail !== info.message
+  const hideDiagnosticInUserMessage =
+    info.code === "gateway_network_error" &&
+    info.message.toLowerCase().includes("notion");
+  return info.detail && info.detail !== info.message && !hideDiagnosticInUserMessage
     ? `${info.message} 诊断：${info.detail}`
     : info.message;
 }
@@ -2959,16 +3365,29 @@ function mapBookshelfResponse(response: BookshelfResponseRecord): BookshelfRespo
   };
 }
 
-function mapReadingItemState(record: ReadingItemStateRecord): ReadingItemState | undefined {
+function mapReadingItemState(record: ReadingItemStateRecord): NormalizedReadingItemState | undefined {
   const itemId = stringValue(record.itemId);
   if (!itemId) {
     return undefined;
   }
 
+  const itemType = normalizeReadingItemStateType(record.itemType);
+  const status = normalizeReadingItemStatus(record.status);
+  const itemKind = normalizeReadingItemKind(record.itemKind, itemType);
+  const isCandidate = normalizeReadingItemCandidateFlag(record.isCandidate, itemType, status);
+
   return {
     itemId,
-    itemType: normalizeReadingItemStateType(record.itemType),
-    status: normalizeReadingItemStatus(record.status),
+    itemType,
+    status,
+    itemKind,
+    isCandidate,
+    candidateSource: normalizeReadingItemCandidateSource(record.candidateSource, isCandidate, itemKind),
+    lifeStatus: normalizeReadingItemLifeStatus(record.lifeStatus, itemType, status),
+    finishedSource: normalizeReadingItemFinishedSource(record.finishedSource),
+    organizeStatus: normalizeReadingItemOrganizeStatus(record.organizeStatus, status),
+    userNote: stringValue(record.userNote),
+    sourceMeta: decodeReadingItemSourceMeta(record.sourceMeta),
     title: stringValue(record.title),
     author: stringValue(record.author),
     cover: stringValue(record.cover),
@@ -2977,6 +3396,31 @@ function mapReadingItemState(record: ReadingItemStateRecord): ReadingItemState |
     createdAt: stringValue(record.createdAt) || "",
     updatedAt: stringValue(record.updatedAt) || ""
   };
+}
+
+function encodeReadingItemSourceMeta(value: ReadingItemSourceMeta | undefined): string | undefined {
+  return value === undefined ? undefined : JSON.stringify(value);
+}
+
+function decodeReadingItemSourceMeta(value: unknown): ReadingItemSourceMeta | undefined {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+
+  let parsed = value;
+  if (typeof value === "string") {
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      return undefined;
+    }
+  }
+
+  if (!isPlainObject(parsed)) {
+    return undefined;
+  }
+
+  return parsed as ReadingItemSourceMeta;
 }
 
 function mapReadingAssistantAnswer(record: ReadingAssistantAnswerRecord): ReadingAssistantAnswer {
@@ -3224,8 +3668,8 @@ function mapReadingAssistantBookReviewAction(
       title,
       author: stringValue(payload.author),
       message:
-        stringValue(payload.message) ?? "这类笔记总结应进入单本 AI 复盘，不走阅读指南。",
-      ctaLabel: stringValue(payload.ctaLabel) ?? "生成 AI 复盘"
+        stringValue(payload.message) ?? "这类笔记总结应进入书籍复盘，不走阅读指南。",
+      ctaLabel: stringValue(payload.ctaLabel) ?? "生成书籍复盘"
     }
   };
 }
@@ -3506,6 +3950,7 @@ function mapBulkExportResultItem(record: BulkExportResultItemRecord): BulkExport
   return {
     bookId: stringValue(record.bookId) || `bulk-export-result-${crypto.randomUUID()}`,
     title: stringValue(record.title) || "未命名书籍",
+    author: stringValue(record.author),
     status: normalizeBulkExportItemStatus(record.status),
     notesFile: stringValue(record.notesFile),
     aiReviewFile: stringValue(record.aiReviewFile),
@@ -3658,18 +4103,17 @@ function mapReadReviewsResponse(
 
 async function invokeSettingsCommand<T>(
   command: string,
-  args?: Record<string, unknown>
+  args?: Record<string, unknown>,
+  timeoutMs = SETTINGS_COMMAND_TIMEOUT_MS,
+  timeoutMessage =
+    "本地设置保存超时，请重试；如果在 Android 上反复出现，请完全退出应用后再打开。"
 ): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeoutId = setTimeout(() => {
-      reject(
-        new Error(
-          "本地设置保存超时，请重试；如果在 Android 上反复出现，请完全退出应用后再打开。"
-        )
-      );
-    }, SETTINGS_COMMAND_TIMEOUT_MS);
+      reject(new Error(timeoutMessage));
+    }, timeoutMs);
   });
 
   try {
@@ -3738,7 +4182,10 @@ function mapSettingsState(response: SettingsStateResponseRecord): SettingsState 
         coverMode:
           response.integrationData?.notion?.coverMode === "contentImageOnly"
             ? "contentImageOnly"
-            : "pageCover"
+            : "pageCover",
+        databaseConnection: mapNotionDatabaseConnection(
+          response.integrationData?.notion?.databaseConnection
+        )
       }
     },
     network: {
@@ -3748,6 +4195,285 @@ function mapSettingsState(response: SettingsStateResponseRecord): SettingsState 
     appVersion: stringValue(response.appVersion) || "0.1.0",
     supportsNativeUpdater: booleanValue(response.supportsNativeUpdater)
   };
+}
+
+function mapNotionDatabaseConnection(value: unknown): NotionDatabaseConnection | undefined {
+  const record = asUnknownRecord(value);
+  if (!record) {
+    return undefined;
+  }
+
+  const databaseId = stringValue(record.databaseId);
+  const titlePropertyId = stringValue(record.titlePropertyId);
+  const titlePropertyNameSnapshot = stringValue(record.titlePropertyNameSnapshot);
+  const schemaCheckedAt = stringValue(record.schemaCheckedAt);
+  if (!databaseId || !titlePropertyId || !titlePropertyNameSnapshot || !schemaCheckedAt) {
+    return undefined;
+  }
+
+  const mappings = (Array.isArray(record.mappings) ? record.mappings : [])
+    .map(mapNotionPropertyMapping)
+    .filter(isDefined);
+
+  return {
+    databaseId,
+    databaseName: stringValue(record.databaseName),
+    databaseUrl: stringValue(record.databaseUrl),
+    titlePropertyId,
+    titlePropertyNameSnapshot,
+    mappings,
+    schemaCheckedAt,
+    schemaFingerprint: stringValue(record.schemaFingerprint)
+  };
+}
+
+function mapNotionPropertySummary(value: unknown): NotionPropertySummary | undefined {
+  const record = asUnknownRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const id = stringValue(record.id);
+  const name = stringValue(record.name);
+  const type = stringValue(record.type) || stringValue(record.propertyType);
+  if (!id || !name || !type) {
+    return undefined;
+  }
+  return { id, name, type };
+}
+
+function mapNotionPropertyMapping(value: unknown): NotionPropertyMapping | undefined {
+  const record = asUnknownRecord(value);
+  if (!record) {
+    return undefined;
+  }
+
+  const logicalField = notionLogicalFieldValue(record.logicalField);
+  const propertyId = stringValue(record.propertyId);
+  const propertyNameSnapshot = stringValue(record.propertyNameSnapshot);
+  const propertyType = stringValue(record.propertyType);
+  if (!logicalField || !propertyId || !propertyNameSnapshot || !propertyType) {
+    return undefined;
+  }
+
+  return {
+    logicalField,
+    propertyId,
+    propertyNameSnapshot,
+    propertyType,
+    enabled: record.enabled === undefined ? true : booleanValue(record.enabled)
+  };
+}
+
+function mapNotionCoverBackfillPreflight(
+  value: unknown
+): NotionCoverBackfillPreflight {
+  const record = requireRecord(value, "Notion 封面回填预检响应无效。");
+  const cover = requireRecord(record.coverProperty, "Notion 封面字段预检响应无效。");
+  const action = notionCoverPropertyActionValue(cover.action);
+  const preflightId = stringValue(record.preflightId);
+  const databaseId = stringValue(record.databaseId);
+  const schemaFingerprint = stringValue(record.schemaFingerprint);
+  if (!preflightId || !databaseId || !schemaFingerprint || !action) {
+    throw new Error("Notion 封面回填预检缺少安全字段，已拒绝执行。");
+  }
+  return {
+    preflightId,
+    databaseId,
+    databaseName: stringValue(record.databaseName),
+    schemaFingerprint,
+    connectionSchemaChanged: booleanValue(record.connectionSchemaChanged),
+    coverProperty: {
+      action,
+      propertyId: stringValue(cover.propertyId),
+      propertyName: stringValue(cover.propertyName),
+      propertyType: stringValue(cover.propertyType),
+      message: stringValue(cover.message) || "封面字段状态未知。"
+    },
+    bookIdPropertyId: stringValue(record.bookIdPropertyId),
+    bookIdPropertyName: stringValue(record.bookIdPropertyName),
+    totalPages: requiredCount(record.totalPages, "totalPages"),
+    pagesWithBookId: requiredCount(record.pagesWithBookId, "pagesWithBookId"),
+    pagesWithLocalCover: requiredCount(record.pagesWithLocalCover, "pagesWithLocalCover"),
+    missingLocalCover: requiredCount(record.missingLocalCover, "missingLocalCover"),
+    missingCoverProperty: requiredCount(record.missingCoverProperty, "missingCoverProperty"),
+    missingPageCover: requiredCount(record.missingPageCover, "missingPageCover"),
+    preservedCoverProperty: requiredCount(
+      record.preservedCoverProperty,
+      "preservedCoverProperty"
+    ),
+    preservedPageCover: requiredCount(record.preservedPageCover, "preservedPageCover"),
+    eligiblePages: requiredCount(record.eligiblePages, "eligiblePages"),
+    canRun: booleanValue(record.canRun),
+    blockers: requiredStringArray(record.blockers, "blockers"),
+    warnings: requiredStringArray(record.warnings, "warnings")
+  };
+}
+
+function mapNotionCoverBackfillProgress(value: unknown): NotionCoverBackfillProgress {
+  const record = requireRecord(value, "Notion 封面回填进度响应无效。");
+  const operationId = stringValue(record.operationId);
+  const phase = notionCoverBackfillPhaseValue(record.phase);
+  if (!operationId || !phase) {
+    throw new Error("Notion 封面回填进度缺少 operation ID 或 phase。");
+  }
+  return {
+    operationId,
+    phase,
+    total: requiredCount(record.total, "total"),
+    completed: requiredCount(record.completed, "completed"),
+    updated: requiredCount(record.updated, "updated"),
+    partial: requiredCount(record.partial, "partial"),
+    preserved: requiredCount(record.preserved, "preserved"),
+    skipped: requiredCount(record.skipped, "skipped"),
+    failed: requiredCount(record.failed, "failed"),
+    canceled: requiredCount(record.canceled, "canceled"),
+    currentPageId: stringValue(record.currentPageId),
+    currentTitle: stringValue(record.currentTitle),
+    message: stringValue(record.message) || "正在回填 Notion 封面。"
+  };
+}
+
+function mapNotionCoverBackfillReport(value: unknown): NotionCoverBackfillReport {
+  const record = requireRecord(value, "Notion 封面回填报告响应无效。");
+  const operationId = stringValue(record.operationId);
+  const preflightId = stringValue(record.preflightId);
+  const databaseId = stringValue(record.databaseId);
+  const coverPropertyId = stringValue(record.coverPropertyId);
+  const coverPropertyName = stringValue(record.coverPropertyName);
+  const startedAt = stringValue(record.startedAt);
+  const completedAt = stringValue(record.completedAt);
+  if (
+    !operationId ||
+    !preflightId ||
+    !databaseId ||
+    !coverPropertyId ||
+    !coverPropertyName ||
+    !startedAt ||
+    !completedAt
+  ) {
+    throw new Error("Notion 封面回填报告缺少关键字段，结果无法安全确认。");
+  }
+  const items = Array.isArray(record.items)
+    ? record.items.map(mapNotionCoverBackfillItem)
+    : (() => {
+        throw new Error("Notion 封面回填报告缺少 items。");
+      })();
+  return {
+    operationId,
+    preflightId,
+    databaseId,
+    coverPropertyId,
+    coverPropertyName,
+    total: requiredCount(record.total, "total"),
+    completed: requiredCount(record.completed, "completed"),
+    updated: requiredCount(record.updated, "updated"),
+    partial: requiredCount(record.partial, "partial"),
+    preserved: requiredCount(record.preserved, "preserved"),
+    skipped: requiredCount(record.skipped, "skipped"),
+    failed: requiredCount(record.failed, "failed"),
+    canceled: requiredCount(record.canceled, "canceled"),
+    wasCanceled: booleanValue(record.wasCanceled),
+    schemaUpgraded: booleanValue(record.schemaUpgraded),
+    startedAt,
+    completedAt,
+    items,
+    warnings: requiredStringArray(record.warnings, "warnings")
+  };
+}
+
+function mapNotionCoverBackfillItem(value: unknown): NotionCoverBackfillItemResult {
+  const record = requireRecord(value, "Notion 封面回填明细响应无效。");
+  const pageId = stringValue(record.pageId);
+  const title = stringValue(record.title);
+  const status = notionCoverBackfillItemStatusValue(record.status);
+  const reason = stringValue(record.reason);
+  if (!pageId || !title || !status || !reason) {
+    throw new Error("Notion 封面回填明细缺少关键字段。");
+  }
+  return {
+    pageId,
+    title,
+    bookId: stringValue(record.bookId),
+    status,
+    propertyUpdated: booleanValue(record.propertyUpdated),
+    pageCoverUpdated: booleanValue(record.pageCoverUpdated),
+    reason
+  };
+}
+
+function notionCoverPropertyActionValue(value: unknown): NotionCoverPropertyAction | undefined {
+  return value === "reuse" || value === "create" || value === "conflict" ? value : undefined;
+}
+
+function notionCoverBackfillPhaseValue(value: unknown): NotionCoverBackfillPhase | undefined {
+  return ["validating", "upgradingSchema", "updatingPages", "canceling", "completed"].includes(
+    String(value)
+  )
+    ? (value as NotionCoverBackfillPhase)
+    : undefined;
+}
+
+function notionCoverBackfillItemStatusValue(
+  value: unknown
+): NotionCoverBackfillItemStatus | undefined {
+  return ["updated", "partial", "preserved", "skipped", "failed", "canceled"].includes(
+    String(value)
+  )
+    ? (value as NotionCoverBackfillItemStatus)
+    : undefined;
+}
+
+function requireRecord(value: unknown, message: string): Record<string, unknown> {
+  const record = asUnknownRecord(value);
+  if (!record) {
+    throw new Error(message);
+  }
+  return record;
+}
+
+function requiredCount(value: unknown, field: string): number {
+  const count = numberValue(value);
+  if (count === undefined || count < 0 || !Number.isInteger(count)) {
+    throw new Error(`Notion 封面回填响应中的 ${field} 无效。`);
+  }
+  return count;
+}
+
+function requiredStringArray(value: unknown, field: string): string[] {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new Error(`Notion 封面回填响应中的 ${field} 无效。`);
+  }
+  return value;
+}
+
+function notionLogicalFieldValue(value: unknown): NotionLogicalField | undefined {
+  const fields: NotionLogicalField[] = [
+    "title",
+    "author",
+    "cover",
+    "bookId",
+    "assetType",
+    "source",
+    "exportedAt",
+    "importStatus",
+    "readingStatus",
+    "readingStage",
+    "progress",
+    "tags",
+    "wereadUrl",
+    "obsidianPath",
+    "promptVersion",
+    "inputHash",
+    "scopeId",
+    "period",
+    "actionCount",
+    "candidateCount",
+    "highlightCount",
+    "thoughtCount",
+    "bookmarkCount",
+    "exportableCount"
+  ];
+  return fields.find((field) => field === value);
 }
 
 function mapSettingsCredentialError(
@@ -4209,6 +4935,103 @@ function normalizeReadingItemStatus(value: unknown): ReadingItemStatus {
   return "toRead";
 }
 
+function normalizeReadingItemKind(
+  value: unknown,
+  legacyType: ReadingItemStateType
+): ReadingItemKind {
+  if (value === "album" || value === "mp" || value === "localBook") {
+    return value;
+  }
+
+  if (value === "book") {
+    return "book";
+  }
+
+  return legacyType === "album" || legacyType === "mp" ? legacyType : "book";
+}
+
+function normalizeReadingItemCandidateFlag(
+  value: unknown,
+  legacyType: ReadingItemStateType,
+  legacyStatus: ReadingItemStatus
+): boolean {
+  if (value !== undefined && value !== null) {
+    return booleanValue(value);
+  }
+
+  return legacyType === "candidate" && legacyStatus === "toRead";
+}
+
+function normalizeReadingItemCandidateSource(
+  value: unknown,
+  isCandidate: boolean,
+  itemKind: ReadingItemKind
+): ReadingItemCandidateSource | undefined {
+  if (
+    value === "weread" ||
+    value === "ai_unconfirmed" ||
+    value === "ai_confirmed" ||
+    value === "light"
+  ) {
+    return value;
+  }
+
+  if (!isCandidate) {
+    return undefined;
+  }
+
+  return itemKind === "album" || itemKind === "mp" ? "light" : "weread";
+}
+
+function normalizeReadingItemLifeStatus(
+  value: unknown,
+  legacyType: ReadingItemStateType,
+  legacyStatus: ReadingItemStatus
+): ReadingItemLifeStatus {
+  if (
+    value === "want" ||
+    value === "reading" ||
+    value === "paused" ||
+    value === "finished" ||
+    value === "dropped"
+  ) {
+    return value;
+  }
+
+  if (value === "none") {
+    return "none";
+  }
+
+  if (legacyStatus === "reading") {
+    return "reading";
+  }
+
+  return legacyType === "candidate" && legacyStatus === "toRead" ? "want" : "none";
+}
+
+function normalizeReadingItemFinishedSource(value: unknown): ReadingItemFinishedSource | undefined {
+  return value === "weread_auto" || value === "manual" ? value : undefined;
+}
+
+function normalizeReadingItemOrganizeStatus(
+  value: unknown,
+  legacyStatus: ReadingItemStatus
+): ReadingItemOrganizeStatus {
+  if (value === "to_organize" || value === "organized") {
+    return value;
+  }
+
+  if (value === "none") {
+    return "none";
+  }
+
+  if (legacyStatus === "reviewing") {
+    return "to_organize";
+  }
+
+  return legacyStatus === "organized" ? "organized" : "none";
+}
+
 function fallbackTitle(type: ShelfEntryType): string {
   if (type === "album") {
     return "未命名有声书";
@@ -4235,6 +5058,15 @@ function parseRawJson(value: unknown): unknown {
 
 function asUnknownRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function firstDefinedString(

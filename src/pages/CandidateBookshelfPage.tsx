@@ -18,13 +18,15 @@ import {
   getCommandErrorMessage,
   getLatestBookDecision,
   listReadingItemStates,
+  patchReadingItemState,
   removeReadingItemState,
   searchBooks,
   summarizeBookDecision,
-  upsertReadingItemState,
   type BookshelfResponse,
   type ReadingStatsResponse
 } from "../lib/reading-api";
+import { getCandidateQueue } from "../lib/reading-selectors";
+import { TERMS } from "../lib/glossary";
 import { dedupeRecommendedBookSearchResults } from "../lib/reading-assistant-recommendations";
 import type {
   BookDecisionGoal,
@@ -43,12 +45,12 @@ import {
   getCandidateSourceLabel,
   getCandidateSourceTone,
   isUnconfirmedAiCandidate,
-  isSavedCandidateState,
   resolveCandidateReplacement,
   type CandidateSourceFilter,
   type LocalCandidateBook
 } from "./candidate-books";
 import {
+  buildBookDecisionRecentReadingContext,
   getRecentReadingContext,
   type RecentReadingWindowMode
 } from "./book-decision-context";
@@ -118,7 +120,7 @@ export function CandidateBookshelfPage({
   const [error, setError] = useState<string>();
   const deferredQuery = useDeferredValue(query);
   const { showToast } = useToast();
-  const candidateBooks = [...candidateMap.values()].sort((left, right) => left.title.localeCompare(right.title, "zh-Hans-CN"));
+  const candidateBooks = [...candidateMap.values()];
   const candidateSourceStats = buildCandidateSourceStats(candidateBooks);
   const sourceFilteredBooks = filterCandidatesBySource(candidateBooks, candidateSourceFilter);
   const visibleBooks = filterCandidateBooks(sourceFilteredBooks, deferredQuery);
@@ -137,6 +139,18 @@ export function CandidateBookshelfPage({
     undefined,
     recentReadingWindowMode
   );
+  const decisionRecentReadingContext = buildBookDecisionRecentReadingContext(
+    bookshelf?.snapshot.entries ?? [],
+    readingStatsCache,
+    recentReadingContext.windowDays
+  );
+  const decisionRequest = {
+    candidates: decisionCandidates,
+    goal: decisionGoal,
+    referenceFactors: Array.from(selectedFactorIds),
+    recentReadingWindowDays: recentReadingContext.windowDays,
+    recentReadingContext: decisionRecentReadingContext
+  };
 
   useEffect(() => {
     let isMounted = true;
@@ -148,7 +162,7 @@ export function CandidateBookshelfPage({
       try {
         const states = await listReadingItemStates();
         if (isMounted) {
-          const candidates = buildCandidateMap(states.filter(isSavedCandidateState));
+          const candidates = buildCandidateMap(getCandidateQueue(states));
           const draft = readBookDecisionDraft(getBookDecisionDraftStorage());
           const availableIds = new Set(candidates.keys());
 
@@ -359,18 +373,27 @@ export function CandidateBookshelfPage({
 
       const replacement = replacementResolution.replacement;
 
-      if (replacementResolution.status === "create") {
-        await upsertReadingItemState({
-          itemId: result.bookId,
-          itemType: "candidate",
-          status: "toRead",
+      await patchReadingItemState(
+        result.bookId,
+        {
+          isCandidate: true,
+          candidateSource: "ai_confirmed",
+          sourceMeta: {
+            ...(existingState?.sourceMeta ?? {}),
+            ...(book.sourceMeta ?? {}),
+            savedFrom: "candidate_bookshelf_confirmation",
+            confirmedAt: new Date().toISOString(),
+            unconfirmedCandidateId: book.bookId
+          }
+        },
+        {
+          itemKind: "book",
           title: result.title,
           author: result.author,
           cover: result.cover,
-          category: result.category,
-          note: replacement.localNote
-        });
-      }
+          category: result.category
+        }
+      );
 
       await removeReadingItemState(book.bookId);
 
@@ -463,12 +486,11 @@ export function CandidateBookshelfPage({
     setError(undefined);
 
     try {
-      const cached = await getLatestBookDecision(decisionCandidates, decisionGoal);
+      const cached = await getLatestBookDecision(decisionRequest);
       const response =
         cached ??
         (await summarizeBookDecision({
-          candidates: decisionCandidates,
-          goal: decisionGoal,
+          ...decisionRequest,
           regenerate: true
         }));
 
@@ -610,9 +632,14 @@ export function CandidateBookshelfPage({
               <h3>把候选池推进到下一步行动</h3>
               <p>从这里确认本地候选、目标和参考因子，生成“下一本读什么、为什么暂缓其他书、接下来怎么读”的决策记录。</p>
             </div>
-            <button className="secondary-action" type="button" onClick={handleOpenDecisionDialog}>
+            <button
+              className="secondary-action"
+              type="button"
+              data-testid="generate-book-decision"
+              onClick={handleOpenDecisionDialog}
+            >
               {isGenerating ? <Loader2 aria-hidden="true" size={18} className="spin" /> : <Sparkles aria-hidden="true" size={18} />}
-              推荐下一本
+              {TERMS.generateBookDecision}
             </button>
           </section>
 

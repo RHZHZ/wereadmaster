@@ -43,6 +43,7 @@ use crate::{
             AiCachedOutputRecord, BookAiSummary, BookAiSummaryResponse, BookAiSummarySource,
             BOOK_NOTES_SUMMARY_FEATURE, BOOK_NOTES_SUMMARY_PROMPT_VERSION,
         },
+        weread_deep_link::build_weread_source_link,
         weread_gateway::{WereadApi, WereadGateway},
     },
 };
@@ -171,6 +172,7 @@ struct PreparedBulkExportItem {
     order: usize,
     book_id: String,
     title: String,
+    author: Option<String>,
     status: BulkExportItemStatus,
     notes_file: Option<String>,
     reason: String,
@@ -520,6 +522,7 @@ impl NotesService {
                             order,
                             book_id: item.book_id,
                             title: item.title,
+                            author: item.author,
                             status: BulkExportItemStatus::Exported,
                             notes_file: None,
                             reason: "已导出本地已生成复盘。".to_string(),
@@ -534,6 +537,7 @@ impl NotesService {
                                 order,
                                 book_id: item.book_id,
                                 title: item.title,
+                                author: item.author,
                                 status: BulkExportItemStatus::Exported,
                                 notes_file: Some(format!("notes/{file_name}")),
                                 reason: "已导出本地笔记 Markdown。".to_string(),
@@ -542,6 +546,7 @@ impl NotesService {
                                 order,
                                 book_id: item.book_id,
                                 title: item.title,
+                                author: item.author,
                                 status: BulkExportItemStatus::Failed,
                                 notes_file: None,
                                 reason: error.user_message(),
@@ -567,6 +572,7 @@ impl NotesService {
                         order,
                         book_id: item.book_id,
                         title: item.title,
+                        author: item.author,
                         status: BulkExportItemStatus::Skipped,
                         notes_file: None,
                         reason: item.reason,
@@ -585,6 +591,7 @@ impl NotesService {
                         order,
                         book_id: item.book_id,
                         title: item.title,
+                        author: item.author,
                         status: BulkExportItemStatus::Skipped,
                         notes_file: None,
                         reason: item.reason,
@@ -657,6 +664,7 @@ impl NotesService {
                         order: job.order,
                         book_id: job.item.book_id,
                         title: job.item.title,
+                        author: job.item.author,
                         status: BulkExportItemStatus::Exported,
                         notes_file: Some(format!("notes/{file_name}")),
                         reason: "已同步缺失笔记并导出 Markdown。".to_string(),
@@ -677,6 +685,7 @@ impl NotesService {
                             order: job.order,
                             book_id: job.item.book_id,
                             title: job.item.title,
+                            author: job.item.author,
                             status,
                             notes_file: None,
                             reason,
@@ -686,6 +695,7 @@ impl NotesService {
                         order: job.order,
                         book_id: job.item.book_id,
                         title: job.item.title,
+                        author: job.item.author,
                         status: BulkExportItemStatus::Failed,
                         notes_file: None,
                         reason: format!("同步任务异常结束：{error}"),
@@ -746,6 +756,7 @@ impl NotesService {
             items.push(BulkExportResultItem {
                 book_id: prepared.book_id,
                 title: prepared.title,
+                author: prepared.author,
                 status,
                 notes_file: prepared.notes_file,
                 ai_review_file,
@@ -938,6 +949,7 @@ fn canceled_bulk_export_item(job: BulkExportSyncJob) -> PreparedBulkExportItem {
         order: job.order,
         book_id: job.item.book_id,
         title: job.item.title,
+        author: job.item.author,
         status: BulkExportItemStatus::Canceled,
         notes_file: None,
         reason: "用户已取消，未开始同步。".to_string(),
@@ -1292,6 +1304,16 @@ fn read_all_cached_book_notes(
         .collect()
 }
 
+fn note_source_deep_link(
+    book_id: &str,
+    chapter_uid: Option<i64>,
+    range: Option<&str>,
+) -> Option<String> {
+    build_weread_source_link(book_id, chapter_uid, range)
+        .ok()
+        .map(|link| link.deep_link)
+}
+
 fn read_highlights(
     connection: &rusqlite::Connection,
     book_id: &str,
@@ -1319,17 +1341,18 @@ fn read_highlights(
         .query_map([book_id], |row| {
             let normalized_book_id: String = row.get(1)?;
             let chapter_uid = row.get(2)?;
+            let range_text: Option<String> = row.get(6)?;
+            let deep_link =
+                note_source_deep_link(&normalized_book_id, chapter_uid, range_text.as_deref());
             Ok(HighlightRecord {
                 bookmark_id: row.get(0)?,
-                book_id: normalized_book_id.clone(),
+                book_id: normalized_book_id,
                 chapter_uid,
                 chapter_title: row.get(3)?,
                 mark_text: row.get(4)?,
                 create_time: row.get(5)?,
-                range_text: row.get(6)?,
-                deep_link: chapter_uid.map(|uid| {
-                    format!("weread://reading?bId={normalized_book_id}&chapterUid={uid}")
-                }),
+                range_text,
+                deep_link,
                 raw_json: row.get(7)?,
             })
         })
@@ -1370,17 +1393,22 @@ fn read_thoughts(
     let rows = statement
         .query_map([book_id], |row| {
             let is_finish: Option<i64> = row.get(10)?;
+            let normalized_book_id: String = row.get(1)?;
+            let chapter_uid = row.get(7)?;
+            let range_text: Option<String> = row.get(8)?;
+            let deep_link =
+                note_source_deep_link(&normalized_book_id, chapter_uid, range_text.as_deref());
             Ok(ThoughtRecord {
                 review_id: row.get(0)?,
-                book_id: row.get(1)?,
+                book_id: normalized_book_id,
                 content: row.get(2)?,
                 abstract_text: row.get(3)?,
                 create_time: row.get(4)?,
                 star: row.get(5)?,
                 chapter_name: row.get(6)?,
-                chapter_uid: row.get(7)?,
-                range_text: row.get(8)?,
-                deep_link: row.get(9)?,
+                chapter_uid,
+                range_text,
+                deep_link,
                 is_finish: is_finish.map(|value| value == 1),
                 raw_json: row.get(11)?,
             })
@@ -1669,11 +1697,14 @@ fn current_unix_seconds() -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::{db::initialize_schema, mappers::notes::map_notebook_overview_page};
+    use crate::{
+        db::initialize_schema,
+        mappers::notes::{map_notebook_overview_page, HighlightRecord, ThoughtRecord},
+    };
 
     use super::{
-        read_notebook_book, replace_highlights, replace_notebook_books, replace_thoughts,
-        sanitize_file_stem,
+        read_highlights, read_notebook_book, read_thoughts, replace_highlights,
+        replace_notebook_books, replace_thoughts, sanitize_file_stem,
     };
 
     #[test]
@@ -1699,6 +1730,79 @@ mod tests {
         replace_thoughts(&connection, "b1", &[], "100").expect("thoughts should clear");
 
         assert_eq!(book.total_note_count, 6);
+    }
+
+    #[test]
+    fn cached_notes_rebuild_links_from_structured_fields() {
+        let connection = rusqlite::Connection::open_in_memory().expect("database should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        let highlights = vec![HighlightRecord {
+            bookmark_id: "h1".to_string(),
+            book_id: "b1".to_string(),
+            chapter_uid: Some(7),
+            chapter_title: Some("第一章".to_string()),
+            mark_text: "划线".to_string(),
+            create_time: Some(100),
+            range_text: Some("12-34".to_string()),
+            deep_link: Some("https://untrusted.example/highlight".to_string()),
+            raw_json: "{}".to_string(),
+        }];
+        let thoughts = vec![ThoughtRecord {
+            review_id: "r1".to_string(),
+            book_id: "b1".to_string(),
+            content: "想法".to_string(),
+            abstract_text: Some("原文".to_string()),
+            create_time: Some(101),
+            star: None,
+            chapter_name: Some("第一章".to_string()),
+            chapter_uid: Some(7),
+            range_text: Some("40-60".to_string()),
+            deep_link: Some("https://untrusted.example/thought".to_string()),
+            is_finish: None,
+            raw_json: "{}".to_string(),
+        }];
+
+        replace_highlights(&connection, "b1", &highlights, "100").expect("highlights should save");
+        replace_thoughts(&connection, "b1", &thoughts, "100").expect("thoughts should save");
+
+        let stored_highlights = read_highlights(&connection, "b1").expect("highlights should read");
+        let stored_thoughts = read_thoughts(&connection, "b1").expect("thoughts should read");
+
+        assert_eq!(
+            stored_highlights[0].deep_link.as_deref(),
+            Some("weread://bestbookmark?bookId=b1&chapterUid=7&rangeStart=12&rangeEnd=34")
+        );
+        assert_eq!(
+            stored_thoughts[0].deep_link.as_deref(),
+            Some("weread://bestbookmark?bookId=b1&chapterUid=7&rangeStart=40&rangeEnd=60")
+        );
+    }
+
+    #[test]
+    fn cached_thoughts_do_not_trust_stored_deep_links() {
+        let connection = rusqlite::Connection::open_in_memory().expect("database should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        let thought = ThoughtRecord {
+            review_id: "r1".to_string(),
+            book_id: "bad/book".to_string(),
+            content: "想法仍保留".to_string(),
+            abstract_text: Some("原文仍保留".to_string()),
+            create_time: Some(101),
+            star: None,
+            chapter_name: Some("第一章".to_string()),
+            chapter_uid: Some(7),
+            range_text: Some("40-60".to_string()),
+            deep_link: Some("https://untrusted.example/thought".to_string()),
+            is_finish: None,
+            raw_json: "{}".to_string(),
+        };
+
+        replace_thoughts(&connection, "bad/book", &[thought], "100").expect("thought should save");
+
+        let stored_thoughts = read_thoughts(&connection, "bad/book").expect("thoughts should read");
+
+        assert_eq!(stored_thoughts[0].content, "想法仍保留");
+        assert_eq!(stored_thoughts[0].deep_link, None);
     }
 
     #[test]

@@ -57,7 +57,7 @@ export function LifetimeReadingReportWide({ data }: LifetimeReadingReportWidePro
 
       <section className="monthly-report-wide-cover lifetime-reading-report-cover">
         <header>
-          <span>wxreadmaster 长期复盘</span>
+          <span>wxreadmaster 全部历史报告</span>
           <h3>
             <span className="monthly-report-wide-title-period">{data.periodAnchor}</span>
             <span className="monthly-report-wide-title-subject">阅读成果</span>

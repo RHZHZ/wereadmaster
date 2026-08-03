@@ -3,7 +3,8 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 import { auditVisualScroll } from "./visual-scroll-helpers";
 
 const LOCAL_READER_URL = "/?local-reader-preview=1";
-const LOCAL_READER_ORIGIN = "http://127.0.0.1:5173";
+const E2E_PORT = process.env.PLAYWRIGHT_E2E_PORT ?? "41731";
+const LOCAL_READER_ORIGIN = `http://127.0.0.1:${E2E_PORT}`;
 const BOOK_ID = "preview-prince";
 
 const PREVIEW_TEXT = [
@@ -61,9 +62,7 @@ test.describe("本地阅读器想法详情", () => {
   test.describe.configure({ timeout: 90_000 });
 
   test("EPUB 书籍进入正文阅读器而不是待接入占位", async ({ page }) => {
-    await gotoLocalReaderPreview(page);
-    await page.locator(".sidebar").getByRole("button", { name: "书架", exact: true }).click();
-    await page.getByLabel("书架子菜单").getByRole("button", { name: "本地书库" }).click();
+    await openPreviewLocalLibrary(page);
     await expect(page.getByRole("button", { name: "更多本地书库操作" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: /排序：最近阅读/ })).toHaveCount(0);
     await expect(page.getByText("排序：最近阅读")).toBeVisible();
@@ -75,7 +74,7 @@ test.describe("本地阅读器想法详情", () => {
     await expect(localBookRow.getByLabel("本地图书来源")).toContainText("本地版本");
     await localBookRow.click();
 
-    await expect(page.getByLabel("本地阅读器")).toBeVisible();
+    await expect(page.getByRole("region", { name: "本地阅读器", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: "月亮与六便士" })).toBeVisible();
     await expect(page.getByLabel("阅读来源边界")).toContainText("本地版本");
     await expect(page.getByLabel("阅读来源边界")).toContainText("与微信书架隔离");
@@ -102,16 +101,14 @@ test.describe("本地阅读器想法详情", () => {
   });
 
   test("Markdown 书籍渲染基础格式并识别标题目录", async ({ page }) => {
-    await gotoLocalReaderPreview(page);
-    await page.locator(".sidebar").getByRole("button", { name: "书架", exact: true }).click();
-    await page.getByLabel("书架子菜单").getByRole("button", { name: "本地书库" }).click();
+    await openPreviewLocalLibrary(page);
     await page.getByRole("tab", { name: "Markdown" }).click();
 
     const localBookRow = page.getByRole("button", { name: /阅读设计笔记 Markdown/ });
     await expect(localBookRow.getByLabel("本地图书来源")).toContainText("本地版本");
     await localBookRow.click();
 
-    await expect(page.getByLabel("本地阅读器")).toBeVisible();
+    await expect(page.getByRole("region", { name: "本地阅读器", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: "阅读设计笔记" })).toBeVisible();
     await expect(page.getByLabel("阅读来源边界")).toContainText("本地版本");
     await expect(page.getByLabel("阅读状态")).toContainText("Markdown · 本地文本阅读");
@@ -1474,7 +1471,7 @@ test.describe("本地阅读器想法详情", () => {
     });
 
     await page.getByRole("button", { name: /小王子 TXT/ }).click();
-    await expect(page.getByLabel("本地阅读器")).toBeVisible();
+    await expect(page.getByRole("region", { name: "本地阅读器", exact: true })).toBeVisible();
     await auditVisualScroll(page, {
       id: "local-reader-document",
       label: "本地阅读器正文",
@@ -1497,7 +1494,7 @@ test.describe("本地阅读器想法详情", () => {
     });
 
     await page.getByRole("button", { name: /小王子 TXT/ }).click();
-    await expect(page.getByLabel("本地阅读器")).toBeVisible();
+    await expect(page.getByRole("region", { name: "本地阅读器", exact: true })).toBeVisible();
     await auditVisualScroll(page, {
       id: "local-reader-document",
       label: "本地阅读器正文窄屏",
@@ -2203,14 +2200,14 @@ async function seedLocalHighlight(page: Page, text: string) {
 async function openPreviewLocalReader(page: Page) {
   await openPreviewLocalLibrary(page);
   await page.getByRole("button", { name: /小王子 TXT/ }).click();
-  await expect(page.getByLabel("本地阅读器")).toBeVisible();
+  await expect(page.getByRole("region", { name: "本地阅读器", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "小王子" })).toBeVisible();
 }
 
 async function openPreviewMarkdownReader(page: Page) {
   await openPreviewLocalLibrary(page);
   await page.getByRole("button", { name: /阅读设计笔记 Markdown/ }).click();
-  await expect(page.getByLabel("本地阅读器")).toBeVisible();
+  await expect(page.getByRole("region", { name: "本地阅读器", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "阅读设计笔记" })).toBeVisible();
 }
 

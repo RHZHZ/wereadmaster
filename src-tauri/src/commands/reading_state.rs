@@ -4,8 +4,7 @@ use tauri::AppHandle;
 use crate::{
     errors::AppError,
     services::reading_state::{
-        ReadingItemMeta, ReadingItemPatch, ReadingItemState, ReadingItemStateInput,
-        ReadingStateService,
+        ReadingItemMeta, ReadingItemPatch, ReadingItemState, ReadingStateService,
     },
 };
 
@@ -41,16 +40,6 @@ pub fn get_reading_item_state(
 ) -> Result<Option<ReadingItemState>, AppCommandError> {
     ReadingStateService::new(app)
         .get_state(item_id)
-        .map_err(Into::into)
-}
-
-#[tauri::command]
-pub fn upsert_reading_item_state(
-    app: AppHandle,
-    input: ReadingItemStateInput,
-) -> Result<ReadingItemState, AppCommandError> {
-    ReadingStateService::new(app)
-        .upsert_state(input)
         .map_err(Into::into)
 }
 

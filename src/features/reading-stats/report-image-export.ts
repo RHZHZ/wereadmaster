@@ -14,16 +14,19 @@ export type ReportImageExportResult = {
   source: "album" | "exportDir" | "browserDownload";
 };
 
+type ReportImageExporter = typeof exportReportImage;
+
 export async function exportCanvasAsReportImage(
   canvas: HTMLCanvasElement,
   fileName: string,
-  errorMessage: string
+  errorMessage: string,
+  exportImage: ReportImageExporter = exportReportImage
 ): Promise<ReportImageExportResult> {
   const blob = await canvasToPngBlob(canvas, errorMessage);
   const pngFileName = ensurePngFileName(fileName);
 
   if (hasTauriRuntime()) {
-    const response = await exportReportImage(
+    const response = await exportImage(
       pngFileName,
       await blobToDataUrl(
         blob,

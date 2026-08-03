@@ -4,11 +4,14 @@ use chrono::{Datelike, Local, Timelike};
 
 use crate::{
     mappers::notes::{BookNotesRecord, ChapterNoteGroup, HighlightRecord, ThoughtRecord},
-    services::ai::{
-        AiFeedbackExportRecord, AiResponseFormatKind, AiReviewFeedbackExport,
-        BookAiSummaryResponse, BookDecision, BookDecisionResponse, ReadingPersona, ReadingRoute,
-        ReadingRouteBookStep, ReadingRouteCheckpoint, ReadingRouteResponse,
-        ReadingStatsAiReviewResponse,
+    services::{
+        ai::{
+            AiFeedbackExportRecord, AiResponseFormatKind, AiReviewFeedbackExport,
+            BookAiSummaryResponse, BookDecision, BookDecisionResponse, ReadingPersona,
+            ReadingRoute, ReadingRouteBookStep, ReadingRouteCheckpoint, ReadingRouteResponse,
+            ReadingStatsAiReviewResponse,
+        },
+        weread_deep_link::build_weread_source_link,
     },
 };
 
@@ -1509,31 +1512,29 @@ fn unix_seconds_label(timestamp: i64) -> String {
 }
 
 fn highlight_deep_link(highlight: &HighlightRecord) -> Option<String> {
-    if let (Some(chapter_uid), Some((range_start, range_end))) = (
+    note_source_deep_link(
+        &highlight.book_id,
         highlight.chapter_uid,
-        parse_range_bounds(highlight.range_text.as_deref()),
-    ) {
-        return Some(format!(
-            "weread://bestbookmark?bookId={}&chapterUid={chapter_uid}&rangeStart={range_start}&rangeEnd={range_end}",
-            highlight.book_id
-        ));
-    }
-
-    highlight.deep_link.clone()
+        highlight.range_text.as_deref(),
+    )
 }
 
 fn thought_deep_link(thought: &ThoughtRecord) -> Option<String> {
-    if let (Some(chapter_uid), Some((range_start, range_end))) = (
+    note_source_deep_link(
+        &thought.book_id,
         thought.chapter_uid,
-        parse_range_bounds(thought.range_text.as_deref()),
-    ) {
-        return Some(format!(
-            "weread://bestbookmark?bookId={}&chapterUid={chapter_uid}&rangeStart={range_start}&rangeEnd={range_end}",
-            thought.book_id
-        ));
-    }
+        thought.range_text.as_deref(),
+    )
+}
 
-    thought.deep_link.clone()
+fn note_source_deep_link(
+    book_id: &str,
+    chapter_uid: Option<i64>,
+    range: Option<&str>,
+) -> Option<String> {
+    build_weread_source_link(book_id, chapter_uid, range)
+        .ok()
+        .map(|link| link.deep_link)
 }
 
 fn highlight_block_id(highlight: &HighlightRecord) -> String {
@@ -1616,7 +1617,7 @@ pub(crate) fn reading_review_title(mode: &str, base_time: i64) -> String {
     }
 }
 
-fn reading_review_period_label(mode: &str) -> String {
+pub(crate) fn reading_review_period_label(mode: &str) -> String {
     match mode {
         "weekly" => "周度".to_string(),
         "annually" => "年度".to_string(),
@@ -1625,7 +1626,7 @@ fn reading_review_period_label(mode: &str) -> String {
     }
 }
 
-fn reading_review_anchor_label(mode: &str, base_time: i64) -> String {
+pub(crate) fn reading_review_anchor_label(mode: &str, base_time: i64) -> String {
     if mode == "overall" || base_time <= 0 {
         return "全部历史".to_string();
     }
@@ -1642,7 +1643,7 @@ fn reading_review_anchor_label(mode: &str, base_time: i64) -> String {
     }
 }
 
-fn format_duration(seconds: i64) -> String {
+pub(crate) fn format_duration(seconds: i64) -> String {
     let normalized_seconds = seconds.max(0);
     let hours = normalized_seconds / 3600;
     let minutes = (normalized_seconds % 3600) / 60;
@@ -1683,6 +1684,47 @@ mod tests {
         serialize_reading_route_markdown, serialize_reading_stats_review_markdown,
         BookAiSummaryMarkdownOptions,
     };
+
+    fn highlight(
+        bookmark_id: &str,
+        book_id: &str,
+        chapter_uid: Option<i64>,
+        range: Option<&str>,
+    ) -> HighlightRecord {
+        HighlightRecord {
+            bookmark_id: bookmark_id.to_string(),
+            book_id: book_id.to_string(),
+            chapter_uid,
+            chapter_title: Some("测试章节".to_string()),
+            mark_text: format!("划线-{bookmark_id}"),
+            create_time: None,
+            range_text: range.map(str::to_string),
+            deep_link: Some("https://untrusted.example/highlight".to_string()),
+            raw_json: "{}".to_string(),
+        }
+    }
+
+    fn thought(
+        review_id: &str,
+        book_id: &str,
+        chapter_uid: Option<i64>,
+        range: Option<&str>,
+    ) -> ThoughtRecord {
+        ThoughtRecord {
+            review_id: review_id.to_string(),
+            book_id: book_id.to_string(),
+            content: format!("想法-{review_id}"),
+            abstract_text: Some(format!("原文-{review_id}")),
+            create_time: None,
+            star: None,
+            chapter_name: Some("测试章节".to_string()),
+            chapter_uid,
+            range_text: range.map(str::to_string),
+            deep_link: Some("https://untrusted.example/thought".to_string()),
+            is_finish: None,
+            raw_json: "{}".to_string(),
+        }
+    }
 
     #[test]
     fn markdown_export_keeps_bookmarks_as_count_only() {
@@ -1788,6 +1830,71 @@ mod tests {
         assert!(markdown.contains("  - 想法：想法内容"));
         assert!(!markdown.contains("_划线时间：1706692800_"));
         assert!(!markdown.contains("创建时间：1706692860"));
+    }
+
+    #[test]
+    fn markdown_export_deep_links_use_highest_available_precision() {
+        let notes = build_book_notes_record(
+            "b1",
+            None,
+            vec![
+                highlight("range", "b1", Some(28), Some("659-705")),
+                highlight("invalid-range", "b1", Some(29), Some("705-659")),
+                highlight("chapter", "b1", Some(30), None),
+                highlight("book", "b1", None, None),
+                highlight("invalid-book", "bad/book", Some(31), Some("1-2")),
+            ],
+            vec![
+                thought("range", "b1", Some(28), Some("900-920")),
+                thought("chapter", "b1", Some(30), None),
+                thought("book", "b1", None, None),
+            ],
+            vec![],
+        );
+
+        let markdown = serialize_book_notes_markdown(&notes, "1706692800");
+
+        assert!(markdown.contains(
+            "[划线-range](<weread://bestbookmark?bookId=b1&chapterUid=28&rangeStart=659&rangeEnd=705>)"
+        ));
+        assert!(markdown.contains("[划线-invalid-range](<weread://reading?bId=b1&chapterUid=29>)"));
+        assert!(markdown.contains("[划线-chapter](<weread://reading?bId=b1&chapterUid=30>)"));
+        assert!(markdown.contains("[划线-book](<weread://reading?bId=b1>)"));
+        assert!(markdown.contains("> 划线-invalid-book"));
+        assert!(!markdown.contains("[划线-invalid-book]"));
+        assert!(markdown.contains(
+            "原文：[原文-range](<weread://bestbookmark?bookId=b1&chapterUid=28&rangeStart=900&rangeEnd=920>)"
+        ));
+        assert!(markdown.contains("原文：[原文-chapter](<weread://reading?bId=b1&chapterUid=30>)"));
+        assert!(markdown.contains("原文：[原文-book](<weread://reading?bId=b1>)"));
+    }
+
+    #[test]
+    fn markdown_export_keeps_body_when_deep_link_building_fails() {
+        let notes = build_book_notes_record(
+            "bad/book",
+            None,
+            vec![highlight(
+                "invalid-highlight",
+                "bad/book",
+                Some(28),
+                Some("10-20"),
+            )],
+            vec![thought(
+                "invalid-thought",
+                "bad/book",
+                Some(28),
+                Some("30-40"),
+            )],
+            vec![],
+        );
+
+        let markdown = serialize_book_notes_markdown(&notes, "1706692800");
+
+        assert!(markdown.contains("> 划线-invalid-highlight"));
+        assert!(markdown.contains("- 原文：原文-invalid-thought"));
+        assert!(markdown.contains("  - 想法：想法-invalid-thought"));
+        assert!(!markdown.contains("weread://"));
     }
 
     #[test]
@@ -2252,6 +2359,8 @@ mod tests {
                     stats_signal_count: 1,
                     local_status_count: 2,
                 },
+                reference_factors: Some(vec!["recent".to_string(), "habits".to_string()]),
+                recent_reading_window_days: Some(60),
                 generated_at: "100".to_string(),
                 prompt_version: "book-decision-v1".to_string(),
                 response_format: Some(AiResponseFormatKind::JsonObject),

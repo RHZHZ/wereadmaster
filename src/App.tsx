@@ -552,7 +552,7 @@ export function App() {
         ? {
             label:
               activeView === "bookAiSummary"
-                ? "AI 复盘"
+                ? "书籍复盘"
                 : activeView === "readingRoute"
                   ? "本书阅读指南"
                   : "单本笔记",
@@ -1269,9 +1269,9 @@ export function App() {
       author: detail?.author ?? activeDetailEntry?.author,
       cover: detail?.cover ?? activeDetailEntry?.cover,
       reviewCount: 0,
-      noteCount: 1,
+      noteCount: 0,
       bookmarkCount: 0,
-      totalNoteCount: 1,
+      totalNoteCount: 0,
       readingProgress: bookDetail?.progress.progressPercent,
     });
     setBookAiBackView("bookDetail");
@@ -1296,9 +1296,9 @@ export function App() {
             author: detail?.author ?? activeDetailEntry?.author ?? author,
             cover: detail?.cover ?? activeDetailEntry?.cover,
             reviewCount: 0,
-            noteCount: 1,
+            noteCount: 0,
             bookmarkCount: 0,
-            totalNoteCount: 1,
+            totalNoteCount: 0,
             readingProgress: bookDetail?.progress.progressPercent,
           }
         : undefined;
@@ -1366,9 +1366,9 @@ export function App() {
       author: book.author,
       cover: book.cover,
       reviewCount: 0,
-      noteCount: detail.feature === "book-review" ? 1 : 0,
+      noteCount: 0,
       bookmarkCount: 0,
-      totalNoteCount: detail.feature === "book-review" ? 1 : 0,
+      totalNoteCount: 0,
       readingProgress: detail.progress,
     });
 
@@ -1777,6 +1777,7 @@ export function App() {
             readingStatsCache={readingStatsCache}
             session={bookDecisionSession}
             onSessionChange={handleBookDecisionGenerated}
+            onOpenSettings={handleOpenSettings}
             onBack={() => handleNavigate("candidateShelf")}
           />
         ) : null}
@@ -1833,6 +1834,7 @@ export function App() {
             }
             onNotesChange={handleBookNotesChange}
             onOpenAiSummary={handleOpenBookAiSummary}
+            onOpenSettings={handleOpenSettings}
             onBack={() => handleNavigate(bookNotesBackView)}
             backLabel={
               bookNotesBackView === "bookDetail" ? "返回书籍详情" : undefined
@@ -1849,6 +1851,7 @@ export function App() {
                 ? bookNotesCache[selectedNotebookBook.bookId]
                 : undefined
             }
+            onNotesChange={handleBookNotesChange}
             onOpenSettings={handleOpenSettings}
             onBack={() => handleNavigate(bookAiBackView)}
             preparedUpdate={
@@ -1862,7 +1865,7 @@ export function App() {
             }
             backLabel={
               bookAiBackView === "readingReview"
-                ? "返回复盘中心"
+                ? "返回成果"
                 : bookAiBackView === "bookDetail"
                   ? "返回书籍详情"
                   : "返回单本笔记"

@@ -3,6 +3,8 @@ use std::cmp::Ordering;
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::services::weread_deep_link::build_weread_source_link;
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct NotebookBookRecord {
@@ -336,8 +338,8 @@ fn map_highlight(
             .find(|chapter| chapter.chapter_uid == uid)
             .map(|chapter| chapter.title.clone())
     });
-    let deep_link = chapter_uid
-        .map(|uid| format!("weread://reading?bId={normalized_book_id}&chapterUid={uid}"));
+    let range_text = string_field(value, "range");
+    let deep_link = note_source_deep_link(&normalized_book_id, chapter_uid, range_text.as_deref());
 
     Some(HighlightRecord {
         bookmark_id,
@@ -346,7 +348,7 @@ fn map_highlight(
         chapter_title,
         mark_text,
         create_time: integer_field(value, "createTime"),
-        range_text: string_field(value, "range"),
+        range_text,
         deep_link,
         raw_json: value.to_string(),
     })
@@ -366,8 +368,8 @@ fn map_thought(book_id: &str, value: &Value) -> Option<ThoughtRecord> {
         })
         .unwrap_or_else(|| book_id.to_string());
     let chapter_uid = integer_field(source, "chapterUid");
-    let deep_link = chapter_uid
-        .map(|uid| format!("weread://reading?bId={normalized_book_id}&chapterUid={uid}"));
+    let range_text = string_field(source, "range");
+    let deep_link = note_source_deep_link(&normalized_book_id, chapter_uid, range_text.as_deref());
 
     Some(ThoughtRecord {
         review_id,
@@ -379,11 +381,21 @@ fn map_thought(book_id: &str, value: &Value) -> Option<ThoughtRecord> {
         chapter_name: string_field(source, "chapterName")
             .or_else(|| string_field(source, "chapterTitle")),
         chapter_uid,
-        range_text: string_field(source, "range"),
+        range_text,
         deep_link,
         is_finish: source.get("isFinish").map(boolish_value),
         raw_json: value.to_string(),
     })
+}
+
+fn note_source_deep_link(
+    book_id: &str,
+    chapter_uid: Option<i64>,
+    range: Option<&str>,
+) -> Option<String> {
+    build_weread_source_link(book_id, chapter_uid, range)
+        .ok()
+        .map(|link| link.deep_link)
 }
 
 fn find_or_create_group(
@@ -552,7 +564,7 @@ mod tests {
             &json!({
                 "chapters": [{ "chapterUid": 7, "chapterIdx": 1, "title": "第一章" }],
                 "updated": [
-                    { "bookmarkId": "h1", "bookId": "b1", "chapterUid": 7, "markText": "划线", "type": 1 },
+                    { "bookmarkId": "h1", "bookId": "b1", "chapterUid": 7, "markText": "划线", "range": "12-34", "type": 1 },
                     { "bookmarkId": "bookmark", "bookId": "b1", "markText": "书签", "type": 0 }
                 ]
             }),
@@ -562,6 +574,13 @@ mod tests {
         assert_eq!(
             record.highlights[0].chapter_title,
             Some("第一章".to_string())
+        );
+        assert_eq!(
+            record.highlights[0].deep_link,
+            Some(
+                "weread://bestbookmark?bookId=b1&chapterUid=7&rangeStart=12&rangeEnd=34"
+                    .to_string()
+            )
         );
     }
 
@@ -591,6 +610,108 @@ mod tests {
         assert_eq!(page.thoughts[0].abstract_text, Some("依附原文".to_string()));
         assert_eq!(page.thoughts[0].chapter_uid, Some(7));
         assert_eq!(page.thoughts[0].range_text, Some("12-34".to_string()));
+        assert_eq!(
+            page.thoughts[0].deep_link,
+            Some(
+                "weread://bestbookmark?bookId=b1&chapterUid=7&rangeStart=12&rangeEnd=34"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn note_mappers_degrade_to_chapter_and_book_links() {
+        let highlights = map_bookmark_list_response(
+            "b1",
+            &json!({
+                "updated": [
+                    {
+                        "bookmarkId": "chapter",
+                        "chapterUid": 7,
+                        "markText": "章节级",
+                        "range": "34-12",
+                        "type": 1
+                    },
+                    {
+                        "bookmarkId": "book",
+                        "markText": "书籍级",
+                        "type": 1
+                    }
+                ]
+            }),
+        );
+        let thoughts = map_mine_reviews_page(
+            "b1",
+            &json!({
+                "reviews": [
+                    {
+                        "review": {
+                            "reviewId": "chapter",
+                            "content": "章节级",
+                            "chapterUid": 8
+                        }
+                    },
+                    {
+                        "review": {
+                            "reviewId": "book",
+                            "content": "书籍级",
+                            "range": "20-30"
+                        }
+                    }
+                ]
+            }),
+        );
+
+        assert_eq!(
+            highlights.highlights[0].deep_link.as_deref(),
+            Some("weread://reading?bId=b1&chapterUid=7")
+        );
+        assert_eq!(
+            highlights.highlights[1].deep_link.as_deref(),
+            Some("weread://reading?bId=b1")
+        );
+        assert_eq!(
+            thoughts.thoughts[0].deep_link.as_deref(),
+            Some("weread://reading?bId=b1&chapterUid=8")
+        );
+        assert_eq!(
+            thoughts.thoughts[1].deep_link.as_deref(),
+            Some("weread://reading?bId=b1")
+        );
+    }
+
+    #[test]
+    fn note_mappers_omit_links_for_invalid_book_ids() {
+        let highlights = map_bookmark_list_response(
+            "bad/book",
+            &json!({
+                "updated": [{
+                    "bookmarkId": "h1",
+                    "markText": "仍保留正文",
+                    "chapterUid": 7,
+                    "range": "12-34",
+                    "type": 1
+                }]
+            }),
+        );
+        let thoughts = map_mine_reviews_page(
+            "bad/book",
+            &json!({
+                "reviews": [{
+                    "review": {
+                        "reviewId": "r1",
+                        "content": "仍保留想法",
+                        "chapterUid": 7,
+                        "range": "12-34"
+                    }
+                }]
+            }),
+        );
+
+        assert_eq!(highlights.highlights[0].mark_text, "仍保留正文");
+        assert_eq!(highlights.highlights[0].deep_link, None);
+        assert_eq!(thoughts.thoughts[0].content, "仍保留想法");
+        assert_eq!(thoughts.thoughts[0].deep_link, None);
     }
 
     #[test]

@@ -44,6 +44,9 @@ impl AppError {
             Self::UpgradeRequired(info) => info.message.clone(),
             Self::Authentication(message) => message.clone(),
             Self::Gateway(message) => message.clone(),
+            Self::Network(message) if is_notion_network_detail(message) => {
+                "无法连接 Notion API，请检查网络、系统代理或 VPN 后重试。".to_string()
+            }
             Self::Network(_) => "微信读书接口暂时无法连接，请稍后重试。".to_string(),
             Self::Decode(_) => "微信读书返回内容无法解析，请稍后重试。".to_string(),
             Self::Storage(_) => "本地阅读数据暂时无法读取或写入，请稍后重试。".to_string(),
@@ -71,6 +74,10 @@ impl From<rusqlite::Error> for AppError {
     fn from(error: rusqlite::Error) -> Self {
         Self::Storage(error.to_string())
     }
+}
+
+fn is_notion_network_detail(message: &str) -> bool {
+    message.to_ascii_lowercase().contains("notion")
 }
 
 fn sanitize_diagnostic_detail(message: &str) -> Option<String> {
@@ -111,6 +118,23 @@ mod tests {
                     .to_string()
             )
         );
+    }
+
+    #[test]
+    fn notion_network_error_has_service_specific_guidance() {
+        let error = AppError::Network(
+            "检查 Notion 数据库失败：无法连接 Notion API（无法建立网络连接）。请检查网络、系统代理或 VPN 后重试。"
+                .to_string(),
+        );
+
+        assert_eq!(
+            error.user_message(),
+            "无法连接 Notion API，请检查网络、系统代理或 VPN 后重试。"
+        );
+        assert!(error
+            .diagnostic_message()
+            .as_deref()
+            .is_some_and(|detail| detail.contains("检查 Notion 数据库失败")));
     }
 
     #[test]

@@ -15,6 +15,7 @@ vi.mock("@tauri-apps/plugin-updater", () => ({
 import {
   buildProgressSaveKey,
   buildLocalReaderOutline,
+  LOCAL_READER_BACKUP_BOUNDARY_NOTICE,
   resolveLocalReaderProgressLoadWarning,
   resolveLocalReaderProgressSaveErrorNotice,
   resolveLocalReaderSaveStateLabel,
@@ -103,6 +104,12 @@ describe("local reader progress warning", () => {
         requestSaveSessionId: 1
       })
     ).toBe(false);
+  });
+
+  it("明确本地阅读器与 SQLite 备份的边界", () => {
+    expect(LOCAL_READER_BACKUP_BOUNDARY_NOTICE).toContain("阅读进度属于 SQLite 备份");
+    expect(LOCAL_READER_BACKUP_BOUNDARY_NOTICE).toContain("划线、想法、AI 提问和阅读器偏好");
+    expect(LOCAL_READER_BACKUP_BOUNDARY_NOTICE).toContain("暂不包含在本地数据备份中");
   });
 
   it("Markdown 目录识别标题并忽略代码块内标题", () => {
