@@ -64,17 +64,7 @@ jobs:
             throw "releaseNotesMarkdown is required in $notesPath."
           }
 
-          $body = @"
-          把微信读书里的阅读记录，沉淀成你的知识资产。
-
-          这是一个本地优先的阅读工作台，统一整理书架、笔记、阅读统计与 AI 复盘，帮助你更清楚地知道接下来读什么、复盘什么、输出什么。
-
-          $markdown
-
-          ## 回滚
-
-          - 如更新异常，请回退到上一版安装包
-          "@
+          $body = $markdown
 
           $delimiter = "RELEASE_NOTES_$([guid]::NewGuid().ToString('N'))"
           Add-Content -Path $env:GITHUB_OUTPUT -Value "body<<$delimiter"
@@ -128,6 +118,23 @@ jobs:
           Copy-Item -Path $sigFile.FullName -Destination $normalizedSigPath -Force
 
           gh release upload "$env:RELEASE_TAG" "$normalizedExePath" "$normalizedSigPath" --clobber
+
+          $release = gh api "repos/${{ github.repository }}/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
+          $normalizedNames = @(
+            (Split-Path -Path $normalizedExePath -Leaf),
+            (Split-Path -Path $normalizedSigPath -Leaf)
+          )
+          $sourceNames = @($exeFile.Name, $sigFile.Name)
+          $duplicateAssets = $release.assets |
+            Where-Object {
+              $sourceNames -contains $_.name -and
+              $normalizedNames -notcontains $_.name
+            }
+
+          foreach ($asset in $duplicateAssets) {
+            Write-Host "Deleting duplicate release asset '$($asset.name)' after normalized upload."
+            gh api --method DELETE "repos/${{ github.repository }}/releases/assets/$($asset.id)"
+          }
 
       - name: Generate latest.json
         env:
