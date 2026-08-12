@@ -204,7 +204,7 @@ jobs:
             platforms = @{
               "windows-x86_64" = @{
                 signature = (Get-Content -Path $sigFile.FullName -Raw).Trim()
-                url = $exeAsset.browser_download_url
+                url = "https://github.com/${{ github.repository }}/releases/download/$env:RELEASE_TAG/$expectedInstallerName"
               }
             }
           }
