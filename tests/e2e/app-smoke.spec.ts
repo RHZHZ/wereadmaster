@@ -28,6 +28,9 @@ type MockTauriOptions = {
   longStatsAction?: boolean;
   manyReadingAssistantThreads?: boolean;
   bookNotesMode?: "ready" | "delayed" | "empty" | "failOnce";
+  publicReviewsMode?: "pagination";
+  noteSynthesisMode?: "lifecycle";
+  embeddingIndexMode?: "lifecycle";
   notionProvisioningMode?: "none" | "partial" | "recoveryRequired" | "unknown";
   notionCoverBackfillMode?: "ready" | "blocked" | "cancel";
   notionAnalysisNetworkError?: boolean;
@@ -60,9 +63,77 @@ test.describe("个人阅读管理应用 smoke", () => {
     await expect(page.getByRole("heading", { name: "未保存凭据" })).toBeVisible();
     await expect(page.getByPlaceholder("粘贴 wrk-...，保存后不会再显示")).toBeVisible();
     await openSettingsCategory(page, "AI 设置");
-    await expect(page.getByRole("heading", { name: "未配置 AI Provider" })).toBeVisible();
-    await expect(page.getByPlaceholder("https://api.openai.com/v1")).toBeVisible();
+    const aiProviderSettings = page.getByRole("region", { name: "AI 设置", exact: true });
+    await expect(aiProviderSettings.getByRole("heading", { name: "未配置 AI Provider" })).toBeVisible();
+    await expect(aiProviderSettings.getByPlaceholder("https://api.openai.com/v1")).toBeVisible();
     await expect(page.getByText("sk-e2e-ai-secret")).toHaveCount(0);
+  });
+
+  test("语义索引要求独立授权并完成构建与本机清理", async ({ page }) => {
+    await installTauriMock(page, {
+      hasCredential: true,
+      hasAiCredential: true,
+      embeddingIndexMode: "lifecycle"
+    });
+    await page.goto("/");
+
+    await openPrimaryNav(page, "设置");
+    await openSettingsCategory(page, "AI 设置");
+
+    const semanticIndex = page.getByRole("region", { name: "语义索引", exact: true });
+    await expect(semanticIndex).toContainText("聊天 AI 的 Key 和授权不会被复用");
+    await expect(semanticIndex.getByRole("button", { name: "开始构建" })).toBeDisabled();
+
+    await semanticIndex.getByLabel("新的 Embedding API Key").fill("sk-e2e-embedding-secret");
+    const remoteConsent = semanticIndex.getByLabel("允许发送笔记正文生成向量");
+    await remoteConsent.click();
+    const consentDialog = page.getByRole("dialog", { name: "允许远程生成语义向量？" });
+    await expect(consentDialog).toContainText("本机笔记正文分批发送");
+    await consentDialog.getByRole("button", { name: "确认授权" }).click();
+    await expect(remoteConsent).toBeChecked();
+
+    await semanticIndex.getByRole("button", { name: "保存语义索引设置" }).click();
+    await expect(
+      page.getByLabel("通知").getByText("语义索引设置和独立 Key 已保存到本机安全存储。")
+    ).toBeVisible();
+    await expect(semanticIndex.getByLabel("新的 Embedding API Key")).toHaveValue("");
+    await expect(semanticIndex.getByPlaceholder("已保存，留空则不更改")).toBeVisible();
+    await expect(page.getByText("sk-e2e-embedding-secret")).toHaveCount(0);
+
+    await semanticIndex.getByRole("button", { name: "测试 Embedding 连接" }).click();
+    await expect(
+      page.getByLabel("通知").getByText("Embedding Provider 连通性测试通过，模型维度为 1536。")
+    ).toBeVisible();
+
+    await semanticIndex.getByRole("button", { name: "开始构建" }).click();
+    await expect(semanticIndex).toContainText("构建完成");
+    await expect(semanticIndex).toContainText("24 / 24");
+    await expect(semanticIndex).toContainText("text-embedding-3-small");
+    await expect(semanticIndex.getByLabel("语义索引构建进度")).toHaveAttribute("value", "100");
+    await expect(
+      page.getByLabel("通知").getByText("语义索引构建完成。当前搜索仍保持词法检索。")
+    ).toBeVisible();
+
+    await semanticIndex.getByRole("button", { name: "清除语义索引" }).click();
+    const clearDialog = page.getByRole("dialog", { name: "确认清除本机语义索引？" });
+    await expect(clearDialog).toContainText("不会删除原始笔记");
+    await clearDialog.getByRole("button", { name: "确认清除" }).click();
+    await expect(semanticIndex).toContainText("尚未构建");
+    await expect(page.getByLabel("通知").getByText("本机语义向量和索引任务记录已清除，原始笔记不受影响。")).toBeVisible();
+
+    await semanticIndex.getByRole("button", { name: "移除 Embedding Key" }).click();
+    await page.getByRole("dialog", { name: "确认移除 Embedding API Key？" })
+      .getByRole("button", { name: "确认移除" })
+      .click();
+    await expect(
+      page.getByLabel("通知").getByText("已移除独立的 Embedding API Key，现有本地向量不会自动删除。")
+    ).toBeVisible();
+
+    await expect(await getInvokeCount(page, "save_embedding_settings")).toBe(2);
+    await expect(await getInvokeCount(page, "test_embedding_connection")).toBe(1);
+    await expect(await getInvokeCount(page, "start_embedding_index")).toBe(1);
+    await expect(await getInvokeCount(page, "clear_embedding_index")).toBe(1);
+    await expect(await getInvokeCount(page, "remove_embedding_credential")).toBe(1);
   });
 
   test("Notion 数据库连接主路径检查字段并保存 property ID 映射", async ({ page }) => {
@@ -979,6 +1050,49 @@ test.describe("个人阅读管理应用 smoke", () => {
     await context.close();
   });
 
+  test("AI 阅读助手空状态建议项紧凑排列", async ({ page }) => {
+    await installTauriMock(page, { hasCredential: true, hasAiCredential: true });
+    await page.goto("/");
+    await page.getByLabel("打开 AI 阅读助手").click();
+
+    const readingAssistant = page.getByRole("complementary", { name: "AI 阅读助手" });
+    await expect(readingAssistant).toBeVisible();
+
+    const layout = await readingAssistant.evaluate((panel) => {
+      const messages = panel.querySelector<HTMLElement>(".reading-assistant-messages");
+      const suggestions = panel.querySelector<HTMLElement>(".reading-assistant-suggestions");
+      const composer = panel.querySelector<HTMLElement>(".reading-assistant-composer");
+      const buttons = Array.from(
+        panel.querySelectorAll<HTMLElement>(".reading-assistant-suggestions button")
+      );
+      if (!messages || !suggestions || !composer || buttons.length !== 3) {
+        throw new Error("AI 阅读助手空状态布局元素缺失");
+      }
+
+      const suggestionRect = suggestions.getBoundingClientRect();
+      const composerRect = composer.getBoundingClientRect();
+      const buttonRects = buttons.map((button) => button.getBoundingClientRect());
+      return {
+        buttonHeights: buttonRects.map((rect) => Math.round(rect.height)),
+        rowGaps: buttonRects.slice(1).flatMap((rect, index) =>
+          rect.top > buttonRects[index].top + 1
+            ? [Math.round(rect.top - buttonRects[index].bottom)]
+            : []
+        ),
+        messagesFlexGrow: window.getComputedStyle(messages).flexGrow,
+        suggestionHeight: Math.round(suggestionRect.height),
+        suggestionToComposerGap: Math.round(composerRect.top - suggestionRect.bottom)
+      };
+    });
+
+    expect(layout.messagesFlexGrow).toBe("1");
+    expect(layout.buttonHeights.every((height) => height >= 30)).toBe(true);
+    expect(layout.suggestionHeight).toBeLessThanOrEqual(120);
+    expect(layout.rowGaps.every((gap) => gap >= 0 && gap <= 8)).toBe(true);
+    expect(layout.suggestionToComposerGap).toBeGreaterThanOrEqual(8);
+    expect(layout.suggestionToComposerGap).toBeLessThanOrEqual(16);
+  });
+
   test("触屏短视口下 AI 阅读助手输入区和模型菜单保持可操作", async ({ browser }) => {
     const context = await browser.newContext({
       baseURL: E2E_ORIGIN,
@@ -1119,6 +1233,36 @@ test.describe("个人阅读管理应用 smoke", () => {
     await expect(bookDetailPage).toContainText("博多·舍费尔");
   });
 
+  test("AI 阅读助手区分抽样调用量与本地笔记总数", async ({ page }) => {
+    await installTauriMock(page, { hasCredential: true, hasAiCredential: true });
+    await page.goto("/");
+
+    await openDeepWorkDetailForAudit(page);
+    await page.getByLabel("打开 AI 阅读助手").click();
+    const readingAssistant = page.getByRole("complementary", { name: "AI 阅读助手" });
+    await sendReadingAssistantMessage(readingAssistant, "基于我的笔记总结重点");
+
+    await expect(readingAssistant).toContainText("原始笔记 · 已调用 20 / 本地 592 · 抽样");
+  });
+
+  test("AI 阅读助手使用本地确定性查询展示笔记数量", async ({ page }) => {
+    await installTauriMock(page);
+    await page.goto("/");
+
+    await openDeepWorkDetailForAudit(page);
+    await page.getByLabel("打开 AI 阅读助手").click();
+    const readingAssistant = page.getByRole("complementary", { name: "AI 阅读助手" });
+    await sendReadingAssistantMessage(readingAssistant, "这本书有多少条笔记？");
+
+    await expect(readingAssistant).toContainText("《深度工作》 · 本地可验证笔记数量。");
+    await expect(readingAssistant).toContainText("592");
+    await expect(readingAssistant).toContainText("笔记总数");
+    await expect(readingAssistant).toContainText("530");
+    await expect(readingAssistant).toContainText("划线");
+    await expect(readingAssistant).toContainText("62");
+    await expect(readingAssistant).toContainText("想法");
+  });
+
   test("AI 阅读助手可编辑最后一条用户消息并重新生成", async ({ page }) => {
     await installTauriMock(page, { manyStatsItems: true });
     await page.goto("/");
@@ -1239,8 +1383,9 @@ test.describe("个人阅读管理应用 smoke", () => {
     await modelMenu.getByRole("menuitem", { name: "模型设置" }).click();
     await expect(readingAssistant).toHaveCount(0);
     await expect(page.getByRole("dialog", { name: "设置" })).toBeVisible();
-    await expect(page.locator('input[value="https://api.openai.com/v1"]')).toBeVisible();
-    await expect(page.locator('input[value="gpt-4o-mini"]')).toBeVisible();
+    const aiProviderSettings = page.getByRole("region", { name: "AI 设置", exact: true });
+    await expect(aiProviderSettings.locator('input[value="https://api.openai.com/v1"]')).toBeVisible();
+    await expect(aiProviderSettings.locator('input[value="gpt-4o-mini"]')).toBeVisible();
   });
 
   test("AI 阅读助手普通问答显示流式增量内容", async ({ page }) => {
@@ -1643,6 +1788,39 @@ test.describe("个人阅读管理应用 smoke", () => {
     await page.getByLabel("本书管理").getByRole("button", { name: /书籍复盘/ }).click();
     await expect(page.getByRole("heading", { name: "主题标签" })).toBeVisible();
     expect(await getInvokeCount(page, "get_book_notes")).toBe(1);
+  });
+
+  test("快照式全量归纳创建后等待显式继续，并在完成后读取正式资产", async ({ page }) => {
+    await installTauriMock(page, { noteSynthesisMode: "lifecycle" });
+    await page.goto("/");
+
+    await openShelfSubNav(page, "微信书架");
+    await page.getByLabel("书架条目").getByRole("button", { name: /代码整洁之道/ }).click();
+    await page.getByLabel("本书管理").getByRole("button", { name: /书籍复盘/ }).click();
+
+    const synthesisCard = page.getByLabel("全量笔记归纳任务");
+    await expect(synthesisCard).toBeVisible();
+    await expect(synthesisCard).toContainText("快照式全量笔记归纳");
+    await expect(synthesisCard.getByRole("button", { name: "创建全量归纳任务" })).toBeDisabled();
+    await synthesisCard.getByRole("checkbox").check();
+    await synthesisCard.getByRole("button", { name: "创建全量归纳任务" }).click();
+
+    await expect(synthesisCard).toContainText("已创建，等待继续");
+    await expect(synthesisCard.getByRole("button", { name: "继续调用 Provider" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "生成复盘" })).toBeDisabled();
+    expect(await getInvokeCount(page, "start_note_synthesis")).toBe(1);
+    expect(await getInvokeCount(page, "continue_note_synthesis")).toBe(0);
+    expect(await getInvokeCount(page, "summarize_book_notes")).toBe(0);
+
+    const cachedSummaryCountBeforeContinue = await getInvokeCount(page, "get_latest_book_notes_summary");
+    await synthesisCard.getByRole("button", { name: "继续调用 Provider" }).click();
+
+    await expect(synthesisCard).toContainText("全量归纳已完成");
+    await expect(page.getByLabel("书籍复盘概览")).toContainText("正式 full-v1 资产");
+    await expect(page.getByLabel("书籍复盘数据边界")).toContainText("本地缓存");
+    expect(await getInvokeCount(page, "continue_note_synthesis")).toBe(1);
+    expect(await getInvokeCount(page, "get_latest_book_notes_summary")).toBeGreaterThan(cachedSummaryCountBeforeContinue);
+    expect(await getInvokeCount(page, "summarize_book_notes")).toBe(0);
   });
 
   test("单本复盘真实空笔记时不查询缓存也不允许生成", async ({ page }) => {
@@ -2661,23 +2839,25 @@ test.describe("个人阅读管理应用 smoke", () => {
     await expect(await getInvokeCount(page, "choose_custom_data_directory")).toBe(2);
     await expect(await getInvokeCount(page, "migrate_local_data_directory")).toBe(1);
     await openSettingsCategory(page, "AI 设置");
-    await expect(page.locator('input[value="https://api.openai.com/v1"]')).toBeVisible();
-    await expect(page.locator('input[value="gpt-4o-mini"]')).toBeVisible();
-    await expect(page.getByPlaceholder("已保存，留空则不更改")).toBeVisible();
+    const aiProviderSettings = page.getByRole("region", { name: "AI 设置", exact: true });
+    await expect(aiProviderSettings.locator('input[value="https://api.openai.com/v1"]')).toBeVisible();
+    await expect(aiProviderSettings.locator('input[value="gpt-4o-mini"]')).toBeVisible();
+    await expect(aiProviderSettings.getByPlaceholder("已保存，留空则不更改")).toBeVisible();
     await expect(page.getByText("sk-e2e-ai-secret")).toHaveCount(0);
-    await page.locator('input[value="gpt-4o-mini"]').fill("gpt-4.1-mini");
+    await aiProviderSettings.locator('input[value="gpt-4o-mini"]').fill("gpt-4.1-mini");
     await page.getByRole("button", { name: "保存 AI 设置" }).click();
     await expect(page.getByLabel("通知").getByText("AI Provider 设置已保存，已保留原有 AI Key。")).toBeVisible();
-    await expect(page.locator('input[value="gpt-4.1-mini"]')).toBeVisible();
+    await expect(aiProviderSettings.locator('input[value="gpt-4.1-mini"]')).toBeVisible();
     await page.getByRole("button", { name: "测试连通性" }).click();
     await expect(page.getByLabel("通知").getByText("AI Provider 连通性测试通过。")).toBeVisible();
-    await page.getByPlaceholder("已保存，留空则不更改").fill("sk-new-ai-key-123456");
+    await aiProviderSettings.getByPlaceholder("已保存，留空则不更改").fill("sk-new-ai-key-123456");
     await page.getByRole("button", { name: "保存 AI 设置" }).click();
     await expect(page.getByLabel("通知").getByText("AI 设置和新 Key 已保存到本机安全存储。")).toBeVisible();
     await page.getByRole("button", { name: "移除 AI Key" }).click();
-    await expect(page.getByRole("dialog", { name: "确认移除 AI API Key？" })).toBeVisible();
-    await page.getByRole("button", { name: "取消" }).click();
-    await expect(page.getByRole("dialog", { name: "确认移除 AI API Key？" })).toHaveCount(0);
+    const removeAiKeyDialog = page.getByRole("dialog", { name: "确认移除 AI API Key？" });
+    await expect(removeAiKeyDialog).toBeVisible();
+    await removeAiKeyDialog.getByRole("button", { name: "取消", exact: true }).click();
+    await expect(removeAiKeyDialog).toHaveCount(0);
     await page.getByRole("button", { name: "移除 AI Key" }).click();
     await page.getByRole("button", { name: "确认移除" }).click();
     await expect(page.getByLabel("通知").getByText("已移除本机保存的 AI API Key。历史 AI 阅读成果缓存不会被删除。")).toBeVisible();
@@ -3860,8 +4040,9 @@ test.describe("个人阅读管理应用 smoke", () => {
       expect(settingsLayout.allActionButtonsTouch).toBe(true);
       expect(settingsLayout.overflowX).toBe(false);
 
-      await mobilePage.locator('input[value="gpt-4o-mini"]').fill("gpt-4.1-mini");
-      await expect(mobilePage.locator('input[value="gpt-4.1-mini"]')).toBeVisible();
+      const mobileAiProviderSettings = mobilePage.getByRole("region", { name: "AI 设置", exact: true });
+      await mobileAiProviderSettings.locator('input[value="gpt-4o-mini"]').fill("gpt-4.1-mini");
+      await expect(mobileAiProviderSettings.locator('input[value="gpt-4.1-mini"]')).toBeVisible();
     } finally {
       await context.close();
     }
@@ -5038,6 +5219,33 @@ test.describe("个人阅读管理应用 smoke", () => {
     });
   });
 
+  test("书籍详情公开点评支持筛选和游标分页去重", async ({ page }) => {
+    await installTauriMock(page, { publicReviewsMode: "pagination" });
+    await page.goto("/");
+
+    await openDeepWorkDetailForAudit(page);
+    const panel = page.getByRole("region", { name: "公开点评" });
+    await expect(panel).toContainText("全部点评一。");
+    await expect(panel.locator(".public-review-item")).toHaveCount(2);
+
+    await panel.getByRole("button", { name: "最新", exact: true }).click();
+    await expect(panel).toContainText("最新点评一。");
+    await expect(panel).not.toContainText("全部点评一。");
+    await expect(panel.locator(".public-review-item")).toHaveCount(2);
+
+    await panel.getByRole("button", { name: "加载更多点评" }).click();
+    await expect(panel).toContainText("最新点评三，来自下一页。");
+    await expect(panel.locator(".public-review-item")).toHaveCount(3);
+    await expect(panel.getByRole("button", { name: "加载更多点评" })).toHaveCount(0);
+    expect(await getLastInvokeArgs(page, "get_public_reviews")).toEqual({
+      bookId: "book-deep-work",
+      reviewListType: 3,
+      count: 10,
+      maxIdx: 2,
+      synckey: 17
+    });
+  });
+
   test("手机端书籍详情长目录默认折叠且展开后内部滚动", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await installTauriMock(page, { longBookDetailChapters: true });
@@ -5046,6 +5254,7 @@ test.describe("个人阅读管理应用 smoke", () => {
     await openShelfSubNav(page, "微信书架");
     await page.getByLabel("书架条目", { exact: true }).getByRole("button", { name: /深度工作/ }).click();
     await expect(page.getByRole("heading", { name: "深度工作" })).toBeVisible();
+    await expect(page.getByLabel("阅读进度")).toContainText("当前章节：第34章 测试章节 34");
 
     const directory = page.getByRole("region", { name: "目录" });
     const chapterList = directory.locator(".chapter-list");
@@ -5527,10 +5736,13 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
       manyReadingAssistantThreads,
       availableAppUpdate,
       bookNotesMode,
+      publicReviewsMode,
       notionProvisioningMode,
       notionCoverBackfillMode,
       notionAnalysisNetworkError,
-      t7SelectorStates
+      t7SelectorStates,
+      noteSynthesisMode,
+      embeddingIndexMode
     }) => {
       const nowSeconds = 1_725_955_200;
       const currentNowSeconds = Math.floor(Date.now() / 1000);
@@ -5562,6 +5774,31 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
           model: "gpt-4o-mini"
         }
       };
+      let embeddingState = {
+        credential: { hasCredential: false },
+        provider: {
+          baseUrl: "https://api.openai.com/v1",
+          model: "text-embedding-3-small",
+          providerLabel: "OpenAI-compatible",
+          batchSize: 16,
+          remoteNoteEmbeddingEnabled: false
+        }
+      };
+      let embeddingIndexState = {};
+      const createEmbeddingProfile = (status) => ({
+        id: "embedding-profile-e2e",
+        providerKind: "openai-compatible",
+        modelId: embeddingState.provider.model,
+        dimensions: 1536,
+        providerLabel: embeddingState.provider.providerLabel,
+        consentConfirmedAt: embeddingState.provider.consentConfirmedAt,
+        status,
+        totalDocumentCount: 24,
+        indexedDocumentCount: status === "ready" ? 24 : 0,
+        createdAt: "2026-08-06T00:10:00.000Z",
+        updatedAt: "2026-08-06T00:11:00.000Z",
+        ...(status === "ready" ? { completedAt: "2026-08-06T00:11:00.000Z" } : {})
+      });
       const baseReadingAssistantThreadSummaries = [
         {
           id: "assistant-history-book-notes",
@@ -5740,6 +5977,78 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
         : baseReadingAssistantThreadDetails;
       let hasReturnedBookReviewExportFailure = false;
       let bookNotesRequestCount = 0;
+      let noteSynthesisJob = null;
+      let hasPublishedNoteSynthesisAsset = false;
+      const noteSynthesisJobBase = {
+        id: "note-synthesis-e2e",
+        bookId: "book-code-review",
+        sourceSnapshotHash: "note-synthesis-snapshot-e2e",
+        totalCount: 3,
+        processedCount: 0,
+        batchCount: 1,
+        completedBatchCount: 0,
+        failedBatchCount: 0,
+        providerModel: "gpt-4o-mini",
+        providerLabel: "OpenAI",
+        consentConfirmedAt: "2026-08-04T13:45:00.000Z",
+        failedBatches: [],
+        coverage: {
+          totalCount: 3,
+          processedCount: 0,
+          pendingCount: 3,
+          skippedEmptyCount: 0,
+          skippedDuplicateCount: 0,
+          failedItemCount: 0,
+          fullSnapshot: true
+        },
+        createdAt: "2026-08-04T13:45:00.000Z",
+        updatedAt: "2026-08-04T13:45:00.000Z"
+      };
+      const noteSynthesisPreview = {
+        bookId: "book-code-review",
+        totalCount: 3,
+        highlightCount: 2,
+        thoughtCount: 1,
+        estimatedBatchCount: 1,
+        estimatedCharCount: 120,
+        providerModel: "gpt-4o-mini",
+        providerLabel: "OpenAI"
+      };
+      const noteSynthesisSummary = {
+        bookId: "book-code-review",
+        promptVersion: "book-notes-summary-full-v1",
+        inputHash: "note-synthesis-full-v1-e2e",
+        providerModel: "gpt-4o-mini",
+        source: "cache",
+        summary: {
+          overview: "正式 full-v1 资产：归纳了代码整洁之道的全部快照笔记。",
+          keyIdeas: ["命名和函数应持续保持清晰"],
+          myFocus: ["把重构节奏写入日常复盘"],
+          actionItems: ["为一个模块安排小步重构"],
+          themeTags: ["整洁代码", "重构"],
+          representativeQuotes: [
+            {
+              quote: "让代码更容易被下一位维护者理解。",
+              reason: "来自完整快照中的代表性笔记。",
+              chapter: "第一章",
+              noteType: "划线"
+            }
+          ],
+          reflectionQuestions: ["今天是否让一个函数更清晰？"],
+          sourceStats: {
+            highlightCount: 2,
+            thoughtCount: 1,
+            bookmarkCount: 0,
+            chapterCount: 1,
+            includedHighlightCount: 2,
+            includedThoughtCount: 1
+          },
+          generatedAt: "2026-08-04T13:46:00.000Z",
+          promptVersion: "book-notes-summary-full-v1",
+          basisNotice: "基于已冻结的本地笔记快照生成。"
+        },
+        cachedUpdatedAt: "2026-08-04T13:46:00.000Z"
+      };
       Object.defineProperty(navigator, "clipboard", {
         configurable: true,
         value: {
@@ -6279,6 +6588,39 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
           },
           chapters: detailChapters,
           deepLink: `weread://reading?bId=${bookId}`
+        };
+      }
+
+      function publicReviewsResponse(reviewListType, maxIdx, synckey) {
+        const isLatest = reviewListType === 3;
+        const isSecondPage = isLatest && maxIdx === 2 && synckey === 17;
+        const reviews = isLatest
+          ? isSecondPage
+            ? [
+                { reviewId: "review-latest-2", content: "最新点评二，重复项。", author: { name: "读者乙" } },
+                { reviewId: "review-latest-3", content: "最新点评三，来自下一页。", author: { name: "读者丙" } }
+              ]
+            : [
+                { reviewId: "review-latest-1", content: "最新点评一。", author: { name: "读者甲" } },
+                { reviewId: "review-latest-2", content: "最新点评二。", author: { name: "读者乙" } }
+              ]
+          : [
+              { reviewId: "review-all-1", content: "全部点评一。", author: { name: "读者甲" } },
+              { reviewId: "review-all-2", content: "全部点评二。", author: { name: "读者乙" } }
+            ];
+        return {
+          result: {
+            bookId: "book-deep-work",
+            reviewListType,
+            totalCount: 3,
+            hasMore: isLatest && !isSecondPage,
+            has5Star: true,
+            has1Star: true,
+            hasRecent: true,
+            nextMaxIdx: isLatest ? 2 : undefined,
+            synckey: isLatest ? 17 : undefined,
+            reviews
+          }
         };
       }
 
@@ -7268,6 +7610,63 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
                   ? "AI Provider 连通性测试通过。"
                   : "还没有保存 AI API Key，也没有输入新的 AI API Key。"
               };
+            case "get_embedding_settings_state":
+              return embeddingState;
+            case "save_embedding_settings": {
+              const request = args.request || {};
+              embeddingState = {
+                credential: {
+                  hasCredential: Boolean(request.apiKey || embeddingState.credential.hasCredential)
+                },
+                provider: {
+                  baseUrl: request.baseUrl || embeddingState.provider.baseUrl,
+                  model: request.model || embeddingState.provider.model,
+                  providerLabel: request.providerLabel || embeddingState.provider.providerLabel,
+                  batchSize: request.batchSize || embeddingState.provider.batchSize,
+                  remoteNoteEmbeddingEnabled: Boolean(request.remoteNoteEmbeddingEnabled),
+                  ...(request.consentConfirmedAt
+                    ? { consentConfirmedAt: request.consentConfirmedAt }
+                    : {})
+                }
+              };
+              return embeddingState;
+            }
+            case "test_embedding_connection":
+              return {
+                isValid: Boolean(args.apiKey || embeddingState.credential.hasCredential),
+                model: args.settings?.model || embeddingState.provider.model,
+                dimensions: 1536,
+                checkedAt: "2026-08-06T00:09:00.000Z",
+                message: "Embedding Provider 连通性测试通过，模型维度为 1536。"
+              };
+            case "remove_embedding_credential":
+              embeddingState = {
+                ...embeddingState,
+                credential: { hasCredential: false }
+              };
+              return embeddingState;
+            case "get_embedding_index_state":
+              return embeddingIndexState;
+            case "start_embedding_index": {
+              const profile = createEmbeddingProfile(embeddingIndexMode === "lifecycle" ? "ready" : "building");
+              embeddingIndexState = profile.status === "ready"
+                ? { ready: profile, latest: profile }
+                : { active: profile, latest: profile };
+              return profile;
+            }
+            case "resume_embedding_index": {
+              const profile = createEmbeddingProfile("ready");
+              embeddingIndexState = { ready: profile, latest: profile };
+              return profile;
+            }
+            case "cancel_embedding_index": {
+              const profile = createEmbeddingProfile("cancelled");
+              embeddingIndexState = { latest: profile };
+              return profile;
+            }
+            case "clear_embedding_index":
+              embeddingIndexState = {};
+              return embeddingIndexState;
             case "probe_ai_provider_capabilities":
               return {
                 basic: "passed",
@@ -7331,6 +7730,32 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
                   promptVersion: "reading-assistant-chat-v1.3",
                   providerModel: null,
                   basisNotice: "基于本地统计和书架明细。"
+                };
+              }
+              if (assistantMessage.includes("多少条笔记")) {
+                return {
+                  threadId: assistantRequest.threadId || "assistant-thread-note-count",
+                  userMessageId: "assistant-user-message-note-count",
+                  messageId: "assistant-message-note-count",
+                  answer: "本地可验证《深度工作》共有 592 条笔记，其中划线 530 条、想法 62 条。",
+                  suggestions: ["帮我从有限抽样里找出反复出现的主题。"],
+                  recommendedBooks: [],
+                  action: {
+                    type: "noteCount",
+                    payload: {
+                      bookId: assistantRequest.entityId || "book-deep-work",
+                      title: "深度工作",
+                      totalCount: 592,
+                      highlightCount: 530,
+                      thoughtCount: 62,
+                      message: "本地可验证笔记数量。"
+                    }
+                  },
+                  usedContext: [],
+                  generatedAt: String(nowSeconds),
+                  promptVersion: "reading-assistant-chat-v1.3",
+                  providerModel: null,
+                  basisNotice: "数量来自本地确定性查询，未调用 AI Provider。"
                 };
               }
               if (assistantMessage.includes("阅读节奏")) {
@@ -7455,8 +7880,11 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
                   {
                     contextType: "rawBookNotes",
                     label: "原始笔记",
-                    sourceRefs: ["book-deep-work"],
-                    itemCount: 2
+                    sourceRefs: ["notes:book-deep-work"],
+                    itemCount: 20,
+                    availableItemCount: 592,
+                    coverage: "sampled",
+                    truncated: true
                   }
                 ],
                 generatedAt: String(nowSeconds),
@@ -7471,7 +7899,77 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
                 credential: { hasCredential: false }
               };
               return aiState;
+            case "preview_note_synthesis":
+              if (noteSynthesisMode === "lifecycle" && args.bookId === "book-code-review") {
+                return {
+                  ...noteSynthesisPreview,
+                  activeJob: noteSynthesisJob || undefined
+                };
+              }
+              return null;
+            case "get_active_note_synthesis_job":
+              return noteSynthesisMode === "lifecycle" && args.bookId === "book-code-review"
+                ? noteSynthesisJob
+                : null;
+            case "start_note_synthesis":
+              if (noteSynthesisMode !== "lifecycle" || args.bookId !== "book-code-review") {
+                throw new Error("M2 lifecycle mock is not enabled for this book.");
+              }
+              noteSynthesisJob = {
+                ...noteSynthesisJobBase,
+                status: "queued",
+                consentConfirmedAt: args.consentConfirmedAt,
+                updatedAt: "2026-08-04T13:45:01.000Z"
+              };
+              return { created: true, job: noteSynthesisJob };
+            case "get_note_synthesis_job":
+              if (!noteSynthesisJob || args.jobId !== noteSynthesisJob.id) {
+                throw new Error("M2 task not found.");
+              }
+              return noteSynthesisJob;
+            case "continue_note_synthesis":
+              if (!noteSynthesisJob || args.jobId !== noteSynthesisJob.id) {
+                throw new Error("M2 task not found.");
+              }
+              hasPublishedNoteSynthesisAsset = true;
+              noteSynthesisJob = {
+                ...noteSynthesisJob,
+                status: "completed",
+                processedCount: 3,
+                completedBatchCount: 1,
+                lastStartedAt: "2026-08-04T13:45:02.000Z",
+                finishedAt: "2026-08-04T13:46:00.000Z",
+                updatedAt: "2026-08-04T13:46:00.000Z",
+                result: {
+                  feature: "book-review",
+                  promptVersion: "book-notes-summary-full-v1",
+                  inputHash: "note-synthesis-full-v1-e2e"
+                },
+                coverage: {
+                  ...noteSynthesisJob.coverage,
+                  processedCount: 3,
+                  pendingCount: 0
+                }
+              };
+              return noteSynthesisJob;
+            case "retry_failed_note_synthesis_batches":
+              throw new Error("This deterministic M2 flow has no failed batches.");
+            case "cancel_note_synthesis":
+              if (!noteSynthesisJob || args.jobId !== noteSynthesisJob.id) {
+                throw new Error("M2 task not found.");
+              }
+              noteSynthesisJob = {
+                ...noteSynthesisJob,
+                status: "cancelled",
+                cancelRequestedAt: "2026-08-04T13:45:03.000Z",
+                finishedAt: "2026-08-04T13:45:03.000Z",
+                updatedAt: "2026-08-04T13:45:03.000Z"
+              };
+              return noteSynthesisJob;
             case "get_latest_book_notes_summary":
+              if (hasPublishedNoteSynthesisAsset && args.bookId === "book-code-review") {
+                return noteSynthesisSummary;
+              }
               if (args.bookId === "book-three-body") {
                 return null;
               }
@@ -7862,6 +8360,11 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
               return hasCredential ? bookshelf : { ...bookshelf, snapshot: { entries: [], summary: bookshelf.snapshot.summary } };
             case "get_book_detail":
               return bookDetail(args.bookId || "book-deep-work");
+            case "get_public_reviews":
+              if (publicReviewsMode === "pagination") {
+                return publicReviewsResponse(args.reviewListType ?? 0, args.maxIdx, args.synckey);
+              }
+              throw new Error("公开点评 mock 未启用");
             case "open_book_in_weread":
               return {
                 opened: false,
@@ -8499,6 +9002,9 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
       longStatsAction: options.longStatsAction ?? false,
       manyReadingAssistantThreads: options.manyReadingAssistantThreads ?? false,
       bookNotesMode: options.bookNotesMode ?? "ready",
+      publicReviewsMode: options.publicReviewsMode,
+      noteSynthesisMode: options.noteSynthesisMode,
+      embeddingIndexMode: options.embeddingIndexMode,
       notionProvisioningMode: options.notionProvisioningMode ?? "none",
       notionCoverBackfillMode: options.notionCoverBackfillMode,
       notionAnalysisNetworkError: options.notionAnalysisNetworkError ?? false,

@@ -28,11 +28,21 @@ import {
   createNotionStandardOutcomesDatabase,
   exportBookNotesSummariesTargets,
   exportReportImage,
+  getEmbeddingSettingsState,
+  saveEmbeddingSettings,
+  testEmbeddingConnection,
+  removeEmbeddingCredential,
+  getEmbeddingIndexState,
+  startEmbeddingIndex,
+  resumeEmbeddingIndex,
+  cancelEmbeddingIndex,
+  clearEmbeddingIndex,
   getAiSettingsState,
   getAiReviewFeedback,
   getAIAssetVersionDetail,
   getAIAssetVersionHistory,
   askReadingAssistant,
+  searchReadingAssistantNotes,
   getBestBookmarks,
   getBookDetail,
   getBookshelf,
@@ -71,6 +81,13 @@ import {
   saveWereadProxyUrl,
   searchBooks,
   summarizeBookNotes,
+  previewNoteSynthesis,
+  startNoteSynthesis,
+  getNoteSynthesisJob,
+  getActiveNoteSynthesisJob,
+  continueNoteSynthesis,
+  retryFailedNoteSynthesisBatches,
+  cancelNoteSynthesis,
   summarizeReadingRoute,
   syncShelf,
   testAiConnection,
@@ -81,6 +98,120 @@ import {
 const invokeMock = vi.mocked(invoke);
 const listenMock = vi.mocked(listen);
 const checkMock = vi.mocked(check);
+
+describe("M2 全量笔记归纳 API", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    vi.stubGlobal("__TAURI__", {});
+  });
+
+  test("routes preview and lifecycle commands with stable payloads", async () => {
+    const job = { id: "job-1", status: "queued" };
+    invokeMock
+      .mockResolvedValueOnce({ bookId: "book-1", totalCount: 4, estimatedBatchCount: 1 })
+      .mockResolvedValueOnce({ created: true, job })
+      .mockResolvedValueOnce(job)
+      .mockResolvedValueOnce(job)
+      .mockResolvedValueOnce(job)
+      .mockResolvedValueOnce(job);
+
+    await previewNoteSynthesis("book-1");
+    await startNoteSynthesis("book-1", "2026-08-04T13:00:00.000Z");
+    await getNoteSynthesisJob("job-1");
+    await getActiveNoteSynthesisJob("book-1");
+    await continueNoteSynthesis("job-1");
+    await retryFailedNoteSynthesisBatches("job-1");
+    await cancelNoteSynthesis("job-1");
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "preview_note_synthesis", { bookId: "book-1" });
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "start_note_synthesis", {
+      bookId: "book-1",
+      consentConfirmedAt: "2026-08-04T13:00:00.000Z"
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(3, "get_note_synthesis_job", { jobId: "job-1" });
+    expect(invokeMock).toHaveBeenNthCalledWith(4, "get_active_note_synthesis_job", { bookId: "book-1" });
+    expect(invokeMock).toHaveBeenNthCalledWith(5, "continue_note_synthesis", { jobId: "job-1" });
+    expect(invokeMock).toHaveBeenNthCalledWith(6, "retry_failed_note_synthesis_batches", { jobId: "job-1" });
+    expect(invokeMock).toHaveBeenNthCalledWith(7, "cancel_note_synthesis", { jobId: "job-1" });
+  });
+});
+
+describe("M3 语义索引 API", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    vi.stubGlobal("__TAURI__", {});
+  });
+
+  test("routes independent settings and index lifecycle commands", async () => {
+    const provider = {
+      baseUrl: "https://provider.example/v1",
+      model: "embed-v1",
+      providerLabel: "Example",
+      batchSize: 16,
+      remoteNoteEmbeddingEnabled: true,
+      consentConfirmedAt: "2026-08-06T00:00:00.000Z"
+    };
+    const profile = {
+      id: "profile-1",
+      providerKind: "openai-compatible",
+      modelId: "embed-v1",
+      dimensions: 1536,
+      status: "building",
+      totalDocumentCount: 10,
+      indexedDocumentCount: 0,
+      createdAt: "100",
+      updatedAt: "100"
+    };
+    invokeMock
+      .mockResolvedValueOnce({ credential: { hasCredential: true }, provider })
+      .mockResolvedValueOnce({ credential: { hasCredential: true }, provider })
+      .mockResolvedValueOnce({
+        isValid: true,
+        model: "embed-v1",
+        dimensions: 1536,
+        checkedAt: "100",
+        message: "连接成功"
+      })
+      .mockResolvedValueOnce({ credential: { hasCredential: false }, provider })
+      .mockResolvedValueOnce({ active: profile, latest: profile })
+      .mockResolvedValueOnce(profile)
+      .mockResolvedValueOnce(profile)
+      .mockResolvedValueOnce(profile)
+      .mockResolvedValueOnce({});
+
+    await getEmbeddingSettingsState();
+    await saveEmbeddingSettings({ apiKey: "embedding-test-key", ...provider });
+    await testEmbeddingConnection({ apiKey: "embedding-test-key", settings: provider });
+    await removeEmbeddingCredential(true);
+    await getEmbeddingIndexState();
+    await startEmbeddingIndex();
+    await resumeEmbeddingIndex("profile-1");
+    await cancelEmbeddingIndex("profile-1");
+    await clearEmbeddingIndex("profile-1", true);
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "get_embedding_settings_state");
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "save_embedding_settings", {
+      request: { apiKey: "embedding-test-key", ...provider }
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(3, "test_embedding_connection", {
+      apiKey: "embedding-test-key",
+      settings: provider
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(4, "remove_embedding_credential", { confirm: true });
+    expect(invokeMock).toHaveBeenNthCalledWith(5, "get_embedding_index_state");
+    expect(invokeMock).toHaveBeenNthCalledWith(6, "start_embedding_index");
+    expect(invokeMock).toHaveBeenNthCalledWith(7, "resume_embedding_index", {
+      profileId: "profile-1"
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(8, "cancel_embedding_index", {
+      profileId: "profile-1"
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(9, "clear_embedding_index", {
+      profileId: "profile-1",
+      confirm: true
+    });
+  });
+});
 
 describe("微信读书原文定位 API", () => {
   beforeEach(() => {
@@ -591,6 +722,221 @@ describe("settings export directory API", () => {
           ctaLabel: "生成书籍复盘"
         }
       }
+    });
+  });
+
+  test("reading assistant maps note count action and sampled context metadata", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    const request = {
+      scope: "bookNotes" as const,
+      entityId: "book_1",
+      message: "这本书一共有多少条笔记？",
+      enabledContext: ["rawBookNotes" as const]
+    };
+    invokeMock.mockResolvedValue({
+      threadId: "thread_note_count",
+      messageId: "msg_note_count",
+      answer: "本地可验证这本书共有 592 条笔记。",
+      suggestions: [],
+      recommendedBooks: [],
+      action: {
+        type: "noteCount",
+        payload: {
+          bookId: "book_1",
+          title: "深度工作",
+          totalCount: 592,
+          highlightCount: 530,
+          thoughtCount: 62,
+          message: "本地可验证笔记数量。"
+        }
+      },
+      usedContext: [
+        {
+          contextType: "rawBookNotes",
+          label: "原始笔记",
+          sourceRefs: ["notes:book_1"],
+          itemCount: 20,
+          availableItemCount: 592,
+          matchedItemCount: "not-a-number",
+          coverage: "sampled",
+          truncated: true
+        },
+        {
+          contextType: "rawBookNotes",
+          label: "非法覆盖值应被忽略",
+          sourceRefs: [],
+          itemCount: 1,
+          availableItemCount: -1,
+          coverage: "unknown"
+        },
+        {
+          contextType: "unknownContext",
+          label: "非法类型应被过滤",
+          itemCount: 1
+        }
+      ],
+      generatedAt: "100",
+      promptVersion: "reading-assistant-chat-v1.3",
+      providerModel: null,
+      basisNotice: "基于本地笔记数量。"
+    });
+
+    const result = await askReadingAssistant(request);
+
+    expect(result).toMatchObject({
+      action: {
+        type: "noteCount",
+        payload: {
+          bookId: "book_1",
+          title: "深度工作",
+          totalCount: 592,
+          highlightCount: 530,
+          thoughtCount: 62
+        }
+      },
+      usedContext: [
+        {
+          contextType: "rawBookNotes",
+          itemCount: 20,
+          availableItemCount: 592,
+          coverage: "sampled",
+          truncated: true
+        },
+        {
+          contextType: "rawBookNotes",
+          itemCount: 1
+        }
+      ]
+    });
+    expect(result.usedContext[1]).not.toHaveProperty("availableItemCount");
+    expect(result.usedContext[1]).not.toHaveProperty("coverage");
+    expect(result.usedContext).toHaveLength(2);
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("reading assistant maps local note search and preserves privacy-safe items", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    invokeMock.mockResolvedValue({
+      bookId: "book_1",
+      title: "深度工作",
+      queryText: "宽恕",
+      mode: "likeFallback",
+      coverage: "exhaustiveMatch",
+      matchedItemCount: 2,
+      includedItemCount: 2,
+      truncated: true,
+      hasMore: true,
+      nextCursor: "sort:1:100:note:highlight:h1",
+      noteTypes: ["highlight", "thought", "invalid"],
+      items: [
+        {
+          documentId: "note:highlight:h1",
+          sourceId: "h1",
+          noteType: "highlight",
+          chapterTitle: "第二章",
+          text: null,
+          createdAt: 100
+        },
+        {
+          documentId: "invalid",
+          sourceId: "invalid",
+          noteType: "unsupported"
+        }
+      ]
+    });
+
+    await expect(
+      searchReadingAssistantNotes({
+        bookId: "book_1",
+        query: "包含“宽恕”的所有笔记",
+        pageLimit: 1
+      })
+    ).resolves.toEqual({
+      bookId: "book_1",
+      title: "深度工作",
+      queryText: "宽恕",
+      mode: "likeFallback",
+      coverage: "exhaustiveMatch",
+      matchedItemCount: 2,
+      includedItemCount: 1,
+      truncated: true,
+      hasMore: true,
+      nextCursor: "sort:1:100:note:highlight:h1",
+      noteTypes: ["highlight", "thought"],
+      items: [
+        {
+          documentId: "note:highlight:h1",
+          sourceId: "h1",
+          noteType: "highlight",
+          chapterUid: undefined,
+          chapterTitle: "第二章",
+          text: undefined,
+          createdAt: 100
+        }
+      ]
+    });
+    expect(invokeMock).toHaveBeenCalledWith("search_reading_assistant_notes", {
+      request: {
+        bookId: "book_1",
+        query: "包含“宽恕”的所有笔记",
+        pageLimit: 1
+      }
+    });
+  });
+
+  test("reading assistant accepts hybrid note search modes", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    invokeMock.mockResolvedValue({
+      bookId: "book_1",
+      queryText: "宽恕",
+      mode: "hybridFallback",
+      coverage: "sampled",
+      matchedItemCount: 0,
+      includedItemCount: 0,
+      truncated: false,
+      hasMore: false,
+      noteTypes: [],
+      items: []
+    });
+
+    await expect(searchReadingAssistantNotes({ bookId: "book_1", query: "宽恕" })).resolves.toMatchObject({
+      mode: "hybridFallback",
+      coverage: "sampled"
+    });
+  });
+
+  test("reading assistant safely drops malformed note count action", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    invokeMock.mockResolvedValue({
+      threadId: "thread_malformed_note_count",
+      messageId: "msg_malformed_note_count",
+      answer: "无法读取结构化数量。",
+      suggestions: [],
+      recommendedBooks: [],
+      action: {
+        type: "noteCount",
+        payload: {
+          bookId: "book_1",
+          totalCount: -1,
+          highlightCount: 1,
+          thoughtCount: 0
+        }
+      },
+      usedContext: [],
+      generatedAt: "100",
+      promptVersion: "reading-assistant-chat-v1.3",
+      providerModel: null,
+      basisNotice: "基于本地上下文。"
+    });
+
+    await expect(askReadingAssistant({
+      scope: "bookNotes",
+      entityId: "book_1",
+      message: "这本书有多少条笔记？",
+      enabledContext: []
+    })).resolves.toMatchObject({
+      answer: "无法读取结构化数量。",
+      action: undefined
     });
   });
 

@@ -4,8 +4,8 @@ import { ToastProvider } from "../components/ToastProvider";
 import type { LocalBook } from "../lib/local-reader-types";
 import type { BookDetailResponse } from "../lib/reading-api";
 import { createReadingAssetLinkPair } from "../lib/reading-asset-links";
-import type { Chapter, ReadingProgress, ShelfEntry } from "../lib/types";
-import { BookDetailPage } from "./BookDetailPage";
+import type { Chapter, PublicReviewsResult, ReadingProgress, ShelfEntry } from "../lib/types";
+import { BookDetailPage, mergePublicReviewPages } from "./BookDetailPage";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn()
@@ -124,6 +124,44 @@ describe("book detail local version notice", () => {
 
     expect(markup).toContain("当前章节：第二章：深度工作");
   });
+
+  it("公开点评分页按 reviewId 去重并采用新游标", () => {
+    const current = makePublicReviewsResult({
+      reviews: [
+        { reviewId: "r1", content: "第一页点评" },
+        { reviewId: "r2", content: "重复点评" }
+      ],
+      synckey: 10,
+      nextMaxIdx: 2
+    });
+    const next = makePublicReviewsResult({
+      reviews: [
+        { reviewId: "r2", content: "重复点评" },
+        { reviewId: "r3", content: "第二页点评" }
+      ],
+      hasMore: false,
+      synckey: 20,
+      nextMaxIdx: 4
+    });
+
+    expect(mergePublicReviewPages(current, next)).toEqual({
+      ...next,
+      reviews: [current.reviews[0], current.reviews[1], next.reviews[1]]
+    });
+  });
+
+  it("公开点评筛选变化时不合并旧筛选结果", () => {
+    const current = makePublicReviewsResult({
+      reviewListType: 0,
+      reviews: [{ reviewId: "r1", content: "全部点评" }]
+    });
+    const next = makePublicReviewsResult({
+      reviewListType: 3,
+      reviews: [{ reviewId: "r2", content: "最新点评" }]
+    });
+
+    expect(mergePublicReviewPages(current, next)).toBe(next);
+  });
 });
 
 function renderPage(input: {
@@ -185,6 +223,21 @@ function makeDetailResponse(
     },
     chapters,
     deepLink: ""
+  };
+}
+
+function makePublicReviewsResult(
+  overrides: Partial<PublicReviewsResult> = {}
+): PublicReviewsResult {
+  return {
+    bookId: "weread-1",
+    reviewListType: 0,
+    hasMore: true,
+    has5Star: true,
+    has1Star: true,
+    hasRecent: true,
+    reviews: [],
+    ...overrides
   };
 }
 

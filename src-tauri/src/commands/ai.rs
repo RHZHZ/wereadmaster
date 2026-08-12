@@ -13,10 +13,11 @@ use crate::{
         BookNotesSummariesExportOptions, BookNotesSummariesTargetExportRequest,
         BookNotesSummariesTargetExportResponse, ExportAiBulkMarkdownResponse,
         ExportAiMarkdownResponse, LocalReaderSelectionQuestionInput,
-        LocalReaderSelectionQuestionResponse, ReadingAssistantAnswer, ReadingAssistantPreferences,
-        ReadingAssistantRequest, ReadingAssistantStreamRequest, ReadingAssistantThreadDetail,
-        ReadingAssistantThreadSummary, ReadingRouteRequest, ReadingRouteResponse,
-        ReadingRouteUpdateContext, ReadingStatsAiReviewResponse,
+        LocalReaderSelectionQuestionResponse, ReadingAssistantAnswer,
+        ReadingAssistantNoteSearchOutput, ReadingAssistantNoteSearchRequest,
+        ReadingAssistantPreferences, ReadingAssistantRequest, ReadingAssistantStreamRequest,
+        ReadingAssistantThreadDetail, ReadingAssistantThreadSummary, ReadingRouteRequest,
+        ReadingRouteResponse, ReadingRouteUpdateContext, ReadingStatsAiReviewResponse,
     },
 };
 
@@ -237,6 +238,17 @@ pub async fn ask_reading_assistant(
 ) -> Result<ReadingAssistantAnswer, AiCommandError> {
     AiService::new(app)
         .ask_reading_assistant(request)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn search_reading_assistant_notes(
+    app: AppHandle,
+    request: ReadingAssistantNoteSearchRequest,
+) -> Result<ReadingAssistantNoteSearchOutput, AiCommandError> {
+    AiService::new(app)
+        .search_reading_assistant_notes(request)
         .await
         .map_err(Into::into)
 }
@@ -626,6 +638,7 @@ mod tests {
     ];
     const READING_ASSISTANT_COMMANDS: &[&str] = &[
         "ask_reading_assistant",
+        "search_reading_assistant_notes",
         "ask_reading_assistant_stream",
         "cancel_reading_assistant_stream",
         "get_reading_assistant_preferences",

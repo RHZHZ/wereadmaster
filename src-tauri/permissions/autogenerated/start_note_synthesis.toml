@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-start-note-synthesis"
+description = "Enables the start_note_synthesis command without any pre-configured scope."
+commands.allow = ["start_note_synthesis"]
+
+[[permission]]
+identifier = "deny-start-note-synthesis"
+description = "Denies the start_note_synthesis command without any pre-configured scope."
+commands.deny = ["start_note_synthesis"]

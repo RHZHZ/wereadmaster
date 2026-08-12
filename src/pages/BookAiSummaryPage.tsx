@@ -48,6 +48,13 @@ import {
   getCommandErrorInfo,
   getCommandErrorMessage,
   getLatestBookNotesSummary,
+  getActiveNoteSynthesisJob,
+  getNoteSynthesisJob,
+  previewNoteSynthesis,
+  startNoteSynthesis,
+  continueNoteSynthesis,
+  retryFailedNoteSynthesisBatches,
+  cancelNoteSynthesis,
   saveAiReviewFeedback,
   summarizeBookNotes,
   patchReadingItemState,
@@ -73,7 +80,9 @@ import type {
   NotebookBook,
   AiReviewFeedbackExport,
   PreparedAssetUpdate,
-  ReadingItemState
+  ReadingItemState,
+  NoteSynthesisJob,
+  NoteSynthesisPreview
 } from "../lib/types";
 import type { SettingsCategoryId } from "./SettingsPage";
 
@@ -136,6 +145,11 @@ export function BookAiSummaryPage({
   const [notesInfo, setNotesInfo] = useState<NotesInfo>(() => notesInfoFromNotes(notes, targetBookId));
   const [notesError, setNotesError] = useState<CommandErrorInfo>();
   const [notesReloadToken, setNotesReloadToken] = useState(0);
+  const [synthesisPreview, setSynthesisPreview] = useState<NoteSynthesisPreview>();
+  const [synthesisJob, setSynthesisJob] = useState<NoteSynthesisJob>();
+  const [isLoadingSynthesis, setIsLoadingSynthesis] = useState(false);
+  const [synthesisConsent, setSynthesisConsent] = useState(false);
+  const [synthesisError, setSynthesisError] = useState<string>();
   const onNotesChangeRef = useRef(onNotesChange);
   const activeNotesBookIdRef = useRef(targetBookId);
   const [error, setError] = useState<CommandErrorInfo>();
@@ -157,6 +171,7 @@ export function BookAiSummaryPage({
   const sourceStats = summary?.sourceStats ?? sourceStatsFromNotes(readyNotes);
   const hasSourceStats = Boolean(summary || readyNotes);
   const hasSummary = Boolean(summary && activeSummaryResponse?.source !== "empty");
+  const hasActiveSynthesisJob = isActiveNoteSynthesisJob(synthesisJob);
   const canGenerate =
     Boolean(targetBookId) &&
     hasReadyNotesForTarget &&
@@ -165,7 +180,8 @@ export function BookAiSummaryPage({
     aiState?.credential.hasCredential === true &&
     !isLoadingSettings &&
     !isLoadingSummaryCache &&
-    status !== "generating";
+    status !== "generating" &&
+    !hasActiveSynthesisJob;
   const statusMeta = statusMetaFromState(
     status,
     Boolean(activeSummaryResponse?.errorMessage),
@@ -278,6 +294,83 @@ export function BookAiSummaryPage({
       isMounted = false;
     };
   }, [targetBookId, notesInfo.status, notesInfo.status === "ready" ? notesInfo.exportableCount : undefined]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadSynthesisState() {
+      if (!targetBookId || notesInfo.status !== "ready" || notesInfo.exportableCount <= 0) {
+        setSynthesisPreview(undefined);
+        setSynthesisJob(undefined);
+        return;
+      }
+
+      setIsLoadingSynthesis(true);
+      setSynthesisError(undefined);
+      try {
+        const [preview, activeJob] = await Promise.all([
+          previewNoteSynthesis(targetBookId),
+          getActiveNoteSynthesisJob(targetBookId)
+        ]);
+        if (isMounted) {
+          setSynthesisPreview(preview);
+          setSynthesisJob(activeJob ?? preview.activeJob);
+        }
+      } catch (loadError) {
+        if (isMounted) {
+          setSynthesisError(getCommandErrorMessage(loadError));
+        }
+      } finally {
+        if (isMounted) {
+          setIsLoadingSynthesis(false);
+        }
+      }
+    }
+
+    void loadSynthesisState();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [targetBookId, notesInfo.status, notesInfo.status === "ready" ? notesInfo.exportableCount : undefined]);
+
+  useEffect(() => {
+    let isMounted = true;
+    let timer: number | undefined;
+    const activeStatus = synthesisJob?.status;
+    if (!targetBookId || !synthesisJob || !["queued", "snapshotting", "batching", "summarizing", "merging", "partial"].includes(activeStatus ?? "")) {
+      return;
+    }
+
+    const refresh = async () => {
+      try {
+        const nextJob = await getNoteSynthesisJob(synthesisJob.id);
+        if (!isMounted) {
+          return;
+        }
+
+        setSynthesisJob(nextJob);
+        if (nextJob.status === "completed") {
+          const cached = await getLatestBookNotesSummary(targetBookId);
+          if (isMounted && cached) {
+            setSummaryResponse(cached);
+            setStatus(statusFromSource(cached.source));
+          }
+        }
+      } catch (loadError) {
+        if (isMounted) {
+          setSynthesisError(getCommandErrorMessage(loadError));
+        }
+      }
+    };
+    timer = window.setInterval(() => void refresh(), 5000);
+    return () => {
+      isMounted = false;
+      if (timer !== undefined) {
+        window.clearInterval(timer);
+      }
+    };
+  }, [targetBookId, synthesisJob?.status]);
 
   useEffect(() => {
     let isMounted = true;
@@ -426,6 +519,70 @@ export function BookAiSummaryPage({
     notesInfo.status,
     notesInfo.status === "ready" ? notesInfo.exportableCount : undefined
   ]);
+
+  async function handleStartSynthesis() {
+    if (!targetBookId || !synthesisConsent) {
+      return;
+    }
+
+    setIsLoadingSynthesis(true);
+    setSynthesisError(undefined);
+    try {
+      const result = await startNoteSynthesis(targetBookId, new Date().toISOString());
+      setSynthesisJob(result.job);
+      setSynthesisConsent(false);
+      showToast({
+        message: result.created ? "全量归纳快照已创建，请显式点击继续。" : "已恢复这本书的未完成全量归纳任务。",
+        tone: "success"
+      });
+    } catch (startError) {
+      setSynthesisError(getCommandErrorMessage(startError));
+    } finally {
+      setIsLoadingSynthesis(false);
+    }
+  }
+
+  async function handleContinueSynthesis(retryFailed: boolean) {
+    if (!synthesisJob) {
+      return;
+    }
+
+    setIsLoadingSynthesis(true);
+    setSynthesisError(undefined);
+    try {
+      const nextJob = retryFailed
+        ? await retryFailedNoteSynthesisBatches(synthesisJob.id)
+        : await continueNoteSynthesis(synthesisJob.id);
+      setSynthesisJob(nextJob);
+      if (nextJob.status === "completed" && targetBookId) {
+        const cached = await getLatestBookNotesSummary(targetBookId);
+        if (cached) {
+          setSummaryResponse(cached);
+          setStatus(statusFromSource(cached.source));
+        }
+      }
+    } catch (continueError) {
+      setSynthesisError(getCommandErrorMessage(continueError));
+    } finally {
+      setIsLoadingSynthesis(false);
+    }
+  }
+
+  async function handleCancelSynthesis() {
+    if (!synthesisJob) {
+      return;
+    }
+
+    setIsLoadingSynthesis(true);
+    setSynthesisError(undefined);
+    try {
+      setSynthesisJob(await cancelNoteSynthesis(synthesisJob.id));
+    } catch (cancelError) {
+      setSynthesisError(getCommandErrorMessage(cancelError));
+    } finally {
+      setIsLoadingSynthesis(false);
+    }
+  }
 
   async function handleGenerate(regenerate: boolean) {
     if (!targetBookId) {
@@ -688,6 +845,21 @@ export function BookAiSummaryPage({
           </div>
         </div>
       </section>
+
+      {synthesisPreview ? (
+        <NoteSynthesisJobCard
+          preview={synthesisPreview}
+          job={synthesisJob}
+          consent={synthesisConsent}
+          loading={isLoadingSynthesis}
+          error={synthesisError}
+          onConsentChange={setSynthesisConsent}
+          onStart={() => void handleStartSynthesis()}
+          onContinue={() => void handleContinueSynthesis(false)}
+          onRetry={() => void handleContinueSynthesis(true)}
+          onCancel={() => void handleCancelSynthesis()}
+        />
+      ) : null}
 
       <section className="ai-summary-boundary-strip" aria-label="书籍复盘数据边界">
         <Database aria-hidden="true" size={18} />
@@ -1106,6 +1278,136 @@ function ReflectionQuestionChecklist({
       }
       labels={reflectionFeedbackLabels}
     />
+  );
+}
+
+export function NoteSynthesisJobCard({
+  preview,
+  job,
+  consent,
+  loading,
+  error,
+  onConsentChange,
+  onStart,
+  onContinue,
+  onRetry,
+  onCancel
+}: {
+  preview: NoteSynthesisPreview;
+  job?: NoteSynthesisJob;
+  consent: boolean;
+  loading: boolean;
+  error?: string;
+  onConsentChange: (value: boolean) => void;
+  onStart: () => void;
+  onContinue: () => void;
+  onRetry: () => void;
+  onCancel: () => void;
+}) {
+  const statusLabel: Record<NoteSynthesisJob["status"], string> = {
+    queued: "已创建，等待继续",
+    snapshotting: "正在创建快照",
+    batching: "正在稳定分批",
+    summarizing: "正在归纳批次",
+    merging: "正在合并复盘",
+    completed: "全量归纳已完成",
+    partial: "部分批次失败",
+    failed: "任务失败",
+    cancelled: "任务已取消"
+  };
+  const activeJob = job ?? preview.activeJob;
+  const progress = activeJob
+    ? Math.round((activeJob.processedCount / Math.max(activeJob.totalCount, 1)) * 100)
+    : 0;
+  const canContinue = activeJob?.status === "queued";
+  const canRetry = Boolean(
+    activeJob &&
+      ["partial", "failed"].includes(activeJob.status) &&
+      activeJob.failedBatches.length > 0
+  );
+  const canCancel = Boolean(
+    activeJob &&
+      ["queued", "snapshotting", "batching", "summarizing", "merging", "partial"].includes(
+        activeJob.status
+      )
+  );
+
+  return (
+    <section className="ai-summary-boundary-strip ai-summary-synthesis-card" aria-label="全量笔记归纳任务">
+      <Database aria-hidden="true" size={20} />
+      <div className="ai-summary-synthesis-card__body">
+        <div className="ai-summary-synthesis-card__heading">
+          <div>
+            <strong>快照式全量笔记归纳</strong>
+            <p>本地共有 {preview.totalCount} 条笔记：划线 {preview.highlightCount} 条、想法 {preview.thoughtCount} 条，预计 {preview.estimatedBatchCount} 个批次。</p>
+          </div>
+          {activeJob ? <span className="ai-summary-badge ai-summary-badge--neutral">{statusLabel[activeJob.status]}</span> : null}
+        </div>
+
+        {activeJob ? (
+          <>
+            <div className="ai-summary-synthesis-progress" aria-label={`全量归纳进度 ${progress}%`}>
+              <span style={{ width: `${progress}%` }} />
+            </div>
+            <div className="ai-summary-synthesis-meta">
+              <span>已处理 {activeJob.processedCount} / {activeJob.totalCount}</span>
+              <span>批次 {activeJob.completedBatchCount} / {activeJob.batchCount}</span>
+              <span>模型：{activeJob.providerModel}</span>
+            </div>
+            {activeJob.errorMessage ? <p className="ai-summary-synthesis-error">{activeJob.errorMessage}</p> : null}
+            {activeJob.failedBatches.length > 0 ? (
+              <p className="ai-summary-synthesis-error">失败批次：{activeJob.failedBatches.map((batch) => batch.batchIndex + 1).join("、")}，可单独重试。</p>
+            ) : null}
+            <div className="ai-summary-actions">
+              {canContinue ? (
+                <button className="sync-button" type="button" onClick={onContinue} disabled={loading}>
+                  {loading ? <Loader2 aria-hidden="true" size={18} className="spin" /> : <RefreshCw aria-hidden="true" size={18} />}
+                  {activeJob.status === "queued" ? "继续调用 Provider" : "继续归纳"}
+                </button>
+              ) : null}
+              {canRetry ? (
+                <button className="secondary-action" type="button" onClick={onRetry} disabled={loading}>
+                  重试失败批次
+                </button>
+              ) : null}
+              {activeJob.status === "failed" && activeJob.failedBatches.length === 0 ? (
+                <p className="ai-summary-synthesis-error">该任务无法继续或重试；请创建新的快照任务后再归纳。</p>
+              ) : null}
+              {canCancel ? (
+                <button className="secondary-action" type="button" onClick={onCancel} disabled={loading}>
+                  取消任务
+                </button>
+              ) : null}
+            </div>
+          </>
+        ) : (
+          <>
+            <label className="ai-summary-synthesis-consent">
+              <input
+                type="checkbox"
+                checked={consent}
+                onChange={(event) => onConsentChange(event.target.checked)}
+              />
+              <span>我确认：创建任务后，快照中的原始笔记正文会发送给当前 Provider（{preview.providerLabel}）。</span>
+            </label>
+            <button className="sync-button" type="button" onClick={onStart} disabled={!consent || loading}>
+              {loading ? <Loader2 aria-hidden="true" size={18} className="spin" /> : <Sparkles aria-hidden="true" size={18} />}
+              创建全量归纳任务
+            </button>
+          </>
+        )}
+        {error ? <p className="ai-summary-synthesis-error" role="alert">{error}</p> : null}
+      </div>
+    </section>
+  );
+}
+
+export function isActiveNoteSynthesisJob(job: NoteSynthesisJob | undefined): boolean {
+  return Boolean(
+    job &&
+      ["queued", "snapshotting", "batching", "summarizing", "merging", "partial"].includes(
+        job.status
+      )
   );
 }
 

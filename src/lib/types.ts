@@ -76,6 +76,74 @@ export type AiSettingsState = {
   provider: AiProviderSettings;
 };
 
+export type EmbeddingCredentialState = {
+  hasCredential: boolean;
+};
+
+export type EmbeddingProviderSettings = {
+  baseUrl: string;
+  model: string;
+  providerLabel: string;
+  batchSize: number;
+  remoteNoteEmbeddingEnabled: boolean;
+  consentConfirmedAt?: string;
+};
+
+export type SaveEmbeddingSettingsRequest = {
+  apiKey?: string;
+  baseUrl: string;
+  model: string;
+  providerLabel?: string;
+  batchSize?: number;
+  remoteNoteEmbeddingEnabled: boolean;
+  consentConfirmedAt?: string;
+};
+
+export type EmbeddingSettingsState = {
+  credential: EmbeddingCredentialState;
+  provider: EmbeddingProviderSettings;
+};
+
+export type EmbeddingConnectionProbe = {
+  isValid: boolean;
+  model: string;
+  dimensions: number;
+  checkedAt: string;
+  message: string;
+};
+
+export type EmbeddingIndexStatus =
+  | "building"
+  | "ready"
+  | "failed"
+  | "cancelled"
+  | "superseded";
+
+export type EmbeddingIndexProfile = {
+  id: string;
+  providerKind: string;
+  modelId: string;
+  dimensions: number;
+  providerLabel?: string;
+  consentConfirmedAt?: string;
+  status: EmbeddingIndexStatus;
+  totalDocumentCount: number;
+  indexedDocumentCount: number;
+  cancelRequestedAt?: string;
+  lastStartedAt?: string;
+  errorCode?: string;
+  errorMessage?: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+};
+
+export type EmbeddingIndexState = {
+  active?: EmbeddingIndexProfile;
+  ready?: EmbeddingIndexProfile;
+  latest?: EmbeddingIndexProfile;
+};
+
 export type AiCachedOutputRecord = {
   feature: string;
   scopeId: string;
@@ -114,6 +182,10 @@ export type ReadingAssistantUsedContext = {
   label: string;
   sourceRefs: string[];
   itemCount: number;
+  availableItemCount?: number;
+  matchedItemCount?: number;
+  coverage?: "sampled" | "exhaustiveMatch" | "fullSnapshot";
+  truncated?: boolean;
 };
 
 export type ReadingAssistantMessageStatus = "pending" | "answered" | "failed";
@@ -159,6 +231,14 @@ export type ReadingAssistantActionOutput =
   | {
       type: "categoryBooks";
       payload: ReadingAssistantCategoryBooksOutput;
+    }
+  | {
+      type: "noteSearch";
+      payload: ReadingAssistantNoteSearchOutput;
+    }
+  | {
+      type: "noteCount";
+      payload: ReadingAssistantNoteCountOutput;
     };
 
 export type ReadingAssistantWereadSearchOutput = {
@@ -229,6 +309,47 @@ export type ReadingAssistantCategoryBookItem = {
   isFinished: boolean;
   readingTimeText?: string;
   source: string;
+};
+
+export type ReadingAssistantNoteCountOutput = {
+  bookId: string;
+  title?: string;
+  totalCount: number;
+  highlightCount: number;
+  thoughtCount: number;
+  message: string;
+};
+
+export type ReadingAssistantNoteSearchItem = {
+  documentId: string;
+  sourceId: string;
+  noteType: "highlight" | "thought";
+  chapterUid?: number;
+  chapterTitle?: string;
+  text?: string;
+  createdAt?: number;
+};
+
+export type ReadingAssistantNoteSearchOutput = {
+  bookId: string;
+  title?: string;
+  queryText: string;
+  mode: "recent" | "lexical" | "likeFallback" | "hybrid" | "hybridFallback";
+  coverage: "sampled" | "exhaustiveMatch";
+  matchedItemCount: number;
+  includedItemCount: number;
+  truncated: boolean;
+  hasMore: boolean;
+  nextCursor?: string;
+  noteTypes: Array<"highlight" | "thought">;
+  items: ReadingAssistantNoteSearchItem[];
+};
+
+export type ReadingAssistantNoteSearchRequest = {
+  bookId: string;
+  query: string;
+  cursor?: string;
+  pageLimit?: number;
 };
 
 export type ReadingAssistantMessageOutput = {
@@ -341,6 +462,83 @@ export type BookAiRepresentativeQuote = {
 
 export type BookAiSummarySource = "cache" | "generated" | "staleCache" | "empty";
 export type AiResponseFormatKind = "json_schema" | "json_object";
+
+export type NoteSynthesisJobStatus =
+  | "queued"
+  | "snapshotting"
+  | "batching"
+  | "summarizing"
+  | "merging"
+  | "completed"
+  | "partial"
+  | "failed"
+  | "cancelled";
+
+export type NoteSynthesisCoverageReport = {
+  totalCount: number;
+  processedCount: number;
+  pendingCount: number;
+  skippedEmptyCount: number;
+  skippedDuplicateCount: number;
+  failedItemCount: number;
+  fullSnapshot: boolean;
+};
+
+export type NoteSynthesisFailedBatch = {
+  batchIndex: number;
+  sourceCount: number;
+  attemptCount: number;
+  errorCode?: string;
+  errorMessage?: string;
+};
+
+export type NoteSynthesisResultReference = {
+  feature: string;
+  promptVersion: string;
+  inputHash: string;
+};
+
+export type NoteSynthesisJob = {
+  id: string;
+  bookId: string;
+  status: NoteSynthesisJobStatus;
+  sourceSnapshotHash: string;
+  totalCount: number;
+  processedCount: number;
+  batchCount: number;
+  completedBatchCount: number;
+  failedBatchCount: number;
+  providerModel: string;
+  providerLabel: string;
+  consentConfirmedAt: string;
+  cancelRequestedAt?: string;
+  lastStartedAt?: string;
+  finishedAt?: string;
+  errorCode?: string;
+  errorMessage?: string;
+  result?: NoteSynthesisResultReference;
+  failedBatches: NoteSynthesisFailedBatch[];
+  coverage: NoteSynthesisCoverageReport;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type NoteSynthesisPreview = {
+  bookId: string;
+  totalCount: number;
+  highlightCount: number;
+  thoughtCount: number;
+  estimatedBatchCount: number;
+  estimatedCharCount: number;
+  providerModel: string;
+  providerLabel: string;
+  activeJob?: NoteSynthesisJob;
+};
+
+export type StartNoteSynthesisResult = {
+  created: boolean;
+  job: NoteSynthesisJob;
+};
 
 export type BookAiSummaryResponse = {
   bookId: string;

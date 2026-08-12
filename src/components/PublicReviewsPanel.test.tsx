@@ -37,6 +37,43 @@ describe("PublicReviewsPanel", () => {
     expect(markup).toContain("值得继续读的一本书。");
   });
 
+  it("renders filters, all loaded reviews, pagination and a local pagination error", () => {
+    const markup = renderToStaticMarkup(
+      <PublicReviewsPanel
+        result={{
+          bookId: "b1",
+          reviewListType: 3,
+          hasMore: true,
+          has5Star: true,
+          has1Star: true,
+          hasRecent: true,
+          reviews: Array.from({ length: 6 }, (_, index) => ({
+            reviewId: `r${index + 1}`,
+            content: `公开点评 ${index + 1}`
+          }))
+        }}
+        reviewListType={3}
+        isLoading={false}
+        paginationError={{
+          code: "network_error",
+          message: "网络暂时不可用"
+        }}
+        onReviewListTypeChange={() => undefined}
+        onRefresh={() => undefined}
+        onLoadMore={() => undefined}
+      />
+    );
+
+    expect(markup).toContain('aria-label="点评筛选"');
+    expect(markup).toContain('aria-pressed="true">最新');
+    expect(markup).toContain("推荐");
+    expect(markup).toContain("不行");
+    expect(markup).toContain("一般");
+    expect(markup).toContain("公开点评 6");
+    expect(markup).toContain("加载更多点评");
+    expect(markup).toContain("更多点评加载失败：网络暂时不可用");
+  });
+
   it("keeps upgrade-required errors as a dedicated notice", () => {
     const markup = renderToStaticMarkup(
       <PublicReviewsPanel

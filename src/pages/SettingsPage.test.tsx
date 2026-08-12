@@ -136,6 +136,29 @@ describe("settings page onboarding artwork", () => {
     expect(markup.indexOf("测试兼容性")).toBeLessThan(markup.indexOf("AI 阅读助手"));
   });
 
+  it("shows a separate semantic index provider and privacy boundary", () => {
+    const markup = renderToStaticMarkup(
+      <ToastProvider>
+        <SettingsPage
+          open
+          credentialStatus={{ hasCredential: true }}
+          onCredentialChange={() => undefined}
+          preferences={DEFAULT_USER_PREFERENCES}
+          onPreferencesChange={() => undefined}
+          onClose={() => undefined}
+          preferredCategory="ai"
+        />
+      </ToastProvider>
+    );
+
+    expect(markup).toContain("语义索引");
+    expect(markup).toContain("Embedding Base URL");
+    expect(markup).toContain("独立保存，不复用聊天 AI Key");
+    expect(markup).toContain("允许发送笔记正文生成向量");
+    expect(markup).toContain("普通笔记查询会自动融合本地词法与语义召回");
+    expect(markup.indexOf("语义索引")).toBeLessThan(markup.indexOf("AI 阅读助手"));
+  });
+
   it("shows reading assistant privacy controls in AI settings", () => {
     const markup = renderToStaticMarkup(
       <ToastProvider>

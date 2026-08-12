@@ -24,6 +24,9 @@ import type {
   BookAiSummaryUpdateContext,
   BookAiSummaryListItem,
   BookAiSummaryResponse,
+  NoteSynthesisJob,
+  NoteSynthesisPreview,
+  StartNoteSynthesisResult,
   BookNotesSummariesExportOptions,
   BookNotesSummariesTargetExportRequest,
   BookNotesSummariesTargetExportResponse,
@@ -56,6 +59,12 @@ import type {
   ExportAiBulkMarkdownResponse,
   ExportAiMarkdownResponse,
   ExportTargetResult,
+  EmbeddingConnectionProbe,
+  EmbeddingIndexProfile,
+  EmbeddingIndexState,
+  EmbeddingProviderSettings,
+  EmbeddingSettingsState,
+  SaveEmbeddingSettingsRequest,
   Highlight,
   LocalDataState,
   AnalyzeNotionDatabaseResult,
@@ -107,7 +116,10 @@ import type {
   ReadingAssistantActionOutput,
   ReadingAssistantAnswer,
   ReadingAssistantCategoryBookItem,
+  ReadingAssistantNoteSearchOutput,
+  ReadingAssistantNoteSearchRequest,
   ReadingAssistantMessage,
+  ReadingAssistantUsedContext,
   ReadingAssistantMessageOutput,
   ReadingAssistantPreferences,
   ReadingAssistantRecommendedBook,
@@ -796,14 +808,63 @@ type ReadingAssistantCategoryBooksActionRecord = {
   books?: unknown;
 };
 
+type ReadingAssistantNoteCountActionRecord = {
+  bookId?: unknown;
+  title?: unknown;
+  totalCount?: unknown;
+  highlightCount?: unknown;
+  thoughtCount?: unknown;
+  message?: unknown;
+};
+
+type ReadingAssistantNoteSearchItemRecord = {
+  documentId?: unknown;
+  sourceId?: unknown;
+  noteType?: unknown;
+  chapterUid?: unknown;
+  chapterTitle?: unknown;
+  text?: unknown;
+  createdAt?: unknown;
+};
+
+type ReadingAssistantNoteSearchActionRecord = {
+  bookId?: unknown;
+  title?: unknown;
+  queryText?: unknown;
+  mode?: unknown;
+  coverage?: unknown;
+  matchedItemCount?: unknown;
+  includedItemCount?: unknown;
+  truncated?: unknown;
+  hasMore?: unknown;
+  nextCursor?: unknown;
+  noteTypes?: unknown;
+  items?: unknown;
+};
+
+type ReadingAssistantUsedContextRecord = {
+  contextType?: unknown;
+  label?: unknown;
+  sourceRefs?: unknown;
+  itemCount?: unknown;
+  availableItemCount?: unknown;
+  matchedItemCount?: unknown;
+  coverage?: unknown;
+  truncated?: unknown;
+};
+
 type ReadingAssistantActionOutputRecord = {
   type?: unknown;
   payload?: unknown;
 };
 
-type ReadingAssistantAnswerRecord = Omit<ReadingAssistantAnswer, "recommendedBooks" | "action"> & {
+type ReadingAssistantAnswerRecord = Omit<
+  ReadingAssistantAnswer,
+  "recommendedBooks" | "action" | "usedContext"
+> & {
   recommendedBooks?: unknown;
   action?: unknown;
+  usedContext?: unknown;
 };
 
 type ReadingAssistantMessageOutputRecord = Omit<
@@ -816,8 +877,9 @@ type ReadingAssistantMessageOutputRecord = Omit<
   action?: unknown;
 };
 
-type ReadingAssistantMessageRecord = Omit<ReadingAssistantMessage, "output"> & {
+type ReadingAssistantMessageRecord = Omit<ReadingAssistantMessage, "output" | "usedContext"> & {
   output?: unknown;
+  usedContext?: unknown;
 };
 
 type ReadingAssistantThreadDetailRecord = Omit<ReadingAssistantThreadDetail, "messages"> & {
@@ -1078,6 +1140,55 @@ export async function removeAiCredential(confirm: boolean): Promise<AiSettingsSt
   return invokeSettingsCommand<AiSettingsState>("remove_ai_credential", { confirm });
 }
 
+export async function getEmbeddingSettingsState(): Promise<EmbeddingSettingsState> {
+  return invokeSettingsCommand<EmbeddingSettingsState>("get_embedding_settings_state");
+}
+
+export async function saveEmbeddingSettings(
+  request: SaveEmbeddingSettingsRequest
+): Promise<EmbeddingSettingsState> {
+  return invokeSettingsCommand<EmbeddingSettingsState>("save_embedding_settings", { request });
+}
+
+export async function testEmbeddingConnection({
+  apiKey,
+  settings
+}: {
+  apiKey?: string;
+  settings?: EmbeddingProviderSettings;
+}): Promise<EmbeddingConnectionProbe> {
+  return invoke<EmbeddingConnectionProbe>("test_embedding_connection", { apiKey, settings });
+}
+
+export async function removeEmbeddingCredential(
+  confirm: boolean
+): Promise<EmbeddingSettingsState> {
+  return invokeSettingsCommand<EmbeddingSettingsState>("remove_embedding_credential", { confirm });
+}
+
+export async function getEmbeddingIndexState(): Promise<EmbeddingIndexState> {
+  return invoke<EmbeddingIndexState>("get_embedding_index_state");
+}
+
+export async function startEmbeddingIndex(): Promise<EmbeddingIndexProfile> {
+  return invoke<EmbeddingIndexProfile>("start_embedding_index");
+}
+
+export async function resumeEmbeddingIndex(profileId: string): Promise<EmbeddingIndexProfile> {
+  return invoke<EmbeddingIndexProfile>("resume_embedding_index", { profileId });
+}
+
+export async function cancelEmbeddingIndex(profileId: string): Promise<EmbeddingIndexProfile> {
+  return invoke<EmbeddingIndexProfile>("cancel_embedding_index", { profileId });
+}
+
+export async function clearEmbeddingIndex(
+  profileId: string | undefined,
+  confirm: boolean
+): Promise<EmbeddingIndexState> {
+  return invoke<EmbeddingIndexState>("clear_embedding_index", { profileId, confirm });
+}
+
 export async function getAiCachedOutput({
   feature,
   scopeId,
@@ -1097,6 +1208,20 @@ export async function getAiCachedOutput({
   });
 
   return response ?? undefined;
+}
+
+export async function searchReadingAssistantNotes(
+  request: ReadingAssistantNoteSearchRequest
+): Promise<ReadingAssistantNoteSearchOutput> {
+  if (!hasTauriRuntime()) {
+    throw new Error("笔记检索需要在桌面应用中使用。");
+  }
+  const response = await invoke<unknown>("search_reading_assistant_notes", { request });
+  const mapped = mapReadingAssistantNoteSearchPayload(response);
+  if (!mapped) {
+    throw new Error("本地笔记检索返回了无效结果。");
+  }
+  return mapped;
 }
 
 export async function askReadingAssistant(
@@ -1224,6 +1349,38 @@ export async function getLatestBookNotesSummary(bookId: string): Promise<BookAiS
   });
 
   return response ?? undefined;
+}
+
+export async function previewNoteSynthesis(bookId: string): Promise<NoteSynthesisPreview> {
+  return invoke<NoteSynthesisPreview>("preview_note_synthesis", { bookId });
+}
+
+export async function startNoteSynthesis(
+  bookId: string,
+  consentConfirmedAt: string
+): Promise<StartNoteSynthesisResult> {
+  return invoke<StartNoteSynthesisResult>("start_note_synthesis", { bookId, consentConfirmedAt });
+}
+
+export async function getNoteSynthesisJob(jobId: string): Promise<NoteSynthesisJob> {
+  return invoke<NoteSynthesisJob>("get_note_synthesis_job", { jobId });
+}
+
+export async function getActiveNoteSynthesisJob(bookId: string): Promise<NoteSynthesisJob | undefined> {
+  const response = await invoke<NoteSynthesisJob | null>("get_active_note_synthesis_job", { bookId });
+  return response ?? undefined;
+}
+
+export async function continueNoteSynthesis(jobId: string): Promise<NoteSynthesisJob> {
+  return invoke<NoteSynthesisJob>("continue_note_synthesis", { jobId });
+}
+
+export async function retryFailedNoteSynthesisBatches(jobId: string): Promise<NoteSynthesisJob> {
+  return invoke<NoteSynthesisJob>("retry_failed_note_synthesis_batches", { jobId });
+}
+
+export async function cancelNoteSynthesis(jobId: string): Promise<NoteSynthesisJob> {
+  return invoke<NoteSynthesisJob>("cancel_note_synthesis", { jobId });
 }
 
 export async function exportBookNotesSummaryMarkdown(
@@ -3429,7 +3586,8 @@ function mapReadingAssistantAnswer(record: ReadingAssistantAnswerRecord): Readin
     recommendedBooks: Array.isArray(record.recommendedBooks)
       ? record.recommendedBooks.map(mapReadingAssistantRecommendedBook).filter(isDefined)
       : [],
-    action: mapReadingAssistantActionOutput(record.action)
+    action: mapReadingAssistantActionOutput(record.action),
+    usedContext: mapReadingAssistantUsedContexts(record.usedContext)
   };
 }
 
@@ -3452,7 +3610,66 @@ function mapReadingAssistantMessage(record: unknown): ReadingAssistantMessage | 
   const candidate = record as ReadingAssistantMessageRecord;
   return {
     ...candidate,
+    usedContext: mapReadingAssistantUsedContexts(candidate.usedContext),
     output: mapReadingAssistantMessageOutput(candidate.output)
+  };
+}
+
+function mapReadingAssistantUsedContexts(record: unknown): ReadingAssistantUsedContext[] {
+  if (!Array.isArray(record)) {
+    return [];
+  }
+
+  return record.map(mapReadingAssistantUsedContext).filter(isDefined);
+}
+
+function mapReadingAssistantUsedContext(record: unknown): ReadingAssistantUsedContext | undefined {
+  if (!isObject(record)) {
+    return undefined;
+  }
+
+  const candidate = record as ReadingAssistantUsedContextRecord;
+  const contextType = stringValue(candidate.contextType);
+  const label = stringValue(candidate.label);
+  const itemCount = numberValue(candidate.itemCount);
+  if (!contextType || !label || itemCount === undefined || itemCount < 0) {
+    return undefined;
+  }
+
+  const allowedContextTypes: ReadingAssistantUsedContext["contextType"][] = [
+    "currentBook",
+    "bookNotesSummary",
+    "rawBookNotes",
+    "readingStats",
+    "readingPersona",
+    "candidateBooks",
+    "bookExclusionList",
+    "aiAssetSummary",
+    "conversationHistory",
+    "readingMemory"
+  ];
+  if (!allowedContextTypes.includes(contextType as ReadingAssistantUsedContext["contextType"])) {
+    return undefined;
+  }
+
+  const availableItemCount = numberValue(candidate.availableItemCount);
+  const matchedItemCount = numberValue(candidate.matchedItemCount);
+  const coverageValue = stringValue(candidate.coverage);
+  const coverage = ["sampled", "exhaustiveMatch", "fullSnapshot"].includes(coverageValue ?? "")
+    ? (coverageValue as ReadingAssistantUsedContext["coverage"])
+    : undefined;
+
+  return {
+    contextType: contextType as ReadingAssistantUsedContext["contextType"],
+    label,
+    sourceRefs: toStringArray(candidate.sourceRefs),
+    itemCount,
+    ...(availableItemCount !== undefined && availableItemCount >= 0
+      ? { availableItemCount }
+      : {}),
+    ...(matchedItemCount !== undefined && matchedItemCount >= 0 ? { matchedItemCount } : {}),
+    ...(coverage ? { coverage } : {}),
+    ...(typeof candidate.truncated === "boolean" ? { truncated: candidate.truncated } : {})
   };
 }
 
@@ -3529,6 +3746,15 @@ function mapReadingAssistantActionOutput(record: unknown): ReadingAssistantActio
 
   if (type === "categoryBooks") {
     return mapReadingAssistantCategoryBooksAction(candidate.payload);
+  }
+
+  if (type === "noteSearch") {
+    const payload = mapReadingAssistantNoteSearchPayload(candidate.payload);
+    return payload ? { type: "noteSearch", payload } : undefined;
+  }
+
+  if (type === "noteCount") {
+    return mapReadingAssistantNoteCountAction(candidate.payload);
   }
 
   return undefined;
@@ -3702,6 +3928,125 @@ function mapReadingAssistantCategoryBooksAction(
       books: Array.isArray(payload.books)
         ? payload.books.map(mapReadingAssistantCategoryBookItem).filter(isDefined)
         : []
+    }
+  };
+}
+
+function mapReadingAssistantNoteSearchPayload(
+  record: unknown
+): ReadingAssistantNoteSearchOutput | undefined {
+  if (!isObject(record)) {
+    return undefined;
+  }
+  const payload = record as ReadingAssistantNoteSearchActionRecord;
+  const bookId = stringValue(payload.bookId);
+  const queryText = stringValue(payload.queryText);
+  const matchedItemCount = nonNegativeNumberValue(payload.matchedItemCount);
+  const includedItemCount = nonNegativeNumberValue(payload.includedItemCount);
+  const mode = payload.mode;
+  const coverage = payload.coverage;
+  if (
+    !bookId ||
+    queryText === undefined ||
+    matchedItemCount === undefined ||
+    includedItemCount === undefined ||
+    (mode !== "recent" &&
+      mode !== "lexical" &&
+      mode !== "likeFallback" &&
+      mode !== "hybrid" &&
+      mode !== "hybridFallback") ||
+    (coverage !== "sampled" && coverage !== "exhaustiveMatch")
+  ) {
+    return undefined;
+  }
+  const items = Array.isArray(payload.items)
+    ? payload.items
+        .map(mapReadingAssistantNoteSearchItem)
+        .filter(isDefined)
+    : [];
+  const hasMore = booleanValue(payload.hasMore) && Boolean(stringValue(payload.nextCursor));
+  return {
+    bookId,
+    title: stringValue(payload.title),
+    queryText,
+    mode,
+    coverage,
+    matchedItemCount,
+    includedItemCount: items.length,
+    truncated: booleanValue(payload.truncated) || items.length < matchedItemCount,
+    hasMore,
+    nextCursor: hasMore ? stringValue(payload.nextCursor) : undefined,
+    noteTypes: Array.isArray(payload.noteTypes)
+      ? payload.noteTypes.filter(
+          (value): value is "highlight" | "thought" =>
+            value === "highlight" || value === "thought"
+        )
+      : [],
+    items
+  };
+}
+
+function mapReadingAssistantNoteSearchItem(
+  record: unknown
+): ReadingAssistantNoteSearchOutput["items"][number] | undefined {
+  if (!isObject(record)) {
+    return undefined;
+  }
+  const candidate = record as ReadingAssistantNoteSearchItemRecord;
+  const documentId = stringValue(candidate.documentId);
+  const sourceId = stringValue(candidate.sourceId);
+  const noteType = candidate.noteType;
+  if (
+    !documentId ||
+    !sourceId ||
+    (noteType !== "highlight" && noteType !== "thought")
+  ) {
+    return undefined;
+  }
+  return {
+    documentId,
+    sourceId,
+    noteType,
+    chapterUid: numberValue(candidate.chapterUid),
+    chapterTitle: stringValue(candidate.chapterTitle),
+    text: stringValue(candidate.text),
+    createdAt: numberValue(candidate.createdAt)
+  };
+}
+
+function mapReadingAssistantNoteCountAction(
+  record: unknown
+): ReadingAssistantActionOutput | undefined {
+  if (!isObject(record)) {
+    return undefined;
+  }
+
+  const payload = record as ReadingAssistantNoteCountActionRecord;
+  const bookId = stringValue(payload.bookId);
+  const totalCount = numberValue(payload.totalCount);
+  const highlightCount = numberValue(payload.highlightCount);
+  const thoughtCount = numberValue(payload.thoughtCount);
+  if (
+    !bookId ||
+    totalCount === undefined ||
+    totalCount < 0 ||
+    highlightCount === undefined ||
+    highlightCount < 0 ||
+    thoughtCount === undefined ||
+    thoughtCount < 0
+  ) {
+    return undefined;
+  }
+
+  return {
+    type: "noteCount",
+    payload: {
+      bookId,
+      title: stringValue(payload.title),
+      totalCount,
+      highlightCount,
+      thoughtCount,
+      message: stringValue(payload.message) ?? "本地可验证笔记数量"
     }
   };
 }

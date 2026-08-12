@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-resume-embedding-index"
+description = "Enables the resume_embedding_index command without any pre-configured scope."
+commands.allow = ["resume_embedding_index"]
+
+[[permission]]
+identifier = "deny-resume-embedding-index"
+description = "Denies the resume_embedding_index command without any pre-configured scope."
+commands.deny = ["resume_embedding_index"]

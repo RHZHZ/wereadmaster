@@ -30,6 +30,7 @@ import authorContactCode from "../assets/support/author-contact-code.jpg";
 import authorRewardCode from "../assets/support/author-reward-code.jpg";
 import { AppUpdateNotes } from "../components/AppUpdateNotes";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { SemanticIndexSettingsCard } from "../components/SemanticIndexSettingsCard";
 import { useToast } from "../components/ToastProvider";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { parseNotionObjectId } from "../lib/notion-page-id";
@@ -2259,6 +2260,7 @@ export function SettingsPage({
                     </section>
                   ) : null}
                 </section>
+                <SemanticIndexSettingsCard onError={setError} />
                 <section
                   className="settings-card settings-panel settings-control-panel reading-assistant-settings-card"
                   aria-label="AI 阅读助手"

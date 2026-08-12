@@ -24,15 +24,21 @@ import {
   cancelReadingAssistantStream,
   clearReadingAssistantHistory,
   getAiSettingsState,
+  getActiveNoteSynthesisJob,
+  getNoteSynthesisJob,
   getCommandErrorMessage,
   getReadingAssistantPreferences,
+  continueNoteSynthesis,
+  retryFailedNoteSynthesisBatches,
+  cancelNoteSynthesis,
   getReadingAssistantThread,
   listReadingItemStates,
   listReadingAssistantThreads,
   listenReadingAssistantStream,
   patchReadingItemState,
   saveReadingAssistantPreferences,
-  searchBooks
+  searchBooks,
+  searchReadingAssistantNotes
 } from "../lib/reading-api";
 import { useConfirm } from "./ConfirmProvider";
 import {
@@ -58,11 +64,13 @@ import type {
   ReadingAssistantAnswer,
   ReadingAssistantContextOption,
   ReadingAssistantMessage,
+  ReadingAssistantNoteSearchOutput,
   ReadingAssistantPreferences,
   ReadingAssistantRecommendedBook,
   ReadingAssistantWereadSearchResult,
   ReadingAssistantThreadSummary,
   ReadingAssistantUsedContext,
+  NoteSynthesisJob,
   SearchResult
 } from "../lib/types";
 
@@ -117,6 +125,40 @@ type ReadingAssistantCategoryBooksActionPayload = Extract<
   { type: "categoryBooks" }
 >["payload"];
 
+type ReadingAssistantNoteCountActionPayload = Extract<
+  ReadingAssistantActionOutput,
+  { type: "noteCount" }
+>["payload"];
+
+type ReadingAssistantNoteSearchActionPayload = Extract<
+  ReadingAssistantActionOutput,
+  { type: "noteSearch" }
+>["payload"];
+
+export function mergeReadingAssistantNoteSearchPages(
+  current: ReadingAssistantNoteSearchOutput,
+  next: ReadingAssistantNoteSearchOutput
+): ReadingAssistantNoteSearchOutput {
+  const seenDocumentIds = new Set<string>();
+  const items = [...current.items, ...next.items].filter((item) => {
+    if (seenDocumentIds.has(item.documentId)) {
+      return false;
+    }
+    seenDocumentIds.add(item.documentId);
+    return true;
+  });
+  const hasMore = next.hasMore && Boolean(next.nextCursor);
+
+  return {
+    ...current,
+    includedItemCount: items.length,
+    truncated: items.length < current.matchedItemCount,
+    hasMore,
+    nextCursor: hasMore ? next.nextCursor : undefined,
+    items
+  };
+}
+
 type ReadingAssistantCategoryBooksActionProps = {
   action: ReadingAssistantCategoryBooksActionPayload;
   onOpenBookDetail?: (bookId: string) => void;
@@ -168,6 +210,94 @@ export function getReadingAssistantContextLabel(
   context: ReadingAssistantContextOption
 ): string {
   return CONTEXT_LABELS[context];
+}
+
+export function formatReadingAssistantUsedContext(context: ReadingAssistantUsedContext): string {
+  if (context.contextType !== "rawBookNotes" || context.availableItemCount === undefined) {
+    return `${context.label} · ${context.itemCount}`;
+  }
+
+  const coverageLabel = context.coverage === "sampled" ? " · 抽样" : "";
+  return `${context.label} · 已调用 ${context.itemCount} / 本地 ${context.availableItemCount}${coverageLabel}`;
+}
+
+export function ReadingAssistantNoteCountAction({
+  action
+}: {
+  action: ReadingAssistantNoteCountActionPayload;
+}) {
+  return (
+    <div className="reading-assistant-stats-action reading-assistant-note-count-action">
+      <span className="reading-assistant-search-results-title">
+        {action.title ? `《${action.title}》` : "当前书"} · {action.message}
+      </span>
+      <div className="reading-assistant-stats-grid">
+        <span>
+          <strong>{action.totalCount}</strong>
+          <small>笔记总数</small>
+        </span>
+        <span>
+          <strong>{action.highlightCount}</strong>
+          <small>划线</small>
+        </span>
+        <span>
+          <strong>{action.thoughtCount}</strong>
+          <small>想法</small>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+export function ReadingAssistantNoteSearchAction({
+  action,
+  onLoadMore
+}: {
+  action: ReadingAssistantNoteSearchActionPayload;
+  onLoadMore?: (cursor: string) => void;
+}) {
+  const modeLabel =
+    action.mode === "recent"
+      ? "近期"
+      : action.mode === "likeFallback"
+        ? "LIKE 回退"
+        : action.mode === "hybrid"
+          ? "混合检索"
+          : action.mode === "hybridFallback"
+            ? "本地词法回退"
+            : "词法检索";
+  const coverageLabel = action.coverage === "exhaustiveMatch" ? "词面全部匹配" : "相关结果";
+  return (
+    <div className="reading-assistant-note-search-action">
+      <div className="reading-assistant-note-search-meta">
+        <strong>{action.title ? `《${action.title}》` : "当前书"}</strong>
+        <span>{action.queryText ? `主题：${action.queryText}` : "主题：近期笔记"}</span>
+        <span>{coverageLabel} · {modeLabel} · 匹配 {action.matchedItemCount} 条 · 展示 {action.includedItemCount} 条</span>
+      </div>
+      {action.items.length === 0 ? (
+        <p className="reading-assistant-search-status">没有找到匹配的本地笔记。</p>
+      ) : (
+        <div className="reading-assistant-note-search-list">
+          {action.items.map((item) => (
+            <article className="reading-assistant-note-search-item" key={item.documentId}>
+              <div className="reading-assistant-note-search-item-head">
+                <span>{item.noteType === "thought" ? "想法" : "划线"}</span>
+                {item.chapterTitle ? <small>{item.chapterTitle}</small> : null}
+              </div>
+              {item.text ? <p>{item.text}</p> : <small>已命中；开启原始笔记展示后可查看正文。</small>}
+            </article>
+          ))}
+        </div>
+      )}
+      {action.hasMore && action.nextCursor && onLoadMore ? (
+        <div className="reading-assistant-note-search-pagination">
+          <button className="text-button" type="button" onClick={() => onLoadMore(action.nextCursor!)}>
+            加载更多
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 const CONTEXT_LABELS: Record<ReadingAssistantContextOption, string> = {
@@ -527,6 +657,10 @@ export function ReadingAssistantPanel({
   const [editingUserMessage, setEditingUserMessage] = useState<EditingUserMessageState>();
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string>();
+  const [noteSynthesisJob, setNoteSynthesisJob] = useState<NoteSynthesisJob>();
+  const noteSynthesisJobRef = useRef<NoteSynthesisJob>();
+  const [isLoadingNoteSynthesis, setIsLoadingNoteSynthesis] = useState(false);
+  const [noteSynthesisError, setNoteSynthesisError] = useState<string>();
   const [candidateBookStates, setCandidateBookStates] = useState<
     Record<string, RecommendedBookCandidateState>
   >({});
@@ -536,6 +670,7 @@ export function ReadingAssistantPanel({
   const [actionSearchResultStates, setActionSearchResultStates] = useState<
     Record<string, RecommendedBookCandidateState>
   >({});
+  const [loadingNoteSearchMessageId, setLoadingNoteSearchMessageId] = useState<string>();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLSpanElement>(null);
   const composerModelRef = useRef<HTMLDivElement>(null);
@@ -671,6 +806,51 @@ export function ReadingAssistantPanel({
       setPanelView("chat");
     }
   }, [open]);
+
+  useEffect(() => {
+    noteSynthesisJobRef.current = noteSynthesisJob;
+  }, [noteSynthesisJob]);
+
+  useEffect(() => {
+    const supportsBookSynthesis =
+      (scope === "bookDetail" || scope === "bookNotes") && Boolean(entityId);
+    if (!open || !supportsBookSynthesis || !entityId) {
+      setNoteSynthesisJob(undefined);
+      setNoteSynthesisError(undefined);
+      return;
+    }
+
+    let isMounted = true;
+    let timer: number | undefined;
+    const refresh = async () => {
+      try {
+        const activeJob = await getActiveNoteSynthesisJob(entityId);
+        const currentJob = noteSynthesisJobRef.current;
+        const job =
+          activeJob ??
+          (currentJob?.bookId === entityId
+            ? await getNoteSynthesisJob(currentJob.id)
+            : undefined);
+        if (isMounted) {
+          setNoteSynthesisJob(job);
+          setNoteSynthesisError(undefined);
+        }
+      } catch (error) {
+        if (isMounted) {
+          setNoteSynthesisError(getCommandErrorMessage(error));
+        }
+      }
+    };
+
+    void refresh();
+    timer = window.setInterval(() => void refresh(), 5000);
+    return () => {
+      isMounted = false;
+      if (timer !== undefined) {
+        window.clearInterval(timer);
+      }
+    };
+  }, [entityId, open, scope]);
 
   useEffect(() => {
     if (!open) {
@@ -1487,6 +1667,53 @@ export function ReadingAssistantPanel({
       );
     }
 
+    if (message.action.type === "noteCount") {
+      return <ReadingAssistantNoteCountAction action={message.action.payload} />;
+    }
+
+    if (message.action.type === "noteSearch") {
+      const action = message.action.payload;
+      return (
+        <ReadingAssistantNoteSearchAction
+          action={action}
+          onLoadMore={
+            loadingNoteSearchMessageId === message.id
+              ? undefined
+              : (cursor) => {
+                  setLoadingNoteSearchMessageId(message.id);
+                  void searchReadingAssistantNotes({
+                    bookId: action.bookId,
+                    query: action.queryText,
+                    cursor,
+                    pageLimit: 20
+                  })
+                    .then((next) => {
+                      setMessages((current) =>
+                        current.map((item) => {
+                          if (item.id !== message.id || item.action?.type !== "noteSearch") {
+                            return item;
+                          }
+                          return {
+                            ...item,
+                            action: {
+                              type: "noteSearch",
+                              payload: mergeReadingAssistantNoteSearchPages(
+                                item.action.payload,
+                                next
+                              )
+                            }
+                          };
+                        })
+                      );
+                    })
+                    .catch((error) => setErrorMessage(getCommandErrorMessage(error)))
+                    .finally(() => setLoadingNoteSearchMessageId(undefined));
+                }
+          }
+        />
+      );
+    }
+
     if (message.action.type !== "wereadSearch") {
       return null;
     }
@@ -1644,10 +1871,56 @@ export function ReadingAssistantPanel({
     );
   }
 
+  async function handleContinueNoteSynthesis(retryFailed: boolean) {
+    if (!noteSynthesisJob) {
+      return;
+    }
+
+    setIsLoadingNoteSynthesis(true);
+    setNoteSynthesisError(undefined);
+    try {
+      const nextJob = retryFailed
+        ? await retryFailedNoteSynthesisBatches(noteSynthesisJob.id)
+        : await continueNoteSynthesis(noteSynthesisJob.id);
+      setNoteSynthesisJob(nextJob);
+    } catch (error) {
+      setNoteSynthesisError(getCommandErrorMessage(error));
+    } finally {
+      setIsLoadingNoteSynthesis(false);
+    }
+  }
+
+  async function handleCancelNoteSynthesis() {
+    if (!noteSynthesisJob) {
+      return;
+    }
+
+    setIsLoadingNoteSynthesis(true);
+    setNoteSynthesisError(undefined);
+    try {
+      setNoteSynthesisJob(await cancelNoteSynthesis(noteSynthesisJob.id));
+    } catch (error) {
+      setNoteSynthesisError(getCommandErrorMessage(error));
+    } finally {
+      setIsLoadingNoteSynthesis(false);
+    }
+  }
+
   function renderChatView() {
     return (
       <div className="reading-assistant-chat-view">
         {renderContextRow()}
+        <ReadingAssistantNoteSynthesisStatus
+          job={noteSynthesisJob}
+          loading={isLoadingNoteSynthesis}
+          error={noteSynthesisError}
+          onContinue={() => void handleContinueNoteSynthesis(false)}
+          onRetry={() => void handleContinueNoteSynthesis(true)}
+          onCancel={() => void handleCancelNoteSynthesis()}
+          onOpenBookReview={
+            entityId && onOpenBookReview ? () => onOpenBookReview(entityId) : undefined
+          }
+        />
 
         <div className="reading-assistant-messages">
           {messages.length === 0 ? (
@@ -1684,7 +1957,7 @@ export function ReadingAssistantPanel({
                   <div className="reading-assistant-used-context">
                     {message.usedContext.map((context, index) => (
                       <span key={`${message.id}-${context.contextType}-${index}`}>
-                        {context.label} · {context.itemCount}
+                        {formatReadingAssistantUsedContext(context)}
                       </span>
                     ))}
                   </div>
@@ -1956,6 +2229,106 @@ export function ReadingAssistantPanel({
       {renderHeader()}
       {renderCurrentView()}
     </aside>
+  );
+}
+
+export function ReadingAssistantNoteSynthesisStatus({
+  job,
+  loading,
+  error,
+  onContinue,
+  onRetry,
+  onCancel,
+  onOpenBookReview
+}: {
+  job?: NoteSynthesisJob;
+  loading: boolean;
+  error?: string;
+  onContinue: () => void;
+  onRetry: () => void;
+  onCancel: () => void;
+  onOpenBookReview?: () => void;
+}) {
+  if (!job && !error) {
+    return null;
+  }
+
+  const statusLabel: Record<NoteSynthesisJob["status"], string> = {
+    queued: "全量归纳已创建，等待继续",
+    snapshotting: "正在创建笔记快照",
+    batching: "正在稳定分批",
+    summarizing: "正在归纳批次",
+    merging: "正在合并书籍复盘",
+    completed: "全量归纳已完成",
+    partial: "部分批次失败",
+    failed: "全量归纳失败",
+    cancelled: "全量归纳已取消"
+  };
+  const progress = job
+    ? Math.round((job.processedCount / Math.max(job.totalCount, 1)) * 100)
+    : 0;
+  const canContinue = job?.status === "queued";
+  const canRetry = Boolean(
+    job &&
+      ["partial", "failed"].includes(job.status) &&
+      job.failedBatches.length > 0
+  );
+  const canCancel = Boolean(
+    job &&
+      ["queued", "snapshotting", "batching", "summarizing", "merging", "partial"].includes(
+        job.status
+      )
+  );
+
+  return (
+    <section className="reading-assistant-synthesis-status" aria-label="全量笔记归纳任务">
+      <div>
+        <strong>{job ? statusLabel[job.status] : "无法读取全量归纳任务"}</strong>
+        {job ? (
+          <p>
+            已处理 {job.processedCount} / {job.totalCount} 条，完成批次 {job.completedBatchCount} / {job.batchCount}。
+          </p>
+        ) : null}
+      </div>
+      {job ? (
+        <div
+          className="reading-assistant-synthesis-progress"
+          aria-label={`全量归纳进度 ${progress}%`}
+        >
+          <span style={{ width: `${progress}%` }} />
+        </div>
+      ) : null}
+      {job?.errorMessage ? <p className="reading-assistant-synthesis-error">{job.errorMessage}</p> : null}
+      {job?.failedBatches.length ? (
+        <p className="reading-assistant-synthesis-error">
+          失败批次：{job.failedBatches.map((batch) => batch.batchIndex + 1).join("、")}
+        </p>
+      ) : null}
+      {error ? <p className="reading-assistant-synthesis-error" role="alert">{error}</p> : null}
+      <div className="reading-assistant-synthesis-actions">
+        {canContinue ? (
+          <button className="text-button" type="button" onClick={onContinue} disabled={loading}>
+            {loading ? <Loader2 aria-hidden="true" className="spin" size={14} /> : <RefreshCw aria-hidden="true" size={14} />}
+            继续归纳
+          </button>
+        ) : null}
+        {canRetry ? (
+          <button className="text-button" type="button" onClick={onRetry} disabled={loading}>
+            重试失败批次
+          </button>
+        ) : null}
+        {canCancel ? (
+          <button className="text-button" type="button" onClick={onCancel} disabled={loading}>
+            取消
+          </button>
+        ) : null}
+        {job?.status === "completed" && onOpenBookReview ? (
+          <button className="text-button" type="button" onClick={onOpenBookReview}>
+            查看书籍复盘
+          </button>
+        ) : null}
+      </div>
+    </section>
   );
 }
 

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-embedding-index-state"
+description = "Enables the get_embedding_index_state command without any pre-configured scope."
+commands.allow = ["get_embedding_index_state"]
+
+[[permission]]
+identifier = "deny-get-embedding-index-state"
+description = "Denies the get_embedding_index_state command without any pre-configured scope."
+commands.deny = ["get_embedding_index_state"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-continue-note-synthesis"
+description = "Enables the continue_note_synthesis command without any pre-configured scope."
+commands.allow = ["continue_note_synthesis"]
+
+[[permission]]
+identifier = "deny-continue-note-synthesis"
+description = "Denies the continue_note_synthesis command without any pre-configured scope."
+commands.deny = ["continue_note_synthesis"]

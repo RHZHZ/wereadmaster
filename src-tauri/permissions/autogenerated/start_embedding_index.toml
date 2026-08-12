@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-start-embedding-index"
+description = "Enables the start_embedding_index command without any pre-configured scope."
+commands.allow = ["start_embedding_index"]
+
+[[permission]]
+identifier = "deny-start-embedding-index"
+description = "Denies the start_embedding_index command without any pre-configured scope."
+commands.deny = ["start_embedding_index"]

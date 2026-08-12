@@ -43,6 +43,7 @@ use crate::{
             AiCachedOutputRecord, BookAiSummary, BookAiSummaryResponse, BookAiSummarySource,
             BOOK_NOTES_SUMMARY_FEATURE, BOOK_NOTES_SUMMARY_PROMPT_VERSION,
         },
+        retrieval::rebuild_book_retrieval_documents,
         weread_deep_link::build_weread_source_link,
         weread_gateway::{WereadApi, WereadGateway},
     },
@@ -355,6 +356,14 @@ impl NotesService {
                     .mark_success(NOTES_SECTION, &completed_at)
                     .map_err(AppError::from)?;
                 transaction.commit().map_err(AppError::from)?;
+
+                // 检索语料和 FTS 都是可重建的派生数据。维护失败不能反向回滚
+                // 已成功提交的源笔记、原始缓存和同步状态。
+                maintain_book_retrieval_index_non_blocking(
+                    &connection,
+                    &normalized_book_id,
+                    &completed_at,
+                );
 
                 let book =
                     read_notebook_book(&connection, &normalized_book_id)?.or(bookmark_record.book);
@@ -1688,6 +1697,14 @@ fn bulk_external_target_failure(target: ExternalExportTarget, message: &str) -> 
     }
 }
 
+fn maintain_book_retrieval_index_non_blocking(
+    connection: &rusqlite::Connection,
+    book_id: &str,
+    indexed_at: &str,
+) {
+    let _ = rebuild_book_retrieval_documents(connection, book_id, indexed_at);
+}
+
 fn current_unix_seconds() -> String {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1700,11 +1717,14 @@ mod tests {
     use crate::{
         db::initialize_schema,
         mappers::notes::{map_notebook_overview_page, HighlightRecord, ThoughtRecord},
+        repositories::sync_state::SyncStateRepository,
+        services::retrieval::{plan_note_retrieval, search_book_notes},
     };
 
     use super::{
-        read_highlights, read_notebook_book, read_thoughts, replace_highlights,
-        replace_notebook_books, replace_thoughts, sanitize_file_stem,
+        maintain_book_retrieval_index_non_blocking, read_highlights, read_notebook_book,
+        read_thoughts, replace_highlights, replace_notebook_books, replace_thoughts,
+        sanitize_file_stem, NOTES_SECTION,
     };
 
     #[test]
@@ -1809,5 +1829,64 @@ mod tests {
     fn sanitize_file_stem_removes_windows_forbidden_characters() {
         assert_eq!(sanitize_file_stem("a:b/c*?", "fallback"), "abc");
         assert_eq!(sanitize_file_stem("...", "fallback"), "fallback");
+    }
+
+    #[test]
+    fn retrieval_index_rebuilds_from_committed_note_sources() {
+        let connection = rusqlite::Connection::open_in_memory().expect("database should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        let highlight = HighlightRecord {
+            bookmark_id: "h1".to_string(),
+            book_id: "b1".to_string(),
+            chapter_uid: Some(1),
+            chapter_title: Some("第一章".to_string()),
+            mark_text: "深度工作".to_string(),
+            create_time: Some(100),
+            range_text: None,
+            deep_link: None,
+            raw_json: "{}".to_string(),
+        };
+        replace_highlights(&connection, "b1", &[highlight], "100").expect("highlight should save");
+        maintain_book_retrieval_index_non_blocking(&connection, "b1", "100");
+
+        let plan = plan_note_retrieval("找出与深度有关的笔记");
+        let result = search_book_notes(&connection, "b1", &plan, None, None)
+            .expect("indexed notes should be searchable");
+        assert_eq!(result.matched_item_count, 1);
+        assert_eq!(result.hits[0].source_id, "h1");
+    }
+
+    #[test]
+    fn retrieval_index_failure_does_not_rollback_note_sources() {
+        let connection = rusqlite::Connection::open_in_memory().expect("database should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        let thought = ThoughtRecord {
+            review_id: "t1".to_string(),
+            book_id: "b1".to_string(),
+            content: "索引失败时想法仍应保留".to_string(),
+            abstract_text: None,
+            create_time: Some(100),
+            star: None,
+            chapter_name: Some("第一章".to_string()),
+            chapter_uid: None,
+            range_text: None,
+            deep_link: None,
+            is_finish: None,
+            raw_json: "{}".to_string(),
+        };
+        replace_thoughts(&connection, "b1", &[thought], "100").expect("thought should save");
+        connection
+            .execute("DROP TABLE retrieval_documents", [])
+            .expect("derived table should be removable");
+
+        maintain_book_retrieval_index_non_blocking(&connection, "b1", "100");
+
+        let stored = read_thoughts(&connection, "b1").expect("source notes should remain readable");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].review_id, "t1");
+        let sync_state = SyncStateRepository::new(&connection)
+            .get(NOTES_SECTION)
+            .expect("sync state should be queryable");
+        assert!(sync_state.is_none());
     }
 }

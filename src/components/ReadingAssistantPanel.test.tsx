@@ -4,7 +4,12 @@ import {
   ReadingAssistantBookReviewAction,
   ReadingAssistantCategoryBooksAction,
   ReadingAssistantMarkdownLite,
+  ReadingAssistantNoteCountAction,
+  ReadingAssistantNoteSearchAction,
+  ReadingAssistantNoteSynthesisStatus,
+  mergeReadingAssistantNoteSearchPages,
   ReadingAssistantRecommendedBookCard,
+  formatReadingAssistantUsedContext,
   getReadingAssistantContextLabel
 } from "./ReadingAssistantPanel";
 
@@ -64,6 +69,182 @@ describe("ReadingAssistantBookReviewAction", () => {
 
     expect(markup).toContain("富爸爸穷爸爸");
     expect(markup).not.toContain("reading-assistant-book-review-button");
+  });
+});
+
+describe("ReadingAssistant M2 note synthesis status", () => {
+  it("renders queued progress and only exposes an explicit continue action", () => {
+    const markup = renderToStaticMarkup(
+      <ReadingAssistantNoteSynthesisStatus
+        job={{
+          id: "job-1",
+          bookId: "book-1",
+          status: "queued",
+          sourceSnapshotHash: "hash",
+          totalCount: 12,
+          processedCount: 0,
+          batchCount: 2,
+          completedBatchCount: 0,
+          failedBatchCount: 0,
+          providerModel: "test-model",
+          providerLabel: "Test Provider",
+          consentConfirmedAt: "100",
+          failedBatches: [],
+          coverage: {
+            totalCount: 12,
+            processedCount: 0,
+            pendingCount: 12,
+            skippedEmptyCount: 0,
+            skippedDuplicateCount: 0,
+            failedItemCount: 0,
+            fullSnapshot: false
+          },
+          createdAt: "100",
+          updatedAt: "100"
+        }}
+        loading={false}
+        onContinue={() => undefined}
+        onRetry={() => undefined}
+        onCancel={() => undefined}
+      />
+    );
+
+    expect(markup).toContain("全量归纳已创建，等待继续");
+    expect(markup).toContain("已处理 0 / 12 条");
+    expect(markup).toContain("继续归纳");
+    expect(markup).toContain("取消");
+    expect(markup).not.toContain("重试失败批次");
+  });
+
+  it("renders failed batches with retry and never offers terminal continue", () => {
+    const markup = renderToStaticMarkup(
+      <ReadingAssistantNoteSynthesisStatus
+        job={{
+          id: "job-2",
+          bookId: "book-1",
+          status: "failed",
+          sourceSnapshotHash: "hash",
+          totalCount: 12,
+          processedCount: 6,
+          batchCount: 2,
+          completedBatchCount: 1,
+          failedBatchCount: 1,
+          providerModel: "test-model",
+          providerLabel: "Test Provider",
+          consentConfirmedAt: "100",
+          failedBatches: [{ batchIndex: 1, sourceCount: 6, attemptCount: 1 }],
+          coverage: {
+            totalCount: 12,
+            processedCount: 6,
+            pendingCount: 6,
+            skippedEmptyCount: 0,
+            skippedDuplicateCount: 0,
+            failedItemCount: 0,
+            fullSnapshot: false
+          },
+          createdAt: "100",
+          updatedAt: "100"
+        }}
+        loading={false}
+        onContinue={() => undefined}
+        onRetry={() => undefined}
+        onCancel={() => undefined}
+      />
+    );
+
+    expect(markup).toContain("失败批次：2");
+    expect(markup).toContain("重试失败批次");
+    expect(markup).not.toContain("继续归纳");
+  });
+
+  it("keeps a completed task actionable for opening the book review", () => {
+    const markup = renderToStaticMarkup(
+      <ReadingAssistantNoteSynthesisStatus
+        job={{
+          id: "job-3",
+          bookId: "book-1",
+          status: "completed",
+          sourceSnapshotHash: "hash",
+          totalCount: 12,
+          processedCount: 12,
+          batchCount: 2,
+          completedBatchCount: 2,
+          failedBatchCount: 0,
+          providerModel: "test-model",
+          providerLabel: "Test Provider",
+          consentConfirmedAt: "100",
+          failedBatches: [],
+          coverage: {
+            totalCount: 12,
+            processedCount: 12,
+            pendingCount: 0,
+            skippedEmptyCount: 0,
+            skippedDuplicateCount: 0,
+            failedItemCount: 0,
+            fullSnapshot: true
+          },
+          createdAt: "100",
+          updatedAt: "100"
+        }}
+        loading={false}
+        onContinue={() => undefined}
+        onRetry={() => undefined}
+        onCancel={() => undefined}
+        onOpenBookReview={() => undefined}
+      />
+    );
+
+    expect(markup).toContain("全量归纳已完成");
+    expect(markup).toContain("查看书籍复盘");
+    expect(markup).not.toContain("继续归纳");
+  });
+});
+
+describe("ReadingAssistant M0 note context", () => {
+  it("formats sampled raw notes with included and available counts", () => {
+    expect(
+      formatReadingAssistantUsedContext({
+        contextType: "rawBookNotes",
+        label: "原始笔记",
+        sourceRefs: ["notes:book_1"],
+        itemCount: 20,
+        availableItemCount: 592,
+        coverage: "sampled",
+        truncated: true
+      })
+    ).toBe("原始笔记 · 已调用 20 / 本地 592 · 抽样");
+  });
+
+  it("keeps the legacy context format when no available count exists", () => {
+    expect(
+      formatReadingAssistantUsedContext({
+        contextType: "rawBookNotes",
+        label: "原始笔记片段",
+        sourceRefs: ["notes:book_1"],
+        itemCount: 20
+      })
+    ).toBe("原始笔记片段 · 20");
+  });
+
+  it("renders deterministic note counts", () => {
+    const markup = renderToStaticMarkup(
+      <ReadingAssistantNoteCountAction
+        action={{
+          bookId: "book_1",
+          title: "深度工作",
+          totalCount: 592,
+          highlightCount: 530,
+          thoughtCount: 62,
+          message: "本地可验证笔记数量"
+        }}
+      />
+    );
+
+    expect(markup).toContain("《深度工作》");
+    expect(markup).toContain("592");
+    expect(markup).toContain("530");
+    expect(markup).toContain("62");
+    expect(markup).toContain("笔记总数");
   });
 });
 
@@ -173,6 +354,106 @@ describe("ReadingAssistantCategoryBooksAction", () => {
     expect(markup).toContain("<button");
     expect(markup).toContain("reading-assistant-category-book is-clickable");
     expect(markup).toContain("小狗钱钱");
+  });
+
+  it("renders note search coverage and keeps protected note text hidden", () => {
+    const markup = renderToStaticMarkup(
+      <ReadingAssistantNoteSearchAction
+        action={{
+          bookId: "book_1",
+          title: "深度工作",
+          queryText: "宽恕",
+          mode: "lexical",
+          coverage: "exhaustiveMatch",
+          matchedItemCount: 2,
+          includedItemCount: 1,
+          truncated: true,
+          hasMore: false,
+          noteTypes: ["highlight", "thought"],
+          items: [
+            {
+              documentId: "note:highlight:h1",
+              sourceId: "h1",
+              noteType: "highlight",
+              chapterTitle: "第二章"
+            }
+          ]
+        }}
+      />
+    );
+
+    expect(markup).toContain("词面全部匹配");
+    expect(markup).toContain("匹配 2 条 · 展示 1 条");
+    expect(markup).toContain("第二章");
+    expect(markup).toContain("开启原始笔记展示后可查看正文");
+  });
+
+  it("labels hybrid fallback note searches as local lexical retrieval", () => {
+    const markup = renderToStaticMarkup(
+      <ReadingAssistantNoteSearchAction
+        action={{
+          bookId: "book_1",
+          queryText: "宽恕",
+          mode: "hybridFallback",
+          coverage: "sampled",
+          matchedItemCount: 1,
+          includedItemCount: 1,
+          truncated: false,
+          hasMore: false,
+          noteTypes: ["highlight"],
+          items: []
+        }}
+      />
+    );
+
+    expect(markup).toContain("本地词法回退");
+  });
+
+  it("deduplicates replayed note pages and derives the displayed count", () => {
+    const current = {
+      bookId: "book_1",
+      queryText: "宽恕",
+      mode: "lexical" as const,
+      coverage: "exhaustiveMatch" as const,
+      matchedItemCount: 3,
+      includedItemCount: 1,
+      truncated: true,
+      hasMore: true,
+      nextCursor: "sort:1:100:note:highlight:h1",
+      noteTypes: ["highlight" as const],
+      items: [
+        {
+          documentId: "note:highlight:h1",
+          sourceId: "h1",
+          noteType: "highlight" as const
+        }
+      ]
+    };
+    const next = {
+      ...current,
+      includedItemCount: 2,
+      hasMore: false,
+      nextCursor: undefined,
+      items: [
+        current.items[0],
+        {
+          documentId: "note:thought:t1",
+          sourceId: "t1",
+          noteType: "thought" as const
+        }
+      ]
+    };
+
+    expect(mergeReadingAssistantNoteSearchPages(current, next)).toMatchObject({
+      includedItemCount: 2,
+      truncated: true,
+      hasMore: false,
+      nextCursor: undefined,
+      items: [
+        { documentId: "note:highlight:h1" },
+        { documentId: "note:thought:t1" }
+      ]
+    });
   });
 
   it("keeps category books static when the book is not available in the shelf", () => {

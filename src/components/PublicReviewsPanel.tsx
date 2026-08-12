@@ -6,16 +6,34 @@ import { SkillUpgradeNotice } from "./SkillUpgradeNotice";
 
 type PublicReviewsPanelProps = {
   result?: PublicReviewsResult;
+  reviewListType?: number;
   isLoading: boolean;
+  isLoadingMore?: boolean;
   error?: CommandErrorInfo;
+  paginationError?: CommandErrorInfo;
+  onReviewListTypeChange?: (reviewListType: number) => void;
   onRefresh: () => void;
+  onLoadMore?: () => void;
 };
+
+const publicReviewFilters = [
+  { value: 0, label: "全部" },
+  { value: 1, label: "推荐" },
+  { value: 2, label: "不行" },
+  { value: 3, label: "最新" },
+  { value: 4, label: "一般" }
+] as const;
 
 export function PublicReviewsPanel({
   result,
+  reviewListType = result?.reviewListType ?? 0,
   isLoading,
+  isLoadingMore = false,
   error,
-  onRefresh
+  paginationError,
+  onReviewListTypeChange,
+  onRefresh,
+  onLoadMore
 }: PublicReviewsPanelProps) {
   if (error?.code === "upgrade_required") {
     return <SkillUpgradeNotice error={error} onRetry={onRefresh} className="public-content-panel public-reviews-panel" />;
@@ -31,10 +49,30 @@ export function PublicReviewsPanel({
           <h3>其他读者怎么看</h3>
           <p>来自微信读书公开内容，不计入个人笔记。</p>
         </div>
-        <button className="secondary-action" type="button" onClick={onRefresh} disabled={isLoading}>
+        <button
+          className="secondary-action"
+          type="button"
+          onClick={onRefresh}
+          disabled={isLoading || isLoadingMore}
+        >
           {isLoading ? <Loader2 aria-hidden="true" size={16} className="spin" /> : <RefreshCw aria-hidden="true" size={16} />}
           {isLoading ? "加载中" : "刷新点评"}
         </button>
+      </div>
+
+      <div className="segmented-control public-review-filters" role="group" aria-label="点评筛选">
+        {publicReviewFilters.map((filter) => (
+          <button
+            key={filter.value}
+            className={reviewListType === filter.value ? "is-active" : undefined}
+            type="button"
+            aria-pressed={reviewListType === filter.value}
+            onClick={() => onReviewListTypeChange?.(filter.value)}
+            disabled={isLoading || isLoadingMore}
+          >
+            {filter.label}
+          </button>
+        ))}
       </div>
 
       {error ? (
@@ -61,10 +99,31 @@ export function PublicReviewsPanel({
 
       {reviews.length > 0 ? (
         <ul className="public-content-list public-review-list">
-          {reviews.slice(0, 5).map((review) => (
+          {reviews.map((review) => (
             <PublicReviewItem key={review.reviewId} review={review} />
           ))}
         </ul>
+      ) : null}
+
+      {paginationError ? (
+        <div className="public-content-status is-error" role="status">
+          <AlertCircle aria-hidden="true" size={18} />
+          <span>更多点评加载失败：{formatPublicReviewError(paginationError)}</span>
+        </div>
+      ) : null}
+
+      {reviews.length > 0 && result?.hasMore && onLoadMore ? (
+        <div className="public-review-pagination">
+          <button
+            className="secondary-action"
+            type="button"
+            onClick={onLoadMore}
+            disabled={isLoading || isLoadingMore}
+          >
+            {isLoadingMore ? <Loader2 aria-hidden="true" size={16} className="spin" /> : null}
+            {isLoadingMore ? "正在加载" : "加载更多点评"}
+          </button>
+        </div>
       ) : null}
     </section>
   );

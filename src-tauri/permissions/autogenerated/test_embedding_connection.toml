@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-test-embedding-connection"
+description = "Enables the test_embedding_connection command without any pre-configured scope."
+commands.allow = ["test_embedding_connection"]
+
+[[permission]]
+identifier = "deny-test-embedding-connection"
+description = "Denies the test_embedding_connection command without any pre-configured scope."
+commands.deny = ["test_embedding_connection"]

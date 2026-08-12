@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-clear-embedding-index"
+description = "Enables the clear_embedding_index command without any pre-configured scope."
+commands.allow = ["clear_embedding_index"]
+
+[[permission]]
+identifier = "deny-clear-embedding-index"
+description = "Denies the clear_embedding_index command without any pre-configured scope."
+commands.deny = ["clear_embedding_index"]

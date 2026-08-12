@@ -375,6 +375,18 @@
           "markdownDescription": "Enables the cancel_bulk_export command without any pre-configured scope."
         },
         {
+          "description": "Enables the cancel_embedding_index command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-cancel-embedding-index",
+          "markdownDescription": "Enables the cancel_embedding_index command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the cancel_note_synthesis command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-cancel-note-synthesis",
+          "markdownDescription": "Enables the cancel_note_synthesis command without any pre-configured scope."
+        },
+        {
           "description": "Enables the cancel_notion_cover_backfill command without any pre-configured scope.",
           "type": "string",
           "const": "allow-cancel-notion-cover-backfill",
@@ -417,6 +429,12 @@
           "markdownDescription": "Enables the clear_ai_output_cache command without any pre-configured scope."
         },
         {
+          "description": "Enables the clear_embedding_index command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-clear-embedding-index",
+          "markdownDescription": "Enables the clear_embedding_index command without any pre-configured scope."
+        },
+        {
           "description": "Enables the clear_local_cache command without any pre-configured scope.",
           "type": "string",
           "const": "allow-clear-local-cache",
@@ -427,6 +445,12 @@
           "type": "string",
           "const": "allow-clear-reading-assistant-history",
           "markdownDescription": "Enables the clear_reading_assistant_history command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the continue_note_synthesis command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-continue-note-synthesis",
+          "markdownDescription": "Enables the continue_note_synthesis command without any pre-configured scope."
         },
         {
           "description": "Enables the continue_notion_standard_database_provisioning command without any pre-configured scope.",
@@ -555,6 +579,12 @@
           "markdownDescription": "Enables the export_report_image command without any pre-configured scope."
         },
         {
+          "description": "Enables the get_active_note_synthesis_job command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-active-note-synthesis-job",
+          "markdownDescription": "Enables the get_active_note_synthesis_job command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_ai_asset_detail command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-ai-asset-detail",
@@ -621,6 +651,18 @@
           "markdownDescription": "Enables the get_credential_status command without any pre-configured scope."
         },
         {
+          "description": "Enables the get_embedding_index_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-embedding-index-state",
+          "markdownDescription": "Enables the get_embedding_index_state command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_embedding_settings_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-embedding-settings-state",
+          "markdownDescription": "Enables the get_embedding_settings_state command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_latest_book_decision command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-latest-book-decision",
@@ -661,6 +703,12 @@
           "type": "string",
           "const": "allow-get-local-reading-progress",
           "markdownDescription": "Enables the get_local_reading_progress command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_note_synthesis_job command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-note-synthesis-job",
+          "markdownDescription": "Enables the get_note_synthesis_job command without any pre-configured scope."
         },
         {
           "description": "Enables the get_notebook_overview command without any pre-configured scope.",
@@ -819,6 +867,12 @@
           "markdownDescription": "Enables the preflight_notion_cover_backfill command without any pre-configured scope."
         },
         {
+          "description": "Enables the preview_note_synthesis command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-preview-note-synthesis",
+          "markdownDescription": "Enables the preview_note_synthesis command without any pre-configured scope."
+        },
+        {
           "description": "Enables the probe_ai_provider_capabilities command without any pre-configured scope.",
           "type": "string",
           "const": "allow-probe-ai-provider-capabilities",
@@ -835,6 +889,12 @@
           "type": "string",
           "const": "allow-remove-credential",
           "markdownDescription": "Enables the remove_credential command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the remove_embedding_credential command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-remove-embedding-credential",
+          "markdownDescription": "Enables the remove_embedding_credential command without any pre-configured scope."
         },
         {
           "description": "Enables the remove_notion_credential command without any pre-configured scope.",
@@ -873,6 +933,18 @@
           "markdownDescription": "Enables the restore_local_data_backup command without any pre-configured scope."
         },
         {
+          "description": "Enables the resume_embedding_index command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-resume-embedding-index",
+          "markdownDescription": "Enables the resume_embedding_index command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the retry_failed_note_synthesis_batches command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-retry-failed-note-synthesis-batches",
+          "markdownDescription": "Enables the retry_failed_note_synthesis_batches command without any pre-configured scope."
+        },
+        {
           "description": "Enables the run_notion_cover_backfill command without any pre-configured scope.",
           "type": "string",
           "const": "allow-run-notion-cover-backfill",
@@ -907,6 +979,12 @@
           "type": "string",
           "const": "allow-save-custom-export-directory",
           "markdownDescription": "Enables the save_custom_export_directory command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the save_embedding_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-save-embedding-settings",
+          "markdownDescription": "Enables the save_embedding_settings command without any pre-configured scope."
         },
         {
           "description": "Enables the save_local_reading_progress command without any pre-configured scope.",
@@ -957,6 +1035,24 @@
           "markdownDescription": "Enables the search_books command without any pre-configured scope."
         },
         {
+          "description": "Enables the search_reading_assistant_notes command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-search-reading-assistant-notes",
+          "markdownDescription": "Enables the search_reading_assistant_notes command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the start_embedding_index command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-start-embedding-index",
+          "markdownDescription": "Enables the start_embedding_index command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the start_note_synthesis command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-start-note-synthesis",
+          "markdownDescription": "Enables the start_note_synthesis command without any pre-configured scope."
+        },
+        {
           "description": "Enables the summarize_book_decision command without any pre-configured scope.",
           "type": "string",
           "const": "allow-summarize-book-decision",
@@ -997,6 +1093,12 @@
           "type": "string",
           "const": "allow-test-ai-connection",
           "markdownDescription": "Enables the test_ai_connection command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the test_embedding_connection command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-test-embedding-connection",
+          "markdownDescription": "Enables the test_embedding_connection command without any pre-configured scope."
         },
         {
           "description": "Enables the validate_ai_credential command without any pre-configured scope.",
@@ -1047,6 +1149,18 @@
           "markdownDescription": "Denies the cancel_bulk_export command without any pre-configured scope."
         },
         {
+          "description": "Denies the cancel_embedding_index command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-cancel-embedding-index",
+          "markdownDescription": "Denies the cancel_embedding_index command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the cancel_note_synthesis command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-cancel-note-synthesis",
+          "markdownDescription": "Denies the cancel_note_synthesis command without any pre-configured scope."
+        },
+        {
           "description": "Denies the cancel_notion_cover_backfill command without any pre-configured scope.",
           "type": "string",
           "const": "deny-cancel-notion-cover-backfill",
@@ -1089,6 +1203,12 @@
           "markdownDescription": "Denies the clear_ai_output_cache command without any pre-configured scope."
         },
         {
+          "description": "Denies the clear_embedding_index command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-clear-embedding-index",
+          "markdownDescription": "Denies the clear_embedding_index command without any pre-configured scope."
+        },
+        {
           "description": "Denies the clear_local_cache command without any pre-configured scope.",
           "type": "string",
           "const": "deny-clear-local-cache",
@@ -1099,6 +1219,12 @@
           "type": "string",
           "const": "deny-clear-reading-assistant-history",
           "markdownDescription": "Denies the clear_reading_assistant_history command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the continue_note_synthesis command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-continue-note-synthesis",
+          "markdownDescription": "Denies the continue_note_synthesis command without any pre-configured scope."
         },
         {
           "description": "Denies the continue_notion_standard_database_provisioning command without any pre-configured scope.",
@@ -1227,6 +1353,12 @@
           "markdownDescription": "Denies the export_report_image command without any pre-configured scope."
         },
         {
+          "description": "Denies the get_active_note_synthesis_job command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-active-note-synthesis-job",
+          "markdownDescription": "Denies the get_active_note_synthesis_job command without any pre-configured scope."
+        },
+        {
           "description": "Denies the get_ai_asset_detail command without any pre-configured scope.",
           "type": "string",
           "const": "deny-get-ai-asset-detail",
@@ -1293,6 +1425,18 @@
           "markdownDescription": "Denies the get_credential_status command without any pre-configured scope."
         },
         {
+          "description": "Denies the get_embedding_index_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-embedding-index-state",
+          "markdownDescription": "Denies the get_embedding_index_state command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_embedding_settings_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-embedding-settings-state",
+          "markdownDescription": "Denies the get_embedding_settings_state command without any pre-configured scope."
+        },
+        {
           "description": "Denies the get_latest_book_decision command without any pre-configured scope.",
           "type": "string",
           "const": "deny-get-latest-book-decision",
@@ -1333,6 +1477,12 @@
           "type": "string",
           "const": "deny-get-local-reading-progress",
           "markdownDescription": "Denies the get_local_reading_progress command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_note_synthesis_job command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-note-synthesis-job",
+          "markdownDescription": "Denies the get_note_synthesis_job command without any pre-configured scope."
         },
         {
           "description": "Denies the get_notebook_overview command without any pre-configured scope.",
@@ -1491,6 +1641,12 @@
           "markdownDescription": "Denies the preflight_notion_cover_backfill command without any pre-configured scope."
         },
         {
+          "description": "Denies the preview_note_synthesis command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-preview-note-synthesis",
+          "markdownDescription": "Denies the preview_note_synthesis command without any pre-configured scope."
+        },
+        {
           "description": "Denies the probe_ai_provider_capabilities command without any pre-configured scope.",
           "type": "string",
           "const": "deny-probe-ai-provider-capabilities",
@@ -1507,6 +1663,12 @@
           "type": "string",
           "const": "deny-remove-credential",
           "markdownDescription": "Denies the remove_credential command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the remove_embedding_credential command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-remove-embedding-credential",
+          "markdownDescription": "Denies the remove_embedding_credential command without any pre-configured scope."
         },
         {
           "description": "Denies the remove_notion_credential command without any pre-configured scope.",
@@ -1545,6 +1707,18 @@
           "markdownDescription": "Denies the restore_local_data_backup command without any pre-configured scope."
         },
         {
+          "description": "Denies the resume_embedding_index command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-resume-embedding-index",
+          "markdownDescription": "Denies the resume_embedding_index command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the retry_failed_note_synthesis_batches command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-retry-failed-note-synthesis-batches",
+          "markdownDescription": "Denies the retry_failed_note_synthesis_batches command without any pre-configured scope."
+        },
+        {
           "description": "Denies the run_notion_cover_backfill command without any pre-configured scope.",
           "type": "string",
           "const": "deny-run-notion-cover-backfill",
@@ -1579,6 +1753,12 @@
           "type": "string",
           "const": "deny-save-custom-export-directory",
           "markdownDescription": "Denies the save_custom_export_directory command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_embedding_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-save-embedding-settings",
+          "markdownDescription": "Denies the save_embedding_settings command without any pre-configured scope."
         },
         {
           "description": "Denies the save_local_reading_progress command without any pre-configured scope.",
@@ -1629,6 +1809,24 @@
           "markdownDescription": "Denies the search_books command without any pre-configured scope."
         },
         {
+          "description": "Denies the search_reading_assistant_notes command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-search-reading-assistant-notes",
+          "markdownDescription": "Denies the search_reading_assistant_notes command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the start_embedding_index command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-start-embedding-index",
+          "markdownDescription": "Denies the start_embedding_index command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the start_note_synthesis command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-start-note-synthesis",
+          "markdownDescription": "Denies the start_note_synthesis command without any pre-configured scope."
+        },
+        {
           "description": "Denies the summarize_book_decision command without any pre-configured scope.",
           "type": "string",
           "const": "deny-summarize-book-decision",
@@ -1669,6 +1867,12 @@
           "type": "string",
           "const": "deny-test-ai-connection",
           "markdownDescription": "Denies the test_ai_connection command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the test_embedding_connection command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-test-embedding-connection",
+          "markdownDescription": "Denies the test_embedding_connection command without any pre-configured scope."
         },
         {
           "description": "Denies the validate_ai_credential command without any pre-configured scope.",

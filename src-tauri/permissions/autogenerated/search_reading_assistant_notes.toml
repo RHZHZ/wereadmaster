@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-search-reading-assistant-notes"
+description = "Enables the search_reading_assistant_notes command without any pre-configured scope."
+commands.allow = ["search_reading_assistant_notes"]
+
+[[permission]]
+identifier = "deny-search-reading-assistant-notes"
+description = "Denies the search_reading_assistant_notes command without any pre-configured scope."
+commands.deny = ["search_reading_assistant_notes"]

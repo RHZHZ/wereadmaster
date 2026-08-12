@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-active-note-synthesis-job"
+description = "Enables the get_active_note_synthesis_job command without any pre-configured scope."
+commands.allow = ["get_active_note_synthesis_job"]
+
+[[permission]]
+identifier = "deny-get-active-note-synthesis-job"
+description = "Denies the get_active_note_synthesis_job command without any pre-configured scope."
+commands.deny = ["get_active_note_synthesis_job"]

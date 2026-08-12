@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   AlertCircle,
   ArrowLeft,
@@ -111,8 +111,12 @@ export function BookDetailPage({
   const [isStateLoading, setIsStateLoading] = useState(false);
   const [stateError, setStateError] = useState<string>();
   const [publicReviews, setPublicReviews] = useState<PublicReviewsResult>();
+  const [publicReviewListType, setPublicReviewListType] = useState(0);
   const [isPublicReviewsLoading, setIsPublicReviewsLoading] = useState(false);
+  const [isPublicReviewsLoadingMore, setIsPublicReviewsLoadingMore] = useState(false);
   const [publicReviewsError, setPublicReviewsError] = useState<CommandErrorInfo>();
+  const [publicReviewsPaginationError, setPublicReviewsPaginationError] = useState<CommandErrorInfo>();
+  const publicReviewsRequestIdRef = useRef(0);
   const [bestBookmarks, setBestBookmarks] = useState<BestBookmarksResult>();
   const [isBestBookmarksLoading, setIsBestBookmarksLoading] = useState(false);
   const [bestBookmarksError, setBestBookmarksError] = useState<CommandErrorInfo>();
@@ -203,10 +207,15 @@ export function BookDetailPage({
   }, [publicReviewsBookId]);
 
   useEffect(() => {
+    const requestId = ++publicReviewsRequestIdRef.current;
+
     if (!publicReviewsBookId) {
       setPublicReviews(undefined);
+      setPublicReviewListType(0);
       setPublicReviewsError(undefined);
+      setPublicReviewsPaginationError(undefined);
       setIsPublicReviewsLoading(false);
+      setIsPublicReviewsLoadingMore(false);
       return;
     }
 
@@ -214,20 +223,26 @@ export function BookDetailPage({
     let isMounted = true;
     setPublicReviews(undefined);
     setPublicReviewsError(undefined);
+    setPublicReviewsPaginationError(undefined);
     setIsPublicReviewsLoading(true);
+    setIsPublicReviewsLoadingMore(false);
 
     async function loadPublicReviews() {
       try {
-        const response = await getPublicReviews({ bookId, count: 5 });
-        if (isMounted) {
+        const response = await getPublicReviews({
+          bookId,
+          reviewListType: publicReviewListType,
+          count: 10
+        });
+        if (isMounted && requestId === publicReviewsRequestIdRef.current) {
           setPublicReviews(response.result);
         }
       } catch (loadError) {
-        if (isMounted) {
+        if (isMounted && requestId === publicReviewsRequestIdRef.current) {
           setPublicReviewsError(getCommandErrorInfo(loadError));
         }
       } finally {
-        if (isMounted) {
+        if (isMounted && requestId === publicReviewsRequestIdRef.current) {
           setIsPublicReviewsLoading(false);
         }
       }
@@ -238,7 +253,7 @@ export function BookDetailPage({
     return () => {
       isMounted = false;
     };
-  }, [publicReviewsBookId]);
+  }, [publicReviewListType, publicReviewsBookId]);
 
   const localBookMatch =
     shelfEntry && detailResponse
@@ -382,16 +397,59 @@ export function BookDetailPage({
       return;
     }
 
+    const requestId = ++publicReviewsRequestIdRef.current;
     setIsPublicReviewsLoading(true);
     setPublicReviewsError(undefined);
+    setPublicReviewsPaginationError(undefined);
 
     try {
-      const response = await getPublicReviews({ bookId: publicReviewsBookId, count: 5 });
-      setPublicReviews(response.result);
+      const response = await getPublicReviews({
+        bookId: publicReviewsBookId,
+        reviewListType: publicReviewListType,
+        count: 10
+      });
+      if (requestId === publicReviewsRequestIdRef.current) {
+        setPublicReviews(response.result);
+      }
     } catch (refreshError) {
-      setPublicReviewsError(getCommandErrorInfo(refreshError));
+      if (requestId === publicReviewsRequestIdRef.current) {
+        setPublicReviewsError(getCommandErrorInfo(refreshError));
+      }
     } finally {
-      setIsPublicReviewsLoading(false);
+      if (requestId === publicReviewsRequestIdRef.current) {
+        setIsPublicReviewsLoading(false);
+      }
+    }
+  }
+
+  async function handleLoadMorePublicReviews() {
+    if (!publicReviewsBookId || !publicReviews?.hasMore || isPublicReviewsLoadingMore) {
+      return;
+    }
+
+    const requestId = publicReviewsRequestIdRef.current;
+    setIsPublicReviewsLoadingMore(true);
+    setPublicReviewsPaginationError(undefined);
+
+    try {
+      const response = await getPublicReviews({
+        bookId: publicReviewsBookId,
+        reviewListType: publicReviewListType,
+        count: 10,
+        maxIdx: publicReviews.nextMaxIdx,
+        synckey: publicReviews.synckey
+      });
+      if (requestId === publicReviewsRequestIdRef.current) {
+        setPublicReviews((current) => mergePublicReviewPages(current, response.result));
+      }
+    } catch (loadError) {
+      if (requestId === publicReviewsRequestIdRef.current) {
+        setPublicReviewsPaginationError(getCommandErrorInfo(loadError));
+      }
+    } finally {
+      if (requestId === publicReviewsRequestIdRef.current) {
+        setIsPublicReviewsLoadingMore(false);
+      }
     }
   }
 
@@ -589,15 +647,40 @@ export function BookDetailPage({
           {publicReviewsBookId ? (
             <PublicReviewsPanel
               result={publicReviews}
+              reviewListType={publicReviewListType}
               isLoading={isPublicReviewsLoading}
+              isLoadingMore={isPublicReviewsLoadingMore}
               error={publicReviewsError}
+              paginationError={publicReviewsPaginationError}
+              onReviewListTypeChange={setPublicReviewListType}
               onRefresh={() => void handleRefreshPublicReviews()}
+              onLoadMore={() => void handleLoadMorePublicReviews()}
             />
           ) : null}
         </>
       ) : null}
     </section>
   );
+}
+
+export function mergePublicReviewPages(
+  current: PublicReviewsResult | undefined,
+  next: PublicReviewsResult
+): PublicReviewsResult {
+  if (!current || current.reviewListType !== next.reviewListType) {
+    return next;
+  }
+
+  const seenReviewIds = new Set(current.reviews.map((review) => review.reviewId));
+  const reviews = [
+    ...current.reviews,
+    ...next.reviews.filter((review) => !seenReviewIds.has(review.reviewId))
+  ];
+
+  return {
+    ...next,
+    reviews
+  };
 }
 
 function LocalVersionNotice({

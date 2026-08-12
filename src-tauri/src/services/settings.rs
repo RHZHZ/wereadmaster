@@ -40,6 +40,10 @@ use crate::{
 };
 
 const CACHE_TABLES: &[&str] = &[
+    "retrieval_embeddings",
+    "retrieval_index_profiles",
+    "retrieval_documents_fts",
+    "retrieval_documents",
     "shelf_entries",
     "shelf_archives",
     "book_details",
@@ -50,6 +54,9 @@ const CACHE_TABLES: &[&str] = &[
     "thoughts",
     "reading_stats",
     "raw_cache",
+    "note_synthesis_batches",
+    "note_synthesis_job_items",
+    "note_synthesis_jobs",
     "ai_outputs",
     "ai_assistant_messages",
     "ai_assistant_threads",
@@ -67,6 +74,9 @@ const DIAGNOSTIC_TABLES: &[&str] = &[
     "thoughts",
     "reading_stats",
     "raw_cache",
+    "note_synthesis_jobs",
+    "note_synthesis_job_items",
+    "note_synthesis_batches",
     "sync_state",
     "ai_outputs",
     "ai_feedback_records",
@@ -1533,9 +1543,24 @@ fn clear_cache_tables(connection: &rusqlite::Connection) -> Result<u64, AppError
 }
 
 fn clear_ai_output_cache(connection: &rusqlite::Connection) -> Result<u64, AppError> {
-    Ok(connection
-        .execute("DELETE FROM ai_outputs", [])
-        .map_err(AppError::from)? as u64)
+    let transaction = connection.unchecked_transaction().map_err(AppError::from)?;
+    let mut deleted_rows = 0_u64;
+
+    // Job children must be deleted before jobs so this remains correct if a restored
+    // database has foreign-key enforcement disabled by an older SQLite connection.
+    for table in [
+        "note_synthesis_batches",
+        "note_synthesis_job_items",
+        "note_synthesis_jobs",
+        "ai_outputs",
+    ] {
+        deleted_rows += transaction
+            .execute(&format!("DELETE FROM {table}"), [])
+            .map_err(AppError::from)? as u64;
+    }
+
+    transaction.commit().map_err(AppError::from)?;
+    Ok(deleted_rows)
 }
 
 fn local_backup_file_manifest(existing_file_names: &[&str]) -> Vec<String> {
@@ -1618,20 +1643,53 @@ fn existing_database_file_manifest(data_dir: &Path) -> Result<Vec<String>, AppEr
     Ok(local_backup_file_manifest(&existing))
 }
 
+fn strip_rebuildable_retrieval_data(database_path: &Path) -> Result<(), AppError> {
+    let connection = rusqlite::Connection::open(database_path).map_err(AppError::from)?;
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys = ON;
+             BEGIN IMMEDIATE;
+             DELETE FROM retrieval_embeddings;
+             DELETE FROM retrieval_index_profiles;
+             DELETE FROM retrieval_documents_fts;
+             COMMIT;
+             PRAGMA wal_checkpoint(TRUNCATE);",
+        )
+        .map_err(AppError::from)
+}
+
+fn rebuild_restored_retrieval_fts(database_path: &Path) -> Result<(), AppError> {
+    let connection = rusqlite::Connection::open(database_path).map_err(AppError::from)?;
+    db::initialize_schema(&connection).map_err(AppError::from)?;
+    crate::services::retrieval::rebuild_retrieval_fts(&connection).map_err(AppError::from)?;
+    connection
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+        .map_err(AppError::from)
+}
+
 fn create_database_backup(
     data_dir: &Path,
     backup_dir: &Path,
     exported_at: &str,
 ) -> Result<Vec<String>, AppError> {
     fs::create_dir_all(backup_dir).map_err(|error| AppError::Storage(error.to_string()))?;
-    let files = existing_database_file_manifest(data_dir)?;
-    if files.is_empty() {
+    let source_files = existing_database_file_manifest(data_dir)?;
+    if source_files.is_empty() {
         return Err(AppError::InvalidPayload(
             "当前没有可备份的本地数据库。".to_string(),
         ));
     }
 
-    copy_named_files(data_dir, backup_dir, &files)?;
+    copy_named_files(data_dir, backup_dir, &source_files)?;
+    let backup_database_path = backup_dir.join(DATABASE_FILE_NAME);
+    strip_rebuildable_retrieval_data(&backup_database_path)?;
+    for suffix in ["-wal", "-shm"] {
+        let sidecar = backup_dir.join(format!("{DATABASE_FILE_NAME}{suffix}"));
+        if sidecar.exists() {
+            fs::remove_file(sidecar).map_err(|error| AppError::Storage(error.to_string()))?;
+        }
+    }
+    let files = vec![DATABASE_FILE_NAME.to_string()];
     let manifest = BackupManifest {
         kind: BACKUP_KIND.to_string(),
         schema_version: BACKUP_SCHEMA_VERSION,
@@ -2020,7 +2078,8 @@ fn restore_backup_files(
             }
         }
 
-        copy_named_files(backup_dir, data_dir, file_names)
+        copy_named_files(backup_dir, data_dir, file_names)?;
+        rebuild_restored_retrieval_fts(&data_dir.join(DATABASE_FILE_NAME))
     })();
 
     if let Err(error) = restore_result {
@@ -2399,6 +2458,69 @@ mod tests {
     }
 
     #[test]
+    fn clear_cache_tables_removes_rebuildable_retrieval_data() {
+        let connection = Connection::open_in_memory().expect("in-memory database should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        connection
+            .execute(
+                "INSERT INTO retrieval_documents (
+                    id, source_type, source_id, book_id, content, normalized_content,
+                    metadata_json, content_hash, source_updated_at, indexed_at
+                 ) VALUES ('note:highlight:h1', 'highlight', 'h1', 'book-1',
+                    '正文', '正文', '{}', 'sha256-v1:h1', '100', '100')",
+                [],
+            )
+            .expect("retrieval document should insert");
+        connection
+            .execute(
+                "INSERT INTO retrieval_documents_fts (
+                    document_id, title_tokens, chapter_tokens, content_tokens
+                 ) VALUES ('note:highlight:h1', '', '', '正文')",
+                [],
+            )
+            .expect("retrieval fts row should insert");
+        connection
+            .execute(
+                "INSERT INTO retrieval_index_profiles (
+                    id, provider_kind, model_id, dimensions, distance_metric,
+                    normalization_version, chunking_version, content_hash_version,
+                    status, total_document_count, indexed_document_count,
+                    created_at, updated_at, completed_at
+                 ) VALUES ('profile-1', 'deterministic-test', 'fixture-v1', 2, 'cosine',
+                    'retrieval-text-v1', 'document-v1', 'sha256-v1',
+                    'ready', 1, 1, '100', '100', '100')",
+                [],
+            )
+            .expect("retrieval profile should insert");
+        connection
+            .execute(
+                "INSERT INTO retrieval_embeddings (
+                    profile_id, document_id, content_hash, dimensions, vector_blob,
+                    created_at, updated_at
+                 ) VALUES ('profile-1', 'note:highlight:h1', 'sha256-v1:h1', 2,
+                    X'0000803F00000000', '100', '100')",
+                [],
+            )
+            .expect("retrieval embedding should insert");
+
+        let deleted = clear_cache_tables(&connection).expect("cache should clear");
+        assert_eq!(deleted, 4);
+        for table in [
+            "retrieval_documents",
+            "retrieval_documents_fts",
+            "retrieval_index_profiles",
+            "retrieval_embeddings",
+        ] {
+            assert_eq!(
+                table_count(&connection, table)
+                    .expect("retrieval table count should read")
+                    .row_count,
+                0
+            );
+        }
+    }
+
+    #[test]
     fn clear_cache_tables_removes_ai_outputs() {
         let connection = Connection::open_in_memory().expect("in-memory database should open");
         initialize_schema(&connection).expect("schema should initialize");
@@ -2443,7 +2565,7 @@ mod tests {
     }
 
     #[test]
-    fn clear_ai_output_cache_only_removes_ai_outputs() {
+    fn clear_ai_output_cache_removes_outputs_and_note_synthesis_jobs_only() {
         let connection = Connection::open_in_memory().expect("in-memory database should open");
         initialize_schema(&connection).expect("schema should initialize");
         connection
@@ -2477,6 +2599,52 @@ mod tests {
         connection
             .execute(
                 "
+                INSERT INTO note_synthesis_jobs (
+                    id, book_id, status, source_snapshot_hash, total_count, processed_count,
+                    batch_count, completed_batch_count, failed_batch_count,
+                    batch_prompt_version, merge_prompt_version, batching_version,
+                    provider_base_url_hash, provider_model, consent_confirmed_at,
+                    consent_provider_label, created_at, updated_at
+                ) VALUES (
+                    'job-1', 'book-1', 'partial', 'snapshot', 1, 0, 1, 0, 1,
+                    'batch-v1', 'merge-v1', 'batching-v1', 'provider-hash', 'test-model',
+                    '100', 'Test Provider', '100', '100'
+                )
+                ",
+                [],
+            )
+            .expect("note synthesis job should insert");
+        connection
+            .execute(
+                "
+                INSERT INTO note_synthesis_job_items (
+                    job_id, document_id, source_type, content_hash, content_snapshot,
+                    source_updated_at, batch_index, audit_status
+                ) VALUES (
+                    'job-1', 'note:highlight:h1', 'highlight', 'content-hash',
+                    '不会出现在诊断中的原始笔记', '100', 0, 'pending'
+                )
+                ",
+                [],
+            )
+            .expect("note synthesis item should insert");
+        connection
+            .execute(
+                "
+                INSERT INTO note_synthesis_batches (
+                    job_id, batch_index, status, source_types_json, source_count,
+                    input_hash, error_code, error_message, updated_at
+                ) VALUES (
+                    'job-1', 0, 'failed', '[\"highlight\"]', 1,
+                    'batch-hash', 'PROVIDER_ERROR', '批次失败', '100'
+                )
+                ",
+                [],
+            )
+            .expect("note synthesis batch should insert");
+        connection
+            .execute(
+                "
                 INSERT INTO shelf_entries (
                     id, type, title, is_top, is_secret, raw_json, updated_at
                 ) VALUES ('b1', 'book', '书名', 0, 0, '{}', '100')
@@ -2497,13 +2665,21 @@ mod tests {
 
         let deleted = clear_ai_output_cache(&connection).expect("ai output cache should clear");
 
-        assert_eq!(deleted, 1);
-        assert_eq!(
-            table_count(&connection, "ai_outputs")
-                .expect("ai output count")
-                .row_count,
-            0
-        );
+        assert_eq!(deleted, 4);
+        for table in [
+            "ai_outputs",
+            "note_synthesis_jobs",
+            "note_synthesis_job_items",
+            "note_synthesis_batches",
+        ] {
+            assert_eq!(
+                table_count(&connection, table)
+                    .expect("AI cache table count")
+                    .row_count,
+                0,
+                "{table} should be cleared"
+            );
+        }
         assert_eq!(
             table_count(&connection, "shelf_entries")
                 .expect("shelf count")
@@ -2643,6 +2819,88 @@ mod tests {
             )
             .expect("reading item should insert");
         connection
+            .execute(
+                "INSERT INTO note_synthesis_jobs (
+                    id, book_id, status, source_snapshot_hash, total_count, processed_count,
+                    batch_count, completed_batch_count, failed_batch_count,
+                    batch_prompt_version, merge_prompt_version, batching_version,
+                    provider_base_url_hash, provider_model, consent_confirmed_at,
+                    consent_provider_label, created_at, updated_at
+                 ) VALUES (
+                    'job-1', 'book-1', 'partial', 'snapshot', 1, 0, 1, 0, 1,
+                    'batch-v1', 'merge-v1', 'batching-v1', 'provider-hash', 'model',
+                    '100', 'Provider', '100', '100'
+                 )",
+                [],
+            )
+            .expect("note synthesis job should insert");
+        connection
+            .execute(
+                "INSERT INTO note_synthesis_job_items (
+                    job_id, document_id, source_type, content_hash, content_snapshot,
+                    source_updated_at, batch_index, audit_status
+                 ) VALUES (
+                    'job-1', 'note:highlight:h1', 'highlight', 'hash',
+                    '不可变快照正文', '100', 0, 'pending'
+                 )",
+                [],
+            )
+            .expect("note synthesis snapshot should insert");
+        connection
+            .execute(
+                "INSERT INTO note_synthesis_batches (
+                    job_id, batch_index, status, source_types_json, source_count,
+                    input_hash, output_json, updated_at
+                 ) VALUES (
+                    'job-1', 0, 'completed', '[\"highlight\"]', 1,
+                    'batch-hash', '{\"themes\":[]}', '100'
+                 )",
+                [],
+            )
+            .expect("note synthesis batch should insert");
+        connection
+            .execute(
+                "INSERT INTO retrieval_documents (
+                    id, source_type, source_id, book_id, content, normalized_content,
+                    metadata_json, content_hash, source_updated_at, indexed_at
+                 ) VALUES ('note:highlight:h1', 'highlight', 'h1', 'book-1',
+                    '深度工作需要专注', '深度工作需要专注', '{}',
+                    'sha256-v1:h1', '100', '100')",
+                [],
+            )
+            .expect("retrieval document should insert");
+        connection
+            .execute(
+                "INSERT INTO retrieval_documents_fts (
+                    document_id, title_tokens, chapter_tokens, content_tokens
+                 ) VALUES ('note:highlight:h1', '', '', '深度 工作 需要 专注')",
+                [],
+            )
+            .expect("retrieval fts row should insert");
+        connection
+            .execute(
+                "INSERT INTO retrieval_index_profiles (
+                    id, provider_kind, model_id, dimensions, distance_metric,
+                    normalization_version, chunking_version, content_hash_version,
+                    status, total_document_count, indexed_document_count,
+                    created_at, updated_at, completed_at
+                 ) VALUES ('profile-1', 'deterministic-test', 'fixture-v1', 2, 'cosine',
+                    'retrieval-text-v1', 'document-v1', 'sha256-v1',
+                    'ready', 1, 1, '100', '100', '100')",
+                [],
+            )
+            .expect("retrieval profile should insert");
+        connection
+            .execute(
+                "INSERT INTO retrieval_embeddings (
+                    profile_id, document_id, content_hash, dimensions, vector_blob,
+                    created_at, updated_at
+                 ) VALUES ('profile-1', 'note:highlight:h1', 'sha256-v1:h1', 2,
+                    X'0000803F00000000', '100', '100')",
+                [],
+            )
+            .expect("retrieval embedding should insert");
+        connection
             .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
             .expect("database should checkpoint");
         drop(connection);
@@ -2652,8 +2910,25 @@ mod tests {
         assert!(files.iter().any(|file| file == db::DATABASE_FILE_NAME));
         let manifest = read_backup_manifest(&backup_dir).expect("manifest should read");
         validate_backup_manifest(&manifest.files).expect("manifest should validate");
-        validate_backup_database(&backup_dir.join(db::DATABASE_FILE_NAME))
-            .expect("backup database should validate");
+        let backup_database_path = backup_dir.join(db::DATABASE_FILE_NAME);
+        validate_backup_database(&backup_database_path).expect("backup database should validate");
+        let backup = Connection::open(&backup_database_path).expect("backup database should open");
+        let backup_counts = (
+            table_count(&backup, "retrieval_documents")
+                .expect("backup retrieval documents count")
+                .row_count,
+            table_count(&backup, "retrieval_index_profiles")
+                .expect("backup profiles count")
+                .row_count,
+            table_count(&backup, "retrieval_embeddings")
+                .expect("backup embeddings count")
+                .row_count,
+            table_count(&backup, "retrieval_documents_fts")
+                .expect("backup fts count")
+                .row_count,
+        );
+        assert_eq!(backup_counts, (1, 0, 0, 0));
+        drop(backup);
 
         let connection = Connection::open(&database_path).expect("database should reopen");
         connection
@@ -2675,6 +2950,48 @@ mod tests {
             )
             .expect("restored row should read");
         assert_eq!(title, "原始书名");
+        let restored_snapshot: String = restored
+            .query_row(
+                "SELECT content_snapshot FROM note_synthesis_job_items
+                 WHERE job_id = 'job-1' AND document_id = 'note:highlight:h1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("restored note synthesis snapshot should read");
+        let restored_batch_status: String = restored
+            .query_row(
+                "SELECT status FROM note_synthesis_batches
+                 WHERE job_id = 'job-1' AND batch_index = 0",
+                [],
+                |row| row.get(0),
+            )
+            .expect("restored note synthesis batch should read");
+        assert_eq!(restored_snapshot, "不可变快照正文");
+        assert_eq!(restored_batch_status, "completed");
+        let restored_retrieval_counts = (
+            table_count(&restored, "retrieval_documents")
+                .expect("restored retrieval documents count")
+                .row_count,
+            table_count(&restored, "retrieval_index_profiles")
+                .expect("restored profiles count")
+                .row_count,
+            table_count(&restored, "retrieval_embeddings")
+                .expect("restored embeddings count")
+                .row_count,
+            table_count(&restored, "retrieval_documents_fts")
+                .expect("restored fts count")
+                .row_count,
+        );
+        assert_eq!(restored_retrieval_counts, (1, 0, 0, 1));
+        let lexical_count: i64 = restored
+            .query_row(
+                "SELECT COUNT(*) FROM retrieval_documents_fts
+                 WHERE retrieval_documents_fts MATCH '深度'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("restored fts should be queryable");
+        assert_eq!(lexical_count, 1);
         drop(restored);
 
         fs::remove_dir_all(temp_root).expect("temporary backup fixture should be removed");

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-retry-failed-note-synthesis-batches"
+description = "Enables the retry_failed_note_synthesis_batches command without any pre-configured scope."
+commands.allow = ["retry_failed_note_synthesis_batches"]
+
+[[permission]]
+identifier = "deny-retry-failed-note-synthesis-batches"
+description = "Denies the retry_failed_note_synthesis_batches command without any pre-configured scope."
+commands.deny = ["retry_failed_note_synthesis_batches"]

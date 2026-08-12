@@ -481,6 +481,90 @@ pub fn initialize_schema(connection: &Connection) -> SqliteResult<()> {
             updated_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS retrieval_documents (
+            id TEXT PRIMARY KEY NOT NULL,
+            source_type TEXT NOT NULL CHECK(source_type IN (
+                'highlight', 'thought', 'ai_asset_summary', 'local_reader_note'
+            )),
+            source_id TEXT NOT NULL,
+            book_id TEXT NOT NULL,
+            chapter_uid INTEGER,
+            chapter_title TEXT,
+            title TEXT,
+            content TEXT NOT NULL,
+            normalized_content TEXT NOT NULL,
+            metadata_json TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            source_updated_at TEXT NOT NULL,
+            indexed_at TEXT NOT NULL,
+            deleted_at TEXT,
+            UNIQUE(source_type, source_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_retrieval_documents_book_type
+            ON retrieval_documents(book_id, source_type, deleted_at);
+
+        CREATE INDEX IF NOT EXISTS idx_retrieval_documents_hash
+            ON retrieval_documents(content_hash);
+
+        CREATE TABLE IF NOT EXISTS retrieval_index_profiles (
+            id TEXT PRIMARY KEY NOT NULL,
+            provider_kind TEXT NOT NULL,
+            model_id TEXT NOT NULL,
+            dimensions INTEGER NOT NULL CHECK(dimensions > 0),
+            distance_metric TEXT NOT NULL CHECK(distance_metric = 'cosine'),
+            normalization_version TEXT NOT NULL,
+            chunking_version TEXT NOT NULL,
+            content_hash_version TEXT NOT NULL,
+            provider_base_url_hash TEXT,
+            provider_label TEXT,
+            consent_confirmed_at TEXT,
+            status TEXT NOT NULL CHECK(status IN (
+                'building', 'ready', 'failed', 'cancelled', 'superseded'
+            )),
+            total_document_count INTEGER NOT NULL DEFAULT 0 CHECK(total_document_count >= 0),
+            indexed_document_count INTEGER NOT NULL DEFAULT 0 CHECK(
+                indexed_document_count >= 0 AND indexed_document_count <= total_document_count
+            ),
+            cancel_requested_at TEXT,
+            last_started_at TEXT,
+            error_code TEXT,
+            error_message TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            completed_at TEXT,
+            CHECK(
+                status <> 'ready'
+                OR indexed_document_count = total_document_count
+            )
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_retrieval_index_profiles_one_ready
+            ON retrieval_index_profiles(status)
+            WHERE status = 'ready';
+
+        CREATE INDEX IF NOT EXISTS idx_retrieval_index_profiles_updated
+            ON retrieval_index_profiles(status, updated_at);
+
+        CREATE TABLE IF NOT EXISTS retrieval_embeddings (
+            profile_id TEXT NOT NULL,
+            document_id TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            dimensions INTEGER NOT NULL CHECK(dimensions > 0),
+            vector_blob BLOB NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(profile_id, document_id),
+            FOREIGN KEY(profile_id) REFERENCES retrieval_index_profiles(id) ON DELETE CASCADE,
+            FOREIGN KEY(document_id) REFERENCES retrieval_documents(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_retrieval_embeddings_document
+            ON retrieval_embeddings(document_id, profile_id);
+
+        CREATE INDEX IF NOT EXISTS idx_retrieval_embeddings_profile_hash
+            ON retrieval_embeddings(profile_id, content_hash);
+
         CREATE TABLE IF NOT EXISTS reading_stats (
             mode TEXT NOT NULL,
             base_time INTEGER NOT NULL,
@@ -511,6 +595,115 @@ pub fn initialize_schema(connection: &Connection) -> SqliteResult<()> {
             updated_at TEXT NOT NULL,
             PRIMARY KEY(feature, scope_id, prompt_version, input_hash)
         );
+
+        CREATE TABLE IF NOT EXISTS note_synthesis_jobs (
+            id TEXT PRIMARY KEY NOT NULL,
+            book_id TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN (
+                'queued', 'snapshotting', 'batching', 'summarizing', 'merging',
+                'completed', 'partial', 'failed', 'cancelled'
+            )),
+            source_snapshot_hash TEXT NOT NULL,
+            total_count INTEGER NOT NULL CHECK(total_count >= 0),
+            processed_count INTEGER NOT NULL DEFAULT 0 CHECK(
+                processed_count >= 0 AND processed_count <= total_count
+            ),
+            batch_count INTEGER NOT NULL DEFAULT 0 CHECK(batch_count >= 0),
+            completed_batch_count INTEGER NOT NULL DEFAULT 0 CHECK(
+                completed_batch_count >= 0 AND completed_batch_count <= batch_count
+            ),
+            failed_batch_count INTEGER NOT NULL DEFAULT 0 CHECK(
+                failed_batch_count >= 0 AND failed_batch_count <= batch_count
+            ),
+            batch_prompt_version TEXT NOT NULL,
+            merge_prompt_version TEXT NOT NULL,
+            batching_version TEXT NOT NULL,
+            provider_base_url_hash TEXT NOT NULL,
+            provider_model TEXT NOT NULL,
+            consent_confirmed_at TEXT NOT NULL,
+            consent_provider_label TEXT NOT NULL,
+            result_feature TEXT,
+            result_prompt_version TEXT,
+            result_input_hash TEXT,
+            cancel_requested_at TEXT,
+            last_started_at TEXT,
+            finished_at TEXT,
+            error_code TEXT,
+            error_message TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            CHECK(completed_batch_count + failed_batch_count <= batch_count),
+            CHECK(
+                (status = 'completed'
+                    AND processed_count = total_count
+                    AND completed_batch_count = batch_count
+                    AND failed_batch_count = 0
+                    AND result_feature IS NOT NULL
+                    AND result_prompt_version IS NOT NULL
+                    AND result_input_hash IS NOT NULL)
+                OR
+                (status <> 'completed'
+                    AND result_feature IS NULL
+                    AND result_prompt_version IS NULL
+                    AND result_input_hash IS NULL)
+            )
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_note_synthesis_jobs_book_status
+            ON note_synthesis_jobs(book_id, status, updated_at);
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_note_synthesis_jobs_one_active_book
+            ON note_synthesis_jobs(book_id)
+            WHERE status IN (
+                'queued', 'snapshotting', 'batching', 'summarizing', 'merging', 'partial'
+            );
+
+        CREATE TABLE IF NOT EXISTS note_synthesis_job_items (
+            job_id TEXT NOT NULL,
+            document_id TEXT NOT NULL,
+            source_type TEXT NOT NULL CHECK(source_type IN ('highlight', 'thought')),
+            content_hash TEXT NOT NULL,
+            chapter_uid INTEGER,
+            chapter_title TEXT,
+            title TEXT,
+            content_snapshot TEXT NOT NULL,
+            source_updated_at TEXT NOT NULL,
+            batch_index INTEGER,
+            audit_status TEXT NOT NULL CHECK(audit_status IN (
+                'pending', 'processed', 'skipped_empty', 'skipped_duplicate', 'failed'
+            )),
+            audit_reason TEXT,
+            processed_at TEXT,
+            PRIMARY KEY(job_id, document_id),
+            FOREIGN KEY(job_id) REFERENCES note_synthesis_jobs(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_note_synthesis_job_items_batch
+            ON note_synthesis_job_items(job_id, batch_index, document_id);
+
+        CREATE TABLE IF NOT EXISTS note_synthesis_batches (
+            job_id TEXT NOT NULL,
+            batch_index INTEGER NOT NULL CHECK(batch_index >= 0),
+            status TEXT NOT NULL CHECK(status IN (
+                'pending', 'running', 'completed', 'failed', 'cancelled'
+            )),
+            chapter_uid INTEGER,
+            source_types_json TEXT NOT NULL,
+            source_count INTEGER NOT NULL CHECK(source_count >= 0),
+            input_hash TEXT NOT NULL,
+            output_json TEXT,
+            attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+            last_started_at TEXT,
+            completed_at TEXT,
+            error_code TEXT,
+            error_message TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(job_id, batch_index),
+            FOREIGN KEY(job_id) REFERENCES note_synthesis_jobs(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_note_synthesis_batches_status
+            ON note_synthesis_batches(job_id, status, batch_index);
 
         CREATE TABLE IF NOT EXISTS ai_feedback_records (
             feature TEXT NOT NULL,
@@ -625,11 +818,211 @@ pub fn initialize_schema(connection: &Connection) -> SqliteResult<()> {
     add_column_if_missing(connection, "thoughts", "range_text", "TEXT")?;
     add_column_if_missing(connection, "thoughts", "deep_link", "TEXT")?;
     add_column_if_missing(connection, "ai_assistant_messages", "output_json", "TEXT")?;
+    ensure_retrieval_profile_schema(connection)?;
+    ensure_retrieval_fts_schema(connection)?;
     ensure_local_books_support_markdown(connection)?;
     ensure_local_reading_progress_schema(connection)?;
     ensure_reading_item_dimensions(connection)?;
 
     Ok(())
+}
+
+fn ensure_retrieval_profile_schema(connection: &Connection) -> SqliteResult<()> {
+    let columns = table_columns(connection, "retrieval_index_profiles")?;
+    let current = [
+        "provider_base_url_hash",
+        "provider_label",
+        "consent_confirmed_at",
+        "cancel_requested_at",
+        "last_started_at",
+    ]
+    .iter()
+    .all(|column| columns.iter().any(|existing| existing == column));
+
+    if !current {
+        let profile_count =
+            connection.query_row("SELECT COUNT(*) FROM retrieval_index_profiles", [], |row| {
+                row.get::<_, i64>(0)
+            })?;
+        let embedding_count =
+            connection.query_row("SELECT COUNT(*) FROM retrieval_embeddings", [], |row| {
+                row.get::<_, i64>(0)
+            })?;
+
+        connection.pragma_update(None, "foreign_keys", "OFF")?;
+        let migration = connection.execute_batch(
+            "BEGIN IMMEDIATE;
+             ALTER TABLE retrieval_embeddings RENAME TO retrieval_embeddings_before_remote;
+             ALTER TABLE retrieval_index_profiles RENAME TO retrieval_index_profiles_before_remote;
+
+             CREATE TABLE retrieval_index_profiles (
+                id TEXT PRIMARY KEY NOT NULL,
+                provider_kind TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                dimensions INTEGER NOT NULL CHECK(dimensions > 0),
+                distance_metric TEXT NOT NULL CHECK(distance_metric = 'cosine'),
+                normalization_version TEXT NOT NULL,
+                chunking_version TEXT NOT NULL,
+                content_hash_version TEXT NOT NULL,
+                provider_base_url_hash TEXT,
+                provider_label TEXT,
+                consent_confirmed_at TEXT,
+                status TEXT NOT NULL CHECK(status IN (
+                    'building', 'ready', 'failed', 'cancelled', 'superseded'
+                )),
+                total_document_count INTEGER NOT NULL DEFAULT 0 CHECK(total_document_count >= 0),
+                indexed_document_count INTEGER NOT NULL DEFAULT 0 CHECK(
+                    indexed_document_count >= 0 AND indexed_document_count <= total_document_count
+                ),
+                cancel_requested_at TEXT,
+                last_started_at TEXT,
+                error_code TEXT,
+                error_message TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT,
+                CHECK(
+                    status <> 'ready'
+                    OR indexed_document_count = total_document_count
+                )
+             );
+
+             INSERT INTO retrieval_index_profiles (
+                id, provider_kind, model_id, dimensions, distance_metric,
+                normalization_version, chunking_version, content_hash_version,
+                status, total_document_count, indexed_document_count,
+                error_code, error_message, created_at, updated_at, completed_at
+             )
+             SELECT id, provider_kind, model_id, dimensions, distance_metric,
+                normalization_version, chunking_version, content_hash_version,
+                status, total_document_count, indexed_document_count,
+                error_code, error_message, created_at, updated_at, completed_at
+             FROM retrieval_index_profiles_before_remote;
+
+             CREATE TABLE retrieval_embeddings (
+                profile_id TEXT NOT NULL,
+                document_id TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                dimensions INTEGER NOT NULL CHECK(dimensions > 0),
+                vector_blob BLOB NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(profile_id, document_id),
+                FOREIGN KEY(profile_id) REFERENCES retrieval_index_profiles(id) ON DELETE CASCADE,
+                FOREIGN KEY(document_id) REFERENCES retrieval_documents(id) ON DELETE CASCADE
+             );
+
+             INSERT INTO retrieval_embeddings (
+                profile_id, document_id, content_hash, dimensions, vector_blob,
+                created_at, updated_at
+             )
+             SELECT profile_id, document_id, content_hash, dimensions, vector_blob,
+                created_at, updated_at
+             FROM retrieval_embeddings_before_remote;
+
+             DROP TABLE retrieval_embeddings_before_remote;
+             DROP TABLE retrieval_index_profiles_before_remote;
+
+             CREATE UNIQUE INDEX idx_retrieval_index_profiles_one_ready
+                ON retrieval_index_profiles(status)
+                WHERE status = 'ready';
+             CREATE INDEX idx_retrieval_index_profiles_updated
+                ON retrieval_index_profiles(status, updated_at);
+             CREATE INDEX idx_retrieval_embeddings_document
+                ON retrieval_embeddings(document_id, profile_id);
+             CREATE INDEX idx_retrieval_embeddings_profile_hash
+                ON retrieval_embeddings(profile_id, content_hash);
+             COMMIT;",
+        );
+        if let Err(error) = migration {
+            let _ = connection.execute_batch("ROLLBACK;");
+            let _ = connection.pragma_update(None, "foreign_keys", "ON");
+            return Err(error);
+        }
+        connection.pragma_update(None, "foreign_keys", "ON")?;
+
+        let migrated_profile_count =
+            connection.query_row("SELECT COUNT(*) FROM retrieval_index_profiles", [], |row| {
+                row.get::<_, i64>(0)
+            })?;
+        let migrated_embedding_count =
+            connection.query_row("SELECT COUNT(*) FROM retrieval_embeddings", [], |row| {
+                row.get::<_, i64>(0)
+            })?;
+        if migrated_profile_count != profile_count || migrated_embedding_count != embedding_count {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "retrieval profile migration changed row counts".to_string(),
+            ));
+        }
+    }
+
+    connection.execute(
+        "UPDATE retrieval_index_profiles
+         SET status = 'cancelled',
+             error_code = COALESCE(error_code, 'superseded_build'),
+             error_message = COALESCE(error_message, '已有更新的向量索引构建任务。')
+         WHERE status = 'building'
+           AND id NOT IN (
+             SELECT id FROM retrieval_index_profiles
+             WHERE status = 'building'
+             ORDER BY updated_at DESC, id DESC
+             LIMIT 1
+           )",
+        [],
+    )?;
+    connection.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_retrieval_index_profiles_one_building
+            ON retrieval_index_profiles(status)
+            WHERE status = 'building';",
+    )?;
+
+    let foreign_key_errors = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_foreign_key_check('retrieval_embeddings')",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?;
+    if foreign_key_errors != 0 {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "retrieval profile migration failed foreign key check".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn ensure_retrieval_fts_schema(connection: &Connection) -> SqliteResult<bool> {
+    let fts5_available = connection
+        .execute_batch(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS temp.retrieval_fts5_probe USING fts5(content);\
+             DROP TABLE IF EXISTS temp.retrieval_fts5_probe;",
+        )
+        .is_ok();
+    if !fts5_available {
+        return Ok(false);
+    }
+
+    connection.execute_batch(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS retrieval_documents_fts USING fts5(
+            document_id UNINDEXED,
+            title_tokens,
+            chapter_tokens,
+            content_tokens,
+            tokenize = 'unicode61'
+        );",
+    )?;
+    Ok(true)
+}
+
+pub(crate) fn retrieval_fts_available(connection: &Connection) -> bool {
+    connection
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table' AND name = 'retrieval_documents_fts'
+            )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap_or(false)
 }
 
 fn ensure_local_reading_progress_schema(connection: &Connection) -> SqliteResult<()> {
@@ -1365,9 +1758,15 @@ mod tests {
                     'notebook_books',
                     'highlights',
                     'thoughts',
+                    'retrieval_documents',
+                    'retrieval_index_profiles',
+                    'retrieval_embeddings',
                     'reading_stats',
                     'raw_cache',
                     'ai_outputs',
+                    'note_synthesis_jobs',
+                    'note_synthesis_job_items',
+                    'note_synthesis_batches',
                     'ai_feedback_records',
                     'local_books',
                     'local_book_files',
@@ -1379,7 +1778,370 @@ mod tests {
             )
             .expect("table count should be readable");
 
-        assert_eq!(table_count, 16);
+        assert_eq!(table_count, 22);
+        assert!(super::retrieval_fts_available(&connection));
+
+        initialize_schema(&connection).expect("schema should initialize idempotently");
+        assert!(super::retrieval_fts_available(&connection));
+    }
+
+    #[test]
+    fn retrieval_vector_schema_enforces_complete_single_ready_profile() {
+        let connection = Connection::open_in_memory().expect("in-memory database should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        let insert_profile = |id: &str, status: &str, total: i64, indexed: i64| {
+            connection.execute(
+                "INSERT INTO retrieval_index_profiles (
+                    id, provider_kind, model_id, dimensions, distance_metric,
+                    normalization_version, chunking_version, content_hash_version,
+                    status, total_document_count, indexed_document_count,
+                    created_at, updated_at
+                 ) VALUES (?1, 'deterministic-test', 'fixture-v1', 2, 'cosine',
+                    'retrieval-text-v1', 'document-v1', 'sha256-v1',
+                    ?2, ?3, ?4, '100', '100')",
+                rusqlite::params![id, status, total, indexed],
+            )
+        };
+
+        insert_profile("profile-ready", "building", 2, 2)
+            .expect("complete building profile should insert");
+        connection
+            .execute(
+                "UPDATE retrieval_index_profiles
+                 SET status = 'ready', completed_at = '101'
+                 WHERE id = 'profile-ready'",
+                [],
+            )
+            .expect("complete profile should become ready");
+        assert!(insert_profile("profile-second-ready", "ready", 0, 0).is_err());
+
+        insert_profile("profile-incomplete", "building", 2, 1)
+            .expect("incomplete building profile should insert");
+        assert!(connection
+            .execute(
+                "UPDATE retrieval_index_profiles SET status = 'ready'
+                 WHERE id = 'profile-incomplete'",
+                [],
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn initialize_schema_migrates_m3a_profiles_without_losing_embeddings() {
+        let connection = Connection::open_in_memory().expect("in-memory database should open");
+        connection
+            .execute_batch(
+                "PRAGMA foreign_keys = ON;
+                 CREATE TABLE retrieval_documents (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    source_type TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    book_id TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    normalized_content TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    source_updated_at TEXT NOT NULL,
+                    indexed_at TEXT NOT NULL,
+                    deleted_at TEXT
+                 );
+                 CREATE TABLE retrieval_index_profiles (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    provider_kind TEXT NOT NULL,
+                    model_id TEXT NOT NULL,
+                    dimensions INTEGER NOT NULL CHECK(dimensions > 0),
+                    distance_metric TEXT NOT NULL CHECK(distance_metric = 'cosine'),
+                    normalization_version TEXT NOT NULL,
+                    chunking_version TEXT NOT NULL,
+                    content_hash_version TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN (
+                        'building', 'ready', 'failed', 'superseded'
+                    )),
+                    total_document_count INTEGER NOT NULL DEFAULT 0,
+                    indexed_document_count INTEGER NOT NULL DEFAULT 0,
+                    error_code TEXT,
+                    error_message TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    completed_at TEXT
+                 );
+                 CREATE TABLE retrieval_embeddings (
+                    profile_id TEXT NOT NULL,
+                    document_id TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    dimensions INTEGER NOT NULL,
+                    vector_blob BLOB NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(profile_id, document_id),
+                    FOREIGN KEY(profile_id) REFERENCES retrieval_index_profiles(id) ON DELETE CASCADE,
+                    FOREIGN KEY(document_id) REFERENCES retrieval_documents(id) ON DELETE CASCADE
+                 );
+                 INSERT INTO retrieval_documents (
+                    id, source_type, source_id, book_id, content, normalized_content,
+                    metadata_json, content_hash, source_updated_at, indexed_at
+                 ) VALUES ('note:highlight:h1', 'highlight', 'h1', 'book-1',
+                    '正文', '正文', '{}', 'sha256-v1:hash', '100', '100');
+                 INSERT INTO retrieval_index_profiles (
+                    id, provider_kind, model_id, dimensions, distance_metric,
+                    normalization_version, chunking_version, content_hash_version,
+                    status, total_document_count, indexed_document_count,
+                    created_at, updated_at, completed_at
+                 ) VALUES ('profile-ready', 'deterministic-test', 'fixture-v1', 2, 'cosine',
+                    'retrieval-text-v1', 'document-v1', 'sha256-v1',
+                    'ready', 1, 1, '100', '101', '101');
+                 INSERT INTO retrieval_embeddings (
+                    profile_id, document_id, content_hash, dimensions, vector_blob,
+                    created_at, updated_at
+                 ) VALUES ('profile-ready', 'note:highlight:h1', 'sha256-v1:hash', 2,
+                    X'0000803F00000000', '100', '100');",
+            )
+            .expect("legacy M3A schema should initialize");
+
+        initialize_schema(&connection).expect("legacy M3A schema should migrate");
+        initialize_schema(&connection).expect("remote profile migration should be idempotent");
+
+        let profile = connection
+            .query_row(
+                "SELECT status, provider_base_url_hash, cancel_requested_at
+                 FROM retrieval_index_profiles WHERE id = 'profile-ready'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .expect("migrated profile should read");
+        assert_eq!(profile, ("ready".to_string(), None, None));
+        let embedding_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM retrieval_embeddings", [], |row| {
+                row.get(0)
+            })
+            .expect("migrated embedding count should read");
+        let foreign_key_errors: i64 = connection
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .expect("foreign key check should run");
+        assert_eq!(embedding_count, 1);
+        assert_eq!(foreign_key_errors, 0);
+        assert!(connection
+            .execute(
+                "INSERT INTO retrieval_index_profiles (
+                    id, provider_kind, model_id, dimensions, distance_metric,
+                    normalization_version, chunking_version, content_hash_version,
+                    status, total_document_count, indexed_document_count,
+                    created_at, updated_at
+                 ) VALUES ('profile-cancelled', 'openai-compatible', 'embed-v1', 2, 'cosine',
+                    'retrieval-text-v1', 'document-v1', 'sha256-v1',
+                    'cancelled', 1, 0, '102', '102')",
+                [],
+            )
+            .is_ok());
+    }
+
+    #[test]
+    fn retrieval_embeddings_cascade_with_profile_and_document() {
+        let connection = Connection::open_in_memory().expect("in-memory database should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        connection
+            .execute(
+                "INSERT INTO retrieval_documents (
+                    id, source_type, source_id, book_id, content, normalized_content,
+                    metadata_json, content_hash, source_updated_at, indexed_at
+                 ) VALUES ('note:highlight:h1', 'highlight', 'h1', 'book-1',
+                    '正文', '正文', '{}', 'sha256-v1:hash', '100', '100')",
+                [],
+            )
+            .expect("document should insert");
+        for (profile_id, status) in [
+            ("profile-delete", "building"),
+            ("document-delete", "failed"),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO retrieval_index_profiles (
+                        id, provider_kind, model_id, dimensions, distance_metric,
+                        normalization_version, chunking_version, content_hash_version,
+                        status, total_document_count, indexed_document_count,
+                        created_at, updated_at
+                     ) VALUES (?1, 'deterministic-test', 'fixture-v1', 2, 'cosine',
+                        'retrieval-text-v1', 'document-v1', 'sha256-v1',
+                        ?2, 1, 1, '100', '100')",
+                    rusqlite::params![profile_id, status],
+                )
+                .expect("profile should insert");
+            connection
+                .execute(
+                    "INSERT INTO retrieval_embeddings (
+                        profile_id, document_id, content_hash, dimensions, vector_blob,
+                        created_at, updated_at
+                     ) VALUES (?1, 'note:highlight:h1', 'sha256-v1:hash', 2,
+                        X'0000000000000000', '100', '100')",
+                    [profile_id],
+                )
+                .expect("embedding should insert");
+        }
+
+        connection
+            .execute(
+                "DELETE FROM retrieval_index_profiles WHERE id = 'profile-delete'",
+                [],
+            )
+            .expect("profile should delete");
+        let after_profile_delete: i64 = connection
+            .query_row("SELECT COUNT(*) FROM retrieval_embeddings", [], |row| {
+                row.get(0)
+            })
+            .expect("embedding count should read");
+        assert_eq!(after_profile_delete, 1);
+
+        connection
+            .execute(
+                "DELETE FROM retrieval_documents WHERE id = 'note:highlight:h1'",
+                [],
+            )
+            .expect("document should delete");
+        let after_document_delete: i64 = connection
+            .query_row("SELECT COUNT(*) FROM retrieval_embeddings", [], |row| {
+                row.get(0)
+            })
+            .expect("embedding count should read");
+        assert_eq!(after_document_delete, 0);
+    }
+
+    #[test]
+    fn note_synthesis_schema_enforces_single_active_job_and_valid_counts() {
+        let connection = Connection::open_in_memory().expect("in-memory database should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        let insert_job = |id: &str, book_id: &str, status: &str| {
+            connection.execute(
+                "INSERT INTO note_synthesis_jobs (
+                    id, book_id, status, source_snapshot_hash, total_count, processed_count,
+                    batch_count, completed_batch_count, failed_batch_count,
+                    batch_prompt_version, merge_prompt_version, batching_version,
+                    provider_base_url_hash, provider_model, consent_confirmed_at,
+                    consent_provider_label, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, 'snapshot', 2, 0, 1, 0, 0,
+                    'batch-v1', 'merge-v1', 'batching-v1', 'provider', 'model',
+                    '1', 'Provider', '1', '1')",
+                rusqlite::params![id, book_id, status],
+            )
+        };
+
+        insert_job("job-1", "book-1", "summarizing").expect("first active job should insert");
+        assert!(insert_job("job-2", "book-1", "queued").is_err());
+        insert_job("job-3", "book-2", "failed").expect("failed job should insert");
+        insert_job("job-4", "book-2", "queued").expect("new active job after failed should insert");
+        assert!(connection
+            .execute(
+                "UPDATE note_synthesis_jobs SET processed_count = 3 WHERE id = 'job-1'",
+                [],
+            )
+            .is_err());
+        assert!(connection
+            .execute(
+                "UPDATE note_synthesis_jobs
+                 SET status = 'completed', processed_count = total_count,
+                     completed_batch_count = batch_count, failed_batch_count = 0
+                 WHERE id = 'job-1'",
+                [],
+            )
+            .is_err());
+        connection
+            .execute(
+                "UPDATE note_synthesis_jobs
+                 SET status = 'completed', processed_count = total_count,
+                     completed_batch_count = batch_count, failed_batch_count = 0,
+                     result_feature = 'book-notes-summary',
+                     result_prompt_version = 'book-notes-summary-full-v1',
+                     result_input_hash = 'result-hash'
+                 WHERE id = 'job-1'",
+                [],
+            )
+            .expect("completed job with full result reference should update");
+    }
+
+    #[test]
+    fn note_synthesis_snapshot_items_cascade_with_job() {
+        let connection = Connection::open_in_memory().expect("in-memory database should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        connection
+            .execute(
+                "INSERT INTO note_synthesis_jobs (
+                    id, book_id, status, source_snapshot_hash, total_count, processed_count,
+                    batch_count, completed_batch_count, failed_batch_count,
+                    batch_prompt_version, merge_prompt_version, batching_version,
+                    provider_base_url_hash, provider_model, consent_confirmed_at,
+                    consent_provider_label, created_at, updated_at
+                 ) VALUES ('job-1', 'book-1', 'queued', 'snapshot', 1, 0, 1, 0, 0,
+                    'batch-v1', 'merge-v1', 'batching-v1', 'provider', 'model',
+                    '1', 'Provider', '1', '1')",
+                [],
+            )
+            .expect("job should insert");
+        connection
+            .execute(
+                "INSERT INTO note_synthesis_job_items (
+                    job_id, document_id, source_type, content_hash, content_snapshot,
+                    source_updated_at, batch_index, audit_status
+                 ) VALUES ('job-1', 'note:highlight:h1', 'highlight', 'hash', '正文',
+                    '1', 0, 'pending')",
+                [],
+            )
+            .expect("snapshot item should insert");
+        connection
+            .execute(
+                "INSERT INTO note_synthesis_batches (
+                    job_id, batch_index, status, source_types_json, source_count,
+                    input_hash, updated_at
+                 ) VALUES ('job-1', 0, 'pending', '[\"highlight\"]', 1, 'input', '1')",
+                [],
+            )
+            .expect("batch should insert");
+
+        connection
+            .execute("DELETE FROM note_synthesis_jobs WHERE id = 'job-1'", [])
+            .expect("job should delete");
+        let item_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM note_synthesis_job_items", [], |row| {
+                row.get(0)
+            })
+            .expect("item count should read");
+        let batch_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM note_synthesis_batches", [], |row| {
+                row.get(0)
+            })
+            .expect("batch count should read");
+        assert_eq!((item_count, batch_count), (0, 0));
+    }
+
+    #[test]
+    fn retrieval_fts_schema_is_queryable() {
+        let connection = Connection::open_in_memory().expect("in-memory database should open");
+        initialize_schema(&connection).expect("schema should initialize");
+
+        connection
+            .execute(
+                "INSERT INTO retrieval_documents_fts (
+                    document_id, title_tokens, chapter_tokens, content_tokens
+                ) VALUES ('note:highlight:h1', '深度 工作', '第一章', '深度 工作 专注')",
+                [],
+            )
+            .expect("fts row should insert");
+        let count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM retrieval_documents_fts
+                 WHERE retrieval_documents_fts MATCH '深度'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("fts query should run");
+
+        assert_eq!(count, 1);
     }
 
     fn create_legacy_reading_item_schema(connection: &Connection) {

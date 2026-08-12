@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cancel-embedding-index"
+description = "Enables the cancel_embedding_index command without any pre-configured scope."
+commands.allow = ["cancel_embedding_index"]
+
+[[permission]]
+identifier = "deny-cancel-embedding-index"
+description = "Denies the cancel_embedding_index command without any pre-configured scope."
+commands.deny = ["cancel_embedding_index"]
