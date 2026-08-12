@@ -138,10 +138,9 @@ jobs:
             (Split-Path -Path $normalizedExePath -Leaf),
             (Split-Path -Path $normalizedSigPath -Leaf)
           )
-          $sourceNames = @($exeFile.Name, $sigFile.Name)
           $duplicateAssets = $release.assets |
             Where-Object {
-              $sourceNames -contains $_.name -and
+              $_.name -match '\.exe(\.sig)?$' -and
               $normalizedNames -notcontains $_.name
             }
 
