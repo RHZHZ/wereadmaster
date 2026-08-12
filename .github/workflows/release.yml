@@ -132,7 +132,8 @@ jobs:
 
           gh release upload "$env:RELEASE_TAG" "$normalizedExePath" "$normalizedSigPath" --clobber
 
-          $release = gh api "repos/${{ github.repository }}/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
+          $releaseInfo = gh release view "$env:RELEASE_TAG" --json databaseId | ConvertFrom-Json
+          $release = gh api "repos/${{ github.repository }}/releases/$($releaseInfo.databaseId)" | ConvertFrom-Json
           $normalizedNames = @(
             (Split-Path -Path $normalizedExePath -Leaf),
             (Split-Path -Path $normalizedSigPath -Leaf)
@@ -162,7 +163,8 @@ jobs:
             throw "Could not find Windows updater signature (*.exe.sig)."
           }
 
-          $release = gh api "repos/${{ github.repository }}/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
+          $releaseInfo = gh release view "$env:RELEASE_TAG" --json databaseId | ConvertFrom-Json
+          $release = gh api "repos/${{ github.repository }}/releases/$($releaseInfo.databaseId)" | ConvertFrom-Json
           $version = [string] $release.tag_name
           if ($version.StartsWith("v")) {
             $version = $version.Substring(1)
