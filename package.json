@@ -1,7 +1,7 @@
 {
   "name": "personal-reading-app",
   "private": true,
-  "version": "1.0.19",
+  "version": "1.0.18",
   "type": "module",
   "scripts": {
     "dev": "vite",

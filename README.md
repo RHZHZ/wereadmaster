@@ -68,16 +68,16 @@ flowchart LR
 
 Web Preview 是安全的只读入口：它不写入阅读状态，不执行桌面导出，不触发 AI，也不调用本地命令。
 
-## v1.0.19 重点更新
+## v1.0.18 重点更新
 
 - 新增独立的语义索引设置：使用 OpenAI-compatible Embedding Provider 在本机建立笔记向量索引，Key 不复用聊天 AI 配置。
 - 普通笔记查询自动融合本地词法与语义召回；精确短语、全量匹配和分页续查优先保持本地词法检索。
 - Embedding 不可用、索引失效或配置不匹配时，检索自动降级为本地词法回退，不会中断笔记搜索。
 - 支持快照式全量笔记归纳：显式授权后再发送快照笔记，任务可显示进度、取消、继续和失败批次重试。
 - 阅读助手会清楚展示混合检索或本地词法回退状态，并保持原始笔记展示的独立授权边界。
-- 修复 Android 发布构建与 Gradle 9 的兼容问题，Android 签名 APK 随 `v1.0.19` 发布提供。
+- 修复 Android 发布构建与 Gradle 9 的兼容问题，Windows 安装包与 Android 签名 APK 统一随 `v1.0.18` 发布。
 
-完整变化、隐私和兼容边界见 [v1.0.19 Release Notes](docs/release-notes-v1.0.19.json)。
+完整变化、隐私和兼容边界见 [v1.0.18 Release Notes](docs/release-notes-v1.0.18.json)。
 
 ## 快速开始
 
@@ -130,7 +130,7 @@ Web Preview 是安全的只读入口：它不写入阅读状态，不执行桌�
 | 目标 | 入口 |
 | --- | --- |
 | 详细安装、同步、阅读、导出和排障 | [用户指南](docs/user-guide.md) |
-| 当前版本变化与升级边界 | [v1.0.19 Release Notes](docs/release-notes-v1.0.19.json) |
+| 当前版本变化与升级边界 | [v1.0.18 Release Notes](docs/release-notes-v1.0.18.json) |
 | 术语和现行产品命名 | [产品术语表](docs/GLOSSARY.md) |
 | 应用更新与发布说明 | [GitHub Releases 更新说明](docs/github-release-updates.md) |
 | 阅读器验收和维护资料 | [docs 目录](docs/) |

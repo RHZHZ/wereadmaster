@@ -83,7 +83,7 @@ jobs:
           tagName: ${{ inputs.tag_name || github.ref_name }}
           releaseName: "微信读书个人阅读管理 ${{ inputs.tag_name || github.ref_name }}"
           releaseBody: ${{ steps.release_notes.outputs.body }}
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
           includeUpdaterJson: false
 
@@ -112,7 +112,7 @@ jobs:
             throw "Could not find Windows updater signature (*.exe.sig)."
           }
 
-          $normalizedExePath = Join-Path $bundleDir "wereadmaster_${version}_x64-setup.exe"
+          $normalizedExePath = Join-Path $bundleDir "weread_${version}_x64-setup.exe"
           $normalizedSigPath = "$normalizedExePath.sig"
           Copy-Item -Path $exeFile.FullName -Destination $normalizedExePath -Force
           Copy-Item -Path $sigFile.FullName -Destination $normalizedSigPath -Force
@@ -155,7 +155,7 @@ jobs:
             $version = $version.Substring(1)
           }
 
-          $expectedInstallerName = "wereadmaster_${version}_x64-setup.exe"
+          $expectedInstallerName = "weread_${version}_x64-setup.exe"
           $exeAsset = $release.assets |
             Where-Object { $_.name -eq $expectedInstallerName } |
             Select-Object -First 1
@@ -341,4 +341,6 @@ jobs:
           fi
           "$APKSIGNER" verify --verbose "$APK_PATH"
 
-          gh release upload "${{ inputs.tag_name || github.ref_name }}" "$APK_PATH" --clobber
+          RELEASE_TAG="${{ inputs.tag_name || github.ref_name }}"
+          gh release upload "$RELEASE_TAG" "$APK_PATH" --clobber
+          gh release edit "$RELEASE_TAG" --draft=false
