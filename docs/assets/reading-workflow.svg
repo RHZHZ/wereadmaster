@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="470" viewBox="0 0 1200 470" role="img" aria-labelledby="title desc">
+  <title id="title">WxReadMaster 阅读闭环</title>
+  <desc id="desc">从同步、阅读整理、生成成果到导出备份的四阶段循环流程图。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#8b8a80"/>
+    </marker>
+    <style>
+      .title { font: 700 27px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #2f2f2a; }
+      .subtitle { font: 400 16px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #6f6d63; }
+      .step { font: 700 18px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #2f2f2a; }
+      .body { font: 400 15px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #4b4a43; }
+      .loop { font: 400 15px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #8b5c00; }
+    </style>
+  </defs>
+  <rect x="1" y="1" width="1198" height="468" rx="18" fill="#fffdf8" stroke="#dedbd1"/>
+  <text x="52" y="58" class="title">一条主线，四个阶段</text>
+  <text x="52" y="88" class="subtitle">把阅读记录变成可继续使用的本地成果</text>
+
+  <rect x="52" y="145" width="240" height="132" rx="16" fill="#e4f2ff" stroke="#2d8cff"/>
+  <circle cx="84" cy="181" r="18" fill="#1677ff"/>
+  <text x="84" y="187" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" font-weight="700" fill="#ffffff">1</text>
+  <text x="116" y="183" class="step">同步</text>
+  <text x="116" y="213" class="body">书架、笔记、统计</text>
+  <text x="116" y="239" class="body">也可导入本地图书</text>
+
+  <line x1="305" y1="211" x2="354" y2="211" stroke="#8b8a80" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <rect x="370" y="145" width="240" height="132" rx="16" fill="#e4faf2" stroke="#28b88a"/>
+  <circle cx="402" cy="181" r="18" fill="#079669"/>
+  <text x="402" y="187" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" font-weight="700" fill="#ffffff">2</text>
+  <text x="434" y="183" class="step">阅读与整理</text>
+  <text x="434" y="213" class="body">候选、进度、待整理</text>
+  <text x="434" y="239" class="body">划线、想法与本地记录</text>
+
+  <line x1="623" y1="211" x2="672" y2="211" stroke="#8b8a80" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <rect x="688" y="145" width="240" height="132" rx="16" fill="#fff0d9" stroke="#ef9419"/>
+  <circle cx="720" cy="181" r="18" fill="#d56500"/>
+  <text x="720" y="187" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" font-weight="700" fill="#ffffff">3</text>
+  <text x="752" y="183" class="step">生成成果</text>
+  <text x="752" y="213" class="body">书籍复盘、阅读指南</text>
+  <text x="752" y="239" class="body">阅读路线、报告图片</text>
+
+  <line x1="941" y1="211" x2="990" y2="211" stroke="#8b8a80" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <rect x="1006" y="145" width="142" height="132" rx="16" fill="#f3efe2" stroke="#9b9789"/>
+  <circle cx="1038" cy="181" r="18" fill="#66645e"/>
+  <text x="1038" y="187" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" font-weight="700" fill="#ffffff">4</text>
+  <text x="1070" y="183" class="step">带走</text>
+  <text x="1070" y="213" class="body">导出</text>
+  <text x="1070" y="239" class="body">备份</text>
+
+  <path d="M1078 310 V365 H172 V310" fill="none" stroke="#b7a982" stroke-width="2" stroke-dasharray="7 7" marker-end="url(#arrow)"/>
+  <text x="625" y="405" text-anchor="middle" class="loop">持续循环：有新笔记或新进度时，再回到同步、整理或刷新成果</text>
+</svg>

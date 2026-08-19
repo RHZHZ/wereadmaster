@@ -9,11 +9,23 @@ import {
   Settings,
   Sparkles
 } from "lucide-react";
-import { AssetExportDialog } from "../components/export/AssetExportDialog";
+import {
+  AssetExportDialog,
+  type AssetExportConfirmation
+} from "../components/export/AssetExportDialog";
 import { useToast } from "../components/ToastProvider";
 import { resolveExportPlatformMode } from "../lib/asset-export-dialog";
-import { formatMultiTargetExportToast } from "../lib/export-targets";
-import type { BookDetail, PreparedAssetUpdate, ReadingProgress, ShelfEntry } from "../lib/types";
+import {
+  buildMultiTargetExportRequest,
+  formatMultiTargetExportToast
+} from "../lib/export-targets";
+import type {
+  BookDetail,
+  ExternalExportTarget,
+  PreparedAssetUpdate,
+  ReadingProgress,
+  ShelfEntry
+} from "../lib/types";
 import type { SettingsCategoryId } from "./SettingsPage";
 import { ReadingRouteInputPanel } from "./reading-route/ReadingRouteInputPanel";
 import { ReadingRouteResultPanel } from "./reading-route/ReadingRouteResultPanel";
@@ -44,8 +56,17 @@ export function ReadingRoutePage({
   const regenerateLabel = preparedUpdate ? "生成更新版本" : "重新生成";
   const exportLabel = state.isCrossBookRoute ? "导出阅读路线" : "导出阅读指南";
 
-  async function exportRoute(targets: Parameters<typeof state.exportRoute>[0]) {
-    const response = await state.exportRoute(targets);
+  async function exportRoute(
+    targets: ExternalExportTarget[],
+    confirmation: AssetExportConfirmation
+  ) {
+    const response = await state.exportRoute(
+      buildMultiTargetExportRequest(
+        targets,
+        confirmation.confirmImaBodyExport,
+        confirmation.forceImaNewSnapshot
+      )
+    );
     showToast(formatMultiTargetExportToast(response));
     return response;
   }
@@ -188,7 +209,9 @@ export function ReadingRoutePage({
         ariaLabel={exportLabel}
         assetTitle={exportLabel}
         assetDescription={state.currentBook?.title ? `《${state.currentBook.title}》` : undefined}
+        sourceKind="readingRoute"
         platformMode={resolveExportPlatformMode()}
+        availableTargets={["markdown", "obsidian", "notion", "ima"]}
         onExport={exportRoute}
         onOpenSettings={() => onOpenSettings("export")}
         onClose={() => setIsAssetExportOpen(false)}

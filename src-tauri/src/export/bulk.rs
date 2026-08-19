@@ -64,7 +64,7 @@ pub struct BulkExportResultItem {
     pub status: BulkExportItemStatus,
     pub notes_file: Option<String>,
     pub ai_review_file: Option<String>,
-    /// 目标级结果（Obsidian / Notion）。仅当批量请求选择了外部目标时非空；
+    /// 目标级结果（Obsidian / Notion / Ima）。仅当批量请求选择了外部目标时非空；
     /// Markdown 始终写入批量目录，不在此列表中重复。
     #[serde(default)]
     pub targets: Vec<ExportTargetResult>,
@@ -211,7 +211,7 @@ pub fn build_bulk_export_preflight(
     }
 }
 
-/// 提取批量请求中需要额外写出的外部目标（Obsidian / Notion），保序去重。
+/// 提取批量请求中需要额外写出的外部目标（Obsidian / Notion / Ima），保序去重。
 /// Markdown 不在其中：批量导出始终把 Markdown 写入本次批量目录作为兜底。
 pub fn bulk_external_targets(
     request: Option<&MultiTargetExportRequest>,
@@ -228,11 +228,50 @@ pub fn bulk_external_targets(
     targets
 }
 
+pub fn ima_batch_should_stop(result: &ExportTargetResult) -> bool {
+    if result.target != ExternalExportTarget::Ima {
+        return false;
+    }
+    if result.status == ExportTargetStatus::Unknown {
+        return true;
+    }
+    let code = result.error.as_ref().map(|error| error.code.as_str());
+    if matches!(code, Some("IMA_CONTENT_REJECTED" | "IMA_CONTENT_TOO_LARGE")) {
+        return false;
+    }
+    matches!(
+        result.status,
+        ExportTargetStatus::Failed | ExportTargetStatus::Partial
+    )
+}
+
+pub fn ima_batch_not_sent_result(trigger_code: &str) -> ExportTargetResult {
+    ExportTargetResult {
+        target: ExternalExportTarget::Ima,
+        status: ExportTargetStatus::Failed,
+        title: None,
+        path: None,
+        url: None,
+        page_id: None,
+        operation_id: None,
+        operation_stage: None,
+        resource_id: None,
+        file_count: None,
+        warning: None,
+        error: Some(super::targets::ExportTargetError {
+            code: "IMA_BATCH_NOT_SENT".to_string(),
+            message: format!("前一项目触发 Ima 批量熔断（{trigger_code}），本项目未发送。"),
+            detail: None,
+        }),
+    }
+}
+
 fn external_target_label(target: ExternalExportTarget) -> &'static str {
     match target {
         ExternalExportTarget::Markdown => "Markdown",
         ExternalExportTarget::Obsidian => "Obsidian",
         ExternalExportTarget::Notion => "Notion",
+        ExternalExportTarget::Ima => "Ima",
     }
 }
 
@@ -258,8 +297,19 @@ fn write_bulk_export_target_line(markdown: &mut String, target: &ExportTargetRes
                 .unwrap_or("未知原因");
             let _ = writeln!(markdown, "- {label}：失败（{reason}）");
         }
+        ExportTargetStatus::Partial => {
+            let reason = target
+                .error
+                .as_ref()
+                .map(|error| error.message.as_str())
+                .unwrap_or("部分内容尚未完成");
+            let _ = writeln!(markdown, "- {label}：部分完成（{reason}）");
+        }
         ExportTargetStatus::Skipped => {
             let _ = writeln!(markdown, "- {label}：已跳过");
+        }
+        ExportTargetStatus::Unknown => {
+            let _ = writeln!(markdown, "- {label}：远端状态无法确认");
         }
     }
 }
@@ -307,6 +357,9 @@ pub fn serialize_bulk_export_index(report: &BulkExportReport) -> String {
                 }
                 ExternalExportTarget::Obsidian => {
                     line.push_str(" · Obsidian ✓");
+                }
+                ExternalExportTarget::Ima => {
+                    line.push_str(" · Ima ✓");
                 }
                 ExternalExportTarget::Markdown => {}
             }
@@ -387,9 +440,9 @@ mod tests {
 
     use super::{
         build_bulk_export_preflight, bulk_external_targets, chunk_bulk_export_jobs,
-        normalize_bulk_export_concurrency, serialize_bulk_export_index,
-        serialize_bulk_export_report, BulkExportItemStatus, BulkExportReport, BulkExportResultItem,
-        BulkExportStrategy,
+        ima_batch_not_sent_result, ima_batch_should_stop, normalize_bulk_export_concurrency,
+        serialize_bulk_export_index, serialize_bulk_export_report, BulkExportItemStatus,
+        BulkExportReport, BulkExportResultItem, BulkExportStrategy,
     };
 
     #[test]
@@ -579,6 +632,7 @@ mod tests {
             targets: vec![ExternalExportTarget::Markdown],
             obsidian: None,
             notion: None,
+            ima: None,
         };
         assert!(bulk_external_targets(Some(&markdown_only)).is_empty());
 
@@ -591,11 +645,72 @@ mod tests {
             ],
             obsidian: None,
             notion: None,
+            ima: None,
         };
         assert_eq!(
             bulk_external_targets(Some(&mixed)),
             vec![ExternalExportTarget::Obsidian, ExternalExportTarget::Notion]
         );
+    }
+
+    #[test]
+    fn ima_batch_circuit_stops_target_failures_but_not_book_content_failures() {
+        let result = |status, code: &str| ExportTargetResult {
+            target: ExternalExportTarget::Ima,
+            status,
+            title: None,
+            path: None,
+            url: None,
+            page_id: None,
+            operation_id: Some("operation-1".to_string()),
+            operation_stage: Some("importDoc".to_string()),
+            resource_id: None,
+            file_count: None,
+            warning: None,
+            error: Some(crate::export::targets::ExportTargetError {
+                code: code.to_string(),
+                message: "failed".to_string(),
+                detail: None,
+            }),
+        };
+
+        assert!(ima_batch_should_stop(&result(
+            ExportTargetStatus::Failed,
+            "IMA_RATE_LIMITED"
+        )));
+        assert!(ima_batch_should_stop(&result(
+            ExportTargetStatus::Partial,
+            "IMA_KNOWLEDGE_ADD_FAILED"
+        )));
+        assert!(ima_batch_should_stop(&result(
+            ExportTargetStatus::Unknown,
+            "IMA_REMOTE_UNKNOWN"
+        )));
+        assert!(!ima_batch_should_stop(&result(
+            ExportTargetStatus::Failed,
+            "IMA_CONTENT_REJECTED"
+        )));
+        assert!(!ima_batch_should_stop(&result(
+            ExportTargetStatus::Partial,
+            "IMA_CONTENT_TOO_LARGE"
+        )));
+    }
+
+    #[test]
+    fn ima_batch_not_sent_has_no_remote_operation_identity() {
+        let result = ima_batch_not_sent_result("IMA_RATE_LIMITED");
+
+        assert_eq!(result.status, ExportTargetStatus::Failed);
+        assert!(result.operation_id.is_none());
+        assert!(result.resource_id.is_none());
+        assert_eq!(
+            result.error.as_ref().map(|error| error.code.as_str()),
+            Some("IMA_BATCH_NOT_SENT")
+        );
+        assert!(result
+            .error
+            .as_ref()
+            .is_some_and(|error| error.message.contains("未发送")));
     }
 
     #[test]
@@ -622,6 +737,9 @@ mod tests {
                             ),
                             url: None,
                             page_id: None,
+                            operation_id: None,
+                            operation_stage: None,
+                            resource_id: None,
                             file_count: Some(1),
                             warning: None,
                             error: None,
@@ -633,6 +751,9 @@ mod tests {
                             path: None,
                             url: Some("https://www.notion.so/page-1".to_string()),
                             page_id: Some("page-1".to_string()),
+                            operation_id: None,
+                            operation_stage: None,
+                            resource_id: None,
                             file_count: None,
                             warning: Some("封面写入失败，正文已导入。".to_string()),
                             error: None,
@@ -654,6 +775,9 @@ mod tests {
                         path: None,
                         url: None,
                         page_id: None,
+                        operation_id: None,
+                        operation_stage: None,
+                        resource_id: None,
                         file_count: None,
                         warning: None,
                         error: Some(ExportTargetError {

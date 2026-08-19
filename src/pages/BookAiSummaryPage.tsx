@@ -19,7 +19,10 @@ import {
   Target
 } from "lucide-react";
 import { AiActionFeedbackChecklist } from "../components/AiActionFeedbackChecklist";
-import { AssetExportDialog } from "../components/export/AssetExportDialog";
+import {
+  AssetExportDialog,
+  type AssetExportConfirmation
+} from "../components/export/AssetExportDialog";
 import { BookInsightSection } from "../components/BookInsightSection";
 import { reflectionFeedbackLabels } from "../components/AiActionFeedbackChecklist";
 import { SkillUpgradeNotice } from "../components/SkillUpgradeNotice";
@@ -41,15 +44,15 @@ import { copyTextToClipboard } from "../lib/clipboard";
 import { buildFeedbackOutcomeAssistantDraft } from "../lib/feedback-outcome-drafts";
 import {
   exportBookNotesSummaryTargets,
+  getBookNotesSummaryVariants,
   getReadingItemState,
   getAiReviewFeedback,
   getAiSettingsState,
   getBookNotes,
   getCommandErrorInfo,
   getCommandErrorMessage,
-  getLatestBookNotesSummary,
-  getActiveNoteSynthesisJob,
   getNoteSynthesisJob,
+  getNoteSynthesisJobSummary,
   previewNoteSynthesis,
   startNoteSynthesis,
   continueNoteSynthesis,
@@ -66,12 +69,16 @@ import {
   type ReadingArtifactKind
 } from "../lib/reading-artifacts";
 import { resolveExportPlatformMode } from "../lib/asset-export-dialog";
-import { formatMultiTargetExportToast } from "../lib/export-targets";
+import {
+  buildMultiTargetExportRequest,
+  formatMultiTargetExportToast
+} from "../lib/export-targets";
 import type {
   AiSettingsState,
   BookAiRepresentativeQuote,
   BookAiSummary,
   BookAiSummaryResponse,
+  BookAiSummaryVariants,
   BookAiSummarySourceStats,
   BookNotes,
   FeedbackOutcomeSummary,
@@ -82,6 +89,7 @@ import type {
   PreparedAssetUpdate,
   ReadingItemState,
   NoteSynthesisJob,
+  NoteSynthesisJobSummary,
   NoteSynthesisPreview
 } from "../lib/types";
 import type { SettingsCategoryId } from "./SettingsPage";
@@ -118,7 +126,11 @@ type AiPageStatus =
   | "error"
   | "empty-note";
 
+type BookReviewMode = "quick" | "full";
+
 const inFlightBookNotesRequests = new Map<string, Promise<BookNotes>>();
+const QUICK_REVIEW_HIGHLIGHT_BUDGET = 80;
+const QUICK_REVIEW_THOUGHT_BUDGET = 20;
 
 export function BookAiSummaryPage({
   book,
@@ -134,7 +146,10 @@ export function BookAiSummaryPage({
   const targetBookId = bookId ?? book?.bookId ?? notes?.bookId;
   const [aiState, setAiState] = useState<AiSettingsState>();
   const [status, setStatus] = useState<AiPageStatus>("idle");
-  const [summaryResponse, setSummaryResponse] = useState<BookAiSummaryResponse>();
+  const [summaryResponses, setSummaryResponses] = useState<BookAiSummaryVariants>({});
+  const initialReviewMode = readReviewModeFromLocation();
+  const [reviewMode, setReviewMode] = useState<BookReviewMode>(initialReviewMode ?? "quick");
+  const hasUserSelectedReviewMode = useRef(Boolean(initialReviewMode));
   const [isLoadingSettings, setIsLoadingSettings] = useState(false);
   const [isLoadingSummaryCache, setIsLoadingSummaryCache] = useState(false);
   const [isLoadingReadingState, setIsLoadingReadingState] = useState(false);
@@ -147,6 +162,8 @@ export function BookAiSummaryPage({
   const [notesReloadToken, setNotesReloadToken] = useState(0);
   const [synthesisPreview, setSynthesisPreview] = useState<NoteSynthesisPreview>();
   const [synthesisJob, setSynthesisJob] = useState<NoteSynthesisJob>();
+  const [synthesisJobs, setSynthesisJobs] = useState<NoteSynthesisJobSummary>();
+  const [synthesisReloadToken, setSynthesisReloadToken] = useState(0);
   const [isLoadingSynthesis, setIsLoadingSynthesis] = useState(false);
   const [synthesisConsent, setSynthesisConsent] = useState(false);
   const [synthesisError, setSynthesisError] = useState<string>();
@@ -163,15 +180,50 @@ export function BookAiSummaryPage({
     readyNotes?.book && readyNotes.book.bookId === targetBookId
       ? readyNotes.book
       : book ?? readyNotes?.book;
-  const activeSummaryResponse =
-    summaryResponse?.bookId === targetBookId
-      ? summaryResponse
-      : undefined;
+  const quickSummaryResponse =
+    summaryResponses.quick?.bookId === targetBookId ? summaryResponses.quick : undefined;
+  const fullSummaryResponse =
+    summaryResponses.full?.bookId === targetBookId ? summaryResponses.full : undefined;
+  const activeSummaryResponse = reviewMode === "full" ? fullSummaryResponse : quickSummaryResponse;
   const summary = activeSummaryResponse?.summary;
-  const sourceStats = summary?.sourceStats ?? sourceStatsFromNotes(readyNotes);
-  const hasSourceStats = Boolean(summary || readyNotes);
-  const hasSummary = Boolean(summary && activeSummaryResponse?.source !== "empty");
+  const quickReviewAvailableCount = readyNotes
+    ? readyNotes.highlights.length + readyNotes.thoughts.length
+    : 0;
+  const quickReviewBudgetCount = readyNotes
+    ? Math.min(readyNotes.highlights.length, QUICK_REVIEW_HIGHLIGHT_BUDGET) +
+      Math.min(readyNotes.thoughts.length, QUICK_REVIEW_THOUGHT_BUDGET)
+    : 0;
+  const completedSynthesisJob =
+    synthesisJob?.status === "completed" ? synthesisJob : synthesisJobs?.latestCompletedJob;
   const hasActiveSynthesisJob = isActiveNoteSynthesisJob(synthesisJob);
+  const hasPendingFullTask = Boolean(
+    synthesisJob &&
+      (hasActiveSynthesisJob || synthesisJob.status === "partial")
+  );
+  const isFullSnapshotSummary =
+    !hasPendingFullTask && isVerifiedFullSnapshotSummary(completedSynthesisJob, fullSummaryResponse);
+  const completedSnapshotIsStale = isNoteSynthesisSnapshotStale(
+    synthesisPreview,
+    completedSynthesisJob
+  );
+  const hasSummary = Boolean(
+    summary &&
+      activeSummaryResponse?.source !== "empty" &&
+      (reviewMode === "quick" || isFullSnapshotSummary)
+  );
+  const visibleSummary = hasSummary ? summary : undefined;
+  const sourceStats = visibleSummary?.sourceStats ?? sourceStatsFromNotes(readyNotes);
+  const hasSourceStats = Boolean(visibleSummary || readyNotes);
+  const hasQuickSummary = Boolean(
+    quickSummaryResponse?.summary && quickSummaryResponse.source !== "empty"
+  );
+  const quickSummarySourceStats = quickSummaryResponse?.summary.sourceStats;
+  const quickSummaryIncludedCount = quickSummarySourceStats
+    ? quickSummarySourceStats.includedHighlightCount + quickSummarySourceStats.includedThoughtCount
+    : quickReviewBudgetCount;
+  const quickSummaryAvailableCount = quickSummarySourceStats
+    ? quickSummarySourceStats.highlightCount + quickSummarySourceStats.thoughtCount
+    : quickReviewAvailableCount;
   const canGenerate =
     Boolean(targetBookId) &&
     hasReadyNotesForTarget &&
@@ -185,11 +237,40 @@ export function BookAiSummaryPage({
   const statusMeta = statusMetaFromState(
     status,
     Boolean(activeSummaryResponse?.errorMessage),
-    notesInfo.status
+    notesInfo.status,
+    reviewMode,
+    isFullSnapshotSummary
   );
   const summaryInputHash = activeSummaryResponse?.inputHash;
   const isOrganized =
     readingState?.organizeStatus === "organized" || readingState?.status === "organized";
+
+  function handleReviewModeChange(nextMode: BookReviewMode) {
+    hasUserSelectedReviewMode.current = true;
+    setReviewMode(nextMode);
+    replaceReviewModeInLocation(nextMode);
+    const nextResponse = nextMode === "full" ? fullSummaryResponse : quickSummaryResponse;
+    if (nextResponse) {
+      setStatus(statusFromSource(nextResponse.source));
+    } else if (status !== "generating" && !isLoadingSummaryCache) {
+      setStatus(statusFromAiState(aiState, notesInfo));
+    }
+  }
+
+  useEffect(() => {
+    if (hasUserSelectedReviewMode.current || reviewMode === "full") {
+      return;
+    }
+
+    if (
+      isActiveNoteSynthesisJob(synthesisJob) ||
+      synthesisJob?.status === "partial" ||
+      isVerifiedFullSnapshotSummary(completedSynthesisJob, fullSummaryResponse)
+    ) {
+      setReviewMode("full");
+      replaceReviewModeInLocation("full");
+    }
+  }, [completedSynthesisJob, fullSummaryResponse, reviewMode, synthesisJob]);
 
   useEffect(() => {
     onNotesChangeRef.current = onNotesChange;
@@ -203,7 +284,7 @@ export function BookAiSummaryPage({
 
     async function loadNotesInfo() {
       if (isBookChange) {
-        setSummaryResponse(undefined);
+        setSummaryResponses({});
       }
       setNotesError(undefined);
 
@@ -293,7 +374,11 @@ export function BookAiSummaryPage({
     return () => {
       isMounted = false;
     };
-  }, [targetBookId, notesInfo.status, notesInfo.status === "ready" ? notesInfo.exportableCount : undefined]);
+  }, [
+    targetBookId,
+    notesInfo.status,
+    notesInfo.status === "ready" ? notesInfo.exportableCount : undefined
+  ]);
 
   useEffect(() => {
     let isMounted = true;
@@ -302,19 +387,26 @@ export function BookAiSummaryPage({
       if (!targetBookId || notesInfo.status !== "ready" || notesInfo.exportableCount <= 0) {
         setSynthesisPreview(undefined);
         setSynthesisJob(undefined);
+        setSynthesisJobs(undefined);
         return;
       }
 
       setIsLoadingSynthesis(true);
       setSynthesisError(undefined);
       try {
-        const [preview, activeJob] = await Promise.all([
+        const [preview, jobs] = await Promise.all([
           previewNoteSynthesis(targetBookId),
-          getActiveNoteSynthesisJob(targetBookId)
+          getNoteSynthesisJobSummary(targetBookId)
         ]);
         if (isMounted) {
           setSynthesisPreview(preview);
-          setSynthesisJob(activeJob ?? preview.activeJob);
+          setSynthesisJobs(jobs);
+          setSynthesisJob(
+            jobs.activeJob ??
+              jobs.latestCompletedJob ??
+              jobs.latestTerminalJob ??
+              preview.activeJob
+          );
         }
       } catch (loadError) {
         if (isMounted) {
@@ -332,13 +424,19 @@ export function BookAiSummaryPage({
     return () => {
       isMounted = false;
     };
-  }, [targetBookId, notesInfo.status, notesInfo.status === "ready" ? notesInfo.exportableCount : undefined]);
+  }, [
+    targetBookId,
+    notesInfo.status,
+    notesInfo.status === "ready" ? notesInfo.exportableCount : undefined,
+    notesInfo.status === "ready" ? notesInfo.notes : undefined,
+    synthesisReloadToken
+  ]);
 
   useEffect(() => {
     let isMounted = true;
     let timer: number | undefined;
     const activeStatus = synthesisJob?.status;
-    if (!targetBookId || !synthesisJob || !["queued", "snapshotting", "batching", "summarizing", "merging", "partial"].includes(activeStatus ?? "")) {
+    if (!targetBookId || !synthesisJob || !["queued", "snapshotting", "batching", "summarizing", "merging"].includes(activeStatus ?? "")) {
       return;
     }
 
@@ -349,12 +447,17 @@ export function BookAiSummaryPage({
           return;
         }
 
-        setSynthesisJob(nextJob);
+        applySynthesisJob(nextJob);
         if (nextJob.status === "completed") {
-          const cached = await getLatestBookNotesSummary(targetBookId);
-          if (isMounted && cached) {
-            setSummaryResponse(cached);
-            setStatus(statusFromSource(cached.source));
+          const variants = await getBookNotesSummaryVariants(targetBookId);
+          if (isMounted) {
+            setSummaryResponses(variants);
+            setReviewMode("full");
+            hasUserSelectedReviewMode.current = true;
+            replaceReviewModeInLocation("full");
+            if (variants.full) {
+              setStatus(statusFromSource(variants.full.source));
+            }
           }
         }
       } catch (loadError) {
@@ -371,6 +474,30 @@ export function BookAiSummaryPage({
       }
     };
   }, [targetBookId, synthesisJob?.status]);
+
+  function applySynthesisJob(nextJob: NoteSynthesisJob) {
+    setSynthesisJob(nextJob);
+    setSynthesisJobs((current) => {
+      if (isActiveNoteSynthesisJob(nextJob)) {
+        return { ...current, activeJob: nextJob };
+      }
+
+      if (nextJob.status === "completed") {
+        return {
+          ...current,
+          activeJob: undefined,
+          latestCompletedJob: nextJob,
+          latestTerminalJob: nextJob
+        };
+      }
+
+      return {
+        ...current,
+        activeJob: undefined,
+        latestTerminalJob: nextJob
+      };
+    });
+  }
 
   useEffect(() => {
     let isMounted = true;
@@ -479,20 +606,21 @@ export function BookAiSummaryPage({
 
       setIsLoadingSummaryCache(true);
       setError(undefined);
-      setSummaryResponse(undefined);
+      setSummaryResponses({});
       setStatus("loading-cache");
 
       try {
-        const cached = await getLatestBookNotesSummary(targetBookId);
+        const cached = await getBookNotesSummaryVariants(targetBookId);
 
         if (!isMounted) {
           return;
         }
 
-        if (cached) {
-          setSummaryResponse(cached);
-          setStatus(statusFromSource(cached.source));
-          setError(cached.errorMessage ? { message: cached.errorMessage } : undefined);
+        setSummaryResponses(cached);
+        const activeCached = reviewMode === "full" ? cached.full : cached.quick;
+        if (activeCached) {
+          setStatus(statusFromSource(activeCached.source));
+          setError(activeCached.errorMessage ? { message: activeCached.errorMessage } : undefined);
           return;
         }
 
@@ -529,10 +657,10 @@ export function BookAiSummaryPage({
     setSynthesisError(undefined);
     try {
       const result = await startNoteSynthesis(targetBookId, new Date().toISOString());
-      setSynthesisJob(result.job);
+      applySynthesisJob(result.job);
       setSynthesisConsent(false);
       showToast({
-        message: result.created ? "全量归纳快照已创建，请显式点击继续。" : "已恢复这本书的未完成全量归纳任务。",
+        message: result.created ? "完整复盘快照已创建，请点击“开始发送并归纳”。" : "已恢复这本书未完成的完整复盘任务。",
         tone: "success"
       });
     } catch (startError) {
@@ -553,12 +681,15 @@ export function BookAiSummaryPage({
       const nextJob = retryFailed
         ? await retryFailedNoteSynthesisBatches(synthesisJob.id)
         : await continueNoteSynthesis(synthesisJob.id);
-      setSynthesisJob(nextJob);
+      applySynthesisJob(nextJob);
       if (nextJob.status === "completed" && targetBookId) {
-        const cached = await getLatestBookNotesSummary(targetBookId);
-        if (cached) {
-          setSummaryResponse(cached);
-          setStatus(statusFromSource(cached.source));
+        const cached = await getBookNotesSummaryVariants(targetBookId);
+        setSummaryResponses(cached);
+        setReviewMode("full");
+        hasUserSelectedReviewMode.current = true;
+        replaceReviewModeInLocation("full");
+        if (cached.full) {
+          setStatus(statusFromSource(cached.full.source));
         }
       }
     } catch (continueError) {
@@ -576,7 +707,7 @@ export function BookAiSummaryPage({
     setIsLoadingSynthesis(true);
     setSynthesisError(undefined);
     try {
-      setSynthesisJob(await cancelNoteSynthesis(synthesisJob.id));
+      applySynthesisJob(await cancelNoteSynthesis(synthesisJob.id));
     } catch (cancelError) {
       setSynthesisError(getCommandErrorMessage(cancelError));
     } finally {
@@ -617,7 +748,7 @@ export function BookAiSummaryPage({
         regenerate,
         updateFrom: regenerate ? preparedUpdate : undefined
       });
-      setSummaryResponse(response);
+      setSummaryResponses((current) => ({ ...current, quick: response }));
       setStatus(statusFromSource(response.source));
       if (response.errorMessage) {
         setError({ message: response.errorMessage });
@@ -629,15 +760,24 @@ export function BookAiSummaryPage({
   }
 
   async function exportBookReview(
-    targets: ExternalExportTarget[]
+    targets: ExternalExportTarget[],
+    confirmation: AssetExportConfirmation
   ): Promise<MultiTargetExportResponse> {
     if (!targetBookId || !hasSummary) {
       throw new Error("当前没有可导出的书籍复盘。");
     }
 
-    const response = await exportBookNotesSummaryTargets(targetBookId, reviewFeedback, {
-      targets
-    });
+    const response = await exportBookNotesSummaryTargets(
+      targetBookId,
+      reviewFeedback,
+      buildMultiTargetExportRequest(
+        targets,
+        confirmation.confirmImaBodyExport,
+        confirmation.forceImaNewSnapshot
+      ),
+      reviewMode,
+      activeSummaryResponse?.inputHash
+    );
     showToast(formatMultiTargetExportToast(response));
     return response;
   }
@@ -787,7 +927,25 @@ export function BookAiSummaryPage({
         <div>
           <p className="section-kicker">本地 书籍复盘</p>
           <h3>{displayBook?.title ? `《${displayBook.title}》书籍复盘` : "书籍复盘"}</h3>
-          <p>读取已保存复盘；点击生成时使用当前书笔记。</p>
+          <p>
+            {reviewMode === "full" && isFullSnapshotSummary
+              ? "本次完整复盘基于已固定的任务快照生成。"
+              : reviewMode === "quick" && hasQuickSummary
+                ? "本次快速复盘使用有限样本生成。"
+                : "读取已保存复盘；点击生成时使用当前书笔记。"}
+          </p>
+          {reviewMode === "quick" && readyNotes ? (
+            <small className="ai-summary-quick-coverage">
+              {hasQuickSummary
+                ? `本次使用 ${quickSummaryIncludedCount} / ${quickSummaryAvailableCount} 条笔记，按章节分层抽样，不代表全量覆盖。`
+                : `快速复盘最多使用 ${quickReviewBudgetCount} / ${quickReviewAvailableCount} 条，按章节分层抽样，不代表全量覆盖。`}
+            </small>
+          ) : null}
+          {reviewMode === "full" && isFullSnapshotSummary && completedSynthesisJob ? (
+            <small className="ai-summary-quick-coverage">
+              完整快照已覆盖 {completedSynthesisJob.processedCount} / {completedSynthesisJob.totalCount} 条笔记。
+            </small>
+          ) : null}
           {displayBook?.author ? <small>{displayBook.author}</small> : null}
         </div>
         <div className="ai-summary-hero-side">
@@ -795,61 +953,98 @@ export function BookAiSummaryPage({
             {statusMeta.label}
           </span>
           <div className="ai-summary-actions">
-            <button
-              className="sync-button"
-              type="button"
-              onClick={() => void handleGenerate(false)}
-              disabled={!canGenerate || hasSummary}
-              aria-busy={status === "generating" || isLoadingSummaryCache || notesInfo.status === "loading"}
-            >
-              {status === "generating" || isLoadingSummaryCache ? (
-                <Loader2 aria-hidden="true" size={18} className="spin" />
+            {reviewMode === "quick" ? (
+              hasQuickSummary ? (
+                <button
+                  className="sync-button"
+                  type="button"
+                  onClick={() => void handleGenerate(true)}
+                  disabled={!canGenerate}
+                  aria-busy={status === "generating"}
+                >
+                  {status === "generating" ? (
+                    <Loader2 aria-hidden="true" size={18} className="spin" />
+                  ) : (
+                    <RefreshCw aria-hidden="true" size={18} />
+                  )}
+                  {status === "generating" ? "重新生成中" : "重新生成快速复盘"}
+                </button>
               ) : (
-                <Database aria-hidden="true" size={18} />
-              )}
-              {notesInfo.status === "loading"
-                ? "读取笔记中"
-                : status === "generating"
-                  ? "生成中"
-                  : isLoadingSummaryCache
-                    ? "读取缓存中"
-                    : "生成复盘"}
-            </button>
-            <button
-              className="secondary-action"
-              type="button"
-              onClick={() => void handleGenerate(true)}
-              disabled={!canGenerate || !hasSummary}
-            >
-              <RefreshCw aria-hidden="true" size={18} />
-              重新生成
-            </button>
-            <button
-              className="secondary-action"
-              type="button"
-              onClick={() => void handleCopyFullSummary()}
-              disabled={!hasSummary}
-            >
-              <Copy aria-hidden="true" size={18} />
-              复制完整复盘
-            </button>
-            <button
-              className="secondary-action"
-              type="button"
-              onClick={() => setIsAssetExportOpen(true)}
-              disabled={!hasSummary || isLoadingSummaryCache || status === "generating"}
-            >
-              <Download aria-hidden="true" size={18} />
-              导出书籍复盘
-            </button>
+                <button
+                  className="sync-button"
+                  type="button"
+                  onClick={() => void handleGenerate(false)}
+                  disabled={!canGenerate}
+                  aria-busy={status === "generating" || isLoadingSummaryCache || notesInfo.status === "loading"}
+                >
+                  {status === "generating" || isLoadingSummaryCache ? (
+                    <Loader2 aria-hidden="true" size={18} className="spin" />
+                  ) : (
+                    <Database aria-hidden="true" size={18} />
+                  )}
+                  {notesInfo.status === "loading"
+                    ? "读取笔记中"
+                    : status === "generating"
+                      ? "生成中"
+                      : isLoadingSummaryCache
+                        ? "读取缓存中"
+                        : "生成快速复盘"}
+                </button>
+              )
+            ) : null}
+            {hasSummary ? (
+              <>
+                <button
+                  className="secondary-action"
+                  type="button"
+                  onClick={() => void handleCopyFullSummary()}
+                >
+                  <Copy aria-hidden="true" size={18} />
+                  {reviewMode === "full" ? "复制完整复盘" : "复制快速复盘"}
+                </button>
+                <button
+                  className="secondary-action"
+                  type="button"
+                  onClick={() => setIsAssetExportOpen(true)}
+                  disabled={isLoadingSummaryCache || status === "generating"}
+                >
+                  <Download aria-hidden="true" size={18} />
+                  {reviewMode === "full" ? "导出完整复盘" : "导出快速复盘"}
+                </button>
+              </>
+            ) : null}
           </div>
         </div>
       </section>
 
-      {synthesisPreview ? (
+      <div className="ai-summary-mode-tabs" role="tablist" aria-label="复盘模式">
+        <button
+          className={`ai-summary-mode-tab${reviewMode === "quick" ? " is-active" : ""}`}
+          type="button"
+          role="tab"
+          aria-selected={reviewMode === "quick"}
+          onClick={() => handleReviewModeChange("quick")}
+        >
+          <Sparkles aria-hidden="true" size={16} />
+          快速复盘（抽样）
+        </button>
+        <button
+          className={`ai-summary-mode-tab${reviewMode === "full" ? " is-active" : ""}`}
+          type="button"
+          role="tab"
+          aria-selected={reviewMode === "full"}
+          onClick={() => handleReviewModeChange("full")}
+        >
+          <Database aria-hidden="true" size={16} />
+          完整复盘（快照）
+        </button>
+      </div>
+
+      {reviewMode === "full" && synthesisPreview ? (
         <NoteSynthesisJobCard
           preview={synthesisPreview}
           job={synthesisJob}
+          resultVisible={Boolean(hasSummary && isFullSnapshotSummary)}
           consent={synthesisConsent}
           loading={isLoadingSynthesis}
           error={synthesisError}
@@ -858,17 +1053,85 @@ export function BookAiSummaryPage({
           onContinue={() => void handleContinueSynthesis(false)}
           onRetry={() => void handleContinueSynthesis(true)}
           onCancel={() => void handleCancelSynthesis()}
+          onViewResult={() => {
+            handleReviewModeChange("full");
+            document.getElementById("book-review-result")?.scrollIntoView({
+              behavior: "smooth",
+              block: "start"
+            });
+          }}
+          onCreateNew={() => {
+            setSynthesisJob(undefined);
+            setSynthesisPreview((current) => (current ? { ...current, activeJob: undefined } : current));
+            setSynthesisJobs((current) => (current ? { ...current, activeJob: undefined } : current));
+            setSynthesisConsent(false);
+          }}
         />
       ) : null}
 
-      <section className="ai-summary-boundary-strip" aria-label="书籍复盘数据边界">
+      {reviewMode === "full" && synthesisError && !synthesisPreview ? (
+        <section className="ai-summary-callout ai-summary-callout--synthesis" role="alert" aria-label="完整复盘状态读取失败">
+          <AlertCircle aria-hidden="true" size={18} />
+          <div>
+            <strong>完整复盘状态读取失败</strong>
+            <p>{synthesisError}</p>
+          </div>
+          <button
+            className="secondary-action"
+            type="button"
+            onClick={() => setSynthesisReloadToken((current) => current + 1)}
+            disabled={isLoadingSynthesis}
+          >
+            <RefreshCw aria-hidden="true" size={18} />
+            {isLoadingSynthesis ? "重新读取中" : "重新读取完整复盘状态"}
+          </button>
+        </section>
+      ) : null}
+
+      {reviewMode === "quick" && synthesisPreview ? (
+        <section className={`ai-summary-boundary-strip ai-summary-boundary-strip--full-entry${hasQuickSummary ? " ai-summary-boundary-strip--compact" : ""}`} aria-label="完整复盘入口">
+          <Database aria-hidden="true" size={18} />
+          <div>
+            <strong>想覆盖当前书的全部可处理笔记？</strong>
+            <p>
+              {synthesisJob && isActiveNoteSynthesisJob(synthesisJob)
+                ? "完整复盘任务正在处理中，可切换到完整复盘查看进度。"
+                : synthesisJob?.status === "partial"
+                  ? "完整复盘有失败批次待重试，可切换到完整复盘处理。"
+                : "进入完整复盘，创建快照后再决定是否发送原始笔记正文。"}
+            </p>
+          </div>
+          <button className="secondary-action" type="button" onClick={() => handleReviewModeChange("full")}>
+            <Database aria-hidden="true" size={18} />
+            进入完整复盘
+          </button>
+        </section>
+      ) : null}
+
+      <section className={`ai-summary-boundary-strip ai-summary-boundary-strip--source${hasSummary ? " ai-summary-boundary-strip--result" : ""}`} aria-label="书籍复盘数据边界">
         <Database aria-hidden="true" size={18} />
         <div>
-          <strong>{activeSummaryResponse ? sourceLabelFromResponse(activeSummaryResponse.source) : "待生成"}</strong>
+          <strong>
+            {reviewMode === "full" && isFullSnapshotSummary
+              ? completedSnapshotIsStale
+                ? "完整快照复盘 · 旧快照"
+                : "完整快照复盘"
+              : reviewMode === "full" && fullSummaryResponse
+                ? `完整复盘 · ${sourceLabelFromResponse(fullSummaryResponse.source)}`
+                : quickSummaryResponse
+                  ? `快速复盘 · ${sourceLabelFromResponse(quickSummaryResponse.source)}`
+                : "待生成"}
+          </strong>
           <p>
-            {activeSummaryResponse
-              ? "当前展示内容来自本机缓存或本次手动生成结果。"
-              : "点击“生成复盘”时使用当前书笔记。"}
+            {reviewMode === "full" && hasPendingFullTask
+              ? "完整复盘任务进行中；上一版结果不会冒充当前任务，完成后将显示新的快照结果。"
+              : reviewMode === "full" && isFullSnapshotSummary && completedSynthesisJob
+              ? `基于任务快照中的 ${completedSynthesisJob.processedCount} / ${completedSynthesisJob.totalCount} 条笔记生成，任务 ${completedSynthesisJob.id}。`
+              : reviewMode === "full"
+                ? "完整复盘结果只在任务完成并通过覆盖校验后作为正式成果展示。"
+              : activeSummaryResponse
+                  ? "本次展示内容来自有限样本，不代表全量覆盖。"
+                  : "点击“生成快速复盘”时使用当前书笔记。"}
           </p>
         </div>
       </section>
@@ -965,8 +1228,8 @@ export function BookAiSummaryPage({
         </div>
       ) : null}
 
-      {summary ? (
-        <div className="ai-summary-content">
+      {summary && hasSummary ? (
+        <div className="ai-summary-content" id="book-review-result">
           <section className="ai-summary-overview" aria-label="书籍复盘概览">
             <CheckCircle2 aria-hidden="true" size={20} />
             <div>
@@ -1050,7 +1313,11 @@ export function BookAiSummaryPage({
       ) : (
         <div className="ai-summary-placeholder">
           <Sparkles aria-hidden="true" size={20} />
-          <p>点击“生成复盘”后，会使用当前书笔记生成书籍复盘。</p>
+          <p>
+            {reviewMode === "full"
+              ? "完整复盘需要先创建快照，再由你确认是否发送原始笔记正文。"
+              : "点击“生成快速复盘”后，会使用当前书笔记生成有限样本复盘。"}
+          </p>
         </div>
       )}
 
@@ -1058,7 +1325,15 @@ export function BookAiSummaryPage({
         <section className="ai-summary-source-card" aria-label="书籍复盘来源统计">
           <div>
             <strong>来源统计</strong>
-            <small>仅统计当前书本地笔记；书签只计数量，不含正文。</small>
+            <small>
+              {reviewMode === "full" && isFullSnapshotSummary
+                ? "完整复盘统计来自任务快照；覆盖量以任务完成校验为准。"
+                : reviewMode === "full"
+                  ? "当前笔记统计仅供快照预览，不代表已创建或完成完整复盘任务。"
+                : sourceStats.selection
+                ? `按章节分层抽样，覆盖 ${sourceStats.selection.coveredChapterCount} 个章节；不代表全量覆盖。`
+                : "仅统计当前书本地笔记；书签只计数量，不含正文。"}
+            </small>
           </div>
           <div className="ai-summary-stats">
             <SummaryStat label="划线" value={sourceStats.highlightCount} />
@@ -1072,8 +1347,8 @@ export function BookAiSummaryPage({
       ) : null}
 
       <div className="ai-summary-meta">
-        <span>生成时间：{formatAiTimestamp(summary?.generatedAt) || "尚未生成"}</span>
-        {summary?.responseFormat ? <span>{formatAiResponseFormat(summary.responseFormat)}</span> : null}
+        <span>生成时间：{formatAiTimestamp(visibleSummary?.generatedAt) || "尚未生成"}</span>
+        {visibleSummary?.responseFormat ? <span>{formatAiResponseFormat(visibleSummary.responseFormat)}</span> : null}
         {activeSummaryResponse?.providerModel ? <span>模型：{activeSummaryResponse.providerModel}</span> : null}
         {activeSummaryResponse?.cachedUpdatedAt ? (
           <span>缓存更新：{formatAiTimestamp(activeSummaryResponse.cachedUpdatedAt)}</span>
@@ -1085,7 +1360,9 @@ export function BookAiSummaryPage({
         ariaLabel="导出书籍复盘"
         assetTitle="导出书籍复盘"
         assetDescription={displayBook?.title ? `《${displayBook.title}》` : undefined}
+        sourceKind="bookReview"
         platformMode={resolveExportPlatformMode()}
+        availableTargets={["markdown", "obsidian", "notion", "ima"]}
         onExport={exportBookReview}
         onOpenSettings={() => onOpenSettings("export")}
         onClose={() => setIsAssetExportOpen(false)}
@@ -1132,7 +1409,7 @@ function ReviewCompletionStrip({
   onMarkOrganized: () => void;
 }) {
   return (
-    <section className={`review-completion-strip${isOrganized ? " is-organized" : ""}`} aria-label="复盘整理状态">
+    <section className={`review-completion-strip review-completion-strip--compact${isOrganized ? " is-organized" : ""}`} aria-label="复盘整理状态">
       <div className="review-completion-icon">
         {isOrganized ? <CheckCircle2 aria-hidden="true" size={20} /> : <ListChecks aria-hidden="true" size={20} />}
       </div>
@@ -1284,6 +1561,7 @@ function ReflectionQuestionChecklist({
 export function NoteSynthesisJobCard({
   preview,
   job,
+  resultVisible = false,
   consent,
   loading,
   error,
@@ -1291,10 +1569,13 @@ export function NoteSynthesisJobCard({
   onStart,
   onContinue,
   onRetry,
-  onCancel
+  onCancel,
+  onViewResult,
+  onCreateNew
 }: {
   preview: NoteSynthesisPreview;
   job?: NoteSynthesisJob;
+  resultVisible?: boolean;
   consent: boolean;
   loading: boolean;
   error?: string;
@@ -1303,6 +1584,8 @@ export function NoteSynthesisJobCard({
   onContinue: () => void;
   onRetry: () => void;
   onCancel: () => void;
+  onViewResult: () => void;
+  onCreateNew: () => void;
 }) {
   const statusLabel: Record<NoteSynthesisJob["status"], string> = {
     queued: "已创建，等待继续",
@@ -1310,7 +1593,7 @@ export function NoteSynthesisJobCard({
     batching: "正在稳定分批",
     summarizing: "正在归纳批次",
     merging: "正在合并复盘",
-    completed: "全量归纳已完成",
+    completed: "完整复盘已完成",
     partial: "部分批次失败",
     failed: "任务失败",
     cancelled: "任务已取消"
@@ -1327,33 +1610,62 @@ export function NoteSynthesisJobCard({
   );
   const canCancel = Boolean(
     activeJob &&
-      ["queued", "snapshotting", "batching", "summarizing", "merging", "partial"].includes(
+      ["queued", "snapshotting", "batching", "summarizing", "merging"].includes(
         activeJob.status
       )
   );
+  const snapshotIsStale = isNoteSynthesisSnapshotStale(preview, activeJob);
+  const displayedStatus = snapshotIsStale
+    ? "完整复盘已完成 · 旧快照"
+    : activeJob
+      ? statusLabel[activeJob.status]
+      : undefined;
 
   return (
-    <section className="ai-summary-boundary-strip ai-summary-synthesis-card" aria-label="全量笔记归纳任务">
+    <section className="ai-summary-boundary-strip ai-summary-synthesis-card" aria-label="完整复盘任务">
       <Database aria-hidden="true" size={20} />
       <div className="ai-summary-synthesis-card__body">
         <div className="ai-summary-synthesis-card__heading">
           <div>
-            <strong>快照式全量笔记归纳</strong>
-            <p>本地共有 {preview.totalCount} 条笔记：划线 {preview.highlightCount} 条、想法 {preview.thoughtCount} 条，预计 {preview.estimatedBatchCount} 个批次。</p>
+            <strong>完整复盘</strong>
+            <p>
+              {activeJob
+                ? `任务快照已固定：${activeJob.totalCount} 条笔记，${activeJob.batchCount} 个批次。`
+                : `当前可处理笔记：${preview.totalCount} 条（划线 ${preview.highlightCount} 条、想法 ${preview.thoughtCount} 条），预计 ${preview.estimatedBatchCount} 个批次。`}
+            </p>
           </div>
-          {activeJob ? <span className="ai-summary-badge ai-summary-badge--neutral">{statusLabel[activeJob.status]}</span> : null}
+          {activeJob ? (
+            <span
+              className={`ai-summary-badge ${snapshotIsStale ? "ai-summary-badge--warning" : "ai-summary-badge--neutral"}`}
+            >
+              {displayedStatus}
+            </span>
+          ) : null}
         </div>
 
         {activeJob ? (
           <>
-            <div className="ai-summary-synthesis-progress" aria-label={`全量归纳进度 ${progress}%`}>
+            <div className="ai-summary-synthesis-progress" aria-label={`完整复盘进度 ${progress}%`}>
               <span style={{ width: `${progress}%` }} />
             </div>
             <div className="ai-summary-synthesis-meta">
               <span>已处理 {activeJob.processedCount} / {activeJob.totalCount}</span>
               <span>批次 {activeJob.completedBatchCount} / {activeJob.batchCount}</span>
               <span>模型：{activeJob.providerModel}</span>
+              {activeJob.finishedAt ? <span>完成：{formatAiTimestamp(activeJob.finishedAt)}</span> : null}
             </div>
+            {activeJob.status === "completed" &&
+            (activeJob.coverage.skippedDuplicateCount > 0 ||
+              activeJob.coverage.skippedEmptyCount > 0) ? (
+              <p>
+                跳过重复 {activeJob.coverage.skippedDuplicateCount} 条 · 空正文 {activeJob.coverage.skippedEmptyCount} 条
+              </p>
+            ) : null}
+            {snapshotIsStale ? (
+              <p className="ai-summary-snapshot-warning">
+                当前书籍已有新笔记或修改；本复盘基于旧快照，未包含这些变化。
+              </p>
+            ) : null}
             {activeJob.errorMessage ? <p className="ai-summary-synthesis-error">{activeJob.errorMessage}</p> : null}
             {activeJob.failedBatches.length > 0 ? (
               <p className="ai-summary-synthesis-error">失败批次：{activeJob.failedBatches.map((batch) => batch.batchIndex + 1).join("、")}，可单独重试。</p>
@@ -1362,7 +1674,7 @@ export function NoteSynthesisJobCard({
               {canContinue ? (
                 <button className="sync-button" type="button" onClick={onContinue} disabled={loading}>
                   {loading ? <Loader2 aria-hidden="true" size={18} className="spin" /> : <RefreshCw aria-hidden="true" size={18} />}
-                  {activeJob.status === "queued" ? "继续调用 Provider" : "继续归纳"}
+                  {activeJob.status === "queued" ? "开始发送并归纳" : "继续归纳"}
                 </button>
               ) : null}
               {canRetry ? (
@@ -1372,6 +1684,21 @@ export function NoteSynthesisJobCard({
               ) : null}
               {activeJob.status === "failed" && activeJob.failedBatches.length === 0 ? (
                 <p className="ai-summary-synthesis-error">该任务无法继续或重试；请创建新的快照任务后再归纳。</p>
+              ) : null}
+              {activeJob.status === "completed" && !resultVisible ? (
+                <button className="sync-button" type="button" onClick={onViewResult}>
+                  查看完整复盘
+                </button>
+              ) : null}
+              {snapshotIsStale ? (
+                <button className="secondary-action" type="button" onClick={onCreateNew} disabled={loading}>
+                  创建新快照
+                </button>
+              ) : null}
+              {["failed", "cancelled"].includes(activeJob.status) ? (
+                <button className="secondary-action" type="button" onClick={onCreateNew} disabled={loading}>
+                  创建新的快照
+                </button>
               ) : null}
               {canCancel ? (
                 <button className="secondary-action" type="button" onClick={onCancel} disabled={loading}>
@@ -1388,11 +1715,11 @@ export function NoteSynthesisJobCard({
                 checked={consent}
                 onChange={(event) => onConsentChange(event.target.checked)}
               />
-              <span>我确认：创建任务后，快照中的原始笔记正文会发送给当前 Provider（{preview.providerLabel}）。</span>
+              <span>我确认：开始完整复盘后，当前快照中的原始笔记正文会发送给 Provider（{preview.providerLabel} / {preview.providerModel}）。</span>
             </label>
             <button className="sync-button" type="button" onClick={onStart} disabled={!consent || loading}>
               {loading ? <Loader2 aria-hidden="true" size={18} className="spin" /> : <Sparkles aria-hidden="true" size={18} />}
-              创建全量归纳任务
+              创建本地快照
             </button>
           </>
         )}
@@ -1405,9 +1732,39 @@ export function NoteSynthesisJobCard({
 export function isActiveNoteSynthesisJob(job: NoteSynthesisJob | undefined): boolean {
   return Boolean(
     job &&
-      ["queued", "snapshotting", "batching", "summarizing", "merging", "partial"].includes(
+      ["queued", "snapshotting", "batching", "summarizing", "merging"].includes(
         job.status
       )
+  );
+}
+
+export function isNoteSynthesisSnapshotStale(
+  preview: NoteSynthesisPreview | undefined,
+  job: NoteSynthesisJob | undefined
+): boolean {
+  return Boolean(
+    preview &&
+      job?.status === "completed" &&
+      preview.currentSourceHash !== job.sourceSnapshotHash
+  );
+}
+
+export function isVerifiedFullSnapshotSummary(
+  job: NoteSynthesisJob | undefined,
+  response: BookAiSummaryResponse | undefined
+): boolean {
+  return Boolean(
+    job &&
+      response &&
+      response.source !== "empty" &&
+      job.status === "completed" &&
+      job.coverage.fullSnapshot &&
+      job.processedCount === job.totalCount &&
+      job.failedBatchCount === 0 &&
+      job.coverage.failedItemCount === 0 &&
+      job.result?.feature === "book-notes-summary" &&
+      job.result.promptVersion === response.promptVersion &&
+      job.result.inputHash === response.inputHash
   );
 }
 
@@ -1660,6 +2017,25 @@ function sourceLabelFromResponse(source: BookAiSummaryResponse["source"]): strin
   return "无可总结内容";
 }
 
+function readReviewModeFromLocation(): BookReviewMode | undefined {
+  if (typeof window === "undefined") {
+    return undefined;
+  }
+
+  const value = new URLSearchParams(window.location.search).get("reviewMode");
+  return value === "quick" || value === "full" ? value : undefined;
+}
+
+function replaceReviewModeInLocation(mode: BookReviewMode): void {
+  if (typeof window === "undefined" || !window.history?.replaceState) {
+    return;
+  }
+
+  const url = new URL(window.location.href);
+  url.searchParams.set("reviewMode", mode);
+  window.history.replaceState(window.history.state, "", url);
+}
+
 function RepresentativeQuoteCard({ quote }: { quote: BookAiRepresentativeQuote }) {
   return (
     <article className="ai-quote-card">
@@ -1784,7 +2160,9 @@ function notesInfoFromNotes(notes: BookNotes | undefined, targetBookId: string |
 function statusMetaFromState(
   status: AiPageStatus,
   hasStaleCacheError: boolean,
-  notesStatus: NotesInfo["status"]
+  notesStatus: NotesInfo["status"],
+  reviewMode: BookReviewMode,
+  isFullSnapshotSummary: boolean
 ) {
   if (notesStatus === "loading") {
     return { label: "读取笔记中", tone: "neutral" };
@@ -1803,26 +2181,41 @@ function statusMetaFromState(
   }
 
   if (status === "cached") {
-    return { label: "本地缓存", tone: "neutral" };
+    return {
+      label: reviewMode === "full"
+        ? isFullSnapshotSummary ? "完整复盘已完成" : "完整复盘待验证"
+        : "快速复盘缓存",
+      tone: reviewMode === "full" && isFullSnapshotSummary ? "success" : "neutral"
+    };
   }
 
   if (status === "generating") {
-    return { label: "生成中", tone: "neutral" };
+    return { label: reviewMode === "full" ? "完整复盘处理中" : "快速复盘生成中", tone: "neutral" };
   }
 
   if (status === "generated") {
-    return { label: "已生成", tone: "success" };
+    return {
+      label: reviewMode === "full"
+        ? isFullSnapshotSummary ? "完整复盘已完成" : "完整复盘待验证"
+        : "快速复盘已生成",
+      tone: reviewMode === "full" && !isFullSnapshotSummary ? "warning" : "success"
+    };
   }
 
   if (status === "error") {
-    return { label: hasStaleCacheError ? "使用旧缓存" : "生成失败", tone: "warning" };
+    return {
+      label: hasStaleCacheError
+        ? reviewMode === "full" ? "完整复盘使用旧结果" : "快速复盘使用旧结果"
+        : reviewMode === "full" ? "完整复盘失败" : "快速复盘失败",
+      tone: "warning"
+    };
   }
 
   if (status === "empty-note") {
     return { label: "无可总结内容", tone: "warning" };
   }
 
-  return { label: "待生成", tone: "neutral" };
+  return { label: reviewMode === "full" ? "完整复盘待创建" : "快速复盘待生成", tone: "neutral" };
 }
 
 function statusFromAiState(aiState: AiSettingsState | undefined, notesInfo: NotesInfo): AiPageStatus {

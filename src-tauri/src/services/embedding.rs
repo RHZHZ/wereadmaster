@@ -88,6 +88,12 @@ pub(crate) struct RemoteEmbeddingBatch {
     pub vectors: Vec<Vec<f32>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EmbeddingProtocol {
+    OpenAiCompatible,
+    Ollama,
+}
+
 #[derive(Debug, Clone)]
 pub enum EmbeddingServiceError {
     InvalidCredential(String),
@@ -182,10 +188,11 @@ impl EmbeddingService {
             store
                 .insert(API_KEY_RECORD.to_vec(), api_key.into_bytes(), None)
                 .map_err(EmbeddingServiceError::storage)?;
-        } else if store
-            .get(API_KEY_RECORD)
-            .map_err(EmbeddingServiceError::storage)?
-            .is_none()
+        } else if !is_ollama_endpoint(&settings.base_url)
+            && store
+                .get(API_KEY_RECORD)
+                .map_err(EmbeddingServiceError::storage)?
+                .is_none()
         {
             return Err(EmbeddingServiceError::MissingCredential);
         }
@@ -196,11 +203,13 @@ impl EmbeddingService {
                 None,
             )
             .map_err(EmbeddingServiceError::storage)?;
+        let has_credential = store
+            .get(API_KEY_RECORD)
+            .map_err(EmbeddingServiceError::storage)?
+            .is_some();
         stronghold.save().map_err(EmbeddingServiceError::storage)?;
         Ok(EmbeddingSettingsState {
-            credential: EmbeddingCredentialState {
-                has_credential: true,
-            },
+            credential: EmbeddingCredentialState { has_credential },
             provider: settings,
         })
     }
@@ -241,13 +250,18 @@ impl EmbeddingService {
     }
 
     pub fn read_api_key(&self) -> Result<String, EmbeddingServiceError> {
+        self.read_api_key_optional()?
+            .ok_or(EmbeddingServiceError::MissingCredential)
+    }
+
+    fn read_api_key_optional(&self) -> Result<Option<String>, EmbeddingServiceError> {
         let (_stronghold, client) = self.open_client()?;
         let store = client.store();
-        let bytes = store
+        store
             .get(API_KEY_RECORD)
             .map_err(EmbeddingServiceError::storage)?
-            .ok_or(EmbeddingServiceError::MissingCredential)?;
-        String::from_utf8(bytes).map_err(EmbeddingServiceError::storage)
+            .map(|bytes| String::from_utf8(bytes).map_err(EmbeddingServiceError::storage))
+            .transpose()
     }
 
     pub async fn test_connection(
@@ -258,12 +272,17 @@ impl EmbeddingService {
         let state = self.settings_state()?;
         let settings = settings.unwrap_or(state.provider);
         validate_provider_settings(&settings)?;
+        let stored_api_key = self.read_api_key_optional()?;
         let api_key = match api_key.map(str::trim).filter(|value| !value.is_empty()) {
-            Some(value) => validate_api_key(value)?,
-            None => self.read_api_key()?,
+            Some(value) => Some(validate_api_key(value)?),
+            None => stored_api_key,
         };
-        let result =
-            request_embeddings(&api_key, &settings, &[CONNECTION_PROBE_TEXT.to_string()]).await?;
+        let result = request_embeddings(
+            api_key.as_deref(),
+            &settings,
+            &[CONNECTION_PROBE_TEXT.to_string()],
+        )
+        .await?;
         let dimensions = result.vectors.first().map(Vec::len).unwrap_or_default();
         Ok(EmbeddingConnectionProbe {
             is_valid: true,
@@ -291,8 +310,9 @@ impl EmbeddingService {
                 "Embedding 查询不能为空。".to_string(),
             ));
         }
-        let api_key = self.read_api_key()?;
-        let result = request_embeddings(&api_key, &state.provider, &[query.to_string()]).await?;
+        let api_key = self.read_api_key_optional()?;
+        let result =
+            request_embeddings(api_key.as_deref(), &state.provider, &[query.to_string()]).await?;
         result.vectors.into_iter().next().ok_or_else(|| {
             EmbeddingServiceError::InvalidProviderOutput(
                 "Embedding Provider 未返回查询向量。".to_string(),
@@ -313,8 +333,8 @@ impl EmbeddingService {
                     .to_string(),
             ));
         }
-        let api_key = self.read_api_key()?;
-        request_embeddings(&api_key, &state.provider, inputs).await
+        let api_key = self.read_api_key_optional()?;
+        request_embeddings(api_key.as_deref(), &state.provider, inputs).await
     }
 
     fn open_client(&self) -> Result<(Stronghold, Client), EmbeddingServiceError> {
@@ -418,6 +438,11 @@ fn validate_api_key(value: &str) -> Result<String, EmbeddingServiceError> {
 }
 
 pub(crate) fn embeddings_url(base_url: &str) -> Result<Url, EmbeddingServiceError> {
+    let (url, _) = provider_endpoint(base_url)?;
+    Ok(url)
+}
+
+fn provider_endpoint(base_url: &str) -> Result<(Url, EmbeddingProtocol), EmbeddingServiceError> {
     let trimmed = base_url.trim().trim_end_matches('/');
     let mut url = Url::parse(trimmed).map_err(|_| {
         EmbeddingServiceError::InvalidSettings("Embedding Base URL 格式无效。".to_string())
@@ -432,9 +457,14 @@ pub(crate) fn embeddings_url(base_url: &str) -> Result<Url, EmbeddingServiceErro
             "Embedding Base URL 不能包含凭据或查询参数。".to_string(),
         ));
     }
-    let path = url.path().trim_end_matches('/');
+    let path = url.path().trim_end_matches('/').to_string();
+    if path.ends_with("/api/embed") {
+        url.set_path(&path);
+        url.set_fragment(None);
+        return Ok((url, EmbeddingProtocol::Ollama));
+    }
     let next_path = if path.ends_with("/embeddings") {
-        path.to_string()
+        path
     } else if path.ends_with("/v1") {
         format!("{path}/embeddings")
     } else if path.is_empty() || path == "/" {
@@ -444,24 +474,40 @@ pub(crate) fn embeddings_url(base_url: &str) -> Result<Url, EmbeddingServiceErro
     };
     url.set_path(&next_path);
     url.set_fragment(None);
-    Ok(url)
+    Ok((url, EmbeddingProtocol::OpenAiCompatible))
+}
+
+fn is_ollama_endpoint(base_url: &str) -> bool {
+    provider_endpoint(base_url)
+        .map(|(_, protocol)| protocol == EmbeddingProtocol::Ollama)
+        .unwrap_or(false)
 }
 
 pub(crate) async fn request_embeddings(
-    api_key: &str,
+    api_key: Option<&str>,
     settings: &EmbeddingProviderSettings,
     inputs: &[String],
 ) -> Result<RemoteEmbeddingBatch, EmbeddingServiceError> {
     validate_provider_settings(settings)?;
     validate_embedding_inputs(inputs, settings.batch_size)?;
-    let api_key = validate_api_key(api_key)?;
-    let response = HttpClient::builder()
+    let (endpoint, protocol) = provider_endpoint(&settings.base_url)?;
+    let request = HttpClient::builder()
         .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECONDS))
         .build()
         .map_err(|error| EmbeddingServiceError::ProviderNetwork(error.to_string()))?
-        .post(embeddings_url(&settings.base_url)?)
-        .bearer_auth(api_key)
-        .json(&json!({ "model": settings.model, "input": inputs }))
+        .post(endpoint);
+    let request = match protocol {
+        EmbeddingProtocol::OpenAiCompatible => request
+            .bearer_auth(validate_api_key(
+                api_key.ok_or(EmbeddingServiceError::MissingCredential)?,
+            )?)
+            .json(&json!({ "model": settings.model, "input": inputs })),
+        EmbeddingProtocol::Ollama => request.json(&json!({
+            "model": settings.model,
+            "input": inputs,
+        })),
+    };
+    let response = request
         .send()
         .await
         .map_err(|error| EmbeddingServiceError::ProviderNetwork(error.to_string()))?;
@@ -528,7 +574,8 @@ fn validate_embedding_inputs(
 #[derive(Debug, Deserialize)]
 struct EmbeddingResponse {
     model: Option<String>,
-    data: Vec<EmbeddingResponseItem>,
+    data: Option<Vec<EmbeddingResponseItem>>,
+    embeddings: Option<Vec<Vec<f32>>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -547,37 +594,63 @@ pub(crate) fn parse_embedding_response(
             "Embedding Provider 返回了无法解析的响应。".to_string(),
         )
     })?;
-    if response.data.len() != expected_count {
-        return Err(EmbeddingServiceError::InvalidProviderOutput(format!(
-            "Embedding 返回数量不一致：期望 {expected_count}，实际 {}。",
-            response.data.len()
-        )));
-    }
-    let mut ordered = vec![None; expected_count];
-    for item in response.data {
-        if item.index >= expected_count || ordered[item.index].is_some() {
-            return Err(EmbeddingServiceError::InvalidProviderOutput(
-                "Embedding 响应包含无效或重复索引。".to_string(),
-            ));
+    let model = response.model;
+    let vectors = if let Some(data) = response.data {
+        let mut ordered = vec![None; expected_count];
+        if data.len() != expected_count {
+            return Err(EmbeddingServiceError::InvalidProviderOutput(format!(
+                "Embedding 返回数量不一致：期望 {expected_count}，实际 {}。",
+                data.len()
+            )));
         }
-        if item.embedding.is_empty()
-            || item.embedding.iter().any(|value| !value.is_finite())
-            || item.embedding.iter().all(|value| *value == 0.0)
-        {
-            return Err(EmbeddingServiceError::InvalidProviderOutput(
-                "Embedding 响应包含空向量、零向量或非有限数值。".to_string(),
-            ));
+        for item in data {
+            if item.index >= expected_count || ordered[item.index].is_some() {
+                return Err(EmbeddingServiceError::InvalidProviderOutput(
+                    "Embedding 响应包含无效或重复索引。".to_string(),
+                ));
+            }
+            ordered[item.index] = Some(item.embedding);
         }
-        ordered[item.index] = Some(item.embedding);
-    }
-    let vectors = ordered
-        .into_iter()
-        .map(|vector| {
-            vector.ok_or_else(|| {
-                EmbeddingServiceError::InvalidProviderOutput("Embedding 响应缺少索引。".to_string())
+        ordered
+            .into_iter()
+            .map(|vector| {
+                vector.ok_or_else(|| {
+                    EmbeddingServiceError::InvalidProviderOutput(
+                        "Embedding 响应缺少索引。".to_string(),
+                    )
+                })
             })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()?
+    } else if let Some(embeddings) = response.embeddings {
+        if embeddings.len() != expected_count {
+            return Err(EmbeddingServiceError::InvalidProviderOutput(format!(
+                "Embedding 返回数量不一致：期望 {expected_count}，实际 {}。",
+                embeddings.len()
+            )));
+        }
+        embeddings
+    } else {
+        return Err(EmbeddingServiceError::InvalidProviderOutput(
+            "Embedding Provider 响应缺少 data 或 embeddings 字段。".to_string(),
+        ));
+    };
+    validate_vectors(vectors, model, configured_model)
+}
+
+fn validate_vectors(
+    vectors: Vec<Vec<f32>>,
+    model: Option<String>,
+    configured_model: &str,
+) -> Result<RemoteEmbeddingBatch, EmbeddingServiceError> {
+    if vectors.iter().any(|vector| {
+        vector.is_empty()
+            || vector.iter().any(|value| !value.is_finite())
+            || vector.iter().all(|value| *value == 0.0)
+    }) {
+        return Err(EmbeddingServiceError::InvalidProviderOutput(
+            "Embedding 响应包含空向量、零向量或非有限数值。".to_string(),
+        ));
+    }
     let dimensions = vectors.first().map(Vec::len).unwrap_or_default();
     if dimensions == 0
         || dimensions > MAX_VECTOR_DIMENSIONS
@@ -588,8 +661,7 @@ pub(crate) fn parse_embedding_response(
         ));
     }
     Ok(RemoteEmbeddingBatch {
-        model: response
-            .model
+        model: model
             .filter(|model| !model.trim().is_empty())
             .unwrap_or_else(|| configured_model.to_string()),
         vectors,
@@ -708,6 +780,18 @@ mod tests {
                 .as_str(),
             "https://gateway.example.com/openai/v1/embeddings"
         );
+        assert_eq!(
+            embeddings_url("http://localhost:11434/api/embed")
+                .unwrap()
+                .as_str(),
+            "http://localhost:11434/api/embed"
+        );
+        assert_eq!(
+            embeddings_url("http://localhost:11434/api/embed/")
+                .unwrap()
+                .as_str(),
+            "http://localhost:11434/api/embed"
+        );
         assert!(embeddings_url("file:///tmp/provider").is_err());
         assert!(embeddings_url("https://user:secret@example.com/v1").is_err());
     }
@@ -757,6 +841,15 @@ mod tests {
             "configured",
         )
         .is_err());
+
+        let ollama = parse_embedding_response(
+            r#"{"model":"qwen3-embedding:4b","embeddings":[[1.0,0.0],[0.0,1.0]]}"#,
+            2,
+            "configured",
+        )
+        .unwrap();
+        assert_eq!(ollama.model, "qwen3-embedding:4b");
+        assert_eq!(ollama.vectors, vec![vec![1.0, 0.0], vec![0.0, 1.0]]);
     }
 
     #[tokio::test]
@@ -800,7 +893,7 @@ mod tests {
             consent_confirmed_at: Some("100".to_string()),
         };
         let result = request_embeddings(
-            "embedding-test-key",
+            Some("embedding-test-key"),
             &settings,
             &["第一条".to_string(), "第二条".to_string()],
         )
@@ -809,6 +902,56 @@ mod tests {
         server.join().expect("mock server should finish");
 
         assert_eq!(result.model, "embed-v1");
+        assert_eq!(result.vectors, vec![vec![1.0, 0.0], vec![0.0, 1.0]]);
+    }
+
+    #[tokio::test]
+    async fn ollama_embedding_request_uses_native_endpoint_without_auth() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("mock server should bind");
+        let address = listener.local_addr().expect("mock address should exist");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("mock request should arrive");
+            let request = read_http_request(&mut stream);
+            let (headers, body) = request
+                .split_once("\r\n\r\n")
+                .expect("request should contain headers");
+            assert!(headers.starts_with("POST /api/embed HTTP/1.1"));
+            assert!(!headers
+                .lines()
+                .any(|line| { line.to_ascii_lowercase().starts_with("authorization:") }));
+            let payload: serde_json::Value =
+                serde_json::from_str(body).expect("request body should be json");
+            assert_eq!(payload["model"], "qwen3-embedding:4b");
+            assert_eq!(payload["input"], serde_json::json!(["第一条", "第二条"]));
+
+            let response_body =
+                r#"{"model":"qwen3-embedding:4b","embeddings":[[1.0,0.0],[0.0,1.0]]}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            )
+            .expect("mock response should write");
+        });
+        let settings = EmbeddingProviderSettings {
+            base_url: format!("http://{address}/api/embed"),
+            model: "qwen3-embedding:4b".to_string(),
+            provider_label: "Ollama".to_string(),
+            batch_size: 2,
+            remote_note_embedding_enabled: true,
+            consent_confirmed_at: Some("100".to_string()),
+        };
+        let result = request_embeddings(
+            None,
+            &settings,
+            &["第一条".to_string(), "第二条".to_string()],
+        )
+        .await
+        .expect("ollama request should succeed");
+        server.join().expect("mock server should finish");
+
+        assert_eq!(result.model, "qwen3-embedding:4b");
         assert_eq!(result.vectors, vec![vec![1.0, 0.0], vec![0.0, 1.0]]);
     }
 

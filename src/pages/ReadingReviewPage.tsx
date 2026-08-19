@@ -6,7 +6,10 @@ import {
   Loader2,
   Settings
 } from "lucide-react";
-import { AssetExportDialog } from "../components/export/AssetExportDialog";
+import {
+  AssetExportDialog,
+  type AssetExportConfirmation
+} from "../components/export/AssetExportDialog";
 import { useToast } from "../components/ToastProvider";
 import { ReadingStatsPeriodJumpPicker } from "../components/ReadingStatsPeriodJumpPicker";
 import { ReadingStatsPeriodNavigator } from "../components/ReadingStatsPeriodNavigator";
@@ -62,9 +65,15 @@ import {
   formatArtifactSharedMessage,
   type ReadingArtifactKind
 } from "../lib/reading-artifacts";
+import { buildMultiTargetExportRequest } from "../lib/export-targets";
 import type { ImageArtifactDeliveryResult } from "../lib/image-artifact-export";
 import { useImageArtifactCapabilities } from "../lib/use-image-artifact-capabilities";
-import type { CredentialStatus, ReadingStatsAiReviewResponse, ReadingStatsMode } from "../lib/types";
+import type {
+  CredentialStatus,
+  ExternalExportTarget,
+  ReadingStatsAiReviewResponse,
+  ReadingStatsMode
+} from "../lib/types";
 import type { SettingsCategoryId } from "./SettingsPage";
 import {
   buildReadingStatsPeriod,
@@ -72,6 +81,7 @@ import {
   getCurrentReadingStatsAnchor,
   getReadingStatsRequestBaseTime,
   getReadingStatsResponse,
+  isCompletedReadingStatsPeriod,
   type ReadingStatsCache,
   type ReadingStatsPeriod
 } from "./reading-stats-period";
@@ -149,6 +159,7 @@ export function ReadingReviewPage({
     onOpenSettings
   });
   const activeReportResponse = getReadingStatsResponse(cache, activePeriod);
+  const canExportActiveReviewToIma = isCompletedReadingStatsPeriod(activePeriod);
   const isActivePeriodReportMode = activePeriod.mode !== "overall";
   const activeReportDataCompleteness = resolveReportDataCompleteness(
     activeReportResponse?.source,
@@ -403,9 +414,24 @@ export function ReadingReviewPage({
         open={isAssetExportOpen}
         ariaLabel="导出报告"
         assetTitle="导出报告"
-        assetDescription={formatReadingStatsPeriodTitle(activePeriod, "review")}
+        assetDescription={`${formatReadingStatsPeriodTitle(activePeriod, "review")}；${
+          activePeriod.mode === "overall"
+            ? "每次导出创建带时间的历史快照，不覆盖旧版本"
+            : "Ima 仅支持已结束的周/月/年周期复盘"
+        }`}
+        imaConfirmationText={
+          activePeriod.mode === "overall"
+            ? "我确认：本次总计阅读报告正文和统计结论将发送到 Ima，且每次导出都会创建新的历史快照。"
+            : "我确认：本次阅读复盘正文和统计结论将发送到 Ima。"
+        }
+        sourceKind="readingStatsReview"
         platformMode={isPreviewReadonly ? "webReadonly" : "native"}
-        onExport={exportReview}
+        availableTargets={
+          canExportActiveReviewToIma
+            ? ["markdown", "obsidian", "notion", "ima"]
+            : ["markdown", "obsidian", "notion"]
+        }
+        onExport={handleExportReview}
         onOpenSettings={() => onOpenSettings("export")}
         onClose={() => setIsAssetExportOpen(false)}
       />
@@ -530,6 +556,19 @@ export function ReadingReviewPage({
       ) : null}
     </section>
   );
+
+  async function handleExportReview(
+    targets: ExternalExportTarget[],
+    confirmation: AssetExportConfirmation
+  ) {
+    return exportReview(
+      buildMultiTargetExportRequest(
+        targets,
+        confirmation.confirmImaBodyExport,
+        confirmation.forceImaNewSnapshot
+      )
+    );
+  }
 
   function handleOpenReport() {
     const nextReportPeriod = activePeriod;

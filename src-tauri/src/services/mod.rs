@@ -4,6 +4,7 @@ pub mod credentials;
 pub mod discovery;
 pub mod embedding;
 pub mod embedding_index;
+pub mod ima_credentials;
 pub mod local_books;
 pub mod note_synthesis;
 pub mod notes;

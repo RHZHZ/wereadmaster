@@ -54,6 +54,7 @@ import {
   type ReadingAssistantMarkdownBlock,
   type ReadingAssistantMarkdownInline
 } from "../lib/reading-assistant-markdown-lite";
+import { formatAiTimestamp } from "../lib/formatters";
 import { TERMS } from "../lib/glossary";
 import type {
   AiProviderPresetId,
@@ -64,12 +65,14 @@ import type {
   ReadingAssistantAnswer,
   ReadingAssistantContextOption,
   ReadingAssistantMessage,
+  ReadingAssistantBookCatalogItem,
   ReadingAssistantNoteSearchOutput,
   ReadingAssistantPreferences,
   ReadingAssistantRecommendedBook,
   ReadingAssistantWereadSearchResult,
   ReadingAssistantThreadSummary,
   ReadingAssistantUsedContext,
+  RetrievalDiagnostic,
   NoteSynthesisJob,
   SearchResult
 } from "../lib/types";
@@ -87,6 +90,8 @@ type ReadingAssistantPanelProps = {
   onOpenBookReview?: (bookId: string, title?: string, author?: string) => void;
   onOpenBookDetail?: (bookId: string) => void;
   canOpenBookDetail?: (bookId: string) => boolean;
+  onSyncShelf?: () => void;
+  isSyncingShelf?: boolean;
   onOpenAiSettings?: () => void;
   onClose: () => void;
 };
@@ -107,6 +112,7 @@ type LocalAssistantMessage = {
   suggestions: string[];
   usedContext: ReadingAssistantUsedContext[];
   recommendedBooks: ReadingAssistantRecommendedBook[];
+  basisNotice?: string;
   action?: ReadingAssistantActionOutput;
 };
 
@@ -124,6 +130,21 @@ type ReadingAssistantCategoryBooksActionPayload = Extract<
   ReadingAssistantActionOutput,
   { type: "categoryBooks" }
 >["payload"];
+
+type ReadingAssistantBookCatalogActionPayload = Extract<
+  ReadingAssistantActionOutput,
+  { type: "bookCatalog" }
+>["payload"];
+
+const READING_ASSISTANT_BOOK_CATALOG_MATCH_LABEL: Record<
+  ReadingAssistantBookCatalogItem["matchReason"],
+  string
+> = {
+  exactTitle: "书名精确匹配",
+  titlePrefix: "标题前缀匹配",
+  titleToken: "标题关键词匹配",
+  author: "作者匹配"
+};
 
 type ReadingAssistantNoteCountActionPayload = Extract<
   ReadingAssistantActionOutput,
@@ -163,6 +184,8 @@ type ReadingAssistantCategoryBooksActionProps = {
   action: ReadingAssistantCategoryBooksActionPayload;
   onOpenBookDetail?: (bookId: string) => void;
   canOpenBookDetail?: (bookId: string) => boolean;
+  onSyncShelf?: () => void;
+  isSyncingShelf?: boolean;
 };
 
 type EditingUserMessageState = {
@@ -221,6 +244,59 @@ export function formatReadingAssistantUsedContext(context: ReadingAssistantUsedC
   return `${context.label} · 已调用 ${context.itemCount} / 本地 ${context.availableItemCount}${coverageLabel}`;
 }
 
+function formatRetrievalDiagnostic(diagnostic?: RetrievalDiagnostic | string): string | undefined {
+  if (!diagnostic) {
+    return undefined;
+  }
+  if (typeof diagnostic === "string") {
+    return diagnostic;
+  }
+  if (diagnostic.reason === "providerSettingsChanged") {
+    return "语义索引与当前 Provider 设置不一致，已回退为本地词法检索。";
+  }
+  if (diagnostic.reason === "embeddingQueryFailed") {
+    return "语义查询暂不可用，已回退为本地词法检索；笔记正文未发送到远程 Provider。";
+  }
+  if (diagnostic.reason === "indexUnavailable") {
+    const statusLabel = diagnostic.indexStatus
+      ? {
+          ready: "就绪",
+          missing: "未建立",
+          building: "构建中",
+          failed: "失败",
+          cancelled: "已取消",
+          superseded: "已替代"
+        }[diagnostic.indexStatus]
+      : undefined;
+    return diagnostic.indexStatus && diagnostic.indexStatus !== "missing"
+      ? `语义索引当前为${statusLabel ?? diagnostic.indexStatus}状态，已回退为本地词法检索。`
+      : "语义索引当前不可用，已回退为本地词法检索。";
+  }
+  switch (diagnostic.strategy) {
+    case "hybrid":
+      return "本次使用本地词法与语义向量混合召回。";
+    case "hybridFallback":
+      return "本次使用本地词法回退。";
+    case "likeFallback":
+      return "本机 FTS 不可用，已回退为本地 LIKE 词面匹配。";
+    case "lexical":
+      return "本次使用本地词法检索。";
+    case "recent":
+      return "未提取出有效检索词，按近期笔记返回。";
+    default:
+      return undefined;
+  }
+}
+
+function ReadingAssistantRetrievalDiagnostic({ message }: { message: LocalAssistantMessage }) {
+  if (message.action?.type === "noteSearch") {
+    return null;
+  }
+  const diagnostic = message.usedContext.find((context) => context.diagnostic)?.diagnostic;
+  const label = formatRetrievalDiagnostic(diagnostic);
+  return label ? <small className="reading-assistant-basis-notice">{label}</small> : null;
+}
+
 export function ReadingAssistantNoteCountAction({
   action
 }: {
@@ -267,12 +343,22 @@ export function ReadingAssistantNoteSearchAction({
             ? "本地词法回退"
             : "词法检索";
   const coverageLabel = action.coverage === "exhaustiveMatch" ? "词面全部匹配" : "相关结果";
+  const isLibrarySearch = action.scope === "library";
+  const diagnosticLabel = formatRetrievalDiagnostic(action.diagnostic);
   return (
     <div className="reading-assistant-note-search-action">
       <div className="reading-assistant-note-search-meta">
-        <strong>{action.title ? `《${action.title}》` : "当前书"}</strong>
+        <strong>
+          {isLibrarySearch
+            ? "我的笔记"
+            : action.title
+              ? `《${action.title}》`
+              : "当前书"}
+        </strong>
+        {isLibrarySearch ? <span>涉及 {action.searchedBookCount} 本书</span> : null}
         <span>{action.queryText ? `主题：${action.queryText}` : "主题：近期笔记"}</span>
         <span>{coverageLabel} · {modeLabel} · 匹配 {action.matchedItemCount} 条 · 展示 {action.includedItemCount} 条</span>
+        {diagnosticLabel ? <small>{diagnosticLabel}</small> : null}
       </div>
       {action.items.length === 0 ? (
         <p className="reading-assistant-search-status">没有找到匹配的本地笔记。</p>
@@ -282,6 +368,7 @@ export function ReadingAssistantNoteSearchAction({
             <article className="reading-assistant-note-search-item" key={item.documentId}>
               <div className="reading-assistant-note-search-item-head">
                 <span>{item.noteType === "thought" ? "想法" : "划线"}</span>
+                {isLibrarySearch && item.bookTitle ? <small>《{item.bookTitle}》</small> : null}
                 {item.chapterTitle ? <small>{item.chapterTitle}</small> : null}
               </div>
               {item.text ? <p>{item.text}</p> : <small>已命中；开启原始笔记展示后可查看正文。</small>}
@@ -304,6 +391,7 @@ const CONTEXT_LABELS: Record<ReadingAssistantContextOption, string> = {
   currentBook: "当前书",
   bookNotesSummary: "复盘摘要",
   rawBookNotes: "原始笔记",
+  bookCatalog: "分类书目",
   readingStats: "阅读统计",
   readingPersona: "阅读画像",
   candidateBooks: "候选书",
@@ -423,6 +511,12 @@ export function ReadingAssistantCategoryBooksAction({
                       book.author,
                       book.category,
                       book.isFinished ? "已读完" : undefined,
+                      !book.isFinished &&
+                      (book.hasReadingEvidence ||
+                        book.progressPercent !== undefined ||
+                        book.readingTimeText !== undefined)
+                        ? "有阅读记录"
+                        : undefined,
                       book.progressPercent !== undefined ? `${book.progressPercent}%` : undefined,
                       book.readingTimeText,
                       book.source
@@ -462,6 +556,136 @@ export function ReadingAssistantCategoryBooksAction({
       {action.totalStatReadingTimeText ? (
         <small className="reading-assistant-stats-footnote">
           统计阅读时长 {action.totalStatReadingTimeText}
+        </small>
+      ) : null}
+    </div>
+  );
+}
+
+export function ReadingAssistantBookCatalogAction({
+  action,
+  onOpenBookDetail,
+  canOpenBookDetail,
+  onSyncShelf,
+  isSyncingShelf = false
+}: {
+  action: ReadingAssistantBookCatalogActionPayload;
+  onOpenBookDetail?: (bookId: string) => void;
+  canOpenBookDetail?: (bookId: string) => boolean;
+  onSyncShelf?: () => void;
+  isSyncingShelf?: boolean;
+}) {
+  const unconfirmedBooks = action.unconfirmedBooks ?? [];
+  const hasOnlyUnconfirmedBooks = action.books.length === 0 && unconfirmedBooks.length > 0;
+  const needsShelfSync =
+    action.diagnostics.catalogCoverage !== "complete" ||
+    action.diagnostics.missingReasons.includes("bookMetadataNotSynced");
+  const title =
+    hasOnlyUnconfirmedBooks
+      ? action.queryKind === "author"
+        ? `作者“${action.queryText}” · 符合当前条件 0 本`
+        : `“${action.queryText}”相关书籍 · 符合当前条件 0 本`
+      : action.queryKind === "author"
+        ? `作者“${action.queryText}” · 有阅读证据 ${action.matchedReadingCount} 本`
+        : `“${action.queryText}”相关书籍 · 有阅读证据 ${action.matchedReadingCount} 本`;
+
+  const renderBook = (book: ReadingAssistantBookCatalogItem) => {
+    const canOpen = Boolean(
+      onOpenBookDetail && (canOpenBookDetail ? canOpenBookDetail(book.bookId) : true)
+    );
+    const content = (
+      <>
+        <BookOpen aria-hidden="true" size={16} />
+        <span>
+          <strong>{book.title}</strong>
+          <small>
+            {[
+              book.author,
+              book.readStatus === "finished"
+                ? "已读完"
+                : book.readStatus === "started"
+                  ? "有阅读记录"
+                  : "未确认阅读",
+              book.progressPercent !== undefined ? `${book.progressPercent}%` : undefined,
+              book.totalNoteCount !== undefined ? `${book.totalNoteCount} 条笔记` : "笔记统计未同步",
+              READING_ASSISTANT_BOOK_CATALOG_MATCH_LABEL[book.matchReason]
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </small>
+        </span>
+      </>
+    );
+
+    return canOpen ? (
+      <button
+        className="reading-assistant-category-book is-clickable"
+        key={book.bookId}
+        type="button"
+        onClick={() => onOpenBookDetail?.(book.bookId)}
+      >
+        {content}
+      </button>
+    ) : (
+      <div className="reading-assistant-category-book" key={book.bookId}>
+        {content}
+      </div>
+    );
+  };
+
+  return (
+    <div className="reading-assistant-category-books-action">
+      <span className="reading-assistant-search-results-title">
+        {title}
+        {action.matchedMetadataCount > action.matchedReadingCount
+          ? ` / 本地匹配 ${action.matchedMetadataCount} 本`
+          : ""}
+      </span>
+      {action.books.length > 0 ? (
+        <div className="reading-assistant-category-books-list">
+          {action.books.map(renderBook)}
+        </div>
+      ) : hasOnlyUnconfirmedBooks ? (
+        <>
+          <p className="reading-assistant-search-status">
+            匹配到书目，但暂时没有符合本次阅读状态条件的记录。请打开相关书籍详情页刷新阅读进度后再查询。
+          </p>
+          <span className="reading-assistant-search-results-title">
+            匹配但待确认 {unconfirmedBooks.length} 本
+          </span>
+          <div className="reading-assistant-category-books-list">
+            {unconfirmedBooks.map(renderBook)}
+          </div>
+        </>
+      ) : (
+        <p className="reading-assistant-search-status">{action.message}</p>
+      )}
+      {needsShelfSync && onSyncShelf ? (
+        <div className="reading-assistant-catalog-sync">
+          <p className="reading-assistant-search-status">
+            本地书目缓存不完整，先同步书架后再重新查询，避免遗漏移出书架前的书籍记录。
+          </p>
+          <button
+            className="btn-ghost reading-assistant-catalog-sync-button"
+            type="button"
+            disabled={isSyncingShelf}
+            onClick={onSyncShelf}
+          >
+            {isSyncingShelf ? (
+              <Loader2 aria-hidden="true" size={15} className="spin" />
+            ) : (
+              <RefreshCw aria-hidden="true" size={15} />
+            )}
+            {isSyncingShelf ? "同步中" : "同步书架"}
+          </button>
+        </div>
+      ) : null}
+      {action.truncated ? (
+        <small className="reading-assistant-stats-footnote">结果较多，已展示前 20 本。</small>
+      ) : null}
+      {action.diagnostics.sourceUpdatedAt?.catalog ? (
+        <small className="reading-assistant-stats-footnote">
+          书目更新时间 {formatAiTimestamp(action.diagnostics.sourceUpdatedAt.catalog)}
         </small>
       ) : null}
     </div>
@@ -632,6 +856,8 @@ export function ReadingAssistantPanel({
   onOpenBookReview,
   onOpenBookDetail,
   canOpenBookDetail,
+  onSyncShelf,
+  isSyncingShelf,
   onOpenAiSettings,
   onClose
 }: ReadingAssistantPanelProps) {
@@ -1667,6 +1893,18 @@ export function ReadingAssistantPanel({
       );
     }
 
+    if (message.action.type === "bookCatalog") {
+      return (
+        <ReadingAssistantBookCatalogAction
+          action={message.action.payload}
+          onOpenBookDetail={onOpenBookDetail}
+          canOpenBookDetail={canOpenBookDetail}
+          onSyncShelf={onSyncShelf}
+          isSyncingShelf={isSyncingShelf}
+        />
+      );
+    }
+
     if (message.action.type === "noteCount") {
       return <ReadingAssistantNoteCountAction action={message.action.payload} />;
     }
@@ -1682,10 +1920,11 @@ export function ReadingAssistantPanel({
               : (cursor) => {
                   setLoadingNoteSearchMessageId(message.id);
                   void searchReadingAssistantNotes({
-                    bookId: action.bookId,
+                    scope: action.scope,
                     query: action.queryText,
                     cursor,
-                    pageLimit: 20
+                    pageLimit: 20,
+                    ...(action.bookId ? { bookId: action.bookId } : {})
                   })
                     .then((next) => {
                       setMessages((current) =>
@@ -1953,6 +2192,10 @@ export function ReadingAssistantPanel({
                 )}
                 {renderRecommendedBooks(message)}
                 {renderAssistantAction(message)}
+                {message.basisNotice ? (
+                  <small className="reading-assistant-basis-notice">{message.basisNotice}</small>
+                ) : null}
+                <ReadingAssistantRetrievalDiagnostic message={message} />
                 {message.usedContext.length > 0 ? (
                   <div className="reading-assistant-used-context">
                     {message.usedContext.map((context, index) => (
@@ -2470,6 +2713,7 @@ function assistantMessageFromAnswer(answer: ReadingAssistantAnswer): LocalAssist
     suggestions: answer.suggestions,
     usedContext: answer.usedContext,
     recommendedBooks: answer.recommendedBooks,
+    basisNotice: answer.basisNotice,
     action: answer.action
   };
 }
@@ -2486,6 +2730,7 @@ function localMessageFromThreadMessage(message: ReadingAssistantMessage): LocalA
     suggestions: output?.suggestions ?? [],
     usedContext: message.usedContext,
     recommendedBooks: output?.recommendedBooks ?? [],
+    basisNotice: output?.basisNotice,
     action: output?.action
   };
 }

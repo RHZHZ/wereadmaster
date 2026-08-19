@@ -98,9 +98,18 @@ pub struct NoteSynthesisPreview {
     pub thought_count: usize,
     pub estimated_batch_count: usize,
     pub estimated_char_count: usize,
+    pub current_source_hash: String,
     pub provider_model: String,
     pub provider_label: String,
     pub active_job: Option<NoteSynthesisJob>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteSynthesisJobSummary {
+    pub active_job: Option<NoteSynthesisJob>,
+    pub latest_completed_job: Option<NoteSynthesisJob>,
+    pub latest_terminal_job: Option<NoteSynthesisJob>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -276,6 +285,14 @@ impl NoteSynthesisService {
         get_active_note_synthesis_job(&connection, book_id)
     }
 
+    pub fn get_summary(
+        &self,
+        book_id: &str,
+    ) -> Result<NoteSynthesisJobSummary, NoteSynthesisError> {
+        let connection = self.open_connection()?;
+        get_note_synthesis_job_summary(&connection, book_id)
+    }
+
     pub fn request_cancel(&self, job_id: &str) -> Result<NoteSynthesisJob, NoteSynthesisError> {
         let connection = self.open_connection()?;
         request_note_synthesis_cancel(&connection, job_id)
@@ -337,6 +354,8 @@ pub fn preview_note_synthesis(
     provider_label: String,
 ) -> Result<NoteSynthesisPreview, NoteSynthesisError> {
     let book_id = require_non_empty(book_id, "缺少书籍 ID，无法预估全量归纳任务。")?;
+    rebuild_book_retrieval_documents(connection, book_id, &current_unix_seconds())
+        .map_err(NoteSynthesisError::storage)?;
     let documents = read_snapshot_documents(connection, book_id)?;
     let highlight_count = documents
         .iter()
@@ -352,6 +371,7 @@ pub fn preview_note_synthesis(
         .sum();
     let mut planned = prepare_snapshot_documents(documents);
     let batches = build_stable_batches(&mut planned, DEFAULT_NOTE_SYNTHESIS_BATCH_MAX_CHARS);
+    let current_source_hash = snapshot_hash(&planned);
 
     Ok(NoteSynthesisPreview {
         book_id: book_id.to_string(),
@@ -360,6 +380,7 @@ pub fn preview_note_synthesis(
         thought_count,
         estimated_batch_count: batches.len(),
         estimated_char_count,
+        current_source_hash,
         provider_model,
         provider_label,
         active_job: get_active_note_synthesis_job(connection, book_id)?,
@@ -528,6 +549,30 @@ pub fn get_active_note_synthesis_job(
          ) ORDER BY updated_at DESC LIMIT 1",
         book_id,
     )
+}
+
+pub fn get_note_synthesis_job_summary(
+    connection: &Connection,
+    book_id: &str,
+) -> Result<NoteSynthesisJobSummary, NoteSynthesisError> {
+    let book_id = require_non_empty(book_id, "缺少书籍 ID。")?;
+    Ok(NoteSynthesisJobSummary {
+        active_job: get_active_note_synthesis_job(connection, book_id)?,
+        latest_completed_job: read_job_by_clause(
+            connection,
+            "book_id = ?1 AND status = 'completed'
+             ORDER BY COALESCE(finished_at, updated_at) DESC, updated_at DESC, id DESC
+             LIMIT 1",
+            book_id,
+        )?,
+        latest_terminal_job: read_job_by_clause(
+            connection,
+            "book_id = ?1 AND status IN ('completed', 'failed', 'cancelled')
+             ORDER BY COALESCE(finished_at, updated_at) DESC, updated_at DESC, id DESC
+             LIMIT 1",
+            book_id,
+        )?,
+    })
 }
 
 pub fn request_note_synthesis_cancel(
@@ -940,6 +985,7 @@ fn read_source_stats_with(
         chapter_count: connection.query_row("SELECT COUNT(DISTINCT chapter_uid) FROM note_synthesis_job_items WHERE job_id = ?1 AND chapter_uid IS NOT NULL", [job_id], |row| row.get::<_, i64>(0)).map_err(NoteSynthesisError::storage)? as usize,
         included_highlight_count: highlight_count as usize,
         included_thought_count: thought_count as usize,
+        selection: None,
     })
 }
 
@@ -1574,12 +1620,12 @@ mod tests {
 
     use super::{
         build_stable_batches, complete_batch, finalize_completed_job,
-        get_active_note_synthesis_job, get_note_synthesis_job, note_synthesis_batch_json_schema,
-        prepare_snapshot_documents, preview_note_synthesis, read_batch_input,
-        recover_interrupted_batches, request_note_synthesis_cancel, run_note_synthesis_job_with,
-        stable_hash_parts, start_note_synthesis, validate_batch_output, verify_full_coverage,
-        NoteSynthesisJob, NoteSynthesisJobStatus, SnapshotDocument, StartNoteSynthesisRequest,
-        DEFAULT_NOTE_SYNTHESIS_BATCH_MAX_CHARS,
+        get_active_note_synthesis_job, get_note_synthesis_job, get_note_synthesis_job_summary,
+        note_synthesis_batch_json_schema, prepare_snapshot_documents, preview_note_synthesis,
+        read_batch_input, recover_interrupted_batches, request_note_synthesis_cancel,
+        run_note_synthesis_job_with, stable_hash_parts, start_note_synthesis,
+        validate_batch_output, verify_full_coverage, NoteSynthesisJob, NoteSynthesisJobStatus,
+        SnapshotDocument, StartNoteSynthesisRequest, DEFAULT_NOTE_SYNTHESIS_BATCH_MAX_CHARS,
     };
 
     fn seed_notes(connection: &Connection) {
@@ -1956,7 +2002,49 @@ mod tests {
         assert_eq!(preview.highlight_count, 2);
         assert_eq!(preview.thought_count, 2);
         assert_eq!(preview.estimated_batch_count, 2);
+        assert!(!preview.current_source_hash.is_empty());
         assert!(preview.active_job.is_none());
+    }
+
+    #[test]
+    fn preview_source_hash_matches_new_job_and_changes_with_current_notes() {
+        let mut connection = Connection::open_in_memory().expect("database should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        seed_notes(&connection);
+
+        let initial_preview = preview_note_synthesis(
+            &connection,
+            "book-1",
+            "test-model".to_string(),
+            "Test Provider".to_string(),
+        )
+        .expect("initial preview should build");
+        let started =
+            start_note_synthesis(&mut connection, start_request()).expect("job should start");
+
+        assert_eq!(
+            initial_preview.current_source_hash,
+            started.job.source_snapshot_hash
+        );
+
+        connection
+            .execute(
+                "UPDATE highlights SET mark_text = '源笔记已修改' WHERE bookmark_id = 'h1'",
+                [],
+            )
+            .expect("source note should update");
+        let changed_preview = preview_note_synthesis(
+            &connection,
+            "book-1",
+            "test-model".to_string(),
+            "Test Provider".to_string(),
+        )
+        .expect("changed preview should build");
+
+        assert_ne!(
+            changed_preview.current_source_hash,
+            started.job.source_snapshot_hash
+        );
     }
 
     #[test]
@@ -2205,6 +2293,67 @@ mod tests {
                 .expect("job should remain queryable")
                 .status,
             NoteSynthesisJobStatus::Cancelled
+        );
+    }
+
+    #[test]
+    fn job_summary_keeps_active_completed_and_latest_terminal_jobs_separate() {
+        let mut connection = Connection::open_in_memory().expect("database should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        seed_notes(&connection);
+
+        let completed = start_note_synthesis(&mut connection, start_request())
+            .expect("completed job should start");
+        connection
+            .execute(
+                "UPDATE note_synthesis_jobs
+                 SET status = 'completed',
+                     processed_count = total_count,
+                     completed_batch_count = batch_count,
+                     failed_batch_count = 0,
+                     result_feature = 'book-notes-summary',
+                     result_prompt_version = 'book-notes-summary-full-v1',
+                     result_input_hash = 'completed-input',
+                     finished_at = '200',
+                     updated_at = '200'
+                 WHERE id = ?1",
+                [&completed.job.id],
+            )
+            .expect("completed job should update");
+
+        let failed = start_note_synthesis(&mut connection, start_request())
+            .expect("failed job should start");
+        connection
+            .execute(
+                "UPDATE note_synthesis_jobs
+                 SET status = 'failed', finished_at = '300', updated_at = '300'
+                 WHERE id = ?1",
+                [&failed.job.id],
+            )
+            .expect("failed job should update");
+
+        let active = start_note_synthesis(&mut connection, start_request())
+            .expect("active job should start");
+        let summary =
+            get_note_synthesis_job_summary(&connection, "book-1").expect("job summary should read");
+
+        assert_eq!(
+            summary.active_job.as_ref().map(|job| job.id.as_str()),
+            Some(active.job.id.as_str())
+        );
+        assert_eq!(
+            summary
+                .latest_completed_job
+                .as_ref()
+                .map(|job| job.id.as_str()),
+            Some(completed.job.id.as_str())
+        );
+        assert_eq!(
+            summary
+                .latest_terminal_job
+                .as_ref()
+                .map(|job| job.id.as_str()),
+            Some(failed.job.id.as_str())
         );
     }
 

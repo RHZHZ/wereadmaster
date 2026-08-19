@@ -16,9 +16,10 @@ use crate::{
     export::{
         bulk::{
             build_bulk_export_preflight, bulk_external_targets, chunk_bulk_export_jobs,
-            normalize_bulk_export_concurrency, serialize_bulk_export_index,
-            serialize_bulk_export_report, BulkExportItemStatus, BulkExportPreflight,
-            BulkExportPreflightItem, BulkExportReport, BulkExportResultItem, BulkExportStrategy,
+            ima_batch_not_sent_result, ima_batch_should_stop, normalize_bulk_export_concurrency,
+            serialize_bulk_export_index, serialize_bulk_export_report, BulkExportItemStatus,
+            BulkExportPreflight, BulkExportPreflightItem, BulkExportReport, BulkExportResultItem,
+            BulkExportStrategy,
         },
         dispatcher::export_document_targets_with_notion_blocks,
         document::ExportDocument,
@@ -96,7 +97,7 @@ pub struct BulkExportRequest {
     pub concurrency: Option<usize>,
     pub exclude_without_exportable_notes: Option<bool>,
     /// 多目标选择。缺省等价于仅 Markdown（旧前端兼容）；
-    /// 选择 Obsidian / Notion 时，Markdown 仍写入批量目录作为兜底。
+    /// 选择 Obsidian / Notion / Ima 时，Markdown 仍写入批量目录作为兜底。
     pub targets: Option<MultiTargetExportRequest>,
 }
 
@@ -774,8 +775,7 @@ impl NotesService {
             });
         }
 
-        // 外部目标（Obsidian / Notion）串行写入：只处理笔记已成功导出的书；
-        // 单本失败不影响其他书，Notion 限流与部分成功语义由导出适配器兜底。
+        // 外部目标串行写入。Ima 目标级失败会熔断后续 Ima 请求，其他目标继续。
         if !external_targets.is_empty() {
             let external_request = MultiTargetExportRequest {
                 targets: external_targets.clone(),
@@ -787,7 +787,9 @@ impl NotesService {
                     .targets
                     .as_ref()
                     .and_then(|value| value.notion.clone()),
+                ima: request.targets.as_ref().and_then(|value| value.ima.clone()),
             };
+            let mut ima_circuit_trigger: Option<String> = None;
             for item in items.iter_mut() {
                 if item.status != BulkExportItemStatus::Exported || item.notes_file.is_none() {
                     continue;
@@ -804,9 +806,43 @@ impl NotesService {
                     }],
                     format!("正在写入外部目标：{}。", item.title),
                 );
-                let target_results = self
-                    .export_bulk_external_targets(&item.book_id, &exported_at, &external_request)
-                    .await;
+                let mut item_request = external_request.clone();
+                if ima_circuit_trigger.is_some() {
+                    item_request
+                        .targets
+                        .retain(|target| *target != ExternalExportTarget::Ima);
+                }
+                let mut target_results = if item_request.targets.is_empty() {
+                    Vec::new()
+                } else {
+                    self.export_bulk_external_targets(&item.book_id, &exported_at, &item_request)
+                        .await
+                };
+                if let Some(trigger_code) = ima_circuit_trigger.as_deref() {
+                    if let Some(index) = external_request
+                        .targets
+                        .iter()
+                        .position(|target| *target == ExternalExportTarget::Ima)
+                    {
+                        target_results.insert(
+                            index.min(target_results.len()),
+                            ima_batch_not_sent_result(trigger_code),
+                        );
+                    }
+                } else if let Some(ima_result) = target_results
+                    .iter()
+                    .find(|result| result.target == ExternalExportTarget::Ima)
+                {
+                    if ima_batch_should_stop(ima_result) {
+                        ima_circuit_trigger = Some(
+                            ima_result
+                                .error
+                                .as_ref()
+                                .map(|error| error.code.clone())
+                                .unwrap_or_else(|| "IMA_REMOTE_UNKNOWN".to_string()),
+                        );
+                    }
+                }
                 let succeeded = target_results
                     .iter()
                     .filter(|result| result.status == ExportTargetStatus::Succeeded)
@@ -815,9 +851,18 @@ impl NotesService {
                     .iter()
                     .filter(|result| result.status == ExportTargetStatus::Failed)
                     .count();
-                if failed > 0 {
+                let incomplete = target_results
+                    .iter()
+                    .filter(|result| {
+                        matches!(
+                            result.status,
+                            ExportTargetStatus::Partial | ExportTargetStatus::Unknown
+                        )
+                    })
+                    .count();
+                if failed > 0 || incomplete > 0 {
                     item.reason = format!(
-                        "{}；外部目标完成 {succeeded}/{} 个，失败 {failed} 个。",
+                        "{}；外部目标完成 {succeeded}/{} 个，失败 {failed} 个，待处理 {incomplete} 个。",
                         item.reason,
                         target_results.len()
                     );
@@ -873,7 +918,7 @@ impl NotesService {
         Ok(())
     }
 
-    /// 为单本书写出批量请求中的外部目标（Obsidian / Notion）。
+    /// 为单本书写出批量请求中的外部目标（Obsidian / Notion / Ima）。
     /// Markdown 已由批量目录负责，此处只处理外部目标；读取缓存失败时
     /// 返回目标级失败结果而不是中断整个批量任务。
     async fn export_bulk_external_targets(
@@ -1687,6 +1732,9 @@ fn bulk_external_target_failure(target: ExternalExportTarget, message: &str) -> 
         path: None,
         url: None,
         page_id: None,
+        operation_id: None,
+        operation_stage: None,
+        resource_id: None,
         file_count: None,
         warning: None,
         error: Some(ExportTargetError {

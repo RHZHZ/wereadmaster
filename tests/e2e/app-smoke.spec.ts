@@ -4,6 +4,7 @@ import { auditVisualScroll, type VisualScrollAuditResult } from "./visual-scroll
 type MockTauriOptions = {
   availableAppUpdate?: boolean;
   hasCredential?: boolean;
+  hasImaCredential?: boolean;
   hasAiCredential?: boolean;
   longNoteCardContent?: boolean;
   longBulkExportList?: boolean;
@@ -30,6 +31,7 @@ type MockTauriOptions = {
   bookNotesMode?: "ready" | "delayed" | "empty" | "failOnce";
   publicReviewsMode?: "pagination";
   noteSynthesisMode?: "lifecycle";
+  noteSynthesisPreviewFailure?: boolean;
   embeddingIndexMode?: "lifecycle";
   notionProvisioningMode?: "none" | "partial" | "recoveryRequired" | "unknown";
   notionCoverBackfillMode?: "ready" | "blocked" | "cancel";
@@ -111,7 +113,7 @@ test.describe("个人阅读管理应用 smoke", () => {
     await expect(semanticIndex).toContainText("text-embedding-3-small");
     await expect(semanticIndex.getByLabel("语义索引构建进度")).toHaveAttribute("value", "100");
     await expect(
-      page.getByLabel("通知").getByText("语义索引构建完成。当前搜索仍保持词法检索。")
+      page.getByLabel("通知").getByText("语义索引构建完成。普通笔记查询将自动使用混合检索。")
     ).toBeVisible();
 
     await semanticIndex.getByRole("button", { name: "清除语义索引" }).click();
@@ -1781,7 +1783,7 @@ test.describe("个人阅读管理应用 smoke", () => {
 
     await expect(page.getByRole("heading", { name: "主题标签" })).toBeVisible();
     expect(await getInvokeCount(page, "get_book_notes")).toBe(1);
-    expect(await getInvokeCount(page, "get_latest_book_notes_summary")).toBe(1);
+    expect(await getInvokeCount(page, "get_latest_book_notes_summary")).toBe(2);
     expect(await getInvokeCount(page, "summarize_book_notes")).toBe(0);
 
     await page.getByRole("button", { name: "返回书籍详情" }).click();
@@ -1798,29 +1800,55 @@ test.describe("个人阅读管理应用 smoke", () => {
     await page.getByLabel("书架条目").getByRole("button", { name: /代码整洁之道/ }).click();
     await page.getByLabel("本书管理").getByRole("button", { name: /书籍复盘/ }).click();
 
-    const synthesisCard = page.getByLabel("全量笔记归纳任务");
+    await expect(page.getByRole("tab", { name: "快速复盘（抽样）" })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByLabel("完整复盘任务")).toHaveCount(0);
+    await page.getByRole("tab", { name: "完整复盘（快照）" }).click();
+    const synthesisCard = page.getByLabel("完整复盘任务");
     await expect(synthesisCard).toBeVisible();
-    await expect(synthesisCard).toContainText("快照式全量笔记归纳");
-    await expect(synthesisCard.getByRole("button", { name: "创建全量归纳任务" })).toBeDisabled();
+    await expect(synthesisCard).toContainText("当前可处理笔记：3 条");
+    await expect(synthesisCard.getByRole("button", { name: "创建本地快照" })).toBeDisabled();
     await synthesisCard.getByRole("checkbox").check();
-    await synthesisCard.getByRole("button", { name: "创建全量归纳任务" }).click();
+    await synthesisCard.getByRole("button", { name: "创建本地快照" }).click();
 
     await expect(synthesisCard).toContainText("已创建，等待继续");
-    await expect(synthesisCard.getByRole("button", { name: "继续调用 Provider" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "生成复盘" })).toBeDisabled();
+    await expect(synthesisCard.getByRole("button", { name: "开始发送并归纳" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "生成快速复盘" })).toHaveCount(0);
     expect(await getInvokeCount(page, "start_note_synthesis")).toBe(1);
     expect(await getInvokeCount(page, "continue_note_synthesis")).toBe(0);
     expect(await getInvokeCount(page, "summarize_book_notes")).toBe(0);
 
     const cachedSummaryCountBeforeContinue = await getInvokeCount(page, "get_latest_book_notes_summary");
-    await synthesisCard.getByRole("button", { name: "继续调用 Provider" }).click();
+    await synthesisCard.getByRole("button", { name: "开始发送并归纳" }).click();
 
-    await expect(synthesisCard).toContainText("全量归纳已完成");
+    await expect(synthesisCard).toContainText("完整复盘已完成");
+    await expect(synthesisCard.locator(".ai-summary-synthesis-progress span")).toHaveAttribute("style", /width: 100%/);
+    await expect(synthesisCard.getByRole("button", { name: "查看完整复盘" })).toHaveCount(0);
     await expect(page.getByLabel("书籍复盘概览")).toContainText("正式 full-v1 资产");
-    await expect(page.getByLabel("书籍复盘数据边界")).toContainText("本地缓存");
+    await expect(page.getByLabel("书籍复盘数据边界")).toContainText("基于任务快照中的 3 / 3 条笔记生成");
     expect(await getInvokeCount(page, "continue_note_synthesis")).toBe(1);
     expect(await getInvokeCount(page, "get_latest_book_notes_summary")).toBeGreaterThan(cachedSummaryCountBeforeContinue);
     expect(await getInvokeCount(page, "summarize_book_notes")).toBe(0);
+  });
+
+  test("完整复盘预览读取失败后提供重试并恢复任务卡", async ({ page }) => {
+    await installTauriMock(page, {
+      hasCredential: true,
+      hasAiCredential: true,
+      noteSynthesisMode: "lifecycle",
+      noteSynthesisPreviewFailure: true
+    });
+    await page.goto("/");
+
+    await openShelfSubNav(page, "微信书架");
+    await page.getByLabel("书架条目").getByRole("button", { name: /代码整洁之道/ }).click();
+    await page.getByLabel("本书管理").getByRole("button", { name: /书籍复盘/ }).click();
+    await page.getByRole("tab", { name: "完整复盘（快照）" }).click();
+
+    const errorCallout = page.getByRole("alert", { name: "完整复盘状态读取失败" });
+    await expect(errorCallout).toContainText("完整复盘预览首次读取失败");
+    await errorCallout.getByRole("button", { name: "重新读取完整复盘状态" }).click();
+    await expect(page.getByLabel("完整复盘任务")).toBeVisible();
+    await expect(page.getByLabel("完整复盘状态读取失败")).toHaveCount(0);
   });
 
   test("单本复盘真实空笔记时不查询缓存也不允许生成", async ({ page }) => {
@@ -1832,7 +1860,7 @@ test.describe("个人阅读管理应用 smoke", () => {
     await page.getByLabel("本书管理").getByRole("button", { name: /书籍复盘/ }).click();
 
     await expect(page.getByText("没有可总结的划线或想法")).toBeVisible();
-    await expect(page.getByRole("button", { name: "生成复盘" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "生成快速复盘", exact: true })).toBeDisabled();
     expect(await getInvokeCount(page, "get_book_notes")).toBe(1);
     expect(await getInvokeCount(page, "get_latest_book_notes_summary")).toBe(0);
     expect(await getInvokeCount(page, "summarize_book_notes")).toBe(0);
@@ -1848,14 +1876,14 @@ test.describe("个人阅读管理应用 smoke", () => {
 
     await expect(page.getByRole("alert")).toContainText("真实笔记读取失败");
     await expect(page.getByRole("alert")).toContainText("真实笔记首次读取失败");
-    await expect(page.getByRole("button", { name: "生成复盘" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "生成快速复盘", exact: true })).toBeDisabled();
     expect(await getInvokeCount(page, "get_book_notes")).toBe(1);
     expect(await getInvokeCount(page, "get_latest_book_notes_summary")).toBe(0);
 
     await page.getByRole("button", { name: "重新读取笔记" }).click();
     await expect(page.getByRole("heading", { name: "主题标签" })).toBeVisible();
     expect(await getInvokeCount(page, "get_book_notes")).toBe(2);
-    expect(await getInvokeCount(page, "get_latest_book_notes_summary")).toBe(1);
+    expect(await getInvokeCount(page, "get_latest_book_notes_summary")).toBe(2);
     expect(await getInvokeCount(page, "summarize_book_notes")).toBe(0);
   });
 
@@ -1874,7 +1902,7 @@ test.describe("个人阅读管理应用 smoke", () => {
     await expect(page.getByLabel("复盘整理状态")).toContainText("手动标记为已整理");
 
     const stateUpdateCount = await getInvokeCount(page, "patch_reading_item_state");
-    await page.getByRole("button", { name: "复制完整复盘" }).click();
+    await page.getByRole("button", { name: "复制快速复盘" }).click();
     await expect(page.getByLabel("通知").getByText("已复制：复盘文档")).toBeVisible();
     await expect(await getInvokeCount(page, "patch_reading_item_state")).toBe(stateUpdateCount);
 
@@ -1886,7 +1914,7 @@ test.describe("个人阅读管理应用 smoke", () => {
     await expect(page.getByLabel("通知").getByText("已复制：复盘问题")).toBeVisible();
     await expect(await getInvokeCount(page, "patch_reading_item_state")).toBe(stateUpdateCount);
 
-    const reviewExportButton = page.getByRole("button", { name: "导出书籍复盘" });
+    const reviewExportButton = page.getByRole("button", { name: "导出快速复盘" });
     await reviewExportButton.click();
     const reviewExportDialog = page.getByRole("dialog", { name: "导出书籍复盘" });
     await expect(reviewExportDialog).toBeVisible();
@@ -2029,7 +2057,7 @@ test.describe("个人阅读管理应用 smoke", () => {
   });
 
   test("桌面端主流程可导航并使用本地命令 mock 数据", async ({ page }) => {
-    await installTauriMock(page);
+    await installTauriMock(page, { hasImaCredential: true });
     await page.goto("/");
 
     await expect(page.getByLabel("应用窗口控制").getByText("个人阅读管理")).toBeVisible();
@@ -2435,8 +2463,12 @@ test.describe("个人阅读管理应用 smoke", () => {
     await expect(await getInvokeCount(page, "summarize_book_notes")).toBe(0);
     await expect(await getInvokeCount(page, "get_latest_book_notes_summary")).toBeGreaterThan(0);
     await expect(page.getByText("专注", { exact: true })).toBeVisible();
+    await expect(page.locator(".ai-summary-badge")).toContainText("快速复盘缓存");
+    await expect(page.getByRole("button", { name: "生成快速复盘", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "重新生成快速复盘", exact: true })).toBeVisible();
+    await expect(page.getByText("本次使用 2 / 2 条笔记，按章节分层抽样，不代表全量覆盖。")).toBeVisible();
     await expect(page.getByLabel("书籍复盘数据边界")).toContainText("本地缓存");
-    await page.getByRole("button", { name: "复制完整复盘" }).click();
+    await page.getByRole("button", { name: "复制快速复盘" }).click();
     await expect(page.getByText("已复制：复盘文档")).toBeVisible();
     await expect(page.getByLabel("通知").getByText("已复制：复盘文档")).toBeVisible();
     await expect(page.locator(".toast-card").filter({ hasText: "已复制：复盘文档" })).toBeVisible();
@@ -2460,7 +2492,7 @@ test.describe("个人阅读管理应用 smoke", () => {
     await expect(page.getByText("直接体现本书笔记的核心关注点。")).toBeVisible();
     await expect(page.getByRole("heading", { name: "复盘问题" })).toBeVisible();
     await expect(page.getByLabel("复盘问题").getByText("我每天是否保留了不被打断的深度时段？")).toBeVisible();
-    await page.getByRole("button", { name: "导出书籍复盘" }).click();
+    await page.getByRole("button", { name: "导出快速复盘" }).click();
     const bookReviewExportDialog = page.getByRole("dialog", { name: "导出书籍复盘" });
     await expect(bookReviewExportDialog).toBeVisible();
     await bookReviewExportDialog.getByRole("button", { name: "开始导出" }).click();
@@ -2523,9 +2555,9 @@ test.describe("个人阅读管理应用 smoke", () => {
     await expect(page.getByRole("heading", { name: "把单本笔记整理成阅读报告" })).toBeVisible();
     await page.getByLabel("建议生成复盘").getByRole("button", { name: /三体/ }).click();
     await expect(page.getByRole("heading", { name: "《三体》书籍复盘" })).toBeVisible();
-    await expect(page.getByText("点击“生成复盘”后，会使用当前书笔记生成书籍复盘")).toBeVisible();
+    await expect(page.getByText("点击“生成快速复盘”后，会使用当前书笔记生成有限样本复盘。")).toBeVisible();
     await expect(page.getByLabel("书籍复盘数据边界")).toContainText("待生成");
-    await expect(page.getByRole("button", { name: "生成复盘" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "生成快速复盘", exact: true })).toBeEnabled();
     await page.getByRole("button", { name: "返回成果" }).click();
     await expect(page.getByRole("heading", { name: "把单本笔记整理成阅读报告" })).toBeVisible();
     await openReadingReviewSubNav(page, "阅读报告");
@@ -2563,6 +2595,50 @@ test.describe("个人阅读管理应用 smoke", () => {
     await assetExportDialog.getByRole("button", { name: "关闭", exact: true }).click();
     await expect(assetExportDialog).toHaveCount(0);
     await expect(page.getByRole("button", { name: "导出报告" })).toBeFocused();
+
+    await page.getByRole("tab", { name: /总计/ }).click();
+    await expect(page.getByRole("heading", { name: "长期阅读画像" })).toBeVisible();
+    await page.getByRole("button", { name: "导出报告" }).click();
+    const overallExportDialog = page.getByRole("dialog", { name: "导出报告" });
+    await expect(overallExportDialog).toContainText("Ima");
+    await expect(overallExportDialog).toContainText("已选择 Ima 知识库");
+    await expect(overallExportDialog).not.toContainText("ima-knowledge-base-e2e");
+    await expect(overallExportDialog).toContainText("每次导出创建带时间的历史快照，不覆盖旧版本");
+    await overallExportDialog.getByRole("checkbox", { name: "Ima" }).check();
+    await expect(overallExportDialog).toContainText(
+      "本次总计阅读报告正文和统计结论将发送到 Ima，且每次导出都会创建新的历史快照"
+    );
+    await overallExportDialog.getByRole("checkbox", { name: /本次总计阅读报告正文/ }).check();
+    await overallExportDialog.getByRole("button", { name: "开始导出" }).click();
+    await expect(overallExportDialog.getByText(/IMA-1/)).toBeVisible();
+    await expect(overallExportDialog).toContainText("已创建新的总计历史快照，旧快照未修改。");
+    const firstOverallSnapshotTitle = await overallExportDialog
+      .getByText(/长期阅读画像 · .*IMA-1/)
+      .textContent();
+    expect(firstOverallSnapshotTitle).toBeTruthy();
+    await overallExportDialog.getByRole("button", { name: "关闭", exact: true }).click();
+
+    await page.getByRole("button", { name: "导出报告" }).click();
+    const repeatedOverallExportDialog = page.getByRole("dialog", { name: "导出报告" });
+    await repeatedOverallExportDialog.getByRole("checkbox", { name: "Ima" }).check();
+    await repeatedOverallExportDialog.getByRole("checkbox", { name: /本次总计阅读报告正文/ }).check();
+    await repeatedOverallExportDialog.getByRole("button", { name: "开始导出" }).click();
+    await expect(repeatedOverallExportDialog.getByText(/IMA-2/)).toBeVisible();
+    const secondOverallSnapshotTitle = await repeatedOverallExportDialog
+      .getByText(/长期阅读画像 · .*IMA-2/)
+      .textContent();
+    expect(secondOverallSnapshotTitle).toBeTruthy();
+    expect(secondOverallSnapshotTitle).not.toBe(firstOverallSnapshotTitle);
+    await expect(await getInvokeCount(page, "export_reading_stats_review_targets")).toBe(3);
+    await expect(await getLastInvokeArgs(page, "export_reading_stats_review_targets")).toMatchObject({
+      mode: "overall",
+      baseTime: 0,
+      request: {
+        targets: ["markdown", "ima"],
+        ima: { confirmBodyExport: true, forceNewSnapshot: false }
+      }
+    });
+    await repeatedOverallExportDialog.getByRole("button", { name: "关闭", exact: true }).click();
 
     await openPrimaryNav(page, "笔记");
     await expect(page.getByRole("heading", { name: "笔记中心" })).toBeVisible();
@@ -5711,6 +5787,7 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
   await page.addInitScript(
     ({
       hasCredential,
+      hasImaCredential,
       longNoteCardContent,
       longBulkExportList,
       longBookDetailChapters,
@@ -5742,6 +5819,7 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
       notionAnalysisNetworkError,
       t7SelectorStates,
       noteSynthesisMode,
+      noteSynthesisPreviewFailure,
       embeddingIndexMode
     }) => {
       const nowSeconds = 1_725_955_200;
@@ -5755,6 +5833,9 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
         ? `要停止使用虚拟环境，可以先记录这段命令：${longNoteCardToken}`
         : "这条原则可以直接放进每日阅读复盘。";
       const credential = hasCredential
+        ? { hasCredential: true, lastValidatedAt: String(nowSeconds) }
+        : { hasCredential: false };
+      const imaCredential = hasImaCredential
         ? { hasCredential: true, lastValidatedAt: String(nowSeconds) }
         : { hasCredential: false };
       const hasSavedAiCredential = hasAiCredential ?? hasCredential;
@@ -5976,6 +6057,7 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
         ? largeReadingAssistantThreadDetails
         : baseReadingAssistantThreadDetails;
       let hasReturnedBookReviewExportFailure = false;
+      let imaExportCount = 0;
       let bookNotesRequestCount = 0;
       let noteSynthesisJob = null;
       let hasPublishedNoteSynthesisAsset = false;
@@ -6011,9 +6093,11 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
         thoughtCount: 1,
         estimatedBatchCount: 1,
         estimatedCharCount: 120,
+        currentSourceHash: "note-synthesis-snapshot-e2e",
         providerModel: "gpt-4o-mini",
         providerLabel: "OpenAI"
       };
+      let shouldFailNoteSynthesisPreview = Boolean(noteSynthesisPreviewFailure);
       const noteSynthesisSummary = {
         bookId: "book-code-review",
         promptVersion: "book-notes-summary-full-v1",
@@ -7039,7 +7123,24 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
               schemaCheckedAt: String(nowSeconds),
               schemaFingerprint: notionAnalysis.schemaFingerprint
             }
-          }
+          },
+          ...(hasImaCredential
+            ? {
+                ima: {
+                  credential: imaCredential,
+                  noteFolderId: "ima-notes-e2e",
+                  knowledgeBaseId: "ima-knowledge-base-e2e",
+                  publishToKnowledgeBase: true,
+                  assetRoutes: {},
+                  adapterVersion: "ima-e2e-v1",
+                  checkedAdapterVersion: "ima-e2e-v1",
+                  latestVersion: "ima-e2e-v1",
+                  compatibilityStatus: "compatible",
+                  canAttemptWrite: true,
+                  isWriteCompatible: true
+                }
+              }
+            : {})
         },
         network: {
           isCustomWereadProxy: false
@@ -7901,6 +8002,10 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
               return aiState;
             case "preview_note_synthesis":
               if (noteSynthesisMode === "lifecycle" && args.bookId === "book-code-review") {
+                if (shouldFailNoteSynthesisPreview) {
+                  shouldFailNoteSynthesisPreview = false;
+                  throw new Error("完整复盘预览首次读取失败");
+                }
                 return {
                   ...noteSynthesisPreview,
                   activeJob: noteSynthesisJob || undefined
@@ -7911,6 +8016,19 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
               return noteSynthesisMode === "lifecycle" && args.bookId === "book-code-review"
                 ? noteSynthesisJob
                 : null;
+            case "get_note_synthesis_job_summary":
+              if (noteSynthesisMode !== "lifecycle" || args.bookId !== "book-code-review") {
+                return {};
+              }
+              return {
+                activeJob: noteSynthesisJob && ["queued", "snapshotting", "batching", "summarizing", "merging"].includes(noteSynthesisJob.status)
+                  ? noteSynthesisJob
+                  : undefined,
+                latestCompletedJob: noteSynthesisJob?.status === "completed" ? noteSynthesisJob : undefined,
+                latestTerminalJob: noteSynthesisJob && !["queued", "snapshotting", "batching", "summarizing", "merging"].includes(noteSynthesisJob.status)
+                  ? noteSynthesisJob
+                  : undefined
+              };
             case "start_note_synthesis":
               if (noteSynthesisMode !== "lifecycle" || args.bookId !== "book-code-review") {
                 throw new Error("M2 lifecycle mock is not enabled for this book.");
@@ -7941,7 +8059,7 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
                 finishedAt: "2026-08-04T13:46:00.000Z",
                 updatedAt: "2026-08-04T13:46:00.000Z",
                 result: {
-                  feature: "book-review",
+                  feature: "book-notes-summary",
                   promptVersion: "book-notes-summary-full-v1",
                   inputHash: "note-synthesis-full-v1-e2e"
                 },
@@ -8179,20 +8297,42 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
                 cachedUpdatedAt: String(nowSeconds - 30)
               };
             case "export_reading_stats_review_targets":
+              const requestedReviewTargets = Array.isArray(args.request?.targets)
+                ? args.request.targets
+                : ["markdown"];
+              if (requestedReviewTargets.includes("ima")) {
+                imaExportCount += 1;
+              }
+              const reviewMode = args.mode || "monthly";
+              const reviewBaseTime = reviewMode === "overall" ? 0 : args.baseTime || nowSeconds;
               return {
                 exportId: "export-reading-stats-review-1",
                 sourceKind: "readingStatsReview",
-                sourceId: `monthly:${args.baseTime || nowSeconds}`,
+                sourceId: `${reviewMode}:${reviewBaseTime}`,
                 exportedAt: String(nowSeconds),
-                results: [
-                  {
-                    target: "markdown",
-                    status: "succeeded",
-                    title: "月度周期复盘",
-                    path:
-                      "C:/Users/RHZ/AppData/Roaming/wxreadmaster/exports/monthly-reading-review-1725955200.md"
-                  }
-                ]
+                results: requestedReviewTargets.map((target) =>
+                  target === "ima"
+                    ? {
+                        target,
+                        status: "succeeded",
+                        title: `长期阅读画像 · 2024-09-10 12:00:00 +08:00 · IMA-${imaExportCount}`,
+                        operationId: `ima-export-e2e-${imaExportCount}`,
+                        resourceId: `ima-note-e2e-${imaExportCount}`,
+                        warning:
+                          reviewMode === "overall"
+                            ? "已创建新的总计历史快照，旧快照未修改。"
+                            : undefined
+                      }
+                    : {
+                        target,
+                        status: "succeeded",
+                        title: reviewMode === "overall" ? "长期阅读画像" : "月度周期复盘",
+                        path:
+                          reviewMode === "overall"
+                            ? "C:/Users/RHZ/AppData/Roaming/wxreadmaster/exports/overall-reading-review-1725955200.md"
+                            : "C:/Users/RHZ/AppData/Roaming/wxreadmaster/exports/monthly-reading-review-1725955200.md"
+                      }
+                )
               };
             case "export_reading_stats_review_markdown":
               return {
@@ -8977,6 +9117,7 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
     },
     {
       hasCredential: options.hasCredential ?? true,
+      hasImaCredential: options.hasImaCredential ?? false,
       availableAppUpdate: options.availableAppUpdate ?? false,
       hasAiCredential: options.hasAiCredential,
       longNoteCardContent: options.longNoteCardContent ?? false,
@@ -9004,6 +9145,7 @@ async function installTauriMock(page: Page, options: MockTauriOptions = {}) {
       bookNotesMode: options.bookNotesMode ?? "ready",
       publicReviewsMode: options.publicReviewsMode,
       noteSynthesisMode: options.noteSynthesisMode,
+      noteSynthesisPreviewFailure: options.noteSynthesisPreviewFailure ?? false,
       embeddingIndexMode: options.embeddingIndexMode,
       notionProvisioningMode: options.notionProvisioningMode ?? "none",
       notionCoverBackfillMode: options.notionCoverBackfillMode,

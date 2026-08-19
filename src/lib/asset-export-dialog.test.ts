@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  canCheckImaRemoteDrift,
+  canForceRepublishImaResult,
+  canRetargetImaKnowledgeAssociation,
+  canSubmitAssetExportTargets,
   canSubmitExportTargets,
   getFailedExportTargets,
   resolveExportPlatformMode,
@@ -45,6 +49,64 @@ function response(
 }
 
 describe("asset export dialog helpers", () => {
+  it("only checks remote drift for completed Ima records", () => {
+    expect(canCheckImaRemoteDrift({
+      target: "ima",
+      status: "succeeded",
+      operationId: "ima-export-1"
+    })).toBe(true);
+    expect(canCheckImaRemoteDrift({
+      target: "ima",
+      status: "skipped",
+      operationId: "ima-export-1"
+    })).toBe(true);
+    expect(canCheckImaRemoteDrift({
+      target: "ima",
+      status: "partial",
+      operationId: "ima-export-1"
+    })).toBe(false);
+  });
+
+  it("only offers forced Ima republish for a successful dedupe result", () => {
+    expect(canForceRepublishImaResult({
+      target: "ima",
+      status: "skipped",
+      operationId: "ima-export-1"
+    })).toBe(true);
+    expect(canForceRepublishImaResult({
+      target: "ima",
+      status: "skipped"
+    })).toBe(false);
+    expect(canForceRepublishImaResult({
+      target: "ima",
+      status: "failed",
+      operationId: "ima-export-1"
+    })).toBe(false);
+  });
+
+  it("only offers knowledge-base retargeting for a confirmed addKnowledge partial", () => {
+    expect(canRetargetImaKnowledgeAssociation({
+      target: "ima",
+      status: "partial",
+      operationId: "ima-export-1",
+      operationStage: "addKnowledge",
+      resourceId: "note-1"
+    })).toBe(true);
+    expect(canRetargetImaKnowledgeAssociation({
+      target: "ima",
+      status: "partial",
+      operationId: "ima-export-1",
+      operationStage: "appendDoc",
+      resourceId: "note-1"
+    })).toBe(false);
+    expect(canRetargetImaKnowledgeAssociation({
+      target: "ima",
+      status: "unknown",
+      operationId: "ima-export-1",
+      operationStage: "addKnowledge",
+      resourceId: "note-1"
+    })).toBe(false);
+  });
   it("resolves native and web readonly platform modes from the runtime", () => {
     expect(resolveExportPlatformMode({ __TAURI__: {} })).toBe("native");
     expect(resolveExportPlatformMode({ __TAURI_INTERNALS__: {} })).toBe("native");
@@ -78,6 +140,176 @@ describe("asset export dialog helpers", () => {
     expect(configurations[2]).toMatchObject({
       readiness: "ready",
       destinationLabel: "目标：阅读成果库"
+    });
+  });
+
+  it("only exposes a ready Ima target to supported note exports", () => {
+    const configurations = resolveExportTargetConfigurations({
+      integrationData: {
+        ...integrationData,
+        ima: {
+          credential: { hasCredential: true },
+          knowledgeBaseId: "knowledge-base-1",
+          publishToKnowledgeBase: true,
+          assetRoutes: {},
+          adapterVersion: "1.1.9",
+          compatibilityStatus: "compatible",
+          canAttemptWrite: true,
+          isWriteCompatible: true
+        }
+      },
+      platformMode: "native",
+      availableTargets: ["markdown", "ima"]
+    });
+
+    expect(configurations.map((item) => item.target)).toEqual(["markdown", "ima"]);
+    expect(configurations[1]).toMatchObject({
+      readiness: "ready",
+      destinationLabel: "已选择 Ima 知识库"
+    });
+    expect(toggleExportTarget(["markdown"], "ima", ["markdown"])).toEqual(["markdown"]);
+  });
+
+  it("blocks Ima writes until compatibility is confirmed", () => {
+    const configurations = resolveExportTargetConfigurations({
+      integrationData: {
+        ...integrationData,
+        ima: {
+          credential: { hasCredential: true },
+          knowledgeBaseId: "knowledge-base-1",
+          publishToKnowledgeBase: true,
+          assetRoutes: {},
+          adapterVersion: "1.1.9",
+          compatibilityStatus: "unconfirmed",
+          canAttemptWrite: true,
+          isWriteCompatible: true
+        }
+      },
+      platformMode: "native",
+      availableTargets: ["ima"]
+    });
+
+    expect(configurations[0]).toMatchObject({
+      readiness: "invalid",
+      detail: "Ima 适配器兼容性尚未确认，请先刷新版本状态。"
+    });
+    expect(canSubmitExportTargets(["ima"], configurations)).toBe(false);
+  });
+
+  it("blocks Ima writes when compatibility flags are missing", () => {
+    const configurations = resolveExportTargetConfigurations({
+      integrationData: {
+        ...integrationData,
+        ima: {
+          credential: { hasCredential: true },
+          knowledgeBaseId: "knowledge-base-1",
+          publishToKnowledgeBase: true,
+          assetRoutes: {},
+          adapterVersion: "1.1.9",
+          compatibilityStatus: "compatible",
+          canAttemptWrite: false,
+          isWriteCompatible: false
+        }
+      },
+      platformMode: "native",
+      availableTargets: ["ima"]
+    });
+
+    expect(configurations[0].readiness).toBe("invalid");
+    expect(canSubmitExportTargets(["ima"], configurations)).toBe(false);
+  });
+
+  it("resolves the configured Ima route for the exported asset", () => {
+    const configurations = resolveExportTargetConfigurations({
+      integrationData: {
+        ...integrationData,
+        ima: {
+          credential: { hasCredential: true },
+          noteFolderId: "global-notes",
+          knowledgeBaseId: "global-knowledge-base",
+          publishToKnowledgeBase: false,
+          assetRoutes: {
+            bookReview: {
+              noteFolderId: "review-notes",
+              knowledgeBaseId: "review-knowledge-base",
+              knowledgeBaseFolderId: "review-folder",
+              publishToKnowledgeBase: true
+            }
+          },
+          adapterVersion: "1.1.9",
+          compatibilityStatus: "compatible",
+          canAttemptWrite: true,
+          isWriteCompatible: true
+        }
+      },
+      platformMode: "native",
+      availableTargets: ["ima"],
+      sourceKind: "bookReview"
+    });
+
+    expect(configurations[0]).toMatchObject({
+      readiness: "ready",
+      destinationLabel: "已选择 Ima 知识库"
+    });
+  });
+
+  it("resolves the configured Ima route for a completed reading review", () => {
+    const configurations = resolveExportTargetConfigurations({
+      integrationData: {
+        ...integrationData,
+        ima: {
+          credential: { hasCredential: true },
+          noteFolderId: "global-notes",
+          publishToKnowledgeBase: false,
+          assetRoutes: {
+            readingStatsReview: {
+              knowledgeBaseId: "review-knowledge-base",
+              knowledgeBaseFolderId: "review-folder",
+              publishToKnowledgeBase: true
+            }
+          },
+          adapterVersion: "1.1.9",
+          compatibilityStatus: "compatible",
+          canAttemptWrite: true,
+          isWriteCompatible: true
+        }
+      },
+      platformMode: "native",
+      availableTargets: ["ima"],
+      sourceKind: "readingStatsReview"
+    });
+
+    expect(configurations[0]).toMatchObject({
+      readiness: "ready",
+      destinationLabel: "已选择 Ima 知识库"
+    });
+  });
+
+  it("keeps a decision as an Ima note unless it has an explicit route", () => {
+    const configurations = resolveExportTargetConfigurations({
+      integrationData: {
+        ...integrationData,
+        ima: {
+          credential: { hasCredential: true },
+          noteFolderId: "global-notes",
+          knowledgeBaseId: "global-knowledge-base",
+          publishToKnowledgeBase: true,
+          assetRoutes: {},
+          adapterVersion: "1.1.9",
+          compatibilityStatus: "compatible",
+          canAttemptWrite: true,
+          isWriteCompatible: true
+        }
+      },
+      platformMode: "native",
+      availableTargets: ["ima"],
+      sourceKind: "bookDecision"
+    });
+
+    expect(configurations[0]).toMatchObject({
+      readiness: "ready",
+      destinationLabel: "笔记本：global-notes",
+      detail: "将创建 Ima 笔记，不关联知识库。"
     });
   });
 
@@ -124,6 +356,38 @@ describe("asset export dialog helpers", () => {
     expect(toggleExportTarget(selected, "markdown")).toEqual(["notion"]);
   });
 
+  it("requires explicit confirmation before submitting Ima note bodies", () => {
+    const configurations = resolveExportTargetConfigurations({
+      exportData: {
+        exportDir: "C:/Users/RHZ/exports",
+        defaultExportDir: "C:/Users/RHZ/exports",
+        isCustomExportDir: false
+      },
+      integrationData: {
+        ...integrationData,
+        ima: {
+          credential: { hasCredential: true },
+          publishToKnowledgeBase: false,
+          assetRoutes: {},
+          adapterVersion: "1.1.9",
+          compatibilityStatus: "compatible",
+          canAttemptWrite: true,
+          isWriteCompatible: true
+        }
+      },
+      platformMode: "native",
+      availableTargets: ["markdown", "ima"]
+    });
+
+    expect(
+      canSubmitAssetExportTargets(["markdown", "ima"], configurations, false)
+    ).toBe(false);
+    expect(
+      canSubmitAssetExportTargets(["markdown", "ima"], configurations, true)
+    ).toBe(true);
+    expect(canSubmitAssetExportTargets(["markdown"], configurations, false)).toBe(true);
+  });
+
   it("summarizes target-level outcomes and extracts only failed targets", () => {
     const partial = response([
       { target: "markdown", status: "succeeded", path: "review.md" },
@@ -152,5 +416,10 @@ describe("asset export dialog helpers", () => {
         { target: "markdown", status: "skipped" }
       ])
     ).toBe("skipped");
+    expect(
+      summarizeAssetExportOutcome([
+        { target: "ima", status: "unknown", operationId: "ima-export-1" }
+      ])
+    ).toBe("partial");
   });
 });

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-ima-note-folders"
+description = "Enables the list_ima_note_folders command without any pre-configured scope."
+commands.allow = ["list_ima_note_folders"]
+
+[[permission]]
+identifier = "deny-list-ima-note-folders"
+description = "Denies the list_ima_note_folders command without any pre-configured scope."
+commands.deny = ["list_ima_note_folders"]

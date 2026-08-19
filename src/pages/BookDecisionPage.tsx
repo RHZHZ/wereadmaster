@@ -14,10 +14,16 @@ import {
   type BookshelfResponse,
   type ReadingStatsResponse
 } from "../lib/reading-api";
-import { AssetExportDialog } from "../components/export/AssetExportDialog";
+import {
+  AssetExportDialog,
+  type AssetExportConfirmation
+} from "../components/export/AssetExportDialog";
 import { useToast } from "../components/ToastProvider";
 import { resolveExportPlatformMode } from "../lib/asset-export-dialog";
-import { formatMultiTargetExportToast } from "../lib/export-targets";
+import {
+  buildMultiTargetExportRequest,
+  formatMultiTargetExportToast
+} from "../lib/export-targets";
 import { formatAiResponseFormat, formatAiTimestamp } from "../lib/formatters";
 import { TERMS } from "../lib/glossary";
 import {
@@ -258,13 +264,21 @@ export function BookDecisionPage({
   }
 
   async function exportDecision(
-    targets: ExternalExportTarget[]
+    targets: ExternalExportTarget[],
+    confirmation: AssetExportConfirmation
   ): Promise<MultiTargetExportResponse> {
     if (decisionCandidates.length === 0) {
       throw new Error("没有可导出的选书决策候选。");
     }
 
-    const result = await exportBookDecisionTargets(decisionRequest, { targets });
+    const result = await exportBookDecisionTargets(
+      decisionRequest,
+      buildMultiTargetExportRequest(
+        targets,
+        confirmation.confirmImaBodyExport,
+        confirmation.forceImaNewSnapshot
+      )
+    );
     showToast(formatMultiTargetExportToast(result));
     return result;
   }
@@ -414,7 +428,9 @@ export function BookDecisionPage({
         ariaLabel="导出选书决策"
         assetTitle="导出选书决策"
         assetDescription={`基于 ${decisionResponse.decision.sourceStats.candidateCount} 本候选`}
+        sourceKind="bookDecision"
         platformMode={resolveExportPlatformMode()}
+        availableTargets={["markdown", "obsidian", "notion", "ima"]}
         onExport={exportDecision}
         onOpenSettings={() => onOpenSettings("export")}
         onClose={() => setIsAssetExportOpen(false)}

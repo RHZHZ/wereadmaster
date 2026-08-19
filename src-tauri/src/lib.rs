@@ -18,6 +18,13 @@ pub fn run() {
             std::fs::create_dir_all(&data_dir).expect("failed to create local app data directory");
             crate::db::open_connection(app.handle())
                 .expect("failed to initialize local reading database");
+            let connection = crate::db::open_connection(app.handle())
+                .expect("failed to open local reading database for Ima recovery");
+            crate::repositories::ima_exports::ImaExportRepository::new(&connection)
+                .mark_attempting_as_unknown(
+                    &crate::repositories::ima_exports::current_unix_seconds(),
+                )
+                .expect("failed to recover unfinished Ima exports");
 
             #[cfg(not(mobile))]
             {
@@ -70,6 +77,7 @@ pub fn run() {
             commands::note_synthesis::start_note_synthesis,
             commands::note_synthesis::get_note_synthesis_job,
             commands::note_synthesis::get_active_note_synthesis_job,
+            commands::note_synthesis::get_note_synthesis_job_summary,
             commands::note_synthesis::continue_note_synthesis,
             commands::note_synthesis::retry_failed_note_synthesis_batches,
             commands::note_synthesis::cancel_note_synthesis,
@@ -105,6 +113,18 @@ pub fn run() {
             commands::notion_credentials::save_notion_credential,
             commands::notion_credentials::remove_notion_credential,
             commands::notion_credentials::validate_notion_credential,
+            commands::ima::get_ima_credential_status,
+            commands::ima::save_ima_credential,
+            commands::ima::remove_ima_credential,
+            commands::ima::validate_ima_credential,
+            commands::ima::refresh_ima_adapter_compatibility,
+            commands::ima::list_ima_note_folders,
+            commands::ima::list_ima_addable_knowledge_bases,
+            commands::ima::list_ima_knowledge_items,
+            commands::ima::retry_ima_export_attempt,
+            commands::ima::retarget_ima_knowledge_association,
+            commands::ima::check_ima_export_drift,
+            commands::ima::resolve_ima_unknown_attempt,
             commands::shelf::sync_shelf,
             commands::shelf::get_bookshelf,
             commands::book::get_book_detail,
@@ -154,6 +174,7 @@ pub fn run() {
             commands::settings::choose_obsidian_vault_directory,
             commands::settings::save_obsidian_export_settings,
             commands::settings::save_notion_export_settings,
+            commands::settings::save_ima_export_settings,
             commands::settings::analyze_notion_database,
             commands::settings::save_notion_database_connection,
             commands::settings::preflight_notion_cover_backfill,

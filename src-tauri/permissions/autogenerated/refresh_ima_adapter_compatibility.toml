@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-refresh-ima-adapter-compatibility"
+description = "Enables the refresh_ima_adapter_compatibility command without any pre-configured scope."
+commands.allow = ["refresh_ima_adapter_compatibility"]
+
+[[permission]]
+identifier = "deny-refresh-ima-adapter-compatibility"
+description = "Denies the refresh_ima_adapter_compatibility command without any pre-configured scope."
+commands.deny = ["refresh_ima_adapter_compatibility"]

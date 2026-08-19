@@ -5,6 +5,7 @@ import {
   AlertCircle,
   Bot,
   ChevronDown,
+  ChevronRight,
   CheckCircle2,
   Database,
   Download,
@@ -69,6 +70,9 @@ import {
   getSettingsState,
   getNotionStandardDatabaseProvisioning,
   listenNotionCoverBackfillProgress,
+  listImaAddableKnowledgeBases,
+  listImaKnowledgeItems,
+  listImaNoteFolders,
   listAiProviderModels,
   migrateLocalDataDirectory,
   probeAiProviderCapabilities,
@@ -76,6 +80,7 @@ import {
   removeAiCredential,
   removeCredential,
   removeNotionCredential,
+  removeImaCredential,
   resetCustomExportDirectory,
   resetWereadProxyUrl,
   resolveNotionStandardDatabaseProvisioning,
@@ -87,7 +92,11 @@ import {
   saveNotionCredential,
   saveNotionDatabaseConnection,
   saveNotionExportSettings,
+  saveImaCredential,
+  saveImaExportSettings,
+  refreshImaAdapterCompatibility,
   validateNotionCredential,
+  validateImaCredential,
   saveObsidianExportSettings,
   saveReadingAssistantPreferences,
   saveWereadProxyUrl,
@@ -109,6 +118,13 @@ import type {
   AnalyzeNotionDatabaseResult,
   CreateNotionStandardDatabaseResult,
   ExportBackupResult,
+  ExportSourceKind,
+  ImaAssetRoute,
+  ImaKnowledgeBase,
+  ImaCompatibilityStatus,
+  ImaKnowledgeItem,
+  ImaKnowledgePathFolder,
+  ImaNoteFolder,
   ReadingAssistantPreferences,
   SettingsState,
   NotionCoverMode,
@@ -142,6 +158,23 @@ type SettingsPageProps = {
   onInstallAppUpdate?: () => Promise<void>;
   onViewAppUpdate?: () => void;
 };
+
+type ImaRouteScope =
+  | "default"
+  | "bookNotes"
+  | "bookReview"
+  | "readingStatsReview"
+  | "readingRoute"
+  | "bookDecision";
+
+const IMA_ROUTE_SCOPE_OPTIONS: Array<{ value: ImaRouteScope; label: string }> = [
+  { value: "default", label: "全局默认" },
+  { value: "bookNotes", label: "微信读书笔记" },
+  { value: "bookReview", label: "书籍复盘" },
+  { value: "readingStatsReview", label: "阅读统计复盘" },
+  { value: "readingRoute", label: "阅读路线" },
+  { value: "bookDecision", label: "选书决策" }
+];
 
 type PendingAction =
   | "removeCredential"
@@ -491,6 +524,24 @@ export function SettingsPage({
   const [isCreatingNotionStandardDatabase, setIsCreatingNotionStandardDatabase] =
     useState(false);
   const [isValidatingNotionToken, setIsValidatingNotionToken] = useState(false);
+  const [imaClientId, setImaClientId] = useState("");
+  const [imaApiKey, setImaApiKey] = useState("");
+  const [imaNoteFolders, setImaNoteFolders] = useState<ImaNoteFolder[]>([]);
+  const [imaKnowledgeBases, setImaKnowledgeBases] = useState<ImaKnowledgeBase[]>([]);
+  const [imaKnowledgeItems, setImaKnowledgeItems] = useState<ImaKnowledgeItem[]>([]);
+  const [imaKnowledgePath, setImaKnowledgePath] = useState<ImaKnowledgePathFolder[]>([]);
+  const [imaSelectedKnowledgeFolderPath, setImaSelectedKnowledgeFolderPath] =
+    useState<ImaKnowledgePathFolder[]>([]);
+  const [imaNoteFolderId, setImaNoteFolderId] = useState("");
+  const [imaKnowledgeBaseId, setImaKnowledgeBaseId] = useState("");
+  const [imaKnowledgeBaseFolderId, setImaKnowledgeBaseFolderId] = useState("");
+  const [imaPublishToKnowledgeBase, setImaPublishToKnowledgeBase] = useState(false);
+  const [imaAssetRoutes, setImaAssetRoutes] =
+    useState<Partial<Record<ExportSourceKind, ImaAssetRoute>>>({});
+  const [imaRouteScope, setImaRouteScope] = useState<ImaRouteScope>("default");
+  const [isSavingIma, setIsSavingIma] = useState(false);
+  const [isLoadingImaTargets, setIsLoadingImaTargets] = useState(false);
+  const [isRefreshingImaCompatibility, setIsRefreshingImaCompatibility] = useState(false);
   const [wereadProxyInput, setWereadProxyInput] = useState("");
   const [isSavingWereadProxy, setIsSavingWereadProxy] = useState(false);
   const [isResettingWereadProxy, setIsResettingWereadProxy] = useState(false);
@@ -506,6 +557,24 @@ export function SettingsPage({
   const [error, setError] = useState<string>();
   const lastToastErrorRef = useRef<string>();
   const { showToast } = useToast();
+  const configuredImaAssetRoute =
+    imaRouteScope === "default" ? undefined : imaAssetRoutes[imaRouteScope];
+  const imaRouteUsesCustomSettings =
+    imaRouteScope === "default" || configuredImaAssetRoute !== undefined;
+  const activeImaNoteFolderId =
+    configuredImaAssetRoute?.noteFolderId ?? imaNoteFolderId;
+  const activeImaKnowledgeBaseId =
+    imaRouteScope === "bookDecision" && !configuredImaAssetRoute
+      ? ""
+      : configuredImaAssetRoute?.knowledgeBaseId ?? imaKnowledgeBaseId;
+  const activeImaKnowledgeBaseFolderId =
+    imaRouteScope === "bookDecision" && !configuredImaAssetRoute
+      ? ""
+      : configuredImaAssetRoute?.knowledgeBaseFolderId ?? imaKnowledgeBaseFolderId;
+  const activeImaPublishToKnowledgeBase =
+    imaRouteScope === "bookDecision" && !configuredImaAssetRoute
+      ? false
+      : configuredImaAssetRoute?.publishToKnowledgeBase ?? imaPublishToKnowledgeBase;
   const credential = state?.credential ?? credentialStatus;
   const activeCategoryConfig =
     settingsCategories.find((category) => category.id === activeCategory) ??
@@ -691,6 +760,16 @@ export function SettingsPage({
       );
       setNotionStandardParentPageInput("");
       setNotionCreatedDatabaseUrl(nextNotionProvisioning?.url);
+      setImaNoteFolderId(nextState.integrationData.ima?.noteFolderId ?? "");
+      setImaKnowledgeBaseId(nextState.integrationData.ima?.knowledgeBaseId ?? "");
+      setImaKnowledgeBaseFolderId(
+        nextState.integrationData.ima?.knowledgeBaseFolderId ?? "",
+      );
+      setImaPublishToKnowledgeBase(
+        nextState.integrationData.ima?.publishToKnowledgeBase ?? false,
+      );
+      setImaAssetRoutes(nextState.integrationData.ima?.assetRoutes ?? {});
+      setImaRouteScope("default");
       setWereadProxyInput(nextState.network.wereadProxyUrl ?? "");
       onCredentialChange(nextState.credential);
     } catch (loadError) {
@@ -1220,6 +1299,246 @@ export function SettingsPage({
       setError(getCommandErrorMessage(saveError));
     } finally {
       setIsSavingIntegrations(false);
+    }
+  }
+
+  async function savePendingImaCredential() {
+    const clientId = imaClientId.trim();
+    const apiKeyValue = imaApiKey.trim();
+    if (!clientId && !apiKeyValue) {
+      return;
+    }
+    if (!clientId || !apiKeyValue) {
+      throw new Error("Ima Client ID 和 API Key 必须同时填写。");
+    }
+    await saveImaCredential(clientId, apiKeyValue);
+    setImaClientId("");
+    setImaApiKey("");
+  }
+
+  function updateActiveImaRoute(update: Partial<ImaAssetRoute>) {
+    if (imaRouteScope === "default") {
+      if (update.noteFolderId !== undefined) {
+        setImaNoteFolderId(update.noteFolderId);
+      }
+      if (update.knowledgeBaseId !== undefined) {
+        setImaKnowledgeBaseId(update.knowledgeBaseId);
+      }
+      if (update.knowledgeBaseFolderId !== undefined) {
+        setImaKnowledgeBaseFolderId(update.knowledgeBaseFolderId);
+      }
+      if (update.publishToKnowledgeBase !== undefined) {
+        setImaPublishToKnowledgeBase(update.publishToKnowledgeBase);
+      }
+      return;
+    }
+
+    setImaAssetRoutes((current) => ({
+      ...current,
+      [imaRouteScope]: {
+        noteFolderId: activeImaNoteFolderId || undefined,
+        knowledgeBaseId: activeImaKnowledgeBaseId || undefined,
+        knowledgeBaseFolderId: activeImaKnowledgeBaseFolderId || undefined,
+        publishToKnowledgeBase: activeImaPublishToKnowledgeBase,
+        ...update
+      }
+    }));
+  }
+
+  function handleImaRouteScopeChange(scope: ImaRouteScope) {
+    setImaRouteScope(scope);
+    setImaKnowledgeItems([]);
+    setImaKnowledgePath([]);
+    setImaSelectedKnowledgeFolderPath([]);
+  }
+
+  function handleImaRouteCustomSettingsChange(enabled: boolean) {
+    if (imaRouteScope === "default") {
+      return;
+    }
+    setImaAssetRoutes((current) => {
+      if (enabled) {
+        return {
+          ...current,
+          [imaRouteScope]: current[imaRouteScope] ?? {
+            noteFolderId: imaNoteFolderId || undefined,
+            knowledgeBaseId:
+              imaRouteScope === "bookDecision" ? undefined : imaKnowledgeBaseId || undefined,
+            knowledgeBaseFolderId:
+              imaRouteScope === "bookDecision"
+                ? undefined
+                : imaKnowledgeBaseFolderId || undefined,
+            publishToKnowledgeBase:
+              imaRouteScope === "bookDecision" ? false : imaPublishToKnowledgeBase
+          }
+        };
+      }
+      const { [imaRouteScope]: _removed, ...remaining } = current;
+      return remaining;
+    });
+    setImaKnowledgeItems([]);
+    setImaKnowledgePath([]);
+    setImaSelectedKnowledgeFolderPath([]);
+  }
+
+  function handleImaNoteFolderChange(value: string) {
+    updateActiveImaRoute({ noteFolderId: value });
+  }
+
+  async function handleImaKnowledgeBaseChange(value: string) {
+    updateActiveImaRoute({
+      knowledgeBaseId: value,
+      knowledgeBaseFolderId: ""
+    });
+    setImaKnowledgeItems([]);
+    setImaKnowledgePath([]);
+    setImaSelectedKnowledgeFolderPath([]);
+    if (!value) {
+      return;
+    }
+    await handleBrowseImaKnowledgeFolder(value);
+  }
+
+  function handleImaKnowledgeFolderSelect(
+    folderId: string,
+    path: ImaKnowledgePathFolder[]
+  ) {
+    updateActiveImaRoute({ knowledgeBaseFolderId: folderId });
+    setImaSelectedKnowledgeFolderPath(normalizeImaKnowledgePath(path));
+  }
+
+  async function handleLoadImaTargets() {
+    setIsLoadingImaTargets(true);
+    setError(undefined);
+    try {
+      await savePendingImaCredential();
+      const credential = await validateImaCredential();
+      const [folders, knowledgeBases] = await Promise.all([
+        listImaNoteFolders(),
+        listImaAddableKnowledgeBases(),
+      ]);
+      const knowledgeBaseId = activeImaKnowledgeBaseId ||
+        state?.integrationData.ima?.knowledgeBaseId;
+      const knowledgeFolderId = activeImaKnowledgeBaseFolderId ||
+        state?.integrationData.ima?.knowledgeBaseFolderId;
+      const knowledgeItems = knowledgeBaseId
+        ? await listImaKnowledgeItems(knowledgeBaseId, knowledgeFolderId)
+        : { items: [], currentPath: [] };
+      setImaNoteFolders(folders);
+      setImaKnowledgeBases(knowledgeBases);
+      setImaKnowledgeItems(knowledgeItems.items.filter((item) => item.isFolder));
+      setImaKnowledgePath(normalizeImaKnowledgePath(knowledgeItems.currentPath));
+      setImaSelectedKnowledgeFolderPath(
+        knowledgeFolderId ? normalizeImaKnowledgePath(knowledgeItems.currentPath) : []
+      );
+      setState((current) => current ? {
+        ...current,
+        integrationData: {
+          ...current.integrationData,
+          ima: {
+            ...(current.integrationData.ima ?? {
+              publishToKnowledgeBase: false,
+              assetRoutes: {},
+              adapterVersion: "1.1.9",
+              compatibilityStatus: "unconfirmed",
+              canAttemptWrite: false,
+              isWriteCompatible: false,
+            }),
+            credential,
+          },
+        },
+      } : current);
+      showToast({ message: "Ima 凭据验证通过，已读取可用目标。", tone: "success" });
+    } catch (loadError) {
+      setError(getCommandErrorMessage(loadError));
+    } finally {
+      setIsLoadingImaTargets(false);
+    }
+  }
+
+  async function handleRefreshImaCompatibility() {
+    setIsRefreshingImaCompatibility(true);
+    setError(undefined);
+    try {
+      await savePendingImaCredential();
+      const nextState = await refreshImaAdapterCompatibility();
+      setState(nextState);
+      showToast({ message: "Ima 适配器版本状态已刷新。", tone: "success" });
+    } catch (refreshError) {
+      setError(getCommandErrorMessage(refreshError));
+    } finally {
+      setIsRefreshingImaCompatibility(false);
+    }
+  }
+
+  async function handleBrowseImaKnowledgeFolder(
+    knowledgeBaseId: string,
+    folderId?: string
+  ) {
+    setIsLoadingImaTargets(true);
+    setError(undefined);
+    try {
+      const response = await listImaKnowledgeItems(knowledgeBaseId, folderId);
+      setImaKnowledgeItems(response.items.filter((item) => item.isFolder));
+      setImaKnowledgePath(normalizeImaKnowledgePath(response.currentPath));
+    } catch (loadError) {
+      setError(getCommandErrorMessage(loadError));
+    } finally {
+      setIsLoadingImaTargets(false);
+    }
+  }
+
+  async function handleSaveImaSettings() {
+    setIsSavingIma(true);
+    setError(undefined);
+    try {
+      await savePendingImaCredential();
+      const nextState = await saveImaExportSettings({
+        noteFolderId: imaNoteFolderId || undefined,
+        knowledgeBaseId: imaPublishToKnowledgeBase
+          ? imaKnowledgeBaseId || undefined
+          : undefined,
+        knowledgeBaseFolderId: imaPublishToKnowledgeBase
+          ? imaKnowledgeBaseFolderId || undefined
+          : undefined,
+        publishToKnowledgeBase: imaPublishToKnowledgeBase,
+        assetRoutes: imaAssetRoutes,
+      });
+      setState(nextState);
+      setImaAssetRoutes(nextState.integrationData.ima?.assetRoutes ?? {});
+      showToast({ message: "Ima 默认目标和资产分类路由已保存。", tone: "success" });
+    } catch (saveError) {
+      setError(getCommandErrorMessage(saveError));
+    } finally {
+      setIsSavingIma(false);
+    }
+  }
+
+  async function handleRemoveImaCredential() {
+    if (!window.confirm("确认移除本机保存的 Ima Client ID 和 API Key？")) {
+      return;
+    }
+    setIsSavingIma(true);
+    setError(undefined);
+    try {
+      const credential = await removeImaCredential(true);
+      setImaNoteFolders([]);
+      setImaKnowledgeBases([]);
+      setImaKnowledgeItems([]);
+      setImaKnowledgePath([]);
+      setImaSelectedKnowledgeFolderPath([]);
+      setState((current) => current?.integrationData.ima ? {
+        ...current,
+        integrationData: {
+          ...current.integrationData,
+          ima: { ...current.integrationData.ima, credential },
+        },
+      } : current);
+      showToast({ message: "已移除 Ima 凭据。", tone: "success" });
+    } catch (removeError) {
+      setError(getCommandErrorMessage(removeError));
+    } finally {
+      setIsSavingIma(false);
     }
   }
 
@@ -2593,6 +2912,22 @@ export function SettingsPage({
                   obsidianVaultInput={obsidianVaultInput}
                   obsidianAttachmentMode={obsidianAttachmentMode}
                   obsidianOpenAfterExport={obsidianOpenAfterExport}
+                  imaClientId={imaClientId}
+                  imaApiKey={imaApiKey}
+                  imaNoteFolders={imaNoteFolders}
+                  imaKnowledgeBases={imaKnowledgeBases}
+                  imaKnowledgeItems={imaKnowledgeItems}
+                  imaKnowledgePath={imaKnowledgePath}
+                  imaSelectedKnowledgeFolderPath={imaSelectedKnowledgeFolderPath}
+                  imaNoteFolderId={activeImaNoteFolderId}
+                  imaKnowledgeBaseId={activeImaKnowledgeBaseId}
+                  imaKnowledgeBaseFolderId={activeImaKnowledgeBaseFolderId}
+                  imaPublishToKnowledgeBase={activeImaPublishToKnowledgeBase}
+                  imaRouteScope={imaRouteScope}
+                  imaRouteUsesCustomSettings={imaRouteUsesCustomSettings}
+                  isSavingIma={isSavingIma}
+                  isLoadingImaTargets={isLoadingImaTargets}
+                  isRefreshingImaCompatibility={isRefreshingImaCompatibility}
                   notionToken={notionToken}
                   notionDatabaseInput={notionDatabaseInput}
                   notionConnectionView={notionConnectionView}
@@ -2616,6 +2951,19 @@ export function SettingsPage({
                   onObsidianVaultInputChange={setObsidianVaultInput}
                   onObsidianAttachmentModeChange={setObsidianAttachmentMode}
                   onObsidianOpenAfterExportChange={setObsidianOpenAfterExport}
+                  onImaClientIdChange={setImaClientId}
+                  onImaApiKeyChange={setImaApiKey}
+                  onImaNoteFolderIdChange={handleImaNoteFolderChange}
+                  onImaKnowledgeBaseIdChange={(value) => void handleImaKnowledgeBaseChange(value)}
+                  onImaKnowledgeFolderBrowse={(folderId) =>
+                    void handleBrowseImaKnowledgeFolder(activeImaKnowledgeBaseId, folderId)
+                  }
+                  onImaKnowledgeFolderSelect={handleImaKnowledgeFolderSelect}
+                  onImaPublishToKnowledgeBaseChange={(value) =>
+                    updateActiveImaRoute({ publishToKnowledgeBase: value })
+                  }
+                  onImaRouteScopeChange={handleImaRouteScopeChange}
+                  onImaRouteCustomSettingsChange={handleImaRouteCustomSettingsChange}
                   onNotionTokenChange={setNotionToken}
                   onNotionDatabaseInputChange={(value) => {
                     setNotionDatabaseInput(value);
@@ -2628,6 +2976,10 @@ export function SettingsPage({
                   onNotionCoverModeChange={setNotionCoverMode}
                   onChooseObsidianVault={() => void handleChooseObsidianVault()}
                   onSaveObsidian={() => void handleSaveObsidianSettings()}
+                  onLoadImaTargets={() => void handleLoadImaTargets()}
+                  onRefreshImaCompatibility={() => void handleRefreshImaCompatibility()}
+                  onSaveIma={() => void handleSaveImaSettings()}
+                  onRemoveImaCredential={() => void handleRemoveImaCredential()}
                   onSaveNotion={() => void handleSaveNotionSettings()}
                   onAnalyzeNotionDatabase={() => void handleAnalyzeNotionDatabase()}
                   onSaveNotionDatabaseConnection={() =>
@@ -3507,6 +3859,22 @@ function IntegrationExportSettings({
   obsidianVaultInput,
   obsidianAttachmentMode,
   obsidianOpenAfterExport,
+  imaClientId,
+  imaApiKey,
+  imaNoteFolders,
+  imaKnowledgeBases,
+  imaKnowledgeItems,
+  imaKnowledgePath,
+  imaSelectedKnowledgeFolderPath,
+  imaNoteFolderId,
+  imaKnowledgeBaseId,
+  imaKnowledgeBaseFolderId,
+  imaPublishToKnowledgeBase,
+  imaRouteScope,
+  imaRouteUsesCustomSettings,
+  isSavingIma,
+  isLoadingImaTargets,
+  isRefreshingImaCompatibility,
   notionToken,
   notionDatabaseInput,
   notionConnectionView,
@@ -3530,6 +3898,15 @@ function IntegrationExportSettings({
   onObsidianVaultInputChange,
   onObsidianAttachmentModeChange,
   onObsidianOpenAfterExportChange,
+  onImaClientIdChange,
+  onImaApiKeyChange,
+  onImaNoteFolderIdChange,
+  onImaKnowledgeBaseIdChange,
+  onImaKnowledgeFolderBrowse,
+  onImaKnowledgeFolderSelect,
+  onImaPublishToKnowledgeBaseChange,
+  onImaRouteScopeChange,
+  onImaRouteCustomSettingsChange,
   onNotionTokenChange,
   onNotionDatabaseInputChange,
   onNotionStandardParentPageInputChange,
@@ -3539,6 +3916,10 @@ function IntegrationExportSettings({
   onNotionCoverModeChange,
   onChooseObsidianVault,
   onSaveObsidian,
+  onLoadImaTargets,
+  onRefreshImaCompatibility,
+  onSaveIma,
+  onRemoveImaCredential,
   onSaveNotion,
   onAnalyzeNotionDatabase,
   onSaveNotionDatabaseConnection,
@@ -3558,6 +3939,22 @@ function IntegrationExportSettings({
   obsidianVaultInput: string;
   obsidianAttachmentMode: ObsidianAttachmentMode;
   obsidianOpenAfterExport: boolean;
+  imaClientId: string;
+  imaApiKey: string;
+  imaNoteFolders: ImaNoteFolder[];
+  imaKnowledgeBases: ImaKnowledgeBase[];
+  imaKnowledgeItems: ImaKnowledgeItem[];
+  imaKnowledgePath: ImaKnowledgePathFolder[];
+  imaSelectedKnowledgeFolderPath: ImaKnowledgePathFolder[];
+  imaNoteFolderId: string;
+  imaKnowledgeBaseId: string;
+  imaKnowledgeBaseFolderId: string;
+  imaPublishToKnowledgeBase: boolean;
+  imaRouteScope: ImaRouteScope;
+  imaRouteUsesCustomSettings: boolean;
+  isSavingIma: boolean;
+  isLoadingImaTargets: boolean;
+  isRefreshingImaCompatibility: boolean;
   notionToken: string;
   notionDatabaseInput: string;
   notionConnectionView?: NotionConnectionView;
@@ -3581,6 +3978,18 @@ function IntegrationExportSettings({
   onObsidianVaultInputChange: (value: string) => void;
   onObsidianAttachmentModeChange: (value: ObsidianAttachmentMode) => void;
   onObsidianOpenAfterExportChange: (value: boolean) => void;
+  onImaClientIdChange: (value: string) => void;
+  onImaApiKeyChange: (value: string) => void;
+  onImaNoteFolderIdChange: (value: string) => void;
+  onImaKnowledgeBaseIdChange: (value: string) => void;
+  onImaKnowledgeFolderBrowse: (folderId?: string) => void;
+  onImaKnowledgeFolderSelect: (
+    folderId: string,
+    path: ImaKnowledgePathFolder[]
+  ) => void;
+  onImaPublishToKnowledgeBaseChange: (value: boolean) => void;
+  onImaRouteScopeChange: (scope: ImaRouteScope) => void;
+  onImaRouteCustomSettingsChange: (enabled: boolean) => void;
   onNotionTokenChange: (value: string) => void;
   onNotionDatabaseInputChange: (value: string) => void;
   onNotionStandardParentPageInputChange: (value: string) => void;
@@ -3593,6 +4002,10 @@ function IntegrationExportSettings({
   onNotionCoverModeChange: (value: NotionCoverMode) => void;
   onChooseObsidianVault: () => void;
   onSaveObsidian: () => void;
+  onLoadImaTargets: () => void;
+  onRefreshImaCompatibility: () => void;
+  onSaveIma: () => void;
+  onRemoveImaCredential: () => void;
   onSaveNotion: () => void;
   onAnalyzeNotionDatabase: () => void;
   onSaveNotionDatabaseConnection: () => void;
@@ -3609,6 +4022,9 @@ function IntegrationExportSettings({
 }) {
   const hasNotionCredential =
     state?.integrationData.notion.credential.hasCredential ?? false;
+  const imaState = state?.integrationData.ima;
+  const hasImaCredential = imaState?.credential.hasCredential ?? false;
+  const hasPendingImaCredential = Boolean(imaClientId.trim() && imaApiKey.trim());
   const savedNotionConnection = state?.integrationData.notion.databaseConnection;
   const hasNotionTarget = Boolean(state?.integrationData.notion.parentId);
   const backfillBusy = isPreflightingNotionCoverBackfill || isRunningNotionCoverBackfill;
@@ -3645,6 +4061,30 @@ function IntegrationExportSettings({
   const canContinueProvisioning = notionProvisioning?.status === "recoveryRequired" ||
     (notionProvisioning?.status === "partial" &&
       notionProvisioning.viewInitialization !== "complete");
+  const imaCompatibilityStatus: ImaCompatibilityStatus =
+    imaState?.compatibilityStatus ?? "unconfirmed";
+  const imaCompatibilityLabel =
+    imaCompatibilityStatus === "compatible"
+      ? "版本已确认兼容"
+      : imaCompatibilityStatus === "incompatible"
+        ? "版本不兼容，已阻止写入"
+        : "版本状态未确认";
+  const imaCompatibilityMessage =
+    imaCompatibilityStatus === "compatible"
+      ? `本地适配器 ${imaState?.adapterVersion} 与 Ima 服务端版本精确匹配。`
+      : imaCompatibilityStatus === "incompatible"
+        ? `本地适配器 ${imaState?.adapterVersion} 与服务端版本 ${imaState?.latestVersion ?? "未知"} 不一致，请按 Ima 官方更新说明处理。`
+        : "尚未取得可确认的服务端版本；为避免误写入，当前会阻止 Ima 写入，请先刷新版本状态。";
+  const imaKnowledgeFolderBrowserDisabled =
+    !imaRouteUsesCustomSettings ||
+    !imaPublishToKnowledgeBase ||
+    !imaKnowledgeBaseId ||
+    isLoadingImaTargets;
+  const imaSelectedKnowledgeFolderLabel = imaKnowledgeBaseFolderId
+    ? imaSelectedKnowledgeFolderPath.length > 0
+      ? imaSelectedKnowledgeFolderPath.map((folder) => folder.name).join(" / ")
+      : `已保存文件夹 · ${imaKnowledgeBaseFolderId}`
+    : "知识库根目录";
 
   return (
     <>
@@ -3682,6 +4122,291 @@ function IntegrationExportSettings({
           </button>
           <button className="sync-button" type="button" onClick={onSaveObsidian} disabled={isSaving || !obsidianVaultInput.trim()}>
             {isSaving ? "保存中" : "保存 Obsidian 设置"}
+          </button>
+        </div>
+      </section>
+      <section
+        className="settings-card settings-panel settings-control-panel"
+        aria-label="Ima 笔记导出设置"
+      >
+        <div className="settings-card-heading">
+          <span className="settings-icon">
+            <KeyRound aria-hidden="true" size={20} />
+          </span>
+          <div>
+            <p className="section-kicker">Ima</p>
+            <h3>笔记与知识库导出</h3>
+          </div>
+        </div>
+        <p>每次导出创建不可变快照；可为笔记、书籍复盘、阅读路线和选书决策分别选择 Ima 目录。</p>
+        <div className="settings-control-row">
+          <label className="credential-input">
+            <span>Client ID</span>
+            <input
+              value={imaClientId}
+              type="password"
+              autoComplete="off"
+              placeholder={hasImaCredential ? "已安全保存，留空则不修改" : "输入 Ima Client ID"}
+              onChange={(event) => onImaClientIdChange(event.target.value)}
+            />
+          </label>
+          <label className="credential-input">
+            <span>API Key</span>
+            <input
+              value={imaApiKey}
+              type="password"
+              autoComplete="off"
+              placeholder={hasImaCredential ? "已安全保存，留空则不修改" : "输入 Ima API Key"}
+              onChange={(event) => onImaApiKeyChange(event.target.value)}
+            />
+          </label>
+        </div>
+        <div className="settings-actions settings-card-actions">
+          <button
+            className="secondary-action"
+            type="button"
+            onClick={onLoadImaTargets}
+            disabled={isLoadingImaTargets || isSavingIma || (!hasImaCredential && !hasPendingImaCredential)}
+          >
+            {isLoadingImaTargets ? <Loader2 aria-hidden="true" size={18} className="spin" /> : <RefreshCw aria-hidden="true" size={18} />}
+            {isLoadingImaTargets ? "读取中" : "验证并读取目标"}
+          </button>
+          <button
+            className="secondary-action"
+            type="button"
+            onClick={onRefreshImaCompatibility}
+            disabled={
+              isRefreshingImaCompatibility ||
+              isLoadingImaTargets ||
+              isSavingIma ||
+              (!hasImaCredential && !hasPendingImaCredential)
+            }
+          >
+            {isRefreshingImaCompatibility ? (
+              <Loader2 aria-hidden="true" size={18} className="spin" />
+            ) : (
+              <RefreshCw aria-hidden="true" size={18} />
+            )}
+            {isRefreshingImaCompatibility ? "检查中" : "重新检查版本"}
+          </button>
+          <button
+            className="text-button"
+            type="button"
+            onClick={() => onOpenExternalLink("https://ima.qq.com/agent-interface", "Ima 配置中心")}
+          >
+            <ExternalLink aria-hidden="true" size={15} />
+            配置中心
+          </button>
+        </div>
+        <div className="settings-control-row">
+          <label className="credential-input">
+            <span>配置范围</span>
+            <select
+              value={imaRouteScope}
+              onChange={(event) => onImaRouteScopeChange(event.target.value as ImaRouteScope)}
+            >
+              {IMA_ROUTE_SCOPE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </label>
+          {imaRouteScope !== "default" ? (
+            <label className="settings-check-row">
+              <input
+                type="checkbox"
+                checked={imaRouteUsesCustomSettings}
+                onChange={(event) => onImaRouteCustomSettingsChange(event.target.checked)}
+              />
+              <span>为此资产使用独立目标</span>
+            </label>
+          ) : (
+            <p className="settings-inline-hint">未单独配置的资产将继承此默认目标。</p>
+          )}
+        </div>
+        {imaRouteScope !== "default" && !imaRouteUsesCustomSettings ? (
+          <p className="settings-inline-hint">
+            {imaRouteScope === "bookDecision"
+              ? "选书决策默认仅创建 Ima 笔记；启用后可显式配置独立知识库和文件夹。"
+              : "当前继承全局默认目标；启用后可选择独立的笔记本、知识库和文件夹。"}
+          </p>
+        ) : null}
+        <div className="settings-control-row">
+          <label className="credential-input">
+            <span>{imaRouteScope === "default" ? "默认笔记本" : "资产笔记本"}</span>
+            <select
+              value={imaNoteFolderId}
+              disabled={!imaRouteUsesCustomSettings}
+              onChange={(event) => onImaNoteFolderIdChange(event.target.value)}
+            >
+              <option value="">Ima 默认位置</option>
+              {imaNoteFolderId && !imaNoteFolders.some((folder) => folder.folderId === imaNoteFolderId) ? (
+                <option value={imaNoteFolderId}>已保存目标（待验证）</option>
+              ) : null}
+              {imaNoteFolders.filter((folder) => folder.folderId !== "0").map((folder) => (
+                <option value={folder.folderId} key={folder.folderId}>{folder.name}</option>
+              ))}
+            </select>
+          </label>
+          <label className="credential-input">
+            <span>{imaRouteScope === "default" ? "默认知识库" : "资产知识库"}</span>
+            <select
+              value={imaKnowledgeBaseId}
+              disabled={!imaRouteUsesCustomSettings || !imaPublishToKnowledgeBase}
+              onChange={(event) => onImaKnowledgeBaseIdChange(event.target.value)}
+            >
+              <option value="">不选择知识库</option>
+              {imaKnowledgeBaseId && !imaKnowledgeBases.some((base) => base.id === imaKnowledgeBaseId) ? (
+                <option value={imaKnowledgeBaseId}>已保存目标（待验证）</option>
+              ) : null}
+              {imaKnowledgeBases.map((base) => (
+                <option value={base.id} key={base.id}>{base.name}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <label className="settings-check-row">
+          <input
+            type="checkbox"
+            checked={imaPublishToKnowledgeBase}
+            disabled={!imaRouteUsesCustomSettings}
+            onChange={(event) => onImaPublishToKnowledgeBaseChange(event.target.checked)}
+          />
+          <span>创建笔记后加入知识库</span>
+        </label>
+        {imaPublishToKnowledgeBase && imaKnowledgeBaseId ? (
+          <p className="settings-inline-hint">
+            首次配置：Ima 文件夹需要先在 Ima 中手动创建，本应用不会自动创建。你也可以直接使用知识库根目录；创建好分类文件夹后，点击上方“验证并读取目标”刷新目录。
+          </p>
+        ) : null}
+        <details className="ima-folder-recommendation">
+          <summary>查看推荐文件夹配置</summary>
+          <div className="ima-folder-recommendation-body">
+            <p>建议在同一个知识库中按资产类型分组，文件夹名称可以按你的习惯调整：</p>
+            <ul>
+              <li>微信读书笔记：原始划线和想法</li>
+              <li>书籍复盘：单本书的总结与行动</li>
+              <li>阅读路线：主题阅读路线和书单判断</li>
+              <li>周期复盘：已结束周、月、年复盘</li>
+              <li>选书决策：选书理由与排除记录</li>
+            </ul>
+            <p>没有创建文件夹时，选择“知识库根目录”即可正常导出。</p>
+          </div>
+        </details>
+        <section className="ima-knowledge-folder-browser" aria-label="知识库文件夹浏览">
+          <div className="ima-folder-browser-heading">
+            <div>
+              <span>知识库文件夹</span>
+              <p>
+                按层浏览后选择目标目录，不会自动回退到根目录。没有子文件夹时，可以直接使用知识库根目录；在 Ima 创建文件夹后再刷新。
+              </p>
+            </div>
+            <strong title={imaSelectedKnowledgeFolderLabel}>
+              已选：{imaSelectedKnowledgeFolderLabel}
+            </strong>
+          </div>
+          <nav className="ima-folder-breadcrumbs" aria-label="当前浏览目录">
+            <button
+              className="text-button"
+              type="button"
+              onClick={() => onImaKnowledgeFolderBrowse()}
+              disabled={imaKnowledgeFolderBrowserDisabled}
+            >
+              知识库根目录
+            </button>
+            {imaKnowledgePath.map((folder) => (
+              <button
+                className="text-button"
+                type="button"
+                key={folder.folderId}
+                onClick={() => onImaKnowledgeFolderBrowse(folder.folderId)}
+                disabled={imaKnowledgeFolderBrowserDisabled}
+              >
+                {folder.name}
+              </button>
+            ))}
+          </nav>
+          <div className="ima-folder-browser-list" role="list">
+            <div className="ima-folder-browser-row" role="listitem">
+              <button
+                className={`ima-folder-select ${!imaKnowledgeBaseFolderId ? "is-selected" : ""}`}
+                type="button"
+                onClick={() => onImaKnowledgeFolderSelect("", [])}
+                disabled={imaKnowledgeFolderBrowserDisabled}
+              >
+                <FolderOpen aria-hidden="true" size={17} />
+                <span>知识库根目录</span>
+              </button>
+            </div>
+            {imaKnowledgeItems.map((item) => {
+              const itemPath = [
+                ...imaKnowledgePath,
+                {
+                  folderId: item.id,
+                  name: item.title,
+                  parentFolderId: item.parentFolderId,
+                },
+              ];
+              return (
+                <div className="ima-folder-browser-row" role="listitem" key={item.id}>
+                  <button
+                    className={`ima-folder-select ${imaKnowledgeBaseFolderId === item.id ? "is-selected" : ""}`}
+                    type="button"
+                    onClick={() => onImaKnowledgeFolderSelect(item.id, itemPath)}
+                    disabled={imaKnowledgeFolderBrowserDisabled}
+                  >
+                    <FolderOpen aria-hidden="true" size={17} />
+                    <span>{item.title}</span>
+                  </button>
+                  <button
+                    className="icon-button"
+                    type="button"
+                    aria-label={`浏览 ${item.title} 的子文件夹`}
+                    title="浏览子文件夹"
+                    onClick={() => onImaKnowledgeFolderBrowse(item.id)}
+                    disabled={imaKnowledgeFolderBrowserDisabled}
+                  >
+                    <ChevronRight aria-hidden="true" size={17} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          {!isLoadingImaTargets && imaKnowledgeBaseId && imaKnowledgeItems.length === 0 ? (
+            <p className="ima-folder-browser-empty">
+              没有子文件夹时，可以直接使用知识库根目录；在 Ima 创建文件夹后再刷新。
+            </p>
+          ) : null}
+        </section>
+        <div className={`ima-version-status is-${imaCompatibilityStatus}`} role="status">
+          {imaCompatibilityStatus === "compatible" ? (
+            <CheckCircle2 aria-hidden="true" size={17} />
+          ) : imaCompatibilityStatus === "incompatible" ? (
+            <AlertCircle aria-hidden="true" size={17} />
+          ) : (
+            <Info aria-hidden="true" size={17} />
+          )}
+          <div>
+            <strong>{imaCompatibilityLabel}</strong>
+            <span>{imaCompatibilityMessage}</span>
+          </div>
+        </div>
+        <div className="settings-actions settings-card-actions">
+          <button
+            className="sync-button"
+            type="button"
+            onClick={onSaveIma}
+            disabled={isSavingIma || (!hasImaCredential && !hasPendingImaCredential) || (imaPublishToKnowledgeBase && !imaKnowledgeBaseId)}
+          >
+            {isSavingIma ? <Loader2 aria-hidden="true" size={18} className="spin" /> : <ShieldCheck aria-hidden="true" size={18} />}
+            {isSavingIma ? "保存中" : "保存 Ima 设置"}
+          </button>
+          <button
+            className="text-button"
+            type="button"
+            onClick={onRemoveImaCredential}
+            disabled={isSavingIma || !hasImaCredential}
+          >
+            移除凭据
           </button>
         </div>
       </section>
@@ -4300,6 +5025,12 @@ export function formatTimestamp(value?: string): string {
   const hour = String(date.getHours()).padStart(2, "0");
   const minute = String(date.getMinutes()).padStart(2, "0");
   return `${year}年${month}月${day}日 ${hour}:${minute}`;
+}
+
+export function normalizeImaKnowledgePath(
+  path: ImaKnowledgePathFolder[]
+): ImaKnowledgePathFolder[] {
+  return path.filter((folder) => folder.folderId !== "root" && folder.folderId !== "0");
 }
 
 function formatAiProviderCapabilityStatus(

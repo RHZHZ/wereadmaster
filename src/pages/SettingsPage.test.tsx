@@ -1,8 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
+import {
+  canUseEmbeddingProvider,
+  isOllamaEndpoint,
+} from "../components/SemanticIndexSettingsCard";
 import { ToastProvider } from "../components/ToastProvider";
 import { DEFAULT_USER_PREFERENCES } from "../lib/preferences";
-import { formatTimestamp, SettingsPage } from "./SettingsPage";
+import {
+  formatTimestamp,
+  normalizeImaKnowledgePath,
+  SettingsPage,
+} from "./SettingsPage";
 
 describe("settings page onboarding artwork", () => {
   it("formats Notion schema check times as readable local date-times", () => {
@@ -64,6 +72,42 @@ describe("settings page onboarding artwork", () => {
 
     expect(markup).toContain("应用更新");
     expect(markup).toContain("版本、发布、安装");
+  });
+
+  it("defaults Ima knowledge publication off and labels an unchecked version as unconfirmed", () => {
+    const markup = renderToStaticMarkup(
+      <ToastProvider>
+        <SettingsPage
+          open
+          credentialStatus={{ hasCredential: true }}
+          onCredentialChange={() => undefined}
+          preferences={DEFAULT_USER_PREFERENCES}
+          onPreferencesChange={() => undefined}
+          onClose={() => undefined}
+          preferredCategory="export"
+        />
+      </ToastProvider>
+    );
+
+    expect(markup).toContain("版本状态未确认");
+    expect(markup).toContain(
+      '<input type="checkbox"/><span>创建笔记后加入知识库</span>',
+    );
+    expect(markup).toContain("按层浏览后选择目标目录，不会自动回退到根目录。");
+    expect(markup).toContain("没有子文件夹时，可以直接使用知识库根目录；在 Ima 创建文件夹后再刷新。");
+    expect(markup).toContain('aria-label="当前浏览目录"');
+  });
+
+  it("does not render root markers as duplicated knowledge-folder breadcrumbs", () => {
+    expect(
+      normalizeImaKnowledgePath([
+        { folderId: "root", name: "根目录" },
+        { folderId: "0", name: "旧根目录" },
+        { folderId: "chapter-1", name: "书籍复盘", parentFolderId: "root" },
+      ]),
+    ).toEqual([
+      { folderId: "chapter-1", name: "书籍复盘", parentFolderId: "root" },
+    ]);
   });
 
   it("shows a dedicated support category with reward and contact qrs", () => {
@@ -136,6 +180,23 @@ describe("settings page onboarding artwork", () => {
     expect(markup.indexOf("测试兼容性")).toBeLessThan(markup.indexOf("AI 阅读助手"));
   });
 
+  it("allows an Ollama native endpoint without an API key", () => {
+    expect(isOllamaEndpoint("http://localhost:11434/api/embed")).toBe(true);
+    expect(isOllamaEndpoint("http://localhost:11434/api/embed/")).toBe(true);
+    expect(isOllamaEndpoint("http://localhost:11434/v1")).toBe(false);
+    expect(
+      canUseEmbeddingProvider(
+        "http://localhost:11434/api/embed",
+        "qwen3-embedding:4b",
+        "",
+        false,
+      ),
+    ).toBe(true);
+    expect(
+      canUseEmbeddingProvider("https://api.openai.com/v1", "text-embedding-3-small", "", false),
+    ).toBe(false);
+  });
+
   it("shows a separate semantic index provider and privacy boundary", () => {
     const markup = renderToStaticMarkup(
       <ToastProvider>
@@ -153,6 +214,7 @@ describe("settings page onboarding artwork", () => {
 
     expect(markup).toContain("语义索引");
     expect(markup).toContain("Embedding Base URL");
+    expect(markup).toContain("OpenAI-compatible Provider 或 Ollama 原生接口");
     expect(markup).toContain("独立保存，不复用聊天 AI Key");
     expect(markup).toContain("允许发送笔记正文生成向量");
     expect(markup).toContain("普通笔记查询会自动融合本地词法与语义召回");

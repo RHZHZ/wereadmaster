@@ -6,6 +6,7 @@ import {
   formatReadingStatsPeriodTitle,
   getLatestReadingStatsResponse,
   getReadingStatsResponse,
+  isCompletedReadingStatsPeriod,
   shiftReadingStatsPeriod,
   type ReadingStatsCache
 } from "./reading-stats-period";
@@ -147,6 +148,57 @@ describe("reading stats period helpers", () => {
       mode: "annually",
       baseTime: currentYear
     });
+  });
+
+  it("treats overall and completed calendar periods as final Ima assets", () => {
+    const now = new Date(2026, 4, 24, 10, 0, 0);
+
+    expect(
+      isCompletedReadingStatsPeriod(
+        { mode: "weekly", baseTime: toLocalTimestamp(2026, 4, 11) },
+        now
+      )
+    ).toBe(true);
+    expect(
+      isCompletedReadingStatsPeriod(
+        { mode: "monthly", baseTime: toLocalTimestamp(2026, 3, 1) },
+        now
+      )
+    ).toBe(true);
+    expect(
+      isCompletedReadingStatsPeriod(
+        { mode: "annually", baseTime: toLocalTimestamp(2025, 0, 1) },
+        now
+      )
+    ).toBe(true);
+
+    expect(
+      isCompletedReadingStatsPeriod(
+        { mode: "weekly", baseTime: toLocalTimestamp(2026, 4, 18) },
+        now
+      )
+    ).toBe(false);
+    expect(
+      isCompletedReadingStatsPeriod(
+        { mode: "monthly", baseTime: toLocalTimestamp(2026, 4, 1) },
+        now
+      )
+    ).toBe(false);
+    expect(
+      isCompletedReadingStatsPeriod(
+        { mode: "annually", baseTime: toLocalTimestamp(2026, 0, 1) },
+        now
+      )
+    ).toBe(false);
+    expect(
+      isCompletedReadingStatsPeriod(
+        { mode: "monthly", baseTime: toLocalTimestamp(2026, 5, 1) },
+        now
+      )
+    ).toBe(false);
+    expect(isCompletedReadingStatsPeriod({ mode: "overall", baseTime: 0 }, now)).toBe(true);
+    expect(isCompletedReadingStatsPeriod({ mode: "overall", baseTime: 123 }, now)).toBe(false);
+    expect(isCompletedReadingStatsPeriod({ mode: "weekly", baseTime: 0 }, now)).toBe(false);
   });
 });
 

@@ -4,8 +4,9 @@ use tauri::AppHandle;
 use crate::services::{
     ai::AiService,
     note_synthesis::{
-        stable_provider_hash, NoteSynthesisError, NoteSynthesisJob, NoteSynthesisPreview,
-        NoteSynthesisService, StartNoteSynthesisRequest, StartNoteSynthesisResult,
+        stable_provider_hash, NoteSynthesisError, NoteSynthesisJob, NoteSynthesisJobSummary,
+        NoteSynthesisPreview, NoteSynthesisService, StartNoteSynthesisRequest,
+        StartNoteSynthesisResult,
     },
 };
 
@@ -78,6 +79,14 @@ pub async fn get_active_note_synthesis_job(
     book_id: String,
 ) -> Result<Option<NoteSynthesisJob>, NoteSynthesisCommandError> {
     run_blocking(move || NoteSynthesisService::new(app).get_active(&book_id)).await
+}
+
+#[tauri::command]
+pub async fn get_note_synthesis_job_summary(
+    app: AppHandle,
+    book_id: String,
+) -> Result<NoteSynthesisJobSummary, NoteSynthesisCommandError> {
+    run_blocking(move || NoteSynthesisService::new(app).get_summary(&book_id)).await
 }
 
 #[tauri::command]

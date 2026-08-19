@@ -1115,14 +1115,39 @@ export function App() {
     );
   }
 
-  function handleOpenBookDetailFromAssistant(bookId: string) {
+  async function handleOpenBookDetailFromAssistant(bookId: string) {
     const entry = findShelfBookEntry(bookId);
-    if (!entry) {
+    if (entry) {
+      handleCloseReadingAssistant();
+      handleOpenBookDetail(entry);
       return;
     }
 
-    handleCloseReadingAssistant();
-    handleOpenBookDetail(entry);
+    try {
+      const response = await getBookDetail(bookId);
+      const detail = response.detail;
+      const archivedEntry: ShelfEntry = {
+        id: detail.bookId,
+        type: "book",
+        title: detail.title,
+        author: detail.author,
+        cover: detail.cover,
+        category: detail.category,
+        isTop: false,
+        isSecret: false,
+        raw: detail
+      };
+      setBookDetailCache((current) => ({
+        ...current,
+        [detail.bookId]: response
+      }));
+      setBookDetail(response);
+      setBookReloadKey(0);
+      handleCloseReadingAssistant();
+      handleOpenBookDetail(archivedEntry);
+    } catch (error) {
+      setCommandError(getCommandErrorInfo(error));
+    }
   }
 
   function handleOpenReadingRouteForShelfEntry(entry: ShelfEntry) {
@@ -1968,7 +1993,9 @@ export function App() {
             }}
             onOpenBookReview={handleOpenBookReviewFromAssistant}
             onOpenBookDetail={handleOpenBookDetailFromAssistant}
-            canOpenBookDetail={(bookId) => Boolean(findShelfBookEntry(bookId))}
+            canOpenBookDetail={() => true}
+            onSyncShelf={() => void handleSyncShelf()}
+            isSyncingShelf={isSyncing}
             onOpenAiSettings={() => {
               handleCloseReadingAssistant();
               handleOpenSettings("ai");

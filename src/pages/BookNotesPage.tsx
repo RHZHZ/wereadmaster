@@ -16,7 +16,10 @@ import {
   Sparkles
 } from "lucide-react";
 import { NoteList } from "../components/NoteList";
-import { AssetExportDialog } from "../components/export/AssetExportDialog";
+import {
+  AssetExportDialog,
+  type AssetExportConfirmation
+} from "../components/export/AssetExportDialog";
 import { SkillUpgradeNotice } from "../components/SkillUpgradeNotice";
 import {
   exportBookNotesTargets,
@@ -42,7 +45,10 @@ import {
   shareCanvasAsPng
 } from "../lib/image-artifact-export";
 import { resolveExportPlatformMode } from "../lib/asset-export-dialog";
-import { formatMultiTargetExportToast } from "../lib/export-targets";
+import {
+  buildMultiTargetExportRequest,
+  formatMultiTargetExportToast
+} from "../lib/export-targets";
 import type { DefaultNotesView } from "../lib/preferences";
 import type {
   BookNotes,
@@ -301,13 +307,21 @@ export function BookNotesPage({
   }
 
   async function exportNotes(
-    targets: ExternalExportTarget[]
+    targets: ExternalExportTarget[],
+    confirmation: AssetExportConfirmation
   ): Promise<MultiTargetExportResponse> {
     if (!targetBookId) {
       throw new Error("缺少书籍 ID，无法导出笔记。");
     }
 
-    const response = await exportBookNotesTargets(targetBookId, { targets });
+    const response = await exportBookNotesTargets(
+      targetBookId,
+      buildMultiTargetExportRequest(
+        targets,
+        confirmation.confirmImaBodyExport,
+        confirmation.forceImaNewSnapshot
+      )
+    );
     showToast(formatMultiTargetExportToast(response));
     return response;
   }
@@ -370,8 +384,8 @@ export function BookNotesPage({
           <h3>{displayBook?.title || notes?.bookId || targetBookId}</h3>
           <p>
             {displayBook?.author
-              ? `${displayBook.author} · 可导出 Markdown，也可手动整理成复盘。`
-              : "划线和想法会按章节分组展示，可导出 Markdown，也可手动整理成复盘。"}
+              ? `${displayBook.author} · 可导出到已配置目标，也可手动整理成复盘。`
+              : "划线和想法会按章节分组展示，可导出到已配置目标，也可手动整理成复盘。"}
           </p>
           <div className="book-notes-actions">
             <button
@@ -609,6 +623,7 @@ export function BookNotesPage({
         assetTitle="导出笔记"
         assetDescription={displayBook?.title ? `《${displayBook.title}》` : undefined}
         platformMode={resolveExportPlatformMode()}
+        availableTargets={["markdown", "obsidian", "notion", "ima"]}
         onExport={exportNotes}
         onOpenSettings={() => onOpenSettings("export")}
         onClose={() => setIsAssetExportOpen(false)}

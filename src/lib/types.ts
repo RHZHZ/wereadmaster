@@ -4,6 +4,10 @@ export type CredentialStatus = {
   lastValidationError?: string;
 };
 
+export type ImaCredentialStatus = CredentialStatus;
+
+export type ImaCompatibilityStatus = "compatible" | "incompatible" | "unconfirmed";
+
 export type CredentialValidationResult = {
   isValid: boolean;
   checkedAt: string;
@@ -169,6 +173,7 @@ export type ReadingAssistantContextOption =
   | "currentBook"
   | "bookNotesSummary"
   | "rawBookNotes"
+  | "bookCatalog"
   | "readingStats"
   | "readingPersona"
   | "candidateBooks"
@@ -176,6 +181,30 @@ export type ReadingAssistantContextOption =
   | "aiAssetSummary"
   | "conversationHistory"
   | "readingMemory";
+
+export type RetrievalDiagnostic = {
+  scope: "book" | "library";
+  strategy:
+    | "structured"
+    | "recent"
+    | "lexical"
+    | "likeFallback"
+    | "hybrid"
+    | "hybridFallback"
+    | "notRequested";
+  availableItemCount?: number;
+  matchedItemCount?: number;
+  includedItemCount?: number;
+  coverage?: "exhaustiveMatch" | "sampled";
+  indexStatus?: "ready" | "missing" | "building" | "failed" | "cancelled" | "superseded";
+  reason?:
+    | "structuredCatalogQuery"
+    | "noNoteIntent"
+    | "globalScopeNoNoteSearch"
+    | "indexUnavailable"
+    | "providerSettingsChanged"
+    | "embeddingQueryFailed";
+};
 
 export type ReadingAssistantUsedContext = {
   contextType: ReadingAssistantContextOption;
@@ -186,6 +215,7 @@ export type ReadingAssistantUsedContext = {
   matchedItemCount?: number;
   coverage?: "sampled" | "exhaustiveMatch" | "fullSnapshot";
   truncated?: boolean;
+  diagnostic?: RetrievalDiagnostic;
 };
 
 export type ReadingAssistantMessageStatus = "pending" | "answered" | "failed";
@@ -227,6 +257,10 @@ export type ReadingAssistantActionOutput =
   | {
       type: "bookReview";
       payload: ReadingAssistantBookReviewActionOutput;
+    }
+  | {
+      type: "bookCatalog";
+      payload: ReadingAssistantBookCatalogOutput;
     }
   | {
       type: "categoryBooks";
@@ -300,6 +334,46 @@ export type ReadingAssistantCategoryBooksOutput = {
   books: ReadingAssistantCategoryBookItem[];
 };
 
+export type ReadingAssistantBookCatalogOutput = {
+  queryKind: "title" | "author";
+  queryText: string;
+  queryStatus: "found" | "partial" | "empty" | "ambiguous";
+  matchedMetadataCount: number;
+  matchedReadingCount: number;
+  listedCount: number;
+  truncated: boolean;
+  message: string;
+  books: ReadingAssistantBookCatalogItem[];
+  unconfirmedBooks?: ReadingAssistantBookCatalogItem[];
+  diagnostics: ReadingAssistantBookCatalogDiagnostics;
+};
+
+export type ReadingAssistantBookCatalogItem = {
+  bookId: string;
+  title: string;
+  author?: string;
+  category?: string;
+  matchReason: "exactTitle" | "titlePrefix" | "titleToken" | "author";
+  readStatus: "finished" | "started" | "unknown";
+  progressPercent?: number;
+  totalNoteCount?: number;
+  highlightCount?: number;
+  thoughtCount?: number;
+  sources: Array<"shelf" | "detail" | "progress" | "localState" | "notebookBooks">;
+};
+
+export type ReadingAssistantBookCatalogDiagnostics = {
+  catalogCoverage: "complete" | "partial" | "unavailable";
+  missingReasons: Array<
+    "bookMetadataNotSynced" | "readingStateMissing" | "noteSummaryMissing" | "progressNotSynced" | "queryAmbiguous"
+  >;
+  sourceUpdatedAt?: {
+    catalog?: string;
+    progress?: string;
+    noteSummary?: string;
+  };
+};
+
 export type ReadingAssistantCategoryBookItem = {
   bookId: string;
   title: string;
@@ -307,6 +381,7 @@ export type ReadingAssistantCategoryBookItem = {
   category?: string;
   progressPercent?: number;
   isFinished: boolean;
+  hasReadingEvidence?: boolean;
   readingTimeText?: string;
   source: string;
 };
@@ -323,6 +398,8 @@ export type ReadingAssistantNoteCountOutput = {
 export type ReadingAssistantNoteSearchItem = {
   documentId: string;
   sourceId: string;
+  bookId: string;
+  bookTitle?: string;
   noteType: "highlight" | "thought";
   chapterUid?: number;
   chapterTitle?: string;
@@ -331,8 +408,11 @@ export type ReadingAssistantNoteSearchItem = {
 };
 
 export type ReadingAssistantNoteSearchOutput = {
-  bookId: string;
+  scope: "book" | "library";
+  bookId?: string;
   title?: string;
+  searchedBookCount: number;
+  diagnostic?: RetrievalDiagnostic | string;
   queryText: string;
   mode: "recent" | "lexical" | "likeFallback" | "hybrid" | "hybridFallback";
   coverage: "sampled" | "exhaustiveMatch";
@@ -346,7 +426,8 @@ export type ReadingAssistantNoteSearchOutput = {
 };
 
 export type ReadingAssistantNoteSearchRequest = {
-  bookId: string;
+  scope?: "book" | "library";
+  bookId?: string;
   query: string;
   cursor?: string;
   pageLimit?: number;
@@ -424,6 +505,20 @@ export type BookAiSummarySourceStats = {
   chapterCount: number;
   includedHighlightCount: number;
   includedThoughtCount: number;
+  selection?: BookAiSummarySelection;
+};
+
+export type BookAiSummarySelection = {
+  strategy: "stableChapterStratified" | string;
+  samplingVersion: string;
+  highlightBudget: number;
+  thoughtBudget: number;
+  availableHighlightCount: number;
+  availableThoughtCount: number;
+  includedHighlightCount: number;
+  includedThoughtCount: number;
+  coveredChapterCount: number;
+  coverage: "sampled" | string;
 };
 
 export type FeedbackOutcomeSummary = {
@@ -530,9 +625,16 @@ export type NoteSynthesisPreview = {
   thoughtCount: number;
   estimatedBatchCount: number;
   estimatedCharCount: number;
+  currentSourceHash: string;
   providerModel: string;
   providerLabel: string;
   activeJob?: NoteSynthesisJob;
+};
+
+export type NoteSynthesisJobSummary = {
+  activeJob?: NoteSynthesisJob;
+  latestCompletedJob?: NoteSynthesisJob;
+  latestTerminalJob?: NoteSynthesisJob;
 };
 
 export type StartNoteSynthesisResult = {
@@ -549,6 +651,11 @@ export type BookAiSummaryResponse = {
   summary: BookAiSummary;
   cachedUpdatedAt?: string;
   errorMessage?: string;
+};
+
+export type BookAiSummaryVariants = {
+  quick?: BookAiSummaryResponse;
+  full?: BookAiSummaryResponse;
 };
 
 export type AiFeedbackExportRecord = {
@@ -1331,7 +1438,7 @@ export type BulkExportResultItem = {
   status: BulkExportItemStatus;
   notesFile?: string;
   aiReviewFile?: string;
-  /** 目标级结果（Obsidian / Notion）；仅当批量请求选择了外部目标时非空。 */
+  /** 目标级结果（Obsidian / Notion / Ima）；仅当批量请求选择了外部目标时非空。 */
   targets?: ExportTargetResult[];
   reason: string;
 };
@@ -1519,7 +1626,7 @@ export type ExportDataState = {
   isCustomExportDir: boolean;
 };
 
-export type ExternalExportTarget = "markdown" | "obsidian" | "notion";
+export type ExternalExportTarget = "markdown" | "obsidian" | "notion" | "ima";
 
 export type ObsidianAttachmentMode = "siblingAssets" | "centralAssets";
 
@@ -1789,6 +1896,25 @@ export type IntegrationDataState = {
     coverMode: NotionCoverMode;
     databaseConnection?: NotionDatabaseConnection;
   };
+  ima?: {
+    credential: ImaCredentialStatus;
+    noteFolderId?: string;
+    knowledgeBaseId?: string;
+    knowledgeBaseFolderId?: string;
+    publishToKnowledgeBase: boolean;
+    assetRoutes: Partial<Record<ExportSourceKind, ImaAssetRoute>>;
+    adapterVersion: string;
+    checkedAdapterVersion?: string;
+    latestVersion?: string;
+    releaseDesc?: string;
+    updateInstruction?: string;
+    updateCheckedDate?: string;
+    lastAttemptAt?: string;
+    lastSuccessAt?: string;
+    compatibilityStatus: ImaCompatibilityStatus;
+    canAttemptWrite: boolean;
+    isWriteCompatible: boolean;
+  };
 };
 
 export type MultiTargetExportRequest = {
@@ -1801,6 +1927,23 @@ export type MultiTargetExportRequest = {
     parentId?: string;
     parentType?: NotionParentType;
   };
+  ima?: ImaExportOverrides;
+};
+
+export type ImaExportOverrides = {
+  noteFolderId?: string;
+  knowledgeBaseId?: string;
+  knowledgeBaseFolderId?: string;
+  publishToKnowledgeBase?: boolean;
+  confirmBodyExport?: boolean;
+  forceNewSnapshot?: boolean;
+};
+
+export type ImaAssetRoute = {
+  noteFolderId?: string;
+  knowledgeBaseId?: string;
+  knowledgeBaseFolderId?: string;
+  publishToKnowledgeBase?: boolean;
 };
 
 export type ExportSourceKind =
@@ -1810,7 +1953,12 @@ export type ExportSourceKind =
   | "readingRoute"
   | "bookDecision";
 
-export type ExportTargetStatus = "succeeded" | "failed" | "skipped";
+export type ExportTargetStatus =
+  | "succeeded"
+  | "partial"
+  | "failed"
+  | "skipped"
+  | "unknown";
 
 export type ExportTargetResult = {
   target: ExternalExportTarget;
@@ -1819,9 +1967,65 @@ export type ExportTargetResult = {
   path?: string;
   url?: string;
   pageId?: string;
+  operationId?: string;
+  operationStage?: string;
+  resourceId?: string;
   fileCount?: number;
   warning?: string;
   error?: SettingsCredentialError;
+};
+
+export type ImaNoteFolder = {
+  folderId: string;
+  name: string;
+  parentFolderId?: string;
+  folderType: number;
+  noteNumber: number;
+};
+
+export type ImaKnowledgeBase = {
+  id: string;
+  name: string;
+};
+
+export type ImaKnowledgeItem = {
+  id: string;
+  title: string;
+  parentFolderId?: string;
+  isFolder: boolean;
+};
+
+export type ImaKnowledgePathFolder = {
+  folderId: string;
+  name: string;
+  parentFolderId?: string;
+};
+
+export type ImaKnowledgeList = {
+  items: ImaKnowledgeItem[];
+  currentPath: ImaKnowledgePathFolder[];
+};
+
+export type ImaUnknownResolution =
+  | "confirmSucceeded"
+  | "abandon"
+  | "createNewSnapshot";
+
+export type ImaRemoteDriftStatus =
+  | "healthy"
+  | "noteMissing"
+  | "noteMoved"
+  | "knowledgeAssociationMissing"
+  | "knowledgeAssociationMoved"
+  | "multipleChanges"
+  | "unknown";
+
+export type ImaRemoteDriftReport = {
+  operationId: string;
+  status: ImaRemoteDriftStatus;
+  checkedAt: string;
+  message: string;
+  canCreateNewSnapshot: boolean;
 };
 
 export type MultiTargetExportResponse = {

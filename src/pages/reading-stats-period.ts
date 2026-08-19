@@ -133,6 +133,21 @@ export function isCurrentReadingStatsPeriod(period: ReadingStatsPeriod): boolean
   return targetIdentity === currentIdentity;
 }
 
+export function isCompletedReadingStatsPeriod(
+  period: ReadingStatsPeriod,
+  now = new Date()
+): boolean {
+  if (period.mode === "overall") {
+    return period.baseTime === 0;
+  }
+  if (period.baseTime <= 0) {
+    return false;
+  }
+
+  const currentAnchor = getCurrentReadingStatsAnchor(period.mode, now);
+  return period.baseTime < currentAnchor;
+}
+
 export function canShiftReadingStatsPeriod(
   period: ReadingStatsPeriod,
   offset: -1 | 1

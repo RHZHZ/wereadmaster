@@ -11,7 +11,7 @@ import type {
   AiSettingsState,
   BookDetail,
   BookAiSummarySource,
-  ExternalExportTarget,
+  MultiTargetExportRequest,
   MultiTargetExportResponse,
   ReadingItemState,
   ReadingProgress,
@@ -223,13 +223,13 @@ export function useReadingRoutePageState({ shelfEntry, detail, progress, prepare
   }
 
   async function exportRoute(
-    targets: ExternalExportTarget[]
+    targetRequest: MultiTargetExportRequest
   ): Promise<MultiTargetExportResponse> {
     if (!request || !hasRoute) {
       throw new Error("当前没有可导出的阅读指南或阅读路线。");
     }
 
-    return exportReadingRouteTargets(request, { targets });
+    return exportReadingRouteTargets(request, targetRequest);
   }
 
   return {

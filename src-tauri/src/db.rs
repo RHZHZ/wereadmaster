@@ -55,6 +55,15 @@ pub struct NotionDatabaseConnectionConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+pub struct ImaAssetRouteConfig {
+    pub note_folder_id: Option<String>,
+    pub knowledge_base_id: Option<String>,
+    pub knowledge_base_folder_id: Option<String>,
+    pub publish_to_knowledge_base: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 struct DataDirectoryConfig {
     custom_data_dir: Option<String>,
     custom_export_dir: Option<String>,
@@ -66,6 +75,19 @@ struct DataDirectoryConfig {
     notion_parent_type: Option<String>,
     notion_cover_mode: Option<String>,
     notion_database_connection: Option<NotionDatabaseConnectionConfig>,
+    ima_note_folder_id: Option<String>,
+    ima_knowledge_base_id: Option<String>,
+    ima_knowledge_base_folder_id: Option<String>,
+    ima_publish_to_knowledge_base: Option<bool>,
+    #[serde(default)]
+    ima_asset_routes: BTreeMap<String, ImaAssetRouteConfig>,
+    ima_update_checked_date: Option<String>,
+    ima_update_checked_adapter_version: Option<String>,
+    ima_update_last_attempt_at: Option<String>,
+    ima_update_last_success_at: Option<String>,
+    ima_latest_version: Option<String>,
+    ima_release_desc: Option<String>,
+    ima_update_instruction: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -77,6 +99,18 @@ pub struct IntegrationConfig {
     pub notion_parent_type: Option<String>,
     pub notion_cover_mode: Option<String>,
     pub notion_database_connection: Option<NotionDatabaseConnectionConfig>,
+    pub ima_note_folder_id: Option<String>,
+    pub ima_knowledge_base_id: Option<String>,
+    pub ima_knowledge_base_folder_id: Option<String>,
+    pub ima_publish_to_knowledge_base: bool,
+    pub ima_asset_routes: BTreeMap<String, ImaAssetRouteConfig>,
+    pub ima_update_checked_date: Option<String>,
+    pub ima_update_checked_adapter_version: Option<String>,
+    pub ima_update_last_attempt_at: Option<String>,
+    pub ima_update_last_success_at: Option<String>,
+    pub ima_latest_version: Option<String>,
+    pub ima_release_desc: Option<String>,
+    pub ima_update_instruction: Option<String>,
 }
 
 pub fn default_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -187,6 +221,18 @@ pub fn read_integration_config(config_dir: &Path) -> Result<IntegrationConfig, S
         notion_parent_type: config.notion_parent_type,
         notion_cover_mode: config.notion_cover_mode,
         notion_database_connection: config.notion_database_connection,
+        ima_note_folder_id: config.ima_note_folder_id,
+        ima_knowledge_base_id: config.ima_knowledge_base_id,
+        ima_knowledge_base_folder_id: config.ima_knowledge_base_folder_id,
+        ima_publish_to_knowledge_base: config.ima_publish_to_knowledge_base.unwrap_or(false),
+        ima_asset_routes: config.ima_asset_routes,
+        ima_update_checked_date: config.ima_update_checked_date,
+        ima_update_checked_adapter_version: config.ima_update_checked_adapter_version,
+        ima_update_last_attempt_at: config.ima_update_last_attempt_at,
+        ima_update_last_success_at: config.ima_update_last_success_at,
+        ima_latest_version: config.ima_latest_version,
+        ima_release_desc: config.ima_release_desc,
+        ima_update_instruction: config.ima_update_instruction,
     })
 }
 
@@ -202,6 +248,19 @@ pub fn write_integration_config(
     config.notion_parent_type = integration.notion_parent_type.clone();
     config.notion_cover_mode = integration.notion_cover_mode.clone();
     config.notion_database_connection = integration.notion_database_connection.clone();
+    config.ima_note_folder_id = integration.ima_note_folder_id.clone();
+    config.ima_knowledge_base_id = integration.ima_knowledge_base_id.clone();
+    config.ima_knowledge_base_folder_id = integration.ima_knowledge_base_folder_id.clone();
+    config.ima_publish_to_knowledge_base = Some(integration.ima_publish_to_knowledge_base);
+    config.ima_asset_routes = integration.ima_asset_routes.clone();
+    config.ima_update_checked_date = integration.ima_update_checked_date.clone();
+    config.ima_update_checked_adapter_version =
+        integration.ima_update_checked_adapter_version.clone();
+    config.ima_update_last_attempt_at = integration.ima_update_last_attempt_at.clone();
+    config.ima_update_last_success_at = integration.ima_update_last_success_at.clone();
+    config.ima_latest_version = integration.ima_latest_version.clone();
+    config.ima_release_desc = integration.ima_release_desc.clone();
+    config.ima_update_instruction = integration.ima_update_instruction.clone();
     write_data_directory_config(config_dir, config)
 }
 
@@ -232,6 +291,18 @@ fn write_data_directory_config(
         && config.notion_parent_type.is_none()
         && config.notion_cover_mode.is_none()
         && config.notion_database_connection.is_none()
+        && config.ima_note_folder_id.is_none()
+        && config.ima_knowledge_base_id.is_none()
+        && config.ima_knowledge_base_folder_id.is_none()
+        && config.ima_publish_to_knowledge_base.is_none()
+        && config.ima_asset_routes.is_empty()
+        && config.ima_update_checked_date.is_none()
+        && config.ima_update_checked_adapter_version.is_none()
+        && config.ima_update_last_attempt_at.is_none()
+        && config.ima_update_last_success_at.is_none()
+        && config.ima_latest_version.is_none()
+        && config.ima_release_desc.is_none()
+        && config.ima_update_instruction.is_none()
     {
         if config_path.exists() {
             fs::remove_file(config_path).map_err(|error| error.to_string())?;
@@ -810,6 +881,59 @@ pub fn initialize_schema(connection: &Connection) -> SqliteResult<()> {
             note TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS ima_export_records (
+            id TEXT PRIMARY KEY NOT NULL,
+            source_kind TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            destination_scope TEXT NOT NULL,
+            title TEXT NOT NULL,
+            ima_note_id TEXT,
+            ima_media_id TEXT,
+            status TEXT NOT NULL CHECK(status IN (
+                'attempting', 'succeeded', 'partial', 'failed', 'unknown', 'abandoned'
+            )),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_ima_export_records_dedupe
+            ON ima_export_records(source_kind, source_id, content_hash, destination_scope, status);
+
+        CREATE TABLE IF NOT EXISTS ima_export_attempts (
+            export_id TEXT PRIMARY KEY NOT NULL,
+            record_id TEXT NOT NULL,
+            snapshot_markdown TEXT NOT NULL,
+            snapshot_hash TEXT NOT NULL,
+            chunk_count INTEGER NOT NULL CHECK(chunk_count > 0),
+            status TEXT NOT NULL CHECK(status IN (
+                'attempting', 'succeeded', 'partial', 'failed', 'unknown', 'abandoned'
+            )),
+            last_completed_stage TEXT,
+            uncertain_stage TEXT,
+            error_code TEXT,
+            error_message TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(record_id) REFERENCES ima_export_records(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS ima_export_chunks (
+            export_id TEXT NOT NULL,
+            chunk_index INTEGER NOT NULL CHECK(chunk_index >= 0),
+            chunker_version TEXT NOT NULL,
+            start_byte INTEGER NOT NULL CHECK(start_byte >= 0),
+            end_byte INTEGER NOT NULL CHECK(end_byte >= start_byte),
+            chunk_hash TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN (
+                'pending', 'attempting', 'succeeded', 'failed', 'unknown'
+            )),
+            attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+            last_error_code TEXT,
+            PRIMARY KEY(export_id, chunk_index),
+            FOREIGN KEY(export_id) REFERENCES ima_export_attempts(export_id) ON DELETE CASCADE
         );
         ",
     )?;

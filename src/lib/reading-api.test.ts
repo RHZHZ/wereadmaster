@@ -61,6 +61,19 @@ import {
   listenReadingAssistantStream,
   getReadingStats,
   getSettingsState,
+  getImaCredentialStatus,
+  refreshImaAdapterCompatibility,
+  saveImaCredential,
+  removeImaCredential,
+  validateImaCredential,
+  checkImaExportDrift,
+  listImaNoteFolders,
+  listImaAddableKnowledgeBases,
+  listImaKnowledgeItems,
+  saveImaExportSettings,
+  retryImaExportAttempt,
+  retargetImaKnowledgeAssociation,
+  resolveImaUnknownAttempt,
   listReadingAssistantThreads,
   listAiProviderModels,
   listReadingItemStates,
@@ -98,6 +111,145 @@ import {
 const invokeMock = vi.mocked(invoke);
 const listenMock = vi.mocked(listen);
 const checkMock = vi.mocked(check);
+
+describe("Ima 导出 API", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    vi.stubGlobal("__TAURI__", {});
+  });
+
+  test("routes credential, target discovery, settings, and recovery commands", async () => {
+    const targetResult = {
+      target: "ima",
+      status: "succeeded",
+      title: "深度工作"
+    };
+    const driftReport = {
+      operationId: "operation-1",
+      status: "healthy",
+      checkedAt: "2026-08-17T00:00:00Z",
+      message: "已确认 Ima 笔记仍位于原笔记本。",
+      canCreateNewSnapshot: false
+    };
+    invokeMock
+      .mockResolvedValueOnce({ hasCredential: false })
+      .mockResolvedValueOnce({ hasCredential: true })
+      .mockResolvedValueOnce({ hasCredential: false })
+      .mockResolvedValueOnce({ hasCredential: true })
+      .mockResolvedValueOnce([{ folderId: "notes-1", name: "微信读书" }])
+      .mockResolvedValueOnce([{ id: "kb-1", name: "阅读知识库" }])
+      .mockResolvedValueOnce({
+        items: [{ id: "folder-1", title: "书籍笔记", isFolder: true }],
+        currentPath: [{ folderId: "root", name: "根目录" }]
+      })
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce(targetResult)
+      .mockResolvedValueOnce(targetResult)
+      .mockResolvedValueOnce(driftReport)
+      .mockResolvedValueOnce(null);
+
+    await getImaCredentialStatus();
+    await saveImaCredential("client-1", "api-key-1");
+    await removeImaCredential(true);
+    await validateImaCredential();
+    await listImaNoteFolders();
+    await listImaAddableKnowledgeBases();
+    await listImaKnowledgeItems("kb-1", "folder-1");
+    await saveImaExportSettings({
+      noteFolderId: "notes-1",
+      knowledgeBaseId: "kb-1",
+      knowledgeBaseFolderId: "folder-1",
+      publishToKnowledgeBase: true
+    });
+    await refreshImaAdapterCompatibility();
+    await retryImaExportAttempt("operation-1");
+    await retargetImaKnowledgeAssociation({
+      operationId: "operation-1",
+      knowledgeBaseId: "kb-2",
+      knowledgeBaseFolderId: "folder-2",
+      confirm: true
+    });
+    await expect(checkImaExportDrift("operation-1")).resolves.toEqual(driftReport);
+    await expect(
+      resolveImaUnknownAttempt({
+        operationId: "operation-1",
+        action: "confirmSucceeded",
+        confirm: true
+      })
+    ).resolves.toBeUndefined();
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "get_ima_credential_status");
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "save_ima_credential", {
+      clientId: "client-1",
+      apiKey: "api-key-1"
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(3, "remove_ima_credential", { confirm: true });
+    expect(invokeMock).toHaveBeenNthCalledWith(4, "validate_ima_credential");
+    expect(invokeMock).toHaveBeenNthCalledWith(5, "list_ima_note_folders");
+    expect(invokeMock).toHaveBeenNthCalledWith(6, "list_ima_addable_knowledge_bases");
+    expect(invokeMock).toHaveBeenNthCalledWith(7, "list_ima_knowledge_items", {
+      knowledgeBaseId: "kb-1",
+      folderId: "folder-1"
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(8, "save_ima_export_settings", {
+      noteFolderId: "notes-1",
+      knowledgeBaseId: "kb-1",
+      knowledgeBaseFolderId: "folder-1",
+      publishToKnowledgeBase: true
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(9, "refresh_ima_adapter_compatibility");
+    expect(invokeMock).toHaveBeenNthCalledWith(10, "retry_ima_export_attempt", {
+      operationId: "operation-1"
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(11, "retarget_ima_knowledge_association", {
+      operationId: "operation-1",
+      knowledgeBaseId: "kb-2",
+      knowledgeBaseFolderId: "folder-2",
+      confirm: true
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(12, "check_ima_export_drift", {
+      operationId: "operation-1"
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(13, "resolve_ima_unknown_attempt", {
+      operationId: "operation-1",
+      action: "confirmSucceeded",
+      confirm: true
+    });
+  });
+
+  test.each([
+    ["compatible", true],
+    ["incompatible", false],
+    ["unconfirmed", false]
+  ] as const)("maps %s compatibility with a fail-closed write gate", async (
+    compatibilityStatus,
+    canAttemptWrite
+  ) => {
+    invokeMock.mockResolvedValueOnce({
+      integrationData: {
+        ima: {
+          credential: { hasCredential: true },
+          publishToKnowledgeBase: false,
+          adapterVersion: "1.1.9",
+          checkedAdapterVersion: "1.1.9",
+          latestVersion: compatibilityStatus === "unconfirmed" ? undefined : "1.1.9",
+          compatibilityStatus,
+          canAttemptWrite,
+          isWriteCompatible: canAttemptWrite
+        }
+      }
+    });
+
+    const state = await refreshImaAdapterCompatibility();
+
+    expect(state.integrationData.ima).toMatchObject({
+      compatibilityStatus,
+      canAttemptWrite,
+      publishToKnowledgeBase: false
+    });
+  });
+});
 
 describe("M2 全量笔记归纳 API", () => {
   beforeEach(() => {
@@ -682,6 +834,101 @@ describe("settings export directory API", () => {
     });
   });
 
+  test("reading assistant maps local book catalog action output", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    const request = {
+      scope: "global" as const,
+      message: "我读过富爸爸的书吗",
+      enabledContext: []
+    };
+    invokeMock.mockResolvedValue({
+      threadId: "thread_1",
+      messageId: "msg_1",
+      answer: "本机书目中找到 2 本相关书籍。",
+      suggestions: [],
+      recommendedBooks: [],
+      action: {
+        type: "bookCatalog",
+        payload: {
+          queryKind: "title",
+          queryText: "富爸爸",
+          queryStatus: "found",
+          matchedMetadataCount: 3,
+          matchedReadingCount: 2,
+          listedCount: 2,
+          truncated: false,
+          message: "本机书目中找到 2 本相关书籍。",
+          diagnostics: {
+            catalogCoverage: "complete",
+            missingReasons: [],
+            sourceUpdatedAt: { catalog: "200", progress: "210", noteSummary: "220" }
+          },
+          books: [
+            {
+              bookId: "book_finished",
+              title: "富爸爸穷爸爸",
+              author: "罗伯特·清崎",
+              matchReason: "titlePrefix",
+              readStatus: "finished",
+              progressPercent: 98,
+              totalNoteCount: 426,
+              highlightCount: 405,
+              thoughtCount: 15,
+              sources: ["shelf", "progress", "notebookBooks"]
+            },
+            {
+              bookId: "malformed",
+              title: "应被过滤",
+              matchReason: "unexpected",
+              readStatus: "finished",
+              sources: []
+            }
+          ],
+          unconfirmedBooks: [
+            {
+              bookId: "book_unread",
+              title: "富爸爸现金流",
+              matchReason: "titlePrefix",
+              readStatus: "unknown",
+              sources: ["notebookBooks"]
+            }
+          ]
+        }
+      },
+      usedContext: [],
+      generatedAt: "100",
+      promptVersion: "reading-assistant-chat-v1.3",
+      providerModel: null,
+      basisNotice: "基于本机书目。"
+    });
+
+    await expect(askReadingAssistant(request)).resolves.toMatchObject({
+      action: {
+        type: "bookCatalog",
+        payload: {
+          queryText: "富爸爸",
+          matchedMetadataCount: 3,
+          matchedReadingCount: 2,
+          books: [
+            {
+              bookId: "book_finished",
+              title: "富爸爸穷爸爸",
+              readStatus: "finished",
+              totalNoteCount: 426
+            }
+          ],
+          unconfirmedBooks: [
+            {
+              bookId: "book_unread",
+              title: "富爸爸现金流",
+              readStatus: "unknown"
+            }
+          ]
+        }
+      }
+    });
+  });
+
   test("reading assistant maps book review action output", async () => {
     vi.stubGlobal("__TAURI__", {});
     const request = {
@@ -814,11 +1061,57 @@ describe("settings export directory API", () => {
     expect(invokeMock).toHaveBeenCalledTimes(1);
   });
 
+  test("reading assistant retains catalog analysis evidence", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    invokeMock.mockResolvedValue({
+      threadId: "thread_catalog",
+      messageId: "msg_catalog",
+      answer: "已基于两本可确认书目分析。",
+      suggestions: [],
+      recommendedBooks: [],
+      usedContext: [
+        {
+          contextType: "bookCatalog",
+          label: "分类书目",
+          sourceRefs: ["catalog:经济理财"],
+          itemCount: 2,
+          availableItemCount: 4,
+          matchedItemCount: 2,
+          truncated: true
+        }
+      ],
+      generatedAt: "100",
+      promptVersion: "reading-assistant-chat-v1.3",
+      providerModel: "gpt-4o-mini",
+      basisNotice: "基于本机可确认分类书目生成。"
+    });
+
+    const result = await askReadingAssistant({
+      scope: "global",
+      message: "梳理我读过的理财书如何影响投资观",
+      enabledContext: []
+    });
+
+    expect(result.usedContext).toEqual([
+      {
+        contextType: "bookCatalog",
+        label: "分类书目",
+        sourceRefs: ["catalog:经济理财"],
+        itemCount: 2,
+        availableItemCount: 4,
+        matchedItemCount: 2,
+        truncated: true
+      }
+    ]);
+  });
+
   test("reading assistant maps local note search and preserves privacy-safe items", async () => {
     vi.stubGlobal("__TAURI__", {});
     invokeMock.mockResolvedValue({
+      scope: "book",
       bookId: "book_1",
       title: "深度工作",
+      searchedBookCount: 1,
       queryText: "宽恕",
       mode: "likeFallback",
       coverage: "exhaustiveMatch",
@@ -852,8 +1145,10 @@ describe("settings export directory API", () => {
         pageLimit: 1
       })
     ).resolves.toEqual({
+      scope: "book",
       bookId: "book_1",
       title: "深度工作",
+      searchedBookCount: 1,
       queryText: "宽恕",
       mode: "likeFallback",
       coverage: "exhaustiveMatch",
@@ -867,6 +1162,8 @@ describe("settings export directory API", () => {
         {
           documentId: "note:highlight:h1",
           sourceId: "h1",
+          bookId: "book_1",
+          bookTitle: undefined,
           noteType: "highlight",
           chapterUid: undefined,
           chapterTitle: "第二章",
@@ -902,6 +1199,45 @@ describe("settings export directory API", () => {
     await expect(searchReadingAssistantNotes({ bookId: "book_1", query: "宽恕" })).resolves.toMatchObject({
       mode: "hybridFallback",
       coverage: "sampled"
+    });
+  });
+
+  test("reading assistant maps structured retrieval diagnostics", async () => {
+    vi.stubGlobal("__TAURI__", {});
+    invokeMock.mockResolvedValue({
+      scope: "library",
+      searchedBookCount: 3,
+      queryText: "消费主义焦虑",
+      mode: "hybridFallback",
+      coverage: "sampled",
+      matchedItemCount: 2,
+      includedItemCount: 2,
+      truncated: false,
+      hasMore: false,
+      noteTypes: ["highlight"],
+      diagnostic: {
+        scope: "library",
+        strategy: "hybridFallback",
+        availableItemCount: 12,
+        matchedItemCount: 2,
+        includedItemCount: 2,
+        coverage: "sampled",
+        indexStatus: "ready",
+        reason: "embeddingQueryFailed"
+      },
+      items: []
+    });
+
+    await expect(
+      searchReadingAssistantNotes({ scope: "library", query: "消费主义焦虑" })
+    ).resolves.toMatchObject({
+      scope: "library",
+      diagnostic: {
+        scope: "library",
+        strategy: "hybridFallback",
+        availableItemCount: 12,
+        reason: "embeddingQueryFailed"
+      }
     });
   });
 

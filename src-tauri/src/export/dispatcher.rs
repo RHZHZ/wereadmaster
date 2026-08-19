@@ -150,6 +150,9 @@ async fn export_single_target(
             )
             .await
         }
+        ExternalExportTarget::Ima => {
+            super::ima::export_document(app, document, markdown, request.ima.as_ref()).await
+        }
     }
 }
 
@@ -200,6 +203,9 @@ fn export_markdown_target(
             path: Some(path.to_string_lossy().to_string()),
             url: None,
             page_id: None,
+            operation_id: None,
+            operation_stage: None,
+            resource_id: None,
             file_count: Some(1),
             warning: None,
             error: None,
@@ -268,6 +274,9 @@ async fn export_obsidian_target(
                 path: Some(output.path.to_string_lossy().to_string()),
                 url: None,
                 page_id: None,
+                operation_id: None,
+                operation_stage: None,
+                resource_id: None,
                 file_count: Some(output.file_count),
                 warning,
                 error: None,
@@ -361,6 +370,9 @@ async fn export_notion_target(
             path: None,
             url: Some(output.url),
             page_id: Some(output.page_id),
+            operation_id: None,
+            operation_stage: None,
+            resource_id: None,
             file_count: None,
             warning: output.warning,
             error: None,
@@ -401,6 +413,7 @@ fn config_unavailable_code(target: ExternalExportTarget) -> &'static str {
         ExternalExportTarget::Markdown => "markdown_config_unavailable",
         ExternalExportTarget::Obsidian => "obsidian_config_unavailable",
         ExternalExportTarget::Notion => "notion_config_unavailable",
+        ExternalExportTarget::Ima => "ima_config_unavailable",
     }
 }
 
@@ -409,6 +422,7 @@ fn config_unavailable_message(target: ExternalExportTarget) -> &'static str {
         ExternalExportTarget::Markdown => "无法读取 Markdown 配置。",
         ExternalExportTarget::Obsidian => "无法读取 Obsidian 配置。",
         ExternalExportTarget::Notion => "无法读取 Notion 配置。",
+        ExternalExportTarget::Ima => "无法读取 Ima 配置。",
     }
 }
 
@@ -425,6 +439,9 @@ fn target_failure(
         path: None,
         url: None,
         page_id: None,
+        operation_id: None,
+        operation_stage: None,
+        resource_id: None,
         file_count: None,
         warning: None,
         error: Some(ExportTargetError {
@@ -450,6 +467,7 @@ mod tests {
             targets: vec![ExternalExportTarget::Notion, ExternalExportTarget::Obsidian],
             obsidian: None,
             notion: None,
+            ima: None,
         };
 
         assert_eq!(obsidian_index_to_run_before_notion(&request), Some(1));
@@ -461,6 +479,7 @@ mod tests {
             targets: vec![ExternalExportTarget::Obsidian, ExternalExportTarget::Notion],
             obsidian: None,
             notion: None,
+            ima: None,
         };
 
         assert_eq!(obsidian_index_to_run_before_notion(&request), None);

@@ -22,7 +22,7 @@ import {
 import type {
   AiSettingsState,
   CredentialStatus,
-  ExternalExportTarget,
+  MultiTargetExportRequest,
   MultiTargetExportResponse,
   ReadingStatsAiReviewResponse,
   ReadingStatsMode
@@ -288,7 +288,7 @@ export function useReadingReviewPage({
   }
 
   async function exportReview(
-    targets: ExternalExportTarget[]
+    request: MultiTargetExportRequest
   ): Promise<MultiTargetExportResponse> {
     if (!stats || !review) {
       throw new Error("请先读取当前周期统计并生成阅读复盘，再导出报告。");
@@ -301,7 +301,7 @@ export function useReadingReviewPage({
     const response = await exportReadingStatsReviewTargets({
       mode: stats.mode,
       baseTime: stats.baseTime,
-      request: { targets }
+      request
     });
     showToast(formatMultiTargetExportToast(response));
     return response;

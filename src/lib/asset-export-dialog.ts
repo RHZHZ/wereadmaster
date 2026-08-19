@@ -1,5 +1,6 @@
 import type {
   ExportDataState,
+  ExportSourceKind,
   ExportTargetResult,
   ExternalExportTarget,
   IntegrationDataState,
@@ -36,19 +37,34 @@ export type ExportTargetConfiguration = {
 
 export type AssetExportOutcome = "succeeded" | "partial" | "failed" | "skipped";
 
-export const EXPORT_TARGET_ORDER: ExternalExportTarget[] = ["markdown", "obsidian", "notion"];
+export const EXPORT_TARGET_ORDER: ExternalExportTarget[] = [
+  "markdown",
+  "obsidian",
+  "notion",
+  "ima"
+];
+export const DEFAULT_AVAILABLE_TARGETS: ExternalExportTarget[] = [
+  "markdown",
+  "obsidian",
+  "notion"
+];
 
 export function resolveExportTargetConfigurations({
   exportData,
   integrationData,
-  platformMode
+  platformMode,
+  availableTargets = DEFAULT_AVAILABLE_TARGETS,
+  sourceKind
 }: {
   exportData?: ExportDataState;
   integrationData?: IntegrationDataState;
   platformMode: ExportPlatformMode;
+  availableTargets?: ExternalExportTarget[];
+  sourceKind?: ExportSourceKind;
 }): ExportTargetConfiguration[] {
+  const targetOrder = EXPORT_TARGET_ORDER.filter((target) => availableTargets.includes(target));
   if (platformMode === "webReadonly") {
-    return EXPORT_TARGET_ORDER.map((target) => ({
+    return targetOrder.map((target) => ({
       target,
       label: exportTargetName(target),
       readiness: "readonly",
@@ -63,8 +79,17 @@ export function resolveExportTargetConfigurations({
   const notionDestination = notion?.databaseConnection?.databaseName?.trim();
   const notionDestinationId =
     notion?.databaseConnection?.databaseId?.trim() || notion?.parentId?.trim();
+  const ima = integrationData?.ima;
+  const imaRoute = resolveImaAssetRoute(ima, sourceKind);
+  const imaWriteCompatible =
+    ima?.compatibilityStatus === "compatible" &&
+    ima.canAttemptWrite &&
+    ima.isWriteCompatible;
+  const imaDestination = imaRoute.publishToKnowledgeBase
+    ? imaRoute.knowledgeBaseId?.trim()
+    : imaRoute.noteFolderId?.trim();
 
-  return [
+  const configurations: ExportTargetConfiguration[] = [
     {
       target: "markdown",
       label: "Markdown",
@@ -97,19 +122,75 @@ export function resolveExportTargetConfigurations({
           : !notion?.credential.hasCredential
             ? "请先在设置页保存 Notion 凭据。"
             : "请在设置页连接数据库或配置父级目标。"
+    },
+    {
+      target: "ima",
+      label: "Ima",
+      readiness: !ima?.credential.hasCredential
+        ? "missing"
+        : !imaWriteCompatible
+          ? "invalid"
+          : imaRoute.publishToKnowledgeBase && !imaRoute.knowledgeBaseId?.trim()
+            ? "missing"
+            : "ready",
+      destinationLabel: imaRoute.publishToKnowledgeBase
+        ? imaDestination
+          ? "已选择 Ima 知识库"
+          : "尚未选择 Ima 知识库"
+        : imaDestination
+          ? `笔记本：${imaDestination}`
+          : "Ima 默认笔记本",
+      detail: !ima?.credential.hasCredential
+        ? "请先在设置页保存 Ima Client ID 和 API Key。"
+        : !imaWriteCompatible
+          ? ima.compatibilityStatus === "incompatible"
+            ? "Ima 接口版本已变化，请先更新应用。"
+            : "Ima 适配器兼容性尚未确认，请先刷新版本状态。"
+          : imaRoute.publishToKnowledgeBase
+            ? "将创建 Ima 笔记并加入所选知识库。"
+            : "将创建 Ima 笔记，不关联知识库。"
     }
   ];
+  return targetOrder.flatMap((target) => {
+    const configuration = configurations.find((item) => item.target === target);
+    return configuration ? [configuration] : [];
+  });
+}
+
+function resolveImaAssetRoute(
+  ima: IntegrationDataState["ima"] | undefined,
+  sourceKind: ExportSourceKind | undefined
+) {
+  const route = sourceKind ? ima?.assetRoutes?.[sourceKind] : undefined;
+  const useDecisionSafeDefault = sourceKind === "bookDecision" && !route;
+  return {
+    noteFolderId: route?.noteFolderId ?? ima?.noteFolderId,
+    knowledgeBaseId: useDecisionSafeDefault
+      ? undefined
+      : route?.knowledgeBaseId ?? ima?.knowledgeBaseId,
+    knowledgeBaseFolderId:
+      useDecisionSafeDefault
+        ? undefined
+        : route?.knowledgeBaseFolderId ?? ima?.knowledgeBaseFolderId,
+    publishToKnowledgeBase:
+      useDecisionSafeDefault
+        ? false
+        : route?.publishToKnowledgeBase ?? ima?.publishToKnowledgeBase ?? false
+  };
 }
 
 export function toggleExportTarget(
   targets: ExternalExportTarget[],
-  target: ExternalExportTarget
+  target: ExternalExportTarget,
+  availableTargets: ExternalExportTarget[] = EXPORT_TARGET_ORDER
 ): ExternalExportTarget[] {
   const next = targets.includes(target)
     ? targets.filter((item) => item !== target)
     : [...targets, target];
 
-  return EXPORT_TARGET_ORDER.filter((item) => next.includes(item));
+  return EXPORT_TARGET_ORDER.filter(
+    (item) => availableTargets.includes(item) && next.includes(item)
+  );
 }
 
 export function canSubmitExportTargets(
@@ -124,6 +205,17 @@ export function canSubmitExportTargets(
   return targets.every((target) => readiness.get(target) === "ready");
 }
 
+export function canSubmitAssetExportTargets(
+  targets: ExternalExportTarget[],
+  configurations: ExportTargetConfiguration[],
+  confirmImaBodyExport: boolean
+): boolean {
+  return (
+    canSubmitExportTargets(targets, configurations) &&
+    (!targets.includes("ima") || confirmImaBodyExport)
+  );
+}
+
 export function summarizeAssetExportOutcome(
   results: ExportTargetResult[]
 ): AssetExportOutcome {
@@ -133,13 +225,16 @@ export function summarizeAssetExportOutcome(
 
   const succeeded = results.filter((result) => result.status === "succeeded").length;
   const failed = results.filter((result) => result.status === "failed").length;
+  const incomplete = results.filter(
+    (result) => result.status === "partial" || result.status === "unknown"
+  ).length;
   const skipped = results.filter((result) => result.status === "skipped").length;
 
   if (succeeded === results.length) {
     return "succeeded";
   }
 
-  if (succeeded > 0 && (failed > 0 || skipped > 0)) {
+  if (incomplete > 0 || (succeeded > 0 && (failed > 0 || skipped > 0))) {
     return "partial";
   }
 
@@ -150,7 +245,37 @@ export function getFailedExportTargets(
   response: MultiTargetExportResponse
 ): ExternalExportTarget[] {
   return EXPORT_TARGET_ORDER.filter((target) =>
-    response.results.some((result) => result.target === target && result.status === "failed")
+    response.results.some(
+      (result) =>
+        result.target === target &&
+        (result.status === "failed" || result.status === "partial")
+    )
+  );
+}
+
+export function canForceRepublishImaResult(result: ExportTargetResult): boolean {
+  return (
+    result.target === "ima" &&
+    result.status === "skipped" &&
+    Boolean(result.operationId)
+  );
+}
+
+export function canRetargetImaKnowledgeAssociation(result: ExportTargetResult): boolean {
+  return (
+    result.target === "ima" &&
+    result.status === "partial" &&
+    result.operationStage === "addKnowledge" &&
+    Boolean(result.operationId) &&
+    Boolean(result.resourceId)
+  );
+}
+
+export function canCheckImaRemoteDrift(result: ExportTargetResult): boolean {
+  return (
+    result.target === "ima" &&
+    (result.status === "succeeded" || result.status === "skipped") &&
+    Boolean(result.operationId)
   );
 }
 
@@ -161,6 +286,10 @@ export function exportTargetName(target: ExternalExportTarget): string {
 
   if (target === "notion") {
     return "Notion";
+  }
+
+  if (target === "ima") {
+    return "Ima";
   }
 
   return "Markdown";

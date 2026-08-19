@@ -459,6 +459,30 @@ test.describe("本地阅读器想法详情", () => {
     await expect(page.getByLabel("小王子 正文")).toBeFocused();
   });
 
+  test("正文拖选会在松开鼠标后创建完整划线", async ({ page }) => {
+    await openPreviewLocalReader(page);
+
+    const readerLabel = "小王子 正文";
+    const selectionToolbar = page.getByRole("toolbar", { name: "本地选中文本操作" });
+    const dragPoints = await getReaderTextDragPoints(page, readerLabel, SELECTED_TEXT);
+
+    await page.mouse.move(dragPoints.start.x, dragPoints.start.y);
+    await page.mouse.down();
+    await page.mouse.move(dragPoints.end.x, dragPoints.end.y, { steps: 8 });
+    await expect(selectionToolbar).toHaveCount(0);
+    await page.mouse.up();
+
+    await expect(selectionToolbar).toBeVisible();
+    await expect(selectionToolbar.getByRole("button", { name: "划线" })).toBeFocused();
+    await selectionToolbar.getByRole("button", { name: "划线" }).click();
+
+    const highlight = page.locator(".local-reader-highlight").filter({
+      hasText: SELECTED_TEXT
+    });
+    await expect(highlight).toHaveText(SELECTED_TEXT);
+    await expect(page.getByRole("button", { name: /查看划线详情/ })).toContainText(SELECTED_TEXT);
+  });
+
   test("触屏设备原生选区变化可唤起本地选区工具条", async ({ browser }) => {
     const context = await browser.newContext({
       baseURL: LOCAL_READER_ORIGIN,
@@ -479,7 +503,8 @@ test.describe("本地阅读器想法详情", () => {
 
       const selectionPopover = mobilePage.locator(".local-reader-selection-popover");
       const selectionToolbar = mobilePage.getByRole("toolbar", { name: "本地选中文本操作" });
-      await expect(selectionToolbar.getByRole("button", { name: "划线" })).toBeFocused();
+      await expect(selectionToolbar).toBeVisible();
+      await expect(selectionToolbar.getByRole("button", { name: "划线" })).not.toBeFocused();
       await expect(selectionToolbar.getByRole("button", { name: "写想法" })).toBeVisible();
 
       const selectionLayout = await selectionPopover.evaluate((element) => {
@@ -1692,6 +1717,70 @@ async function setDarkUserPreferences(page: Page) {
 
 async function selectReaderText(page: Page, text: string) {
   await selectReaderTextIn(page, "小王子 正文", text);
+}
+
+async function getReaderTextDragPoints(page: Page, readerLabel: string, text: string) {
+  return page.getByLabel(readerLabel).evaluate((reader, selectedText) => {
+    const contentRoot = reader.querySelector(".local-reader-content");
+    if (!contentRoot) {
+      throw new Error("阅读器正文节点不存在。");
+    }
+
+    const walker = document.createTreeWalker(contentRoot, NodeFilter.SHOW_TEXT);
+    let currentNode = walker.nextNode();
+    while (currentNode) {
+      const nodeText = currentNode.textContent ?? "";
+      const startIndex = nodeText.indexOf(selectedText);
+      if (startIndex >= 0) {
+        const endIndex = startIndex + selectedText.length;
+        const selectionRange = document.createRange();
+        selectionRange.setStart(currentNode, startIndex);
+        selectionRange.setEnd(currentNode, endIndex);
+
+        const readerRect = reader.getBoundingClientRect();
+        const selectionRect = selectionRange.getBoundingClientRect();
+        const readerVisibleTop = readerRect.top + 28;
+        const readerVisibleBottom = readerRect.bottom - 28;
+        if (selectionRect.top < readerVisibleTop || selectionRect.bottom > readerVisibleBottom) {
+          reader.scrollTop +=
+            selectionRect.top - readerRect.top - (reader.clientHeight - selectionRect.height) / 2;
+        }
+
+        const startRange = document.createRange();
+        startRange.setStart(currentNode, startIndex);
+        startRange.setEnd(currentNode, startIndex + 1);
+        const endRange = document.createRange();
+        endRange.setStart(currentNode, endIndex - 1);
+        endRange.setEnd(currentNode, endIndex);
+        const startRect = startRange.getBoundingClientRect();
+        const endRect = endRange.getBoundingClientRect();
+
+        if (
+          startRect.width === 0 ||
+          startRect.height === 0 ||
+          endRect.width === 0 ||
+          endRect.height === 0
+        ) {
+          throw new Error(`无法读取拖选文本坐标：${selectedText}`);
+        }
+
+        return {
+          start: {
+            x: startRect.left + Math.min(2, startRect.width / 2),
+            y: startRect.top + startRect.height / 2
+          },
+          end: {
+            x: endRect.right - Math.min(2, endRect.width / 2),
+            y: endRect.top + endRect.height / 2
+          }
+        };
+      }
+
+      currentNode = walker.nextNode();
+    }
+
+    throw new Error(`阅读器正文缺少拖选文本：${selectedText}`);
+  }, text);
 }
 
 async function selectReaderTextIn(page: Page, readerLabel: string, text: string) {

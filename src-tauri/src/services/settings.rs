@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fmt::Write,
     fs,
     path::{Path, PathBuf},
@@ -11,9 +12,11 @@ use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
 use crate::{
-    db::{self, DATABASE_FILE_NAME},
+    db::{self, ImaAssetRouteConfig, DATABASE_FILE_NAME},
     errors::AppError,
     export::{
+        document::ExportSourceKind,
+        ima_client::{ima_compatibility_status, ImaCompatibilityStatus, IMA_ADAPTER_VERSION},
         notion::{
             analyze_database, create_reading_library_template,
             create_reading_library_template_typed, create_reading_workspace_template,
@@ -28,6 +31,7 @@ use crate::{
     repositories::sync_state::{SyncStateRecord, SyncStateRepository},
     services::{
         credentials::{CredentialService, CredentialServiceError, CredentialStatus},
+        ima_credentials::{ImaCredentialService, ImaCredentialStatus},
         notion_credentials::{NotionCredentialService, NotionCredentialStatus},
         notion_provisioning::{
             clear_provisioning, provisioning_path, read_provisioning,
@@ -143,6 +147,7 @@ pub struct ExportDataState {
 pub struct IntegrationDataState {
     pub obsidian: ObsidianIntegrationState,
     pub notion: NotionIntegrationState,
+    pub ima: ImaIntegrationState,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -169,6 +174,28 @@ pub struct NotionIntegrationState {
     pub parent_type: Option<NotionParentType>,
     pub cover_mode: NotionCoverMode,
     pub database_connection: Option<db::NotionDatabaseConnectionConfig>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImaIntegrationState {
+    pub credential: ImaCredentialStatus,
+    pub note_folder_id: Option<String>,
+    pub knowledge_base_id: Option<String>,
+    pub knowledge_base_folder_id: Option<String>,
+    pub publish_to_knowledge_base: bool,
+    pub asset_routes: BTreeMap<String, ImaAssetRouteConfig>,
+    pub adapter_version: String,
+    pub checked_adapter_version: Option<String>,
+    pub latest_version: Option<String>,
+    pub release_desc: Option<String>,
+    pub update_instruction: Option<String>,
+    pub update_checked_date: Option<String>,
+    pub last_attempt_at: Option<String>,
+    pub last_success_at: Option<String>,
+    pub compatibility_status: ImaCompatibilityStatus,
+    pub can_attempt_write: bool,
+    pub is_write_compatible: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -798,6 +825,47 @@ impl SettingsService {
         self.settings_state()
     }
 
+    pub fn save_ima_export_settings(
+        &self,
+        note_folder_id: Option<String>,
+        knowledge_base_id: Option<String>,
+        knowledge_base_folder_id: Option<String>,
+        publish_to_knowledge_base: bool,
+        asset_routes: Option<BTreeMap<String, ImaAssetRouteConfig>>,
+    ) -> Result<SettingsStateResponse, AppError> {
+        let note_folder_id = normalize_optional_string(note_folder_id);
+        let knowledge_base_id = normalize_optional_string(knowledge_base_id);
+        let knowledge_base_folder_id = normalize_optional_string(knowledge_base_folder_id);
+        if note_folder_id.as_deref() == Some("0") {
+            return Err(AppError::InvalidPayload(
+                "Ima 笔记本 ID 不能使用分页游标 0。".to_string(),
+            ));
+        }
+        if publish_to_knowledge_base && knowledge_base_id.is_none() {
+            return Err(AppError::InvalidPayload(
+                "发布到 Ima 知识库时必须选择目标知识库。".to_string(),
+            ));
+        }
+        if knowledge_base_folder_id.is_some() && !publish_to_knowledge_base {
+            return Err(AppError::InvalidPayload(
+                "选择 Ima 知识库文件夹时必须启用知识库发布。".to_string(),
+            ));
+        }
+
+        let config_dir = db::default_data_dir(&self.app).map_err(AppError::Storage)?;
+        let mut integration =
+            db::read_integration_config(&config_dir).map_err(AppError::Storage)?;
+        integration.ima_note_folder_id = note_folder_id;
+        integration.ima_knowledge_base_id = knowledge_base_id;
+        integration.ima_knowledge_base_folder_id = knowledge_base_folder_id;
+        integration.ima_publish_to_knowledge_base = publish_to_knowledge_base;
+        if let Some(asset_routes) = asset_routes {
+            integration.ima_asset_routes = normalize_ima_asset_routes(asset_routes, &integration)?;
+        }
+        db::write_integration_config(&config_dir, &integration).map_err(AppError::Storage)?;
+        self.settings_state()
+    }
+
     pub async fn analyze_notion_database(
         &self,
         database_id: String,
@@ -1372,6 +1440,13 @@ impl SettingsService {
     fn integration_data_state(&self) -> Result<IntegrationDataState, AppError> {
         let config_dir = db::default_data_dir(&self.app).map_err(AppError::Storage)?;
         let integration = db::read_integration_config(&config_dir).map_err(AppError::Storage)?;
+        let ima_compatibility_status = ima_compatibility_status(
+            integration.ima_latest_version.as_deref(),
+            integration.ima_update_checked_adapter_version.as_deref(),
+            integration.ima_update_last_attempt_at.as_deref(),
+            integration.ima_update_last_success_at.as_deref(),
+        );
+        let ima_can_attempt_write = ima_compatibility_status == ImaCompatibilityStatus::Compatible;
         let vault_dir = normalize_optional_string(integration.obsidian_vault_dir);
 
         Ok(IntegrationDataState {
@@ -1399,6 +1474,33 @@ impl SettingsService {
                     integration.notion_cover_mode.as_deref(),
                 ),
                 database_connection: integration.notion_database_connection,
+            },
+            ima: ImaIntegrationState {
+                credential: ImaCredentialService::new(self.app.clone())
+                    .credential_status()
+                    .unwrap_or(ImaCredentialStatus {
+                        has_credential: false,
+                        last_validated_at: None,
+                        last_validation_error: Some("Ima 凭据存储暂时不可用。".to_string()),
+                    }),
+                note_folder_id: normalize_optional_string(integration.ima_note_folder_id),
+                knowledge_base_id: normalize_optional_string(integration.ima_knowledge_base_id),
+                knowledge_base_folder_id: normalize_optional_string(
+                    integration.ima_knowledge_base_folder_id,
+                ),
+                publish_to_knowledge_base: integration.ima_publish_to_knowledge_base,
+                asset_routes: integration.ima_asset_routes,
+                adapter_version: IMA_ADAPTER_VERSION.to_string(),
+                checked_adapter_version: integration.ima_update_checked_adapter_version,
+                latest_version: integration.ima_latest_version,
+                release_desc: integration.ima_release_desc,
+                update_instruction: integration.ima_update_instruction,
+                update_checked_date: integration.ima_update_checked_date,
+                last_attempt_at: integration.ima_update_last_attempt_at,
+                last_success_at: integration.ima_update_last_success_at,
+                compatibility_status: ima_compatibility_status,
+                can_attempt_write: ima_can_attempt_write,
+                is_write_compatible: ima_can_attempt_write,
             },
         })
     }
@@ -1919,6 +2021,69 @@ fn normalize_optional_string(value: Option<String>) -> Option<String> {
     })
 }
 
+fn normalize_ima_asset_routes(
+    routes: BTreeMap<String, ImaAssetRouteConfig>,
+    global: &db::IntegrationConfig,
+) -> Result<BTreeMap<String, ImaAssetRouteConfig>, AppError> {
+    routes
+        .into_iter()
+        .map(|(source_kind, route)| {
+            let Some(kind) = ExportSourceKind::from_config_value(&source_kind) else {
+                return Err(AppError::InvalidPayload(format!(
+                    "未知的 Ima 资产类别：{source_kind}。"
+                )));
+            };
+            let route = ImaAssetRouteConfig {
+                note_folder_id: normalize_optional_string(route.note_folder_id),
+                knowledge_base_id: normalize_optional_string(route.knowledge_base_id),
+                knowledge_base_folder_id: normalize_optional_string(route.knowledge_base_folder_id),
+                publish_to_knowledge_base: route.publish_to_knowledge_base,
+            };
+            if route.note_folder_id.as_deref() == Some("0") {
+                return Err(AppError::InvalidPayload(format!(
+                    "{} 的 Ima 笔记本 ID 不能使用分页游标 0。",
+                    kind.ima_asset_label()
+                )));
+            }
+
+            let global_publish_to_knowledge_base = if kind == ExportSourceKind::BookDecision {
+                false
+            } else {
+                global.ima_publish_to_knowledge_base
+            };
+            let publish_to_knowledge_base = route
+                .publish_to_knowledge_base
+                .unwrap_or(global_publish_to_knowledge_base);
+            let knowledge_base_id = route
+                .knowledge_base_id
+                .as_deref()
+                .or(global.ima_knowledge_base_id.as_deref());
+            if publish_to_knowledge_base && knowledge_base_id.is_none() {
+                return Err(AppError::InvalidPayload(format!(
+                    "{} 发布到 Ima 知识库时必须选择目标知识库。",
+                    kind.ima_asset_label()
+                )));
+            }
+            if !publish_to_knowledge_base
+                && (route.knowledge_base_id.is_some() || route.knowledge_base_folder_id.is_some())
+            {
+                return Err(AppError::InvalidPayload(format!(
+                    "{} 未启用知识库发布，不能指定知识库或文件夹。",
+                    kind.ima_asset_label()
+                )));
+            }
+            if route.knowledge_base_folder_id.is_some() && knowledge_base_id.is_none() {
+                return Err(AppError::InvalidPayload(format!(
+                    "{} 的 Ima 知识库文件夹必须同时指定目标知识库。",
+                    kind.ima_asset_label()
+                )));
+            }
+
+            Ok((kind.as_config_value().to_string(), route))
+        })
+        .collect()
+}
+
 fn build_export_data_state(
     default_data_dir: &Path,
     custom_export_dir: Option<&Path>,
@@ -2306,14 +2471,16 @@ fn current_unix_seconds() -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::Path};
+    use std::{collections::BTreeMap, fs, path::Path};
 
     use rusqlite::Connection;
     use serde_json::json;
 
     use crate::{
         db::{self, initialize_schema},
+        export::ima_client::{ImaCompatibilityStatus, IMA_ADAPTER_VERSION},
         repositories::sync_state::SyncStateRecord,
+        services::ima_credentials::ImaCredentialStatus,
     };
 
     use super::{
@@ -2324,9 +2491,10 @@ mod tests {
         sanitize_diagnostic_text, sanitize_png_file_name, select_custom_data_directory,
         serialize_diagnostics_markdown, table_count, validate_backup_database,
         validate_backup_manifest, validate_custom_data_directory, write_data_operation_state,
-        DataOperationState, ExportDataState, IntegrationDataState, LocalDataState, NetworkState,
-        NotionCoverMode, NotionCredentialStatus, NotionIntegrationState, ObsidianAttachmentMode,
-        ObsidianIntegrationState, SettingsStateResponse, TableCountRecord,
+        DataOperationState, ExportDataState, ImaIntegrationState, IntegrationDataState,
+        LocalDataState, NetworkState, NotionCoverMode, NotionCredentialStatus,
+        NotionIntegrationState, ObsidianAttachmentMode, ObsidianIntegrationState,
+        SettingsStateResponse, TableCountRecord,
     };
 
     #[test]
@@ -2748,6 +2916,25 @@ mod tests {
                     parent_type: None,
                     cover_mode: NotionCoverMode::PageCover,
                     database_connection: None,
+                },
+                ima: ImaIntegrationState {
+                    credential: ImaCredentialStatus::default(),
+                    note_folder_id: None,
+                    knowledge_base_id: None,
+                    knowledge_base_folder_id: None,
+                    publish_to_knowledge_base: true,
+                    asset_routes: BTreeMap::new(),
+                    adapter_version: IMA_ADAPTER_VERSION.to_string(),
+                    checked_adapter_version: None,
+                    latest_version: None,
+                    release_desc: None,
+                    update_instruction: None,
+                    update_checked_date: None,
+                    last_attempt_at: None,
+                    last_success_at: None,
+                    compatibility_status: ImaCompatibilityStatus::Unconfirmed,
+                    can_attempt_write: false,
+                    is_write_compatible: false,
                 },
             },
             network: NetworkState {

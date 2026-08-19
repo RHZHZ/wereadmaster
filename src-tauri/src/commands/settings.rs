@@ -1,8 +1,10 @@
+use std::collections::BTreeMap;
+
 use serde::Serialize;
 use tauri::AppHandle;
 
 use crate::{
-    db::NotionDatabaseConnectionConfig,
+    db::{ImaAssetRouteConfig, NotionDatabaseConnectionConfig},
     errors::AppError,
     export::{notion::NotionDatabaseAnalysis, targets::NotionParentType},
     services::{
@@ -206,6 +208,27 @@ pub async fn save_notion_export_settings(
 ) -> Result<SettingsStateResponse, AppCommandError> {
     run_blocking(move || {
         SettingsService::new(app).save_notion_export_settings(parent_id, parent_type, cover_mode)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn save_ima_export_settings(
+    app: AppHandle,
+    note_folder_id: Option<String>,
+    knowledge_base_id: Option<String>,
+    knowledge_base_folder_id: Option<String>,
+    publish_to_knowledge_base: bool,
+    asset_routes: Option<BTreeMap<String, ImaAssetRouteConfig>>,
+) -> Result<SettingsStateResponse, AppCommandError> {
+    run_blocking(move || {
+        SettingsService::new(app).save_ima_export_settings(
+            note_folder_id,
+            knowledge_base_id,
+            knowledge_base_folder_id,
+            publish_to_knowledge_base,
+            asset_routes,
+        )
     })
     .await
 }

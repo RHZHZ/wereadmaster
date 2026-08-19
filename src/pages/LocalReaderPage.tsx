@@ -1,4 +1,14 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent } from "react";
+import {
+  Fragment,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent,
+  type MouseEvent,
+  type PointerEvent as ReactPointerEvent
+} from "react";
 import {
   AlertCircle,
   AlignLeft,
@@ -111,6 +121,14 @@ type SelectionMenuState = {
   endOffset: number;
   top: number;
   left: number;
+};
+
+type ReaderSelectionSession = {
+  pointerIsDown: boolean;
+  keyboardSelectionInProgress: boolean;
+  ignoreMouseUpUntil: number;
+  ignoreSelectionChangeUntil: number;
+  fallbackTimer?: number;
 };
 
 type ThoughtDraftState = SelectionMenuState & {
@@ -245,10 +263,22 @@ const SELECTION_POPOVER_SHORT_VIEWPORT_MIN_HEIGHT = 96;
 const SELECTION_POPOVER_SHORT_VIEWPORT_MAX_HEIGHT = 148;
 const SELECTION_POPOVER_SHORT_VIEWPORT_RESERVED_HEIGHT = 260;
 const SELECTION_POPOVER_STATUSBAR_GAP = 4;
+const SELECTION_CHANGE_FALLBACK_DELAY_MS = 120;
+const TOUCH_MOUSEUP_IGNORE_WINDOW_MS = 500;
 const THOUGHT_COMPOSER_WIDTH = 360;
 const THOUGHT_COMPOSER_HEIGHT = 220;
 const AI_QUESTION_COMPOSER_WIDTH = 380;
 const AI_QUESTION_COMPOSER_HEIGHT = 250;
+const KEYBOARD_SELECTION_NAVIGATION_KEYS = new Set([
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+  "ArrowUp",
+  "End",
+  "Home",
+  "PageDown",
+  "PageUp"
+]);
 const FONT_SCALE_OPTIONS: Array<{ value: LocalReaderFontScale; label: string; detail: string }> = [
   { value: "compact", label: "紧凑", detail: "更高信息密度" },
   { value: "standard", label: "标准", detail: "默认阅读尺寸" },
@@ -314,6 +344,13 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
   const aiQuestionSubmissionLockRef = useRef(false);
   const currentBookIdRef = useRef(bookId);
   const preserveSelectionMenuUntilRef = useRef(0);
+  const selectionSessionRef = useRef<ReaderSelectionSession>({
+    pointerIsDown: false,
+    keyboardSelectionInProgress: false,
+    ignoreMouseUpUntil: 0,
+    ignoreSelectionChangeUntil: 0
+  });
+  const selectionMenuAutoFocusRef = useRef(false);
   const outlineButtonRef = useRef<HTMLButtonElement>(null);
   const searchButtonRef = useRef<HTMLButtonElement>(null);
   const selectionMenuRef = useRef<HTMLDivElement>(null);
@@ -688,14 +725,19 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
   ]);
 
   useEffect(() => {
-    document.addEventListener("selectionchange", handleSelectionChange);
-    return () => document.removeEventListener("selectionchange", handleSelectionChange);
+    document.addEventListener("selectionchange", handleNativeSelectionChange);
+    return () => {
+      document.removeEventListener("selectionchange", handleNativeSelectionChange);
+      cancelNativeSelectionFallback();
+    };
   }, [aiQuestionRecords, content.length, thoughts]);
 
   useEffect(() => {
-    if (!selectionMenu) {
+    if (!selectionMenu || !selectionMenuAutoFocusRef.current) {
       return undefined;
     }
+
+    selectionMenuAutoFocusRef.current = false;
 
     const frameId = window.requestAnimationFrame(() => {
       selectionMenuRef.current
@@ -905,27 +947,131 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
     }
   }
 
-  function handleSelectionChange() {
-    window.setTimeout(() => {
-      if (shouldPreserveSelectionMenu()) {
+  function cancelNativeSelectionFallback() {
+    const session = selectionSessionRef.current;
+    if (session.fallbackTimer === undefined) {
+      return;
+    }
+
+    window.clearTimeout(session.fallbackTimer);
+    session.fallbackTimer = undefined;
+  }
+
+  function commitReaderSelection({ autoFocus = false }: { autoFocus?: boolean } = {}) {
+    cancelNativeSelectionFallback();
+    if (shouldPreserveSelectionMenu()) {
+      return;
+    }
+
+    const nextSelection = readReaderSelection(
+      contentRef.current,
+      content.length,
+      (startOffset, endOffset) =>
+        getSelectionPopoverEstimatedHeight(
+          findThoughtsForRange(thoughts, startOffset, endOffset).length,
+          findAiQuestionRecordsForRange(aiQuestionRecords, startOffset, endOffset).length
+        )
+    );
+
+    selectionMenuAutoFocusRef.current = Boolean(nextSelection && autoFocus);
+    if (nextSelection) {
+      setAiQuestionComposer(undefined);
+      lastSelectionTriggerRef.current = undefined;
+      if (autoFocus) {
+        selectionSessionRef.current.ignoreSelectionChangeUntil =
+          Date.now() + SELECTION_CHANGE_FALLBACK_DELAY_MS;
+      }
+    }
+    setSelectionMenu(nextSelection);
+  }
+
+  function scheduleNativeSelectionFallback() {
+    const session = selectionSessionRef.current;
+    cancelNativeSelectionFallback();
+    session.fallbackTimer = window.setTimeout(() => {
+      session.fallbackTimer = undefined;
+      if (
+        session.pointerIsDown ||
+        session.keyboardSelectionInProgress ||
+        shouldPreserveSelectionMenu()
+      ) {
         return;
       }
 
-      const nextSelection = readReaderSelection(
-        contentRef.current,
-        content.length,
-        (startOffset, endOffset) =>
-          getSelectionPopoverEstimatedHeight(
-            findThoughtsForRange(thoughts, startOffset, endOffset).length,
-            findAiQuestionRecordsForRange(aiQuestionRecords, startOffset, endOffset).length
-          )
-      );
-      if (nextSelection) {
-        setAiQuestionComposer(undefined);
-        lastSelectionTriggerRef.current = undefined;
-      }
-      setSelectionMenu(nextSelection);
-    }, 0);
+      commitReaderSelection();
+    }, SELECTION_CHANGE_FALLBACK_DELAY_MS);
+  }
+
+  function handleNativeSelectionChange() {
+    const session = selectionSessionRef.current;
+    if (
+      session.pointerIsDown ||
+      session.keyboardSelectionInProgress ||
+      shouldPreserveSelectionMenu() ||
+      Date.now() < session.ignoreSelectionChangeUntil
+    ) {
+      return;
+    }
+
+    scheduleNativeSelectionFallback();
+  }
+
+  function handleReaderPointerDown(event: ReactPointerEvent<HTMLElement>) {
+    if (!event.isPrimary || event.button !== 0) {
+      return;
+    }
+
+    selectionSessionRef.current.pointerIsDown = true;
+    cancelNativeSelectionFallback();
+  }
+
+  function handleReaderMouseUp(event: MouseEvent<HTMLElement>) {
+    if (event.button !== 0) {
+      return;
+    }
+
+    const session = selectionSessionRef.current;
+    if (Date.now() < session.ignoreMouseUpUntil) {
+      return;
+    }
+
+    session.pointerIsDown = false;
+    commitReaderSelection({ autoFocus: true });
+  }
+
+  function handleReaderTouchEnd() {
+    const session = selectionSessionRef.current;
+    session.pointerIsDown = false;
+    session.ignoreMouseUpUntil = Date.now() + TOUCH_MOUSEUP_IGNORE_WINDOW_MS;
+    commitReaderSelection();
+  }
+
+  function handleReaderPointerCancel() {
+    selectionSessionRef.current.pointerIsDown = false;
+    scheduleNativeSelectionFallback();
+  }
+
+  function handleReaderKeyDown(event: KeyboardEvent<HTMLElement>) {
+    if (!event.shiftKey || !KEYBOARD_SELECTION_NAVIGATION_KEYS.has(event.key)) {
+      return;
+    }
+
+    selectionSessionRef.current.keyboardSelectionInProgress = true;
+    cancelNativeSelectionFallback();
+  }
+
+  function handleReaderKeyUp(event: KeyboardEvent<HTMLElement>) {
+    const session = selectionSessionRef.current;
+    if (!session.keyboardSelectionInProgress) {
+      return;
+    }
+
+    if (event.key !== "Shift" && event.shiftKey) {
+      return;
+    }
+
+    session.keyboardSelectionInProgress = false;
+    commitReaderSelection({ autoFocus: true });
   }
 
   function updateReaderPreferences(
@@ -1281,6 +1427,7 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
       bounds: getFloatingLayerBounds(event.currentTarget)
     });
     clearReaderSelection();
+    cancelNativeSelectionFallback();
     setActiveHighlightDetail(undefined);
     setActiveAiQuestionRecordId(undefined);
     setPendingDeleteHighlightId(undefined);
@@ -1288,6 +1435,7 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
     setThoughtDraft(undefined);
     setAiQuestionComposer(undefined);
     preserveSelectionMenuUntilRef.current = Date.now() + 240;
+    selectionMenuAutoFocusRef.current = true;
     setRevealedThoughtRange({
       startOffset: highlight.startOffset,
       endOffset: highlight.endOffset
@@ -2274,9 +2422,12 @@ export function LocalReaderPage({ bookId, onBack }: LocalReaderPageProps) {
               aria-label={`${book.title} 正文`}
               tabIndex={-1}
               onScroll={handleReaderScroll}
-              onMouseUp={handleSelectionChange}
-              onTouchEnd={handleSelectionChange}
-              onKeyUp={handleSelectionChange}
+              onPointerDownCapture={handleReaderPointerDown}
+              onPointerCancelCapture={handleReaderPointerCancel}
+              onMouseUpCapture={handleReaderMouseUp}
+              onTouchEndCapture={handleReaderTouchEnd}
+              onKeyDown={handleReaderKeyDown}
+              onKeyUp={handleReaderKeyUp}
             >
               <div
                 ref={contentRef}

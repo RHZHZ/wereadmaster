@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520" role="img" aria-labelledby="title desc">
+  <title id="title">WxReadMaster 数据边界</title>
+  <desc id="desc">微信读书、本地书库、AI 服务和导出目标之间的数据流向与边界。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#8b8a80"/>
+    </marker>
+    <style>
+      .title { font: 700 27px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #2f2f2a; }
+      .subtitle { font: 400 16px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #6f6d63; }
+      .head { font: 700 17px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #2f2f2a; }
+      .body { font: 400 14px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #4b4a43; }
+      .note { font: 400 14px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #7c5a00; }
+    </style>
+  </defs>
+  <rect x="1" y="1" width="1198" height="518" rx="18" fill="#fffdf8" stroke="#dedbd1"/>
+  <text x="52" y="56" class="title">数据在哪里，什么时候会出去</text>
+  <text x="52" y="86" class="subtitle">本地优先；联网和写入都由具体操作触发</text>
+
+  <rect x="52" y="132" width="244" height="150" rx="16" fill="#e4f2ff" stroke="#2d8cff"/>
+  <text x="76" y="169" class="head">微信读书</text>
+  <text x="76" y="201" class="body">书架、笔记、统计</text>
+  <text x="76" y="227" class="body">主动同步到本地缓存</text>
+  <text x="76" y="253" class="body">不抓取密码、Cookie 或他人数据</text>
+
+  <rect x="330" y="132" width="244" height="150" rx="16" fill="#e4faf2" stroke="#28b88a"/>
+  <text x="354" y="169" class="head">本地工作区</text>
+  <text x="354" y="201" class="body">阅读状态、划线、想法</text>
+  <text x="354" y="227" class="body">AI 成果、导出记录</text>
+  <text x="354" y="253" class="body">Web Preview 只读查看</text>
+
+  <rect x="608" y="132" width="244" height="150" rx="16" fill="#fff0d9" stroke="#ef9419"/>
+  <text x="632" y="169" class="head">AI / Embedding</text>
+  <text x="632" y="201" class="body">生成成果时发送授权上下文</text>
+  <text x="632" y="227" class="body">建索引时发送笔记正文</text>
+  <text x="632" y="253" class="body">日常检索只发送查询文本</text>
+
+  <rect x="886" y="132" width="262" height="150" rx="16" fill="#f3efe2" stroke="#9b9789"/>
+  <text x="910" y="169" class="head">导出目标</text>
+  <text x="910" y="201" class="body">Markdown / Obsidian / Notion</text>
+  <text x="910" y="227" class="body">只消费本地已有成果</text>
+  <text x="910" y="253" class="body">Notion 当前为单向导出</text>
+
+  <line x1="304" y1="207" x2="322" y2="207" stroke="#8b8a80" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="582" y1="207" x2="600" y2="207" stroke="#8b8a80" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="860" y1="207" x2="878" y2="207" stroke="#8b8a80" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <rect x="52" y="342" width="1096" height="102" rx="14" fill="#fff8e7" stroke="#d8bd76"/>
+  <text x="78" y="378" class="head">三个明确边界</text>
+  <text x="78" y="409" class="note">1. 打开导出窗口不会自动同步、调用 AI 或生成缺失成果。</text>
+  <text x="472" y="409" class="note">2. SQLite 备份不含凭据、向量和 WebView 阅读器记录。</text>
+  <text x="878" y="409" class="note">3. Web Preview 不写入状态、不执行本地命令。</text>
+</svg>

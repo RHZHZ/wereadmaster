@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-resolve-ima-unknown-attempt"
+description = "Enables the resolve_ima_unknown_attempt command without any pre-configured scope."
+commands.allow = ["resolve_ima_unknown_attempt"]
+
+[[permission]]
+identifier = "deny-resolve-ima-unknown-attempt"
+description = "Denies the resolve_ima_unknown_attempt command without any pre-configured scope."
+commands.deny = ["resolve_ima_unknown_attempt"]

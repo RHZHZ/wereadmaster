@@ -445,6 +445,25 @@ pub(crate) fn search_ready_profile(
     query_vector: &[f32],
     limit: usize,
 ) -> Result<Vec<RankedDocument>, String> {
+    search_ready_profile_with_book_scope(connection, Some(book_id), note_types, query_vector, limit)
+}
+
+pub(crate) fn search_ready_profile_library(
+    connection: &Connection,
+    note_types: &[NoteType],
+    query_vector: &[f32],
+    limit: usize,
+) -> Result<Vec<RankedDocument>, String> {
+    search_ready_profile_with_book_scope(connection, None, note_types, query_vector, limit)
+}
+
+fn search_ready_profile_with_book_scope(
+    connection: &Connection,
+    book_id: Option<&str>,
+    note_types: &[NoteType],
+    query_vector: &[f32],
+    limit: usize,
+) -> Result<Vec<RankedDocument>, String> {
     let profile = connection
         .query_row(
             "SELECT id, dimensions FROM retrieval_index_profiles
@@ -463,40 +482,66 @@ pub(crate) fn search_ready_profile(
     let include_highlights = note_types.is_empty() || note_types.contains(&NoteType::Highlight);
     let include_thoughts = note_types.is_empty() || note_types.contains(&NoteType::Thought);
 
-    let mut statement = connection
-        .prepare(
-            "SELECT d.id, e.vector_blob, e.dimensions
-             FROM retrieval_documents d
-             JOIN retrieval_embeddings e
-               ON e.document_id = d.id
-              AND e.profile_id = ?1
-              AND e.content_hash = d.content_hash
-             WHERE d.book_id = ?2
-               AND d.deleted_at IS NULL
-               AND ((?3 = 1 AND d.source_type = 'highlight')
-                 OR (?4 = 1 AND d.source_type = 'thought'))
-             ORDER BY d.id ASC",
-        )
-        .map_err(|error| error.to_string())?;
-    let candidates = statement
-        .query_map(
-            params![
-                profile_id,
-                book_id,
-                i64::from(include_highlights),
-                i64::from(include_thoughts),
-            ],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, Vec<u8>>(1)?,
-                    row.get::<_, i64>(2)?,
-                ))
-            },
-        )
-        .map_err(|error| error.to_string())?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|error| error.to_string())?;
+    let sql = if book_id.is_some() {
+        "SELECT d.id, e.vector_blob, e.dimensions
+         FROM retrieval_documents d
+         JOIN retrieval_embeddings e
+           ON e.document_id = d.id
+          AND e.profile_id = ?1
+          AND e.content_hash = d.content_hash
+         WHERE d.book_id = ?2
+           AND d.deleted_at IS NULL
+           AND ((?3 = 1 AND d.source_type = 'highlight')
+             OR (?4 = 1 AND d.source_type = 'thought'))
+         ORDER BY d.id ASC"
+    } else {
+        "SELECT d.id, e.vector_blob, e.dimensions
+         FROM retrieval_documents d
+         JOIN retrieval_embeddings e
+           ON e.document_id = d.id
+          AND e.profile_id = ?1
+          AND e.content_hash = d.content_hash
+         WHERE d.deleted_at IS NULL
+           AND ((?2 = 1 AND d.source_type = 'highlight')
+             OR (?3 = 1 AND d.source_type = 'thought'))
+         ORDER BY d.id ASC"
+    };
+    let mut statement = connection.prepare(sql).map_err(|error| error.to_string())?;
+    let map_row = |row: &rusqlite::Row<'_>| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Vec<u8>>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
+    };
+    let candidates = if let Some(book_id) = book_id {
+        statement
+            .query_map(
+                params![
+                    profile_id,
+                    book_id,
+                    i64::from(include_highlights),
+                    i64::from(include_thoughts),
+                ],
+                map_row,
+            )
+            .map_err(|error| error.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| error.to_string())?
+    } else {
+        statement
+            .query_map(
+                params![
+                    profile_id,
+                    i64::from(include_highlights),
+                    i64::from(include_thoughts),
+                ],
+                map_row,
+            )
+            .map_err(|error| error.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| error.to_string())?
+    };
 
     let mut ranked = Vec::with_capacity(candidates.len());
     for (document_id, vector_blob, stored_dimensions) in candidates {

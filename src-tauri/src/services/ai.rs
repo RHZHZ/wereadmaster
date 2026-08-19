@@ -1,6 +1,6 @@
 use std::{
     cmp::Ordering,
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt::{self, Write as _},
     fs,
     sync::{Mutex, OnceLock},
@@ -51,16 +51,21 @@ use crate::{
         notes::NotesService,
         retrieval::{
             is_valid_note_retrieval_cursor, plan_note_retrieval, rebuild_book_retrieval_documents,
-            search_book_notes, search_book_notes_with_ranked_vector, NoteRetrievalMode,
-            NoteRetrievalPlan, NoteRetrievalResult,
+            search_book_notes, search_book_notes_with_ranked_vector, search_library_notes,
+            search_library_notes_with_ranked_vector, NoteRetrievalMode, NoteRetrievalPlan,
+            NoteRetrievalResult, RetrievalDiagnostic,
         },
         stats::StatsService,
-        vector_retrieval::{choose_retrieval_strategy, search_ready_profile, RetrievalStrategy},
+        vector_retrieval::{
+            choose_retrieval_strategy, search_ready_profile, search_ready_profile_library,
+            RetrievalStrategy,
+        },
     },
 };
 
 pub const BOOK_NOTES_SUMMARY_PROMPT_VERSION: &str = "book-notes-summary-v3";
 pub const BOOK_NOTES_SUMMARY_FULL_PROMPT_VERSION: &str = "book-notes-summary-full-v1";
+pub const BOOK_NOTES_SUMMARY_SAMPLING_VERSION: &str = "book-review-sampling-v1";
 pub const READING_STATS_REVIEW_PROMPT_VERSION: &str = "reading-stats-review-v2";
 pub const READING_ROUTE_PROMPT_VERSION: &str = "reading-route-v2.1";
 pub const BOOK_DECISION_PROMPT_VERSION: &str = "book-decision-v2";
@@ -84,7 +89,7 @@ const DEFAULT_AI_MODEL: &str = "gpt-4o-mini";
 const DEFAULT_AI_PROVIDER_PRESET_ID: &str = "openai";
 const CUSTOM_AI_PROVIDER_PRESET_ID: &str = "custom";
 const MAX_SUMMARY_HIGHLIGHTS: usize = 80;
-const MAX_SUMMARY_THOUGHTS: usize = 80;
+const MAX_SUMMARY_THOUGHTS: usize = 20;
 const MAX_SUMMARY_CHAPTER_GROUPS: usize = 80;
 const MAX_NOTE_TEXT_CHARS: usize = 700;
 const MAX_STATS_BUCKETS: usize = 90;
@@ -105,6 +110,7 @@ const MAX_READING_ASSISTANT_SUGGESTIONS: usize = 3;
 const MAX_READING_ASSISTANT_HISTORY_MESSAGES: usize = 8;
 const MAX_READING_ASSISTANT_CANDIDATES: usize = 8;
 const MAX_READING_ASSISTANT_CATEGORY_BOOKS: usize = 50;
+const MAX_READING_ASSISTANT_BOOK_CATALOG_BOOKS: usize = 20;
 const MAX_READING_ASSISTANT_RECENT_BOOKS: usize = 5;
 const MAX_READING_ASSISTANT_EXCLUSION_BOOKS: usize = 12;
 const MAX_READING_ASSISTANT_RECOMMENDED_BOOKS: usize = 5;
@@ -414,6 +420,21 @@ pub struct AiCachedOutputRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct BookAiSummarySelection {
+    pub strategy: String,
+    pub sampling_version: String,
+    pub highlight_budget: usize,
+    pub thought_budget: usize,
+    pub available_highlight_count: usize,
+    pub available_thought_count: usize,
+    pub included_highlight_count: usize,
+    pub included_thought_count: usize,
+    pub covered_chapter_count: usize,
+    pub coverage: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct BookAiSummarySourceStats {
     pub highlight_count: usize,
     pub thought_count: usize,
@@ -421,6 +442,8 @@ pub struct BookAiSummarySourceStats {
     pub chapter_count: usize,
     pub included_highlight_count: usize,
     pub included_thought_count: usize,
+    #[serde(default)]
+    pub selection: Option<BookAiSummarySelection>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -859,6 +882,7 @@ pub enum ReadingAssistantContextOption {
     CurrentBook,
     BookNotesSummary,
     RawBookNotes,
+    BookCatalog,
     ReadingStats,
     ReadingPersona,
     CandidateBooks,
@@ -874,11 +898,14 @@ enum ReadingAssistantIntent {
     NewBookRecommendation,
     CandidateShelfDecision,
     WereadAvailabilitySearch,
+    BookCatalogQuery,
     CategoryBooksQuery,
+    CategoryBooksAnalysis,
     ReadingStatsAggregate,
     NoteSearchQuery,
     NoteCountQuery,
     FullNoteSynthesisRequest,
+    LibraryNoteSearchQuery,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -897,6 +924,16 @@ pub struct ReadingAssistantUsedContext {
     pub coverage: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub truncated: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<RetrievalDiagnostic>,
+}
+
+/// Action 诊断允许读取旧版本保存的纯字符串，同时新结果统一写入结构化对象。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum ReadingAssistantDiagnostic {
+    Structured(RetrievalDiagnostic),
+    Legacy(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -915,6 +952,7 @@ pub enum ReadingAssistantActionOutput {
     WereadSearch(ReadingAssistantWereadSearchOutput),
     StatsAggregate(ReadingAssistantStatsAggregateOutput),
     BookReview(ReadingAssistantBookReviewActionOutput),
+    BookCatalog(ReadingAssistantBookCatalogOutput),
     CategoryBooks(ReadingAssistantCategoryBooksOutput),
     NoteSearch(ReadingAssistantNoteSearchOutput),
     NoteCount(ReadingAssistantNoteCountOutput),
@@ -997,6 +1035,60 @@ pub struct ReadingAssistantCategoryBooksOutput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct ReadingAssistantBookCatalogOutput {
+    pub query_kind: String,
+    pub query_text: String,
+    pub query_status: String,
+    pub matched_metadata_count: usize,
+    pub matched_reading_count: usize,
+    pub listed_count: usize,
+    pub truncated: bool,
+    pub message: String,
+    #[serde(default)]
+    pub books: Vec<ReadingAssistantBookCatalogItem>,
+    /// 命中本地书目但未满足本次阅读状态过滤条件的书，供用户进入详情页补齐进度。
+    #[serde(default)]
+    pub unconfirmed_books: Vec<ReadingAssistantBookCatalogItem>,
+    pub diagnostics: ReadingAssistantBookCatalogDiagnostics,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingAssistantBookCatalogItem {
+    pub book_id: String,
+    pub title: String,
+    pub author: Option<String>,
+    pub category: Option<String>,
+    pub match_reason: String,
+    pub read_status: String,
+    pub progress_percent: Option<i64>,
+    pub total_note_count: Option<i64>,
+    pub highlight_count: Option<i64>,
+    pub thought_count: Option<i64>,
+    #[serde(default)]
+    pub sources: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingAssistantBookCatalogDiagnostics {
+    pub catalog_coverage: String,
+    #[serde(default)]
+    pub missing_reasons: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_updated_at: Option<ReadingAssistantBookCatalogSourceUpdatedAt>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingAssistantBookCatalogSourceUpdatedAt {
+    pub catalog: Option<String>,
+    pub progress: Option<String>,
+    pub note_summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct ReadingAssistantCategoryBookItem {
     pub book_id: String,
     pub title: String,
@@ -1004,6 +1096,8 @@ pub struct ReadingAssistantCategoryBookItem {
     pub category: Option<String>,
     pub progress_percent: Option<i64>,
     pub is_finished: bool,
+    #[serde(default)]
+    pub has_reading_evidence: bool,
     pub reading_time_text: Option<String>,
     pub source: String,
 }
@@ -1024,6 +1118,8 @@ pub struct ReadingAssistantNoteCountOutput {
 pub struct ReadingAssistantNoteSearchItem {
     pub document_id: String,
     pub source_id: String,
+    pub book_id: String,
+    pub book_title: Option<String>,
     pub note_type: String,
     pub chapter_uid: Option<i64>,
     pub chapter_title: Option<String>,
@@ -1034,8 +1130,12 @@ pub struct ReadingAssistantNoteSearchItem {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ReadingAssistantNoteSearchOutput {
-    pub book_id: String,
+    pub scope: String,
+    pub book_id: Option<String>,
     pub title: Option<String>,
+    pub searched_book_count: usize,
+    #[serde(default)]
+    pub diagnostic: Option<ReadingAssistantDiagnostic>,
     pub query_text: String,
     pub mode: String,
     pub coverage: String,
@@ -1151,10 +1251,20 @@ pub struct ReadingAssistantStreamRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ReadingAssistantNoteSearchRequest {
-    pub book_id: String,
+    #[serde(default)]
+    pub scope: ReadingAssistantNoteSearchScope,
+    pub book_id: Option<String>,
     pub query: String,
     pub cursor: Option<String>,
     pub page_limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum ReadingAssistantNoteSearchScope {
+    #[default]
+    Book,
+    Library,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -1786,7 +1896,6 @@ impl AiService {
         &self,
         request: ReadingAssistantNoteSearchRequest,
     ) -> Result<ReadingAssistantNoteSearchOutput, AiServiceError> {
-        let book_id = normalize_reading_assistant_id("书籍 ID", &request.book_id)?;
         let query = normalize_reading_assistant_message(&request.query)?;
         if request
             .cursor
@@ -1798,43 +1907,66 @@ impl AiService {
             ));
         }
         let preferences = self.get_reading_assistant_preferences()?;
-        let connection = self.open_connection()?;
-        let indexed_item_count = connection
-            .query_row(
-                "SELECT COUNT(*) FROM retrieval_documents WHERE book_id = ?1 AND deleted_at IS NULL",
-                [&book_id],
-                |row| row.get::<_, i64>(0),
-            )
-            .map_err(AiServiceError::storage)? as usize;
-        if indexed_item_count == 0 {
-            let indexed_at = current_unix_seconds();
-            rebuild_book_retrieval_documents(&connection, &book_id, &indexed_at)
-                .map_err(AiServiceError::storage)?;
-        }
-
         let plan = plan_note_retrieval(&query);
-        drop(connection);
-        let result = self
-            .search_notes_with_semantic_fallback(
-                &book_id,
-                &plan,
-                request.cursor.as_deref(),
-                request
-                    .page_limit
-                    .or(Some(DEFAULT_READING_ASSISTANT_NOTE_SEARCH_PAGE_SIZE)),
-            )
-            .await?;
-        let connection = self.open_connection()?;
-        let title = read_assistant_current_book(&connection, &book_id)?
-            .as_ref()
-            .and_then(reading_assistant_current_book_title);
-        Ok(reading_assistant_note_search_output(
-            book_id,
-            title,
-            &plan,
-            result,
-            preferences.allow_raw_book_notes,
-        ))
+        let page_limit = request
+            .page_limit
+            .or(Some(DEFAULT_READING_ASSISTANT_NOTE_SEARCH_PAGE_SIZE));
+        match request.scope {
+            ReadingAssistantNoteSearchScope::Book => {
+                let book_id = request.book_id.as_deref().ok_or_else(|| {
+                    AiServiceError::InvalidProviderOutput("单书笔记检索需要书籍 ID。".to_string())
+                })?;
+                let book_id = normalize_reading_assistant_id("书籍 ID", book_id)?;
+                let connection = self.open_connection()?;
+                ensure_reading_assistant_retrieval_documents(&connection, &book_id)?;
+                drop(connection);
+                let result = self
+                    .search_notes_with_semantic_fallback(
+                        &book_id,
+                        &plan,
+                        request.cursor.as_deref(),
+                        page_limit,
+                    )
+                    .await?;
+                let connection = self.open_connection()?;
+                let title = read_assistant_current_book(&connection, &book_id)?
+                    .as_ref()
+                    .and_then(reading_assistant_current_book_title);
+                Ok(reading_assistant_note_search_output(
+                    "book",
+                    Some(book_id),
+                    title,
+                    1,
+                    &plan,
+                    result,
+                    preferences.allow_raw_book_notes,
+                ))
+            }
+            ReadingAssistantNoteSearchScope::Library => {
+                {
+                    let connection = self.open_connection()?;
+                    ensure_library_reading_assistant_retrieval_documents(&connection)?;
+                }
+                let result = self
+                    .search_library_notes_with_semantic_fallback(
+                        &plan,
+                        request.cursor.as_deref(),
+                        page_limit,
+                    )
+                    .await?;
+                let connection = self.open_connection()?;
+                let searched_book_count = read_library_note_book_count(&connection)?;
+                Ok(reading_assistant_note_search_output(
+                    "library",
+                    None,
+                    None,
+                    searched_book_count,
+                    &plan,
+                    result,
+                    preferences.allow_raw_book_notes,
+                ))
+            }
+        }
     }
 
     fn lexical_note_search(
@@ -1849,18 +1981,45 @@ impl AiService {
             .map_err(AiServiceError::storage)
     }
 
+    fn lexical_note_search_with_diagnostic(
+        &self,
+        book_id: &str,
+        plan: &NoteRetrievalPlan,
+        cursor: Option<&str>,
+        page_limit: Option<usize>,
+        index_status: Option<&str>,
+        reason: Option<&str>,
+    ) -> Result<NoteRetrievalResult, AiServiceError> {
+        self.lexical_note_search(book_id, plan, cursor, page_limit)
+            .map(|result| annotate_retrieval_result(result, index_status, reason))
+    }
+
     fn hybrid_fallback_note_search(
         &self,
         book_id: &str,
         plan: &NoteRetrievalPlan,
         cursor: Option<&str>,
         page_limit: Option<usize>,
+        index_status: Option<&str>,
+        reason: Option<&str>,
     ) -> Result<NoteRetrievalResult, AiServiceError> {
         self.lexical_note_search(book_id, plan, cursor, page_limit)
             .map(|mut result| {
                 result.mode = NoteRetrievalMode::HybridFallback;
-                result
+                annotate_retrieval_result(result, index_status, reason)
             })
+    }
+
+    fn lexical_library_note_search_with_diagnostic(
+        &self,
+        plan: &NoteRetrievalPlan,
+        cursor: Option<&str>,
+        page_limit: Option<usize>,
+        index_status: Option<&str>,
+        reason: Option<&str>,
+    ) -> Result<NoteRetrievalResult, AiServiceError> {
+        self.lexical_library_note_search(plan, cursor, page_limit)
+            .map(|result| annotate_retrieval_result(result, index_status, reason))
     }
 
     async fn search_notes_with_semantic_fallback(
@@ -1874,57 +2033,83 @@ impl AiService {
             return self.lexical_note_search(book_id, plan, cursor, page_limit);
         }
         let connection = self.open_connection()?;
-        let ready_profile = connection
-            .query_row(
-                "SELECT provider_kind, model_id, dimensions, provider_base_url_hash
-                 FROM retrieval_index_profiles WHERE status = 'ready'
-                 ORDER BY updated_at DESC, id DESC LIMIT 1",
-                [],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, i64>(2)?,
-                        row.get::<_, Option<String>>(3)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(AiServiceError::storage)?;
-        let Some((provider_kind, model_id, dimensions, provider_hash)) = ready_profile else {
-            return self.lexical_note_search(book_id, plan, cursor, page_limit);
+        let profile = read_latest_retrieval_index_profile(&connection)?;
+        let Some(profile) = profile else {
+            return self.lexical_note_search_with_diagnostic(
+                book_id,
+                plan,
+                cursor,
+                page_limit,
+                Some("missing"),
+                Some("indexUnavailable"),
+            );
         };
+        if profile.status != "ready" {
+            return self.lexical_note_search_with_diagnostic(
+                book_id,
+                plan,
+                cursor,
+                page_limit,
+                Some(profile.status.as_str()),
+                Some("indexUnavailable"),
+            );
+        }
         let strategy = choose_retrieval_strategy(
             plan.exact_phrase.as_deref(),
             plan.require_exhaustive_lexical_match,
             true,
         );
         if strategy == RetrievalStrategy::Lexical {
-            return self.lexical_note_search(book_id, plan, cursor, page_limit);
+            return self.lexical_note_search_with_diagnostic(
+                book_id,
+                plan,
+                cursor,
+                page_limit,
+                Some("ready"),
+                None,
+            );
         }
         drop(connection);
         let embedding = EmbeddingService::new(self.app.clone());
         let settings = match embedding.settings_state() {
             Ok(state) => state.provider,
-            Err(_) => return self.hybrid_fallback_note_search(book_id, plan, cursor, page_limit),
+            Err(_) => {
+                return self.hybrid_fallback_note_search(
+                    book_id,
+                    plan,
+                    cursor,
+                    page_limit,
+                    Some("ready"),
+                    Some("embeddingQueryFailed"),
+                )
+            }
         };
-        if provider_kind != "openai-compatible"
-            || model_id != settings.model
-            || provider_hash.as_deref() != Some(stable_provider_hash(&settings.base_url).as_str())
-            || dimensions <= 0
+        if profile.provider_kind != "openai-compatible"
+            || profile.model_id != settings.model
+            || profile.provider_hash.as_deref()
+                != Some(stable_provider_hash(&settings.base_url).as_str())
+            || profile.dimensions <= 0
         {
-            return self.hybrid_fallback_note_search(book_id, plan, cursor, page_limit);
+            return self.hybrid_fallback_note_search(
+                book_id,
+                plan,
+                cursor,
+                page_limit,
+                Some("ready"),
+                Some("providerSettingsChanged"),
+            );
         }
         let query_vector = match embedding.embed_query(&settings, &plan.query_text).await {
             Ok(vector) => vector,
             Err(_) => {
-                let connection = self.open_connection()?;
-                return search_book_notes(&connection, book_id, plan, cursor, page_limit)
-                    .map(|mut result| {
-                        result.mode = NoteRetrievalMode::HybridFallback;
-                        result
-                    })
-                    .map_err(AiServiceError::storage);
+                return self.hybrid_fallback_note_search(
+                    book_id,
+                    plan,
+                    cursor,
+                    page_limit,
+                    Some("ready"),
+                    Some("embeddingQueryFailed"),
+                )
             }
         };
         let connection = self.open_connection()?;
@@ -1936,7 +2121,16 @@ impl AiService {
             plan.candidate_limit,
         ) {
             Ok(rank) if !rank.is_empty() => rank,
-            _ => return self.hybrid_fallback_note_search(book_id, plan, cursor, page_limit),
+            _ => {
+                return self.hybrid_fallback_note_search(
+                    book_id,
+                    plan,
+                    cursor,
+                    page_limit,
+                    Some("ready"),
+                    Some("indexUnavailable"),
+                )
+            }
         };
         search_book_notes_with_ranked_vector(
             &connection,
@@ -1947,7 +2141,218 @@ impl AiService {
             Some(&vector_rank),
             NoteRetrievalMode::Hybrid,
         )
+        .map(|result| annotate_retrieval_result(result, Some("ready"), None))
         .map_err(AiServiceError::storage)
+    }
+
+    fn lexical_library_note_search(
+        &self,
+        plan: &NoteRetrievalPlan,
+        cursor: Option<&str>,
+        page_limit: Option<usize>,
+    ) -> Result<NoteRetrievalResult, AiServiceError> {
+        let connection = self.open_connection()?;
+        search_library_notes(&connection, plan, cursor, page_limit).map_err(AiServiceError::storage)
+    }
+
+    fn hybrid_fallback_library_note_search(
+        &self,
+        plan: &NoteRetrievalPlan,
+        cursor: Option<&str>,
+        page_limit: Option<usize>,
+        index_status: Option<&str>,
+        reason: Option<&str>,
+    ) -> Result<NoteRetrievalResult, AiServiceError> {
+        self.lexical_library_note_search(plan, cursor, page_limit)
+            .map(|mut result| {
+                result.mode = NoteRetrievalMode::HybridFallback;
+                annotate_retrieval_result(result, index_status, reason)
+            })
+    }
+
+    async fn search_library_notes_with_semantic_fallback(
+        &self,
+        plan: &NoteRetrievalPlan,
+        cursor: Option<&str>,
+        page_limit: Option<usize>,
+    ) -> Result<NoteRetrievalResult, AiServiceError> {
+        if cursor.is_some() || plan.query_text.is_empty() {
+            return self.lexical_library_note_search(plan, cursor, page_limit);
+        }
+        let connection = self.open_connection()?;
+        let profile = read_latest_retrieval_index_profile(&connection)?;
+        let Some(profile) = profile else {
+            return self.lexical_library_note_search_with_diagnostic(
+                plan,
+                cursor,
+                page_limit,
+                Some("missing"),
+                Some("indexUnavailable"),
+            );
+        };
+        if profile.status != "ready" {
+            return self.lexical_library_note_search_with_diagnostic(
+                plan,
+                cursor,
+                page_limit,
+                Some(profile.status.as_str()),
+                Some("indexUnavailable"),
+            );
+        }
+        if choose_retrieval_strategy(
+            plan.exact_phrase.as_deref(),
+            plan.require_exhaustive_lexical_match,
+            true,
+        ) == RetrievalStrategy::Lexical
+        {
+            return self.lexical_library_note_search_with_diagnostic(
+                plan,
+                cursor,
+                page_limit,
+                Some("ready"),
+                None,
+            );
+        }
+        drop(connection);
+        let embedding = EmbeddingService::new(self.app.clone());
+        let settings = match embedding.settings_state() {
+            Ok(state) => state.provider,
+            Err(_) => {
+                return self.hybrid_fallback_library_note_search(
+                    plan,
+                    cursor,
+                    page_limit,
+                    Some("ready"),
+                    Some("embeddingQueryFailed"),
+                )
+            }
+        };
+        if profile.provider_kind != "openai-compatible"
+            || profile.model_id != settings.model
+            || profile.provider_hash.as_deref()
+                != Some(stable_provider_hash(&settings.base_url).as_str())
+            || profile.dimensions <= 0
+        {
+            return self.hybrid_fallback_library_note_search(
+                plan,
+                cursor,
+                page_limit,
+                Some("ready"),
+                Some("providerSettingsChanged"),
+            );
+        }
+        let query_vector = match embedding.embed_query(&settings, &plan.query_text).await {
+            Ok(vector) => vector,
+            Err(_) => {
+                return self.hybrid_fallback_library_note_search(
+                    plan,
+                    cursor,
+                    page_limit,
+                    Some("ready"),
+                    Some("embeddingQueryFailed"),
+                )
+            }
+        };
+        let connection = self.open_connection()?;
+        let vector_rank = match search_ready_profile_library(
+            &connection,
+            &plan.note_types,
+            &query_vector,
+            plan.candidate_limit,
+        ) {
+            Ok(rank) if !rank.is_empty() => rank,
+            _ => {
+                return self.hybrid_fallback_library_note_search(
+                    plan,
+                    cursor,
+                    page_limit,
+                    Some("ready"),
+                    Some("indexUnavailable"),
+                )
+            }
+        };
+        search_library_notes_with_ranked_vector(
+            &connection,
+            plan,
+            cursor,
+            page_limit,
+            Some(&vector_rank),
+            NoteRetrievalMode::Hybrid,
+        )
+        .map(|result| annotate_retrieval_result(result, Some("ready"), None))
+        .map_err(AiServiceError::storage)
+    }
+
+    async fn retrieve_note_context(
+        &self,
+        book_id: &str,
+        user_message: &str,
+    ) -> Result<Option<Value>, AiServiceError> {
+        let plan = plan_note_retrieval(user_message);
+        {
+            let connection = self.open_connection()?;
+            ensure_reading_assistant_retrieval_documents(&connection, book_id)?;
+        }
+        let result = self
+            .search_notes_with_semantic_fallback(book_id, &plan, None, None)
+            .await?;
+        Ok(reading_assistant_retrieved_book_notes_context(result))
+    }
+
+    async fn enrich_reading_assistant_raw_book_notes_context(
+        &self,
+        request: &ReadingAssistantContextBuildRequest,
+        context_bundle: &mut ReadingAssistantContextBundle,
+    ) -> Result<(), AiServiceError> {
+        if request.intent == ReadingAssistantIntent::CategoryBooksAnalysis
+            || !request.preferences.use_personalized_context
+            || !request.preferences.allow_raw_book_notes
+            || !matches!(
+                request.scope,
+                AssistantContextScope::BookDetail | AssistantContextScope::BookNotes
+            )
+        {
+            return Ok(());
+        }
+        let enabled_context = normalize_reading_assistant_context_options(
+            &request.scope,
+            &request.enabled_context,
+            &request.preferences,
+        );
+        if !context_option_enabled(
+            &enabled_context,
+            &ReadingAssistantContextOption::RawBookNotes,
+        ) {
+            return Ok(());
+        }
+        let Some(book_id) = request.entity_id.as_deref() else {
+            return Ok(());
+        };
+
+        let notes_context = match self
+            .retrieve_note_context(book_id, &request.user_message)
+            .await
+        {
+            Ok(notes) => notes,
+            Err(_) => {
+                let connection = self.open_connection()?;
+                read_assistant_raw_book_notes_context(&connection, book_id)?.map(|mut notes| {
+                    if let Some(object) = notes.as_object_mut() {
+                        object.insert(
+                            "retrievalFallback".to_string(),
+                            json!("balancedSampleAfterRetrievalFailure"),
+                        );
+                        object.insert("retrievalMode".to_string(), json!("unavailable"));
+                    }
+                    notes
+                })
+            }
+        };
+        if let Some(notes) = notes_context {
+            add_reading_assistant_raw_note_context(context_bundle, book_id, notes)?;
+        }
+
+        Ok(())
     }
 
     pub async fn ask_reading_assistant(
@@ -2005,6 +2410,15 @@ impl AiService {
                 )
                 .await;
         }
+        if intent == ReadingAssistantIntent::BookCatalogQuery {
+            return self.answer_reading_assistant_book_catalog_query(
+                &request.scope,
+                entity_id.as_deref(),
+                &thread_id,
+                &message,
+                &preferences,
+            );
+        }
         if intent == ReadingAssistantIntent::CategoryBooksQuery {
             return self.answer_reading_assistant_category_books_query(
                 &request.scope,
@@ -2012,6 +2426,9 @@ impl AiService {
                 &thread_id,
                 &message,
                 &preferences,
+                None,
+                false,
+                false,
             );
         }
         if intent == ReadingAssistantIntent::ReadingStatsAggregate {
@@ -2022,6 +2439,17 @@ impl AiService {
                 &message,
                 &preferences,
             );
+        }
+        if intent == ReadingAssistantIntent::LibraryNoteSearchQuery {
+            return self
+                .answer_reading_assistant_library_note_search(
+                    &request.scope,
+                    entity_id.as_deref(),
+                    &thread_id,
+                    &message,
+                    &preferences,
+                )
+                .await;
         }
         if matches!(
             intent,
@@ -2040,6 +2468,28 @@ impl AiService {
                 )
                 .await;
         }
+
+        let category_books_analysis = if intent == ReadingAssistantIntent::CategoryBooksAnalysis {
+            let action = {
+                let connection = self.open_connection()?;
+                build_reading_assistant_category_books_output(&connection, &message)?
+            };
+            if !preferences.use_personalized_context || action.books.is_empty() {
+                return self.answer_reading_assistant_category_books_query(
+                    &request.scope,
+                    entity_id.as_deref(),
+                    &thread_id,
+                    &message,
+                    &preferences,
+                    Some(action),
+                    true,
+                    !preferences.use_personalized_context,
+                );
+            }
+            Some(action)
+        } else {
+            None
+        };
 
         let provider = self.settings_state()?.provider;
         let api_key = self.read_api_key()?;
@@ -2081,11 +2531,14 @@ impl AiService {
             preferences: preferences.clone(),
             intent,
             user_message: message.clone(),
+            category_books_analysis: category_books_analysis.clone(),
         };
-        let context_bundle = {
+        let mut context_bundle = {
             let connection = self.open_connection()?;
             build_reading_assistant_context(&connection, &build_request)?
         };
+        self.enrich_reading_assistant_raw_book_notes_context(&build_request, &mut context_bundle)
+            .await?;
         let payload = build_reading_assistant_payload(
             &request.scope,
             entity_id.as_deref(),
@@ -2247,6 +2700,12 @@ impl AiService {
                 &connection,
                 generated.recommended_books,
             )?;
+        }
+        if let Some(action) = category_books_analysis {
+            generated.action = Some(ReadingAssistantActionOutput::CategoryBooks(action));
+            generated.basis_notice =
+                "基于本机可确认的分类书目、阅读状态和统计覆盖边界生成，不包含原始笔记。"
+                    .to_string();
         }
         if generated.action.is_none() {
             let action = {
@@ -2556,8 +3015,10 @@ impl AiService {
                     )
                     .await?;
                 let search_output = reading_assistant_note_search_output(
-                    book_id,
+                    "book",
+                    Some(book_id),
                     title.clone(),
+                    1,
                     &plan,
                     result,
                     preferences.allow_raw_book_notes,
@@ -2733,7 +3194,7 @@ impl AiService {
         })
     }
 
-    fn answer_reading_assistant_category_books_query(
+    async fn answer_reading_assistant_library_note_search(
         &self,
         scope: &AssistantContextScope,
         entity_id: Option<&str>,
@@ -2742,7 +3203,173 @@ impl AiService {
         preferences: &ReadingAssistantPreferences,
     ) -> Result<ReadingAssistantAnswer, AiServiceError> {
         let input_hash = stable_hash_json(&json!({
-            "intent": "categoryBooksQuery",
+            "intent": reading_assistant_intent_as_str(ReadingAssistantIntent::LibraryNoteSearchQuery),
+            "message": message,
+            "entityId": entity_id
+        }))?;
+        let now = current_unix_seconds();
+        let user_message_id = generate_reading_assistant_id(
+            "msg",
+            &json!({
+                "threadId": thread_id,
+                "role": "user",
+                "message": message,
+                "inputHash": input_hash,
+                "createdAt": now
+            }),
+        );
+
+        let plan = plan_note_retrieval(message);
+        let result = {
+            let connection = self.open_connection()?;
+            ensure_library_reading_assistant_retrieval_documents(&connection)?;
+            drop(connection);
+            self.search_library_notes_with_semantic_fallback(
+                &plan,
+                None,
+                Some(DEFAULT_READING_ASSISTANT_NOTE_SEARCH_PAGE_SIZE),
+            )
+            .await?
+        };
+        let searched_book_count = {
+            let connection = self.open_connection()?;
+            read_library_note_book_count(&connection)?
+        };
+        let search_output = reading_assistant_note_search_output(
+            "library",
+            None,
+            None,
+            searched_book_count,
+            &plan,
+            result,
+            preferences.allow_raw_book_notes,
+        );
+        let query_label = if search_output.query_text.is_empty() {
+            "近期笔记".to_string()
+        } else {
+            format!("“{}”", search_output.query_text)
+        };
+        let privacy_notice = if preferences.allow_raw_book_notes {
+            "正文已按你的原始笔记授权在本机展示；本次使用跨书本地检索，未调用 AI Provider。"
+        } else {
+            "原始笔记授权未开启，本次只展示命中数量、书名和笔记元数据，不返回正文，也未调用 AI Provider。"
+        };
+        let generated = ReadingAssistantGeneratedOutput {
+            answer: if search_output.matched_item_count == 0 {
+                format!(
+                    "本机 {} 本有笔记的书中，没有找到与 {query_label} 匹配的本地笔记。",
+                    search_output.searched_book_count
+                )
+            } else {
+                format!(
+                    "本机 {} 本有笔记的书中，找到 {} 条与 {query_label} 相关的笔记，当前展示 {} 条。",
+                    search_output.searched_book_count,
+                    search_output.matched_item_count,
+                    search_output.included_item_count
+                )
+            },
+            suggestions: vec![
+                "只看我的想法".to_string(),
+                "只看划线".to_string(),
+                "换一个跨书主题继续找".to_string(),
+            ],
+            basis_notice: privacy_notice.to_string(),
+            recommended_books: Vec::new(),
+            action: Some(ReadingAssistantActionOutput::NoteSearch(search_output)),
+        };
+
+        let generated_at = current_unix_seconds();
+        let assistant_message_id = generate_reading_assistant_id(
+            "msg",
+            &json!({
+                "threadId": thread_id,
+                "role": "assistant",
+                "inputHash": input_hash,
+                "createdAt": generated_at
+            }),
+        );
+        if preferences.save_conversation_history {
+            let connection = self.open_connection()?;
+            upsert_reading_assistant_thread(
+                &connection,
+                thread_id,
+                scope,
+                entity_id,
+                &reading_assistant_thread_title(message),
+                &json!({
+                    "sourceCount": 0,
+                    "usedContext": [],
+                    "actionIntent": reading_assistant_intent_as_str(
+                        ReadingAssistantIntent::LibraryNoteSearchQuery
+                    )
+                }),
+                &now,
+            )?;
+            insert_reading_assistant_message(
+                &connection,
+                &ReadingAssistantMessageDraft {
+                    id: user_message_id.clone(),
+                    thread_id: thread_id.to_string(),
+                    role: "user".to_string(),
+                    content: message.to_string(),
+                    status: "answered".to_string(),
+                    used_context: Vec::new(),
+                    output: None,
+                    prompt_version: None,
+                    input_hash: Some(input_hash.clone()),
+                    provider_model: None,
+                    error_code: None,
+                    error_message: None,
+                    created_at: now,
+                },
+            )?;
+            insert_reading_assistant_message(
+                &connection,
+                &ReadingAssistantMessageDraft {
+                    id: assistant_message_id.clone(),
+                    thread_id: thread_id.to_string(),
+                    role: "assistant".to_string(),
+                    content: generated.answer.clone(),
+                    status: "answered".to_string(),
+                    used_context: Vec::new(),
+                    output: Some(reading_assistant_message_output(&generated)),
+                    prompt_version: Some(READING_ASSISTANT_PROMPT_VERSION.to_string()),
+                    input_hash: Some(input_hash),
+                    provider_model: None,
+                    error_code: None,
+                    error_message: None,
+                    created_at: generated_at.clone(),
+                },
+            )?;
+            touch_reading_assistant_thread(&connection, thread_id, &generated_at)?;
+        }
+
+        Ok(ReadingAssistantAnswer {
+            thread_id: thread_id.to_string(),
+            user_message_id,
+            message_id: assistant_message_id,
+            answer: generated.answer,
+            suggestions: generated.suggestions,
+            recommended_books: generated.recommended_books,
+            action: generated.action,
+            used_context: Vec::new(),
+            generated_at,
+            prompt_version: READING_ASSISTANT_PROMPT_VERSION.to_string(),
+            provider_model: None,
+            basis_notice: generated.basis_notice,
+        })
+    }
+
+    fn answer_reading_assistant_book_catalog_query(
+        &self,
+        scope: &AssistantContextScope,
+        entity_id: Option<&str>,
+        thread_id: &str,
+        message: &str,
+        preferences: &ReadingAssistantPreferences,
+    ) -> Result<ReadingAssistantAnswer, AiServiceError> {
+        let input_hash = stable_hash_json(&json!({
+            "intent": "bookCatalogQuery",
             "message": message
         }))?;
         let now = current_unix_seconds();
@@ -2768,7 +3395,7 @@ impl AiService {
                 &json!({
                     "sourceCount": 0,
                     "usedContext": [],
-                    "actionIntent": "categoryBooksQuery"
+                    "actionIntent": "bookCatalogQuery"
                 }),
                 &now,
             )?;
@@ -2794,14 +3421,186 @@ impl AiService {
 
         let action = {
             let connection = self.open_connection()?;
-            build_reading_assistant_category_books_output(&connection, message)?
+            build_reading_assistant_book_catalog_output(&connection, message)?
         };
         let generated = ReadingAssistantGeneratedOutput {
-            answer: reading_assistant_category_books_answer(&action),
-            suggestions: vec![
-                format!("帮我只看{}里已读完的书。", action.category_label),
-                format!("帮我解释{}类阅读偏好。", action.category_label),
-            ],
+            answer: reading_assistant_book_catalog_answer(&action),
+            suggestions: if action.query_status == "found" {
+                vec![
+                    format!("帮我只看“{}”里已读完的书。", action.query_text),
+                    format!("帮我查看“{}”相关书籍的本地笔记数量。", action.query_text),
+                ]
+            } else if action.query_status == "partial" {
+                let refresh_hint = action
+                    .diagnostics
+                    .source_updated_at
+                    .as_ref()
+                    .and_then(|source| source.catalog.as_ref())
+                    .is_some()
+                    .then_some("请打开相关书籍详情页刷新阅读进度后再查。")
+                    .unwrap_or("请先同步书架后再查。");
+                vec![
+                    refresh_hint.to_string(),
+                    "请用《书名》或作者名重新查询。".to_string(),
+                ]
+            } else {
+                vec![
+                    "请先同步书架后再查。".to_string(),
+                    "请用《书名》或作者名重新查询。".to_string(),
+                ]
+            },
+            basis_notice:
+                "基于本机书架、书籍详情和阅读进度查询；笔记数量仅来自本地笔记汇总，不调用 AI Provider。"
+                    .to_string(),
+            recommended_books: Vec::new(),
+            action: Some(ReadingAssistantActionOutput::BookCatalog(action)),
+        };
+        let generated_at = current_unix_seconds();
+        let assistant_message_id = generate_reading_assistant_id(
+            "msg",
+            &json!({
+                "threadId": thread_id,
+                "role": "assistant",
+                "inputHash": input_hash,
+                "createdAt": generated_at
+            }),
+        );
+        if preferences.save_conversation_history {
+            let connection = self.open_connection()?;
+            insert_reading_assistant_message(
+                &connection,
+                &ReadingAssistantMessageDraft {
+                    id: assistant_message_id.clone(),
+                    thread_id: thread_id.to_string(),
+                    role: "assistant".to_string(),
+                    content: generated.answer.clone(),
+                    status: "answered".to_string(),
+                    used_context: Vec::new(),
+                    output: Some(reading_assistant_message_output(&generated)),
+                    prompt_version: Some(READING_ASSISTANT_PROMPT_VERSION.to_string()),
+                    input_hash: Some(input_hash.clone()),
+                    provider_model: None,
+                    error_code: None,
+                    error_message: None,
+                    created_at: generated_at.clone(),
+                },
+            )?;
+            touch_reading_assistant_thread(&connection, thread_id, &generated_at)?;
+        }
+
+        Ok(ReadingAssistantAnswer {
+            thread_id: thread_id.to_string(),
+            user_message_id,
+            message_id: assistant_message_id,
+            answer: generated.answer,
+            suggestions: generated.suggestions,
+            recommended_books: generated.recommended_books,
+            action: generated.action,
+            used_context: Vec::new(),
+            generated_at,
+            prompt_version: READING_ASSISTANT_PROMPT_VERSION.to_string(),
+            provider_model: None,
+            basis_notice: generated.basis_notice,
+        })
+    }
+
+    fn answer_reading_assistant_category_books_query(
+        &self,
+        scope: &AssistantContextScope,
+        entity_id: Option<&str>,
+        thread_id: &str,
+        message: &str,
+        preferences: &ReadingAssistantPreferences,
+        prebuilt_action: Option<ReadingAssistantCategoryBooksOutput>,
+        is_analysis_request: bool,
+        personalized_context_disabled: bool,
+    ) -> Result<ReadingAssistantAnswer, AiServiceError> {
+        let input_hash = stable_hash_json(&json!({
+            "intent": if is_analysis_request {
+                "categoryBooksAnalysis"
+            } else {
+                "categoryBooksQuery"
+            },
+            "message": message
+        }))?;
+        let now = current_unix_seconds();
+        let user_message_id = generate_reading_assistant_id(
+            "msg",
+            &json!({
+                "threadId": thread_id,
+                "role": "user",
+                "message": message,
+                "inputHash": input_hash,
+                "createdAt": now
+            }),
+        );
+
+        if preferences.save_conversation_history {
+            let connection = self.open_connection()?;
+            upsert_reading_assistant_thread(
+                &connection,
+                thread_id,
+                scope,
+                entity_id,
+                &reading_assistant_thread_title(message),
+                &json!({
+                    "sourceCount": 0,
+                    "usedContext": [],
+                    "actionIntent": if is_analysis_request {
+                        "categoryBooksAnalysis"
+                    } else {
+                        "categoryBooksQuery"
+                    }
+                }),
+                &now,
+            )?;
+            insert_reading_assistant_message(
+                &connection,
+                &ReadingAssistantMessageDraft {
+                    id: user_message_id.clone(),
+                    thread_id: thread_id.to_string(),
+                    role: "user".to_string(),
+                    content: message.to_string(),
+                    status: "answered".to_string(),
+                    used_context: Vec::new(),
+                    output: None,
+                    prompt_version: None,
+                    input_hash: None,
+                    provider_model: None,
+                    error_code: None,
+                    error_message: None,
+                    created_at: now.clone(),
+                },
+            )?;
+        }
+
+        let action = match prebuilt_action {
+            Some(action) => action,
+            None => {
+                let connection = self.open_connection()?;
+                build_reading_assistant_category_books_output(&connection, message)?
+            }
+        };
+        let generated = ReadingAssistantGeneratedOutput {
+            answer: if is_analysis_request {
+                reading_assistant_category_books_analysis_unavailable_answer(
+                    &action,
+                    personalized_context_disabled,
+                )
+            } else {
+                reading_assistant_category_books_answer(&action)
+            },
+            suggestions: if is_analysis_request {
+                vec![
+                    format!("列出我读过的{}类书籍。", action.category_label),
+                    "同步书架和阅读统计后再分析。".to_string(),
+                ]
+            } else {
+                vec![
+                    format!("帮我只看{}里已读完的书。", action.category_label),
+                    format!("帮我解释{}类阅读偏好。", action.category_label),
+                ]
+            },
             basis_notice:
                 "基于本机缓存的阅读统计、书架、书籍详情和阅读进度聚合，不调用 AI Provider。"
                     .to_string(),
@@ -3123,6 +3922,70 @@ impl AiService {
         Ok(None)
     }
 
+    pub fn get_book_notes_summary_for_kind(
+        &self,
+        book_id: String,
+        review_kind: &str,
+    ) -> Result<Option<BookAiSummaryResponse>, AiServiceError> {
+        let prompt_version = match review_kind {
+            "quick" => BOOK_NOTES_SUMMARY_PROMPT_VERSION,
+            "full" => BOOK_NOTES_SUMMARY_FULL_PROMPT_VERSION,
+            _ => {
+                return Err(AiServiceError::InvalidProviderOutput(
+                    "未知的书籍复盘类型。".to_string(),
+                ))
+            }
+        };
+        let connection = self.open_connection()?;
+        if review_kind == "full" {
+            let Some(cached) = read_latest_ai_output(
+                &connection,
+                BOOK_NOTES_SUMMARY_FEATURE,
+                &book_id,
+                prompt_version,
+            )?
+            else {
+                return Ok(None);
+            };
+
+            let input_hash = cached.input_hash.clone();
+            return cached_summary_response(&book_id, &input_hash, cached, None).map(Some);
+        }
+
+        let notes = read_local_book_notes(&connection, &book_id)?;
+        let summary_input = build_summary_input(&notes, None)?;
+        let input_hash = stable_hash_json(&summary_input.payload)?;
+        if notes.exportable_count == 0 {
+            return Ok(None);
+        }
+
+        if let Some(cached) = self.get_cached_output(
+            BOOK_NOTES_SUMMARY_FEATURE.to_string(),
+            notes.book_id.clone(),
+            prompt_version.to_string(),
+            input_hash.clone(),
+        )? {
+            return cached_summary_response(&notes.book_id, &input_hash, cached, None).map(Some);
+        }
+
+        let Some(cached) =
+            self.latest_cached_output(BOOK_NOTES_SUMMARY_FEATURE, &notes.book_id, prompt_version)?
+        else {
+            return Ok(None);
+        };
+
+        cached_summary_response(
+            &notes.book_id,
+            &input_hash,
+            cached,
+            Some(
+                "当前笔记较上次快速复盘已有变化，已先展示最近一次缓存；如需更新，请点击重新生成。"
+                    .to_string(),
+            ),
+        )
+        .map(Some)
+    }
+
     pub fn list_book_notes_summaries(&self) -> Result<Vec<BookAiSummaryListItem>, AiServiceError> {
         let connection = self.open_connection()?;
         read_book_summary_list(&connection)
@@ -3187,7 +4050,7 @@ impl AiService {
         review_feedback: Option<AiReviewFeedbackExport>,
     ) -> Result<ExportAiMarkdownResponse, AiServiceError> {
         let (prepared, _response) =
-            self.prepare_book_notes_summary_export(book_id, review_feedback)?;
+            self.prepare_book_notes_summary_export(book_id, review_feedback, None, None)?;
 
         self.write_ai_markdown_export(
             &prepared.file_stem,
@@ -3201,12 +4064,18 @@ impl AiService {
         book_id: String,
         review_feedback: Option<AiReviewFeedbackExport>,
         request: MultiTargetExportRequest,
+        review_kind: Option<String>,
+        input_hash: Option<String>,
     ) -> Result<MultiTargetExportResponse, AiServiceError> {
         request
             .validate()
             .map_err(AiServiceError::InvalidProviderOutput)?;
-        let (prepared, response) =
-            self.prepare_book_notes_summary_export(book_id, review_feedback)?;
+        let (prepared, response) = self.prepare_book_notes_summary_export(
+            book_id,
+            review_feedback,
+            review_kind.as_deref(),
+            input_hash.as_deref(),
+        )?;
         let summary = &response.summary;
         let quotes = summary
             .representative_quotes
@@ -3272,14 +4141,45 @@ impl AiService {
         &self,
         book_id: String,
         review_feedback: Option<AiReviewFeedbackExport>,
+        review_kind: Option<&str>,
+        input_hash: Option<&str>,
     ) -> Result<(PreparedExportDocument, BookAiSummaryResponse), AiServiceError> {
-        let response = self
-            .get_latest_book_notes_summary(book_id.clone())?
-            .ok_or_else(|| {
-                AiServiceError::InvalidProviderOutput(
-                    "当前书还没有可导出的 AI 总结缓存，请先生成或读取缓存。".to_string(),
-                )
-            })?;
+        let response = match (review_kind, input_hash) {
+            (Some(kind), Some(input_hash)) => {
+                let prompt_version = match kind {
+                    "quick" => BOOK_NOTES_SUMMARY_PROMPT_VERSION,
+                    "full" => BOOK_NOTES_SUMMARY_FULL_PROMPT_VERSION,
+                    _ => {
+                        return Err(AiServiceError::InvalidProviderOutput(
+                            "未知的书籍复盘类型。".to_string(),
+                        ))
+                    }
+                };
+                let cached = self.get_cached_output(
+                    BOOK_NOTES_SUMMARY_FEATURE.to_string(),
+                    book_id.clone(),
+                    prompt_version.to_string(),
+                    input_hash.to_string(),
+                )?;
+                let exact_response = cached
+                    .map(|cached| cached_summary_response(&book_id, input_hash, cached, None))
+                    .transpose()?;
+                if exact_response.is_some() {
+                    exact_response
+                } else if kind == "quick" {
+                    self.get_book_notes_summary_for_kind(book_id.clone(), kind)?
+                } else {
+                    None
+                }
+            }
+            (Some(kind), None) => self.get_book_notes_summary_for_kind(book_id.clone(), kind)?,
+            (None, _) => self.get_latest_book_notes_summary(book_id.clone())?,
+        }
+        .ok_or_else(|| {
+            AiServiceError::InvalidProviderOutput(
+                "当前书还没有可导出的 AI 总结缓存，请先生成或读取缓存。".to_string(),
+            )
+        })?;
         let notes = read_local_book_notes(&self.open_connection()?, &book_id)?;
         let title = notes
             .book
@@ -3381,6 +4281,7 @@ impl AiService {
                 targets: selection.targets.clone(),
                 obsidian: request.obsidian.clone(),
                 notion: request.notion.clone(),
+                ima: None,
             }
             .validate()
             .map_err(AiServiceError::InvalidProviderOutput)?;
@@ -3551,6 +4452,7 @@ impl AiService {
                         targets: external_targets,
                         obsidian: request.obsidian.clone(),
                         notion: request.notion.clone(),
+                        ima: None,
                     },
                     Some(&review_blocks),
                     selection.known_obsidian_path.as_deref(),
@@ -3582,6 +4484,9 @@ impl AiService {
                                         ),
                                         url: None,
                                         page_id: None,
+                                        operation_id: None,
+                                        operation_stage: None,
+                                        resource_id: None,
                                         file_count: Some(1),
                                         warning: None,
                                         error: None,
@@ -5185,6 +6090,7 @@ struct ReadingAssistantContextBuildRequest {
     preferences: ReadingAssistantPreferences,
     intent: ReadingAssistantIntent,
     user_message: String,
+    category_books_analysis: Option<ReadingAssistantCategoryBooksOutput>,
 }
 
 #[derive(Debug, Clone)]
@@ -5214,7 +6120,83 @@ struct ReadingAssistantSearchKeywordResolution {
 struct ReadingAssistantCategoryBooksQuery {
     label: String,
     aliases: Vec<String>,
-    require_finished: bool,
+    read_filter: ReadingAssistantCategoryReadFilter,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadingAssistantBookCatalogReadFilter {
+    HasEvidence,
+    Started,
+    Finished,
+    AllLocalBooks,
+}
+
+#[derive(Debug, Clone)]
+struct ReadingAssistantBookCatalogQuery {
+    target_text: String,
+    read_filter: ReadingAssistantBookCatalogReadFilter,
+}
+
+#[derive(Debug, Clone)]
+struct ReadingAssistantBookCatalogCandidate {
+    book_id: String,
+    title: String,
+    author: Option<String>,
+    category: Option<String>,
+    progress_percent: Option<i64>,
+    is_finished: bool,
+    reading_time_seconds: Option<i64>,
+    last_read_at: Option<i64>,
+    has_note_evidence: bool,
+    sources: Vec<String>,
+    total_note_count: Option<i64>,
+    highlight_count: Option<i64>,
+    thought_count: Option<i64>,
+}
+
+impl ReadingAssistantBookCatalogCandidate {
+    fn has_reading_evidence(&self) -> bool {
+        self.is_finished
+            || self.progress_percent.unwrap_or_default() > 0
+            || self.reading_time_seconds.unwrap_or_default() > 0
+            || self.last_read_at.unwrap_or_default() > 0
+            || self.has_note_evidence
+    }
+
+    fn read_status(&self) -> &'static str {
+        if self.is_finished {
+            "finished"
+        } else if self.has_reading_evidence() {
+            "started"
+        } else {
+            "unknown"
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadingAssistantBookCatalogMatchReason {
+    ExactTitle,
+    TitlePrefix,
+    TitleToken,
+    Author,
+}
+
+impl ReadingAssistantBookCatalogMatchReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ExactTitle => "exactTitle",
+            Self::TitlePrefix => "titlePrefix",
+            Self::TitleToken => "titleToken",
+            Self::Author => "author",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadingAssistantCategoryReadFilter {
+    Finished,
+    StartedOrFinished,
 }
 
 #[derive(Debug, Clone)]
@@ -5228,6 +6210,15 @@ struct ReadingAssistantCategoryBookCandidate {
     reading_time_seconds: Option<i64>,
     last_read_at: Option<i64>,
     source: String,
+}
+
+impl ReadingAssistantCategoryBookCandidate {
+    fn has_reading_evidence(&self) -> bool {
+        self.is_finished
+            || self.progress_percent.unwrap_or_default() > 0
+            || self.reading_time_seconds.unwrap_or_default() > 0
+            || self.last_read_at.unwrap_or_default() > 0
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -6030,11 +7021,11 @@ fn models_url(base_url: &str) -> String {
 }
 
 pub(crate) fn book_notes_summary_system_prompt() -> &'static str {
-    "你是个人阅读复盘助手。只基于用户提供的当前书籍本地笔记生成总结，不补写未提供的书籍内容，不假装读过全文，不输出内部 ID。必须使用简体中文，只输出一个顶层 JSON 对象，不要 Markdown。顶层字段名必须使用英文 camelCase，且必须包含 overview、keyIdeas、myFocus、actionItems、themeTags、representativeQuotes、reflectionQuestions。overview 必须是字符串，写 3-5 句；keyIdeas 为 3-8 条字符串；myFocus 为字符串数组；actionItems 是 0-3 条下一步行动，必须是可执行任务，不是观点复述或复盘问题；每条 actionItem 必须以动词开头，并包含对象、范围、数量、时间或完成标准中的至少一项；如果当前笔记不足以支持具体行动，可以返回空数组，不要强行生成“继续思考”“深入理解”“进一步复盘”这类泛化行动。themeTags 为 5-10 个短标签；representativeQuotes 为 3-6 条对象，每条包含 quote、reason、chapter、noteType，noteType 只能是“划线”或“想法”，quote 必须来自提供的划线或想法原文，可截短但不可改写；reflectionQuestions 为 3-6 个适合用户复盘的问题，必须是问句，用于继续追问，不得写成执行任务；不要在 actionItems 和 reflectionQuestions 中输出语义重复的条目。如果输入里包含 updateContext，则必须优先参考上一版复盘的用户反馈，把已完成、暂不做、不适合和文字备注转化为新的总结依据，并避免重复生成已经明确完成或明确不适合的建议；可以额外返回 feedbackOutcomeSummary 对象，其中 summary 用 1-2 句整理上一版明确反馈沉淀出的阅读成果，appliedChanges 用 1-3 条说明本次如何调整建议；feedbackOutcomeSummary 只能基于 updateContext 中的用户明确反馈，不得编造未完成事项，不得评价用户执行力、完成率、坚持程度或表现。如果没有真实反馈，不要生成 feedbackOutcomeSummary。如果笔记数量太少，必须在 overview 中说明总结依据有限。"
+    "你是个人阅读复盘助手。只基于用户提供的当前书籍本地笔记生成总结，不补写未提供的书籍内容，不假装读过全文，不输出内部 ID。必须使用简体中文，只输出一个顶层 JSON 对象，不要 Markdown。顶层字段名必须使用英文 camelCase，且必须包含 overview、keyIdeas、myFocus、actionItems、themeTags、representativeQuotes、reflectionQuestions、feedbackOutcomeSummary。overview 必须是字符串，写 3-5 句；keyIdeas 为 3-8 条字符串；myFocus 为字符串数组；actionItems 是 0-3 条下一步行动，必须是可执行任务，不是观点复述或复盘问题；每条 actionItem 必须以动词开头，并包含对象、范围、数量、时间或完成标准中的至少一项；如果当前笔记不足以支持具体行动，可以返回空数组，不要强行生成“继续思考”“深入理解”“进一步复盘”这类泛化行动。themeTags 为 5-10 个短标签；representativeQuotes 为 3-6 条对象，每条必须包含 quote、reason、chapter、noteType，noteType 只能是“划线”或“想法”，quote 必须来自提供的划线或想法原文，可截短但不可改写；笔记未提供章节时，chapter 填“未知章节”。reflectionQuestions 为 3-6 个适合用户复盘的问题，必须是问句，用于继续追问，不得写成执行任务；不要在 actionItems 和 reflectionQuestions 中输出语义重复的条目。如果输入里包含 updateContext，则必须优先参考上一版复盘的用户反馈，把已完成、暂不做、不适合和文字备注转化为新的总结依据，并避免重复生成已经明确完成或明确不适合的建议；feedbackOutcomeSummary 有真实反馈时返回对象，其中 summary 用 1-2 句整理上一版明确反馈沉淀出的阅读成果，appliedChanges 用 1-3 条说明本次如何调整建议；没有真实反馈时必须返回 null。feedbackOutcomeSummary 只能基于 updateContext 中的用户明确反馈，不得编造未完成事项，不得评价用户执行力、完成率、坚持程度或表现。如果笔记数量太少，必须在 overview 中说明总结依据有限。"
 }
 
 fn reading_stats_review_system_prompt() -> &'static str {
-    "你是个人阅读数据复盘助手。只基于用户提供的微信读书结构化统计生成复盘，不编造未提供的阅读记录、书籍内容或评分，不输出内部 ID。必须使用简体中文，只输出一个顶层 JSON 对象，不要 Markdown。顶层字段名必须使用英文 camelCase，且必须包含 overview、rhythmInsights、preferenceInsights、focusItems、nextActions。overview 必须是字符串，写 2-4 句；rhythmInsights 为 2-5 条阅读节奏洞察；preferenceInsights 为 2-5 条偏好洞察；focusItems 为 2-5 条值得关注的书籍、类别或时间变化；nextActions 为 2-5 条可执行建议。如果输入中提供了 personaStatus、personaCode、personaLabel、personaDisplayTitle、personaPaletteGroup、personaAccentTone、personaConfidence、personaBasisNotice、personaDimensions、personaEvidence，这些字段已经由本地规则预先计算，你只能基于这些现成字段补充解释，不得重算、改写或否定本地给出的人格代码和证据。可以额外返回可选 readingPersona 对象；如果返回，该对象只能包含 summary 和 suggestion 两个字符串字段。readingPersona 里的 MBTI 表达只能作为阅读风格隐喻，不代表真实心理人格，不得输出心理诊断、真实性格定论、能力评价或人生建议；当 personaStatus 为 insufficient 或统计样本不足时，可以省略 readingPersona，或只说明依据有限。readingPersona.summary 建议写 1-2 句，描述这一周期更像怎样阅读；readingPersona.suggestion 只给 1 条温和建议，不要重复 nextActions。所有结论都必须能从统计字段推导，不能引用笔记正文，因为输入不包含笔记。严禁输出原始秒数字段名、原始秒数值或 Unix 时间戳；时间长度必须写成人类可读中文，例如“1小时58分钟”“6分钟”，日期必须写成“5月6日”“2026年5月”这类格式。优先使用输入里已经提供的 display 字段，不要复述 technical/raw 字段名。如果输入里提供了 displayPeriod，优先直接使用这个周期名称，不要改写成“本月”“今年”“当前周期”这类相对时间。"
+    "你是个人阅读数据复盘助手。只基于用户提供的微信读书结构化统计生成复盘，不编造未提供的阅读记录、书籍内容或评分，不输出内部 ID。必须使用简体中文，只输出一个顶层 JSON 对象，不要 Markdown。顶层字段名必须使用英文 camelCase，且必须包含 overview、rhythmInsights、preferenceInsights、focusItems、nextActions、readingPersona。overview 必须是字符串，写 2-4 句；rhythmInsights 为 2-5 条阅读节奏洞察；preferenceInsights 为 2-5 条偏好洞察；focusItems 为 2-5 条值得关注的书籍、类别或时间变化；nextActions 为 2-5 条可执行建议。如果输入中提供了 personaStatus、personaCode、personaLabel、personaDisplayTitle、personaPaletteGroup、personaAccentTone、personaConfidence、personaBasisNotice、personaDimensions、personaEvidence，这些字段已经由本地规则预先计算，你只能基于这些现成字段补充解释，不得重算、改写或否定本地给出的人格代码和证据。readingPersona 必须返回对象或 null；返回对象时只能包含 summary 和 suggestion 两个字符串字段。readingPersona 里的 MBTI 表达只能作为阅读风格隐喻，不代表真实心理人格，不得输出心理诊断、真实性格定论、能力评价或人生建议；当 personaStatus 为 insufficient 或统计样本不足时，readingPersona 必须返回 null。readingPersona.summary 建议写 1-2 句，描述这一周期更像怎样阅读；readingPersona.suggestion 只给 1 条温和建议，不要重复 nextActions。所有结论都必须能从统计字段推导，不能引用笔记正文，因为输入不包含笔记。严禁输出原始秒数字段名、原始秒数值或 Unix 时间戳；时间长度必须写成人类可读中文，例如“1小时58分钟”“6分钟”，日期必须写成“5月6日”“2026年5月”这类格式。优先使用输入里已经提供的 display 字段，不要复述 technical/raw 字段名。如果输入里提供了 displayPeriod，优先直接使用这个周期名称，不要改写成“本月”“今年”“当前周期”这类相对时间。"
 }
 
 fn reading_route_system_prompt() -> &'static str {
@@ -6052,6 +7043,7 @@ fn local_reader_selection_question_system_prompt() -> &'static str {
 fn reading_assistant_system_prompt() -> &'static str {
     concat!(
         "你是 wxreadmaster 的 AI 阅读对话助手。默认只能基于输入中提供的本地阅读上下文回答，不得编造用户没有读过、没有保存、没有生成过的阅读记录，不得声称读取了整本书或原始笔记，除非输入明确包含这些内容。",
+        "当 payload.intent 为 categoryBooksAnalysis 时，只能使用 context.catalogAnalysis.books 中的已确认书目、分类和阅读状态进行分析；不得把统计总数补造成书名，不得从未提供的原始笔记、阅读记忆或历史对话推断观点、影响或偏好。若 hasUnconfirmedBooks 为 true，必须说明分析仅覆盖已确认书目。",
         "唯一受控例外：当 payload.intent 为 newBookRecommendation，或用户明确要求推荐新书/推荐可加入候选书架的书时，可以结合输入中的阅读画像、阅读统计、AI 资产摘要和通用书目知识提出 3-5 本新书候选；每本必须包含书名、作者、推荐理由、适合用户的原因和可能风险/取舍，并避开 payload 或上下文里的 bookExclusionList；必须说明这些书不是本地候选书架已有项、未确认微信读书可用、需要用户确认后再加入候选书架。",
         "必须使用简体中文，只输出一个顶层 JSON 对象，JSON 外壳不要 Markdown。answer 字段可以使用 Markdown-lite：短段落、无序列表、有序列表和加粗；不要输出表格、图片、HTML 或代码块。字段必须使用英文 camelCase，且必须包含 answer、suggestions、basisNotice、recommendedBooks；为了支持流式展示，输出字段顺序必须先 answer，再 suggestions、basisNotice、recommendedBooks。",
         "新书推荐场景必须把具体书籍放入 recommendedBooks，每项包含 title、author、reason、fit、risk；非新书推荐场景 recommendedBooks 必须返回空数组。新书推荐的 answer 只写摘要、选择依据和可用性提醒，建议 120-220 个中文字符，不逐本展开推荐理由、适合原因或风险；每本书详情必须写入 recommendedBooks。普通问答的 answer 写 2-8 句，优先短段落和列表，先直接回应用户，再说明依据和不确定性；当用户要求整理、生成或列出 N 个问题/复盘问题/追问时，answer 必须直接列出对应数量的编号问题，不得只说明已整理；上下文不足时也要给出可执行的下一步，不把缺数据作为错误。",
@@ -6114,7 +7106,7 @@ pub(crate) fn book_notes_summary_json_schema() -> Value {
     json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["overview", "keyIdeas", "myFocus", "actionItems", "themeTags", "representativeQuotes", "reflectionQuestions"],
+        "required": ["overview", "keyIdeas", "myFocus", "actionItems", "themeTags", "representativeQuotes", "reflectionQuestions", "feedbackOutcomeSummary"],
         "properties": {
             "overview": { "type": "string" },
             "keyIdeas": {
@@ -6138,7 +7130,7 @@ pub(crate) fn book_notes_summary_json_schema() -> Value {
                 "items": {
                     "type": "object",
                     "additionalProperties": false,
-                    "required": ["quote", "reason", "noteType"],
+                    "required": ["quote", "reason", "chapter", "noteType"],
                     "properties": {
                         "quote": { "type": "string" },
                         "reason": { "type": "string" },
@@ -6155,7 +7147,7 @@ pub(crate) fn book_notes_summary_json_schema() -> Value {
                 "items": { "type": "string" }
             },
             "feedbackOutcomeSummary": {
-                "type": "object",
+                "type": ["object", "null"],
                 "additionalProperties": false,
                 "required": ["summary", "appliedChanges"],
                 "properties": {
@@ -6174,7 +7166,7 @@ fn reading_stats_review_json_schema() -> Value {
     json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["overview", "rhythmInsights", "preferenceInsights", "focusItems", "nextActions"],
+        "required": ["overview", "rhythmInsights", "preferenceInsights", "focusItems", "nextActions", "readingPersona"],
         "properties": {
             "overview": { "type": "string" },
             "rhythmInsights": {
@@ -6194,8 +7186,9 @@ fn reading_stats_review_json_schema() -> Value {
                 "items": { "type": "string" }
             },
             "readingPersona": {
-                "type": "object",
+                "type": ["object", "null"],
                 "additionalProperties": false,
+                "required": ["summary", "suggestion"],
                 "properties": {
                     "summary": { "type": "string" },
                     "suggestion": { "type": "string" }
@@ -6643,17 +7636,325 @@ fn provider_network_user_message(message: &str) -> String {
     format!("AI Provider 无法连接（{reason}）。请检查 Base URL、网络代理、防火墙，或稍后重试。")
 }
 
+#[derive(Debug, Clone)]
+struct SummaryNoteCandidate {
+    index: usize,
+    source_id: String,
+    chapter_key: String,
+    chapter_sort_key: String,
+    priority: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SummarySelectionResult {
+    indices: Vec<usize>,
+    chapter_keys: HashSet<String>,
+}
+
+fn select_summary_candidates(
+    candidates: &[SummaryNoteCandidate],
+    budget: usize,
+    book_id: &str,
+    source_type: &str,
+) -> SummarySelectionResult {
+    if candidates.is_empty() || budget == 0 {
+        return SummarySelectionResult::default();
+    }
+
+    let mut strata: HashMap<String, Vec<usize>> = HashMap::new();
+    for (position, candidate) in candidates.iter().enumerate() {
+        strata
+            .entry(candidate.chapter_key.clone())
+            .or_default()
+            .push(position);
+    }
+
+    let mut selected_positions = if candidates.len() <= budget {
+        (0..candidates.len()).collect::<Vec<_>>()
+    } else {
+        let mut chapter_keys = strata.keys().cloned().collect::<Vec<_>>();
+        chapter_keys.sort_by(|left, right| {
+            stable_sampling_hash(&[
+                book_id,
+                BOOK_NOTES_SUMMARY_SAMPLING_VERSION,
+                source_type,
+                left,
+            ])
+            .cmp(&stable_sampling_hash(&[
+                book_id,
+                BOOK_NOTES_SUMMARY_SAMPLING_VERSION,
+                source_type,
+                right,
+            ]))
+            .then_with(|| left.cmp(right))
+        });
+        chapter_keys.truncate(budget.min(chapter_keys.len()));
+
+        let mut quotas = chapter_keys
+            .iter()
+            .map(|chapter_key| (chapter_key.clone(), 1_usize))
+            .collect::<HashMap<_, _>>();
+        let mut remaining = budget.saturating_sub(quotas.len());
+
+        while remaining > 0 {
+            let capacities = chapter_keys
+                .iter()
+                .filter_map(|chapter_key| {
+                    let current = quotas.get(chapter_key).copied().unwrap_or_default();
+                    let capacity = strata
+                        .get(chapter_key)
+                        .map(|indices| indices.len().saturating_sub(current))
+                        .unwrap_or_default();
+                    (capacity > 0).then_some((chapter_key.clone(), capacity))
+                })
+                .collect::<Vec<_>>();
+            let total_capacity = capacities
+                .iter()
+                .map(|(_, capacity)| *capacity)
+                .sum::<usize>();
+            if total_capacity == 0 {
+                break;
+            }
+
+            let slots = remaining.min(total_capacity);
+            let mut allocated = 0_usize;
+            let mut remainders = Vec::with_capacity(capacities.len());
+            for (chapter_key, capacity) in &capacities {
+                let numerator = slots.saturating_mul(*capacity);
+                let base = (numerator / total_capacity).min(*capacity);
+                if base > 0 {
+                    *quotas.entry(chapter_key.clone()).or_default() += base;
+                    allocated += base;
+                }
+                remainders.push((
+                    numerator % total_capacity,
+                    stable_sampling_hash(&[
+                        book_id,
+                        BOOK_NOTES_SUMMARY_SAMPLING_VERSION,
+                        source_type,
+                        chapter_key,
+                    ]),
+                    chapter_key.clone(),
+                ));
+            }
+
+            remainders.sort_by(|left, right| {
+                right
+                    .0
+                    .cmp(&left.0)
+                    .then_with(|| left.1.cmp(&right.1))
+                    .then_with(|| left.2.cmp(&right.2))
+            });
+            let mut leftover = slots.saturating_sub(allocated);
+            for (_, _, chapter_key) in remainders {
+                if leftover == 0 {
+                    break;
+                }
+                let current = quotas.get(&chapter_key).copied().unwrap_or_default();
+                let capacity = strata
+                    .get(&chapter_key)
+                    .map(|indices| indices.len())
+                    .unwrap_or_default();
+                if current < capacity {
+                    *quotas.entry(chapter_key).or_default() += 1;
+                    leftover -= 1;
+                }
+            }
+
+            let used = slots.saturating_sub(leftover);
+            if used == 0 {
+                break;
+            }
+            remaining = remaining.saturating_sub(used);
+        }
+
+        let mut selected = Vec::new();
+        for chapter_key in chapter_keys {
+            let quota = quotas.get(&chapter_key).copied().unwrap_or_default();
+            let mut indices = strata.get(&chapter_key).cloned().unwrap_or_default();
+            indices.sort_by(|left, right| {
+                compare_summary_candidate_priority(candidates, *left, *right)
+            });
+            selected.extend(indices.into_iter().take(quota));
+        }
+        selected
+    };
+
+    selected_positions
+        .sort_by(|left, right| compare_summary_candidates_canonical(candidates, *left, *right));
+    let chapter_keys = selected_positions
+        .iter()
+        .filter_map(|position| candidates.get(*position))
+        .map(|candidate| candidate.chapter_key.clone())
+        .collect::<HashSet<_>>();
+    let indices = selected_positions
+        .iter()
+        .filter_map(|position| candidates.get(*position))
+        .map(|candidate| candidate.index)
+        .collect::<Vec<_>>();
+
+    SummarySelectionResult {
+        indices,
+        chapter_keys,
+    }
+}
+
+fn compare_summary_candidate_priority(
+    candidates: &[SummaryNoteCandidate],
+    left: usize,
+    right: usize,
+) -> Ordering {
+    candidates[left]
+        .priority
+        .cmp(&candidates[right].priority)
+        .then_with(|| candidates[left].source_id.cmp(&candidates[right].source_id))
+        .then_with(|| candidates[left].index.cmp(&candidates[right].index))
+}
+
+fn compare_summary_candidates_canonical(
+    candidates: &[SummaryNoteCandidate],
+    left: usize,
+    right: usize,
+) -> Ordering {
+    candidates[left]
+        .chapter_sort_key
+        .cmp(&candidates[right].chapter_sort_key)
+        .then_with(|| candidates[left].source_id.cmp(&candidates[right].source_id))
+        .then_with(|| candidates[left].priority.cmp(&candidates[right].priority))
+        .then_with(|| candidates[left].index.cmp(&candidates[right].index))
+}
+
+fn stable_sampling_hash(parts: &[&str]) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for part in parts {
+        for byte in part.as_bytes().iter().copied().chain([0xff]) {
+            hash ^= byte as u64;
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    format!("{hash:016x}")
+}
+
+fn summary_note_chapter_keys(
+    chapter_uid: Option<i64>,
+    chapter_title: Option<&str>,
+) -> (String, String) {
+    if let Some(chapter_uid) = chapter_uid {
+        return (
+            format!("uid:{chapter_uid}"),
+            format!("uid:{chapter_uid:020}"),
+        );
+    }
+
+    let normalized_title = chapter_title.unwrap_or_default().trim();
+    if normalized_title.is_empty() {
+        (
+            "__unclassified__".to_string(),
+            "title:__unclassified__".to_string(),
+        )
+    } else {
+        (
+            format!("title:{normalized_title}"),
+            format!("title:{normalized_title}"),
+        )
+    }
+}
+
 fn build_summary_input(
     notes: &BookNotesRecord,
     update_context: Option<&BookSummaryUpdateContext>,
 ) -> Result<SummaryInput, AiServiceError> {
+    let highlight_candidates = notes
+        .highlights
+        .iter()
+        .enumerate()
+        .map(|(index, highlight)| {
+            let source_id = if highlight.bookmark_id.trim().is_empty() {
+                stable_sampling_hash(&["highlight", &highlight.mark_text, &highlight.raw_json])
+            } else {
+                highlight.bookmark_id.clone()
+            };
+            let (chapter_key, chapter_sort_key) = summary_note_chapter_keys(
+                highlight.chapter_uid,
+                highlight.chapter_title.as_deref(),
+            );
+            let priority = stable_sampling_hash(&[
+                &notes.book_id,
+                BOOK_NOTES_SUMMARY_SAMPLING_VERSION,
+                "highlight",
+                &source_id,
+            ]);
+            SummaryNoteCandidate {
+                index,
+                source_id,
+                chapter_key,
+                chapter_sort_key,
+                priority,
+            }
+        })
+        .collect::<Vec<_>>();
+    let thought_candidates = notes
+        .thoughts
+        .iter()
+        .enumerate()
+        .map(|(index, thought)| {
+            let source_id = if thought.review_id.trim().is_empty() {
+                stable_sampling_hash(&["thought", &thought.content, &thought.raw_json])
+            } else {
+                thought.review_id.clone()
+            };
+            let (chapter_key, chapter_sort_key) =
+                summary_note_chapter_keys(thought.chapter_uid, thought.chapter_name.as_deref());
+            let priority = stable_sampling_hash(&[
+                &notes.book_id,
+                BOOK_NOTES_SUMMARY_SAMPLING_VERSION,
+                "thought",
+                &source_id,
+            ]);
+            SummaryNoteCandidate {
+                index,
+                source_id,
+                chapter_key,
+                chapter_sort_key,
+                priority,
+            }
+        })
+        .collect::<Vec<_>>();
+    let selected_highlights = select_summary_candidates(
+        &highlight_candidates,
+        MAX_SUMMARY_HIGHLIGHTS,
+        &notes.book_id,
+        "highlight",
+    );
+    let selected_thoughts = select_summary_candidates(
+        &thought_candidates,
+        MAX_SUMMARY_THOUGHTS,
+        &notes.book_id,
+        "thought",
+    );
+    let covered_chapter_count = selected_highlights
+        .chapter_keys
+        .union(&selected_thoughts.chapter_keys)
+        .count();
     let source_stats = BookAiSummarySourceStats {
         highlight_count: notes.highlights.len(),
         thought_count: notes.thoughts.len(),
         bookmark_count: notes.bookmark_count,
         chapter_count: notes.chapters.len(),
-        included_highlight_count: notes.highlights.len().min(MAX_SUMMARY_HIGHLIGHTS),
-        included_thought_count: notes.thoughts.len().min(MAX_SUMMARY_THOUGHTS),
+        included_highlight_count: selected_highlights.indices.len(),
+        included_thought_count: selected_thoughts.indices.len(),
+        selection: Some(BookAiSummarySelection {
+            strategy: "stableChapterStratified".to_string(),
+            sampling_version: BOOK_NOTES_SUMMARY_SAMPLING_VERSION.to_string(),
+            highlight_budget: MAX_SUMMARY_HIGHLIGHTS,
+            thought_budget: MAX_SUMMARY_THOUGHTS,
+            available_highlight_count: notes.highlights.len(),
+            available_thought_count: notes.thoughts.len(),
+            included_highlight_count: selected_highlights.indices.len(),
+            included_thought_count: selected_thoughts.indices.len(),
+            covered_chapter_count,
+            coverage: "sampled".to_string(),
+        }),
     };
     let reading_stage = notes
         .book
@@ -6672,10 +7973,10 @@ fn build_summary_input(
             "totalNoteCount": book.total_note_count
         })
     });
-    let highlights = notes
-        .highlights
+    let highlights = selected_highlights
+        .indices
         .iter()
-        .take(MAX_SUMMARY_HIGHLIGHTS)
+        .filter_map(|index| notes.highlights.get(*index))
         .map(|highlight| {
             json!({
                 "type": "highlight",
@@ -6685,10 +7986,10 @@ fn build_summary_input(
             })
         })
         .collect::<Vec<_>>();
-    let thoughts = notes
-        .thoughts
+    let thoughts = selected_thoughts
+        .indices
         .iter()
-        .take(MAX_SUMMARY_THOUGHTS)
+        .filter_map(|index| notes.thoughts.get(*index))
         .map(|thought| {
             json!({
                 "type": "thought",
@@ -8091,6 +9392,10 @@ fn build_reading_assistant_context(
     connection: &rusqlite::Connection,
     request: &ReadingAssistantContextBuildRequest,
 ) -> Result<ReadingAssistantContextBundle, AiServiceError> {
+    if request.intent == ReadingAssistantIntent::CategoryBooksAnalysis {
+        return build_reading_assistant_category_books_analysis_context(request);
+    }
+
     if !request.preferences.use_personalized_context {
         return Ok(ReadingAssistantContextBundle {
             payload: json!({
@@ -8118,8 +9423,6 @@ fn build_reading_assistant_context(
                     connection,
                     book_id,
                     &enabled_context,
-                    &request.preferences,
-                    &request.user_message,
                     &mut context,
                     &mut used_context,
                     &mut source_count,
@@ -8208,6 +9511,7 @@ fn build_reading_assistant_context(
                         matched_item_count: None,
                         coverage: None,
                         truncated: None,
+                        diagnostic: None,
                     });
                     source_count += item_count;
                 }
@@ -8223,6 +9527,61 @@ fn build_reading_assistant_context(
         }),
         used_context,
         source_count,
+    })
+}
+
+fn build_reading_assistant_category_books_analysis_context(
+    request: &ReadingAssistantContextBuildRequest,
+) -> Result<ReadingAssistantContextBundle, AiServiceError> {
+    let action = request.category_books_analysis.as_ref().ok_or_else(|| {
+        AiServiceError::InvalidProviderOutput("分类书目分析缺少本地书目结果。".to_string())
+    })?;
+    let books = action
+        .books
+        .iter()
+        .map(|book| {
+            json!({
+                "bookId": book.book_id,
+                "title": book.title,
+                "author": book.author,
+                "category": book.category,
+                "readStatus": if book.is_finished { "finished" } else { "started" }
+            })
+        })
+        .collect::<Vec<_>>();
+    let total_stat_count = action
+        .total_stat_count
+        .and_then(|count| usize::try_from(count).ok());
+    let has_unconfirmed_books = total_stat_count.is_some_and(|count| count > action.listed_count);
+    let used_context = vec![ReadingAssistantUsedContext {
+        context_type: ReadingAssistantContextOption::BookCatalog,
+        label: "分类书目".to_string(),
+        source_refs: vec![format!("catalog:{}", action.category_label)],
+        item_count: action.listed_count,
+        available_item_count: total_stat_count,
+        matched_item_count: Some(action.listed_count),
+        coverage: None,
+        truncated: has_unconfirmed_books.then_some(true),
+        diagnostic: None,
+    }];
+
+    Ok(ReadingAssistantContextBundle {
+        payload: json!({
+            "basis": "本次仅提供本机可确认的分类书目、分类与阅读状态；不包含原始笔记、书籍全文、阅读记忆或历史对话。",
+            "scope": assistant_scope_as_str(&request.scope),
+            "context": {
+                "catalogAnalysis": {
+                    "categoryLabel": action.category_label,
+                    "queryStatus": action.query_status,
+                    "totalStatCount": action.total_stat_count,
+                    "confirmedBookCount": action.listed_count,
+                    "hasUnconfirmedBooks": has_unconfirmed_books,
+                    "books": books
+                }
+            }
+        }),
+        used_context,
+        source_count: action.listed_count,
     })
 }
 
@@ -8325,6 +9684,7 @@ fn add_used_context(
         matched_item_count: None,
         coverage: None,
         truncated: None,
+        diagnostic: None,
     });
     *source_count += item_count;
 }
@@ -8333,8 +9693,6 @@ fn add_book_detail_context(
     connection: &rusqlite::Connection,
     book_id: &str,
     enabled_context: &HashSet<ReadingAssistantContextOption>,
-    preferences: &ReadingAssistantPreferences,
-    user_message: &str,
     context: &mut Map<String, Value>,
     used_context: &mut Vec<ReadingAssistantUsedContext>,
     source_count: &mut usize,
@@ -8388,79 +9746,6 @@ fn add_book_detail_context(
                 1,
                 source_count,
             );
-        }
-    }
-
-    if preferences.allow_raw_book_notes
-        && context_option_enabled(
-            enabled_context,
-            &ReadingAssistantContextOption::RawBookNotes,
-        )
-    {
-        let notes_context = match read_assistant_retrieved_book_notes_context(
-            connection,
-            &normalized_book_id,
-            user_message,
-        ) {
-            Ok(notes) => notes,
-            Err(_) => read_assistant_raw_book_notes_context(connection, &normalized_book_id)?.map(
-                |mut notes| {
-                    if let Some(object) = notes.as_object_mut() {
-                        object.insert(
-                            "retrievalFallback".to_string(),
-                            json!("balancedSampleAfterRetrievalFailure"),
-                        );
-                        object.insert("retrievalMode".to_string(), json!("unavailable"));
-                    }
-                    notes
-                },
-            ),
-        };
-        if let Some(notes) = notes_context {
-            let item_count = notes
-                .get("includedItemCount")
-                .and_then(Value::as_u64)
-                .map(|value| value as usize)
-                .unwrap_or(0);
-            let available_item_count = notes
-                .get("availableItemCount")
-                .and_then(Value::as_u64)
-                .map(|value| value as usize);
-            let matched_item_count = notes
-                .get("matchedItemCount")
-                .and_then(Value::as_u64)
-                .map(|value| value as usize);
-            let coverage = notes
-                .get("coverage")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            let truncated = notes.get("truncated").and_then(Value::as_bool);
-            let source_refs = notes
-                .get("items")
-                .and_then(Value::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(|item| item.get("documentId").and_then(Value::as_str))
-                        .map(|document_id| format!("retrieval:{document_id}"))
-                        .collect::<Vec<_>>()
-                })
-                .filter(|items| !items.is_empty())
-                .unwrap_or_else(|| vec![format!("notes:{normalized_book_id}")]);
-            context.insert("rawBookNotes".to_string(), notes);
-            if item_count > 0 {
-                used_context.push(ReadingAssistantUsedContext {
-                    context_type: ReadingAssistantContextOption::RawBookNotes,
-                    label: "相关原始笔记".to_string(),
-                    source_refs,
-                    item_count,
-                    available_item_count,
-                    matched_item_count,
-                    coverage,
-                    truncated,
-                });
-                *source_count += item_count;
-            }
         }
     }
 
@@ -9022,23 +10307,24 @@ fn select_balanced_raw_note_items(
 }
 
 fn reading_assistant_note_search_output(
-    book_id: String,
+    scope: &str,
+    book_id: Option<String>,
     title: Option<String>,
+    searched_book_count: usize,
     plan: &crate::services::retrieval::NoteRetrievalPlan,
     result: crate::services::retrieval::NoteRetrievalResult,
     allow_raw_book_notes: bool,
 ) -> ReadingAssistantNoteSearchOutput {
-    let coverage = if result.exhaustive_match {
-        "exhaustiveMatch"
-    } else {
-        "sampled"
-    };
+    let coverage = result.diagnostic.coverage.clone();
+    let diagnostic = result.diagnostic.clone();
     let items = result
         .hits
         .into_iter()
         .map(|hit| ReadingAssistantNoteSearchItem {
             document_id: hit.document_id,
             source_id: hit.source_id,
+            book_id: hit.book_id,
+            book_title: hit.book_title,
             note_type: hit.source_type,
             chapter_uid: hit.chapter_uid,
             chapter_title: hit.chapter_title,
@@ -9047,8 +10333,11 @@ fn reading_assistant_note_search_output(
         })
         .collect::<Vec<_>>();
     ReadingAssistantNoteSearchOutput {
+        scope: scope.to_string(),
         book_id,
         title,
+        searched_book_count,
+        diagnostic: Some(ReadingAssistantDiagnostic::Structured(diagnostic)),
         query_text: result.query_text,
         mode: result.mode.as_str().to_string(),
         coverage: coverage.to_string(),
@@ -9066,12 +10355,61 @@ fn reading_assistant_note_search_output(
     }
 }
 
-fn read_assistant_retrieved_book_notes_context(
+#[derive(Debug, Clone)]
+struct RetrievalIndexProfileState {
+    status: String,
+    provider_kind: String,
+    model_id: String,
+    dimensions: i64,
+    provider_hash: Option<String>,
+}
+
+fn read_latest_retrieval_index_profile(
+    connection: &rusqlite::Connection,
+) -> Result<Option<RetrievalIndexProfileState>, AiServiceError> {
+    connection
+        .query_row(
+            "SELECT status, provider_kind, model_id, dimensions, provider_base_url_hash
+             FROM retrieval_index_profiles
+             ORDER BY updated_at DESC, id DESC LIMIT 1",
+            [],
+            |row| {
+                Ok(RetrievalIndexProfileState {
+                    status: row.get(0)?,
+                    provider_kind: row.get(1)?,
+                    model_id: row.get(2)?,
+                    dimensions: row.get(3)?,
+                    provider_hash: row.get(4)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(AiServiceError::storage)
+}
+
+fn annotate_retrieval_result(
+    mut result: NoteRetrievalResult,
+    index_status: Option<&str>,
+    reason: Option<&str>,
+) -> NoteRetrievalResult {
+    result.diagnostic.strategy = result.mode.as_str().to_string();
+    result.diagnostic.available_item_count = result.available_item_count;
+    result.diagnostic.matched_item_count = result.matched_item_count;
+    result.diagnostic.included_item_count = result.hits.len();
+    result.diagnostic.coverage = if result.exhaustive_match {
+        "exhaustiveMatch".to_string()
+    } else {
+        "sampled".to_string()
+    };
+    result.diagnostic.index_status = index_status.map(str::to_string);
+    result.diagnostic.reason = reason.map(str::to_string);
+    result
+}
+
+fn ensure_reading_assistant_retrieval_documents(
     connection: &rusqlite::Connection,
     book_id: &str,
-    user_message: &str,
-) -> Result<Option<Value>, AiServiceError> {
-    let plan = plan_note_retrieval(user_message);
+) -> Result<(), AiServiceError> {
     let indexed_item_count = connection
         .query_row(
             "SELECT COUNT(*) FROM retrieval_documents WHERE book_id = ?1 AND deleted_at IS NULL",
@@ -9085,13 +10423,54 @@ fn read_assistant_retrieved_book_notes_context(
             .map_err(AiServiceError::storage)?;
     }
 
-    let result = search_book_notes(connection, book_id, &plan, None, None)
+    Ok(())
+}
+
+fn ensure_library_reading_assistant_retrieval_documents(
+    connection: &rusqlite::Connection,
+) -> Result<(), AiServiceError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT book_id FROM highlights
+             UNION
+             SELECT book_id FROM thoughts
+             ORDER BY book_id ASC",
+        )
         .map_err(AiServiceError::storage)?;
+    let book_ids = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(AiServiceError::storage)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(AiServiceError::storage)?;
+    for book_id in book_ids {
+        ensure_reading_assistant_retrieval_documents(connection, &book_id)?;
+    }
+
+    Ok(())
+}
+
+fn read_library_note_book_count(
+    connection: &rusqlite::Connection,
+) -> Result<usize, AiServiceError> {
+    connection
+        .query_row(
+            "SELECT COUNT(DISTINCT book_id)
+             FROM retrieval_documents
+             WHERE deleted_at IS NULL",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|count| count as usize)
+        .map_err(AiServiceError::storage)
+}
+
+fn reading_assistant_retrieved_book_notes_context(result: NoteRetrievalResult) -> Option<Value> {
     if result.hits.is_empty() {
-        return Ok(None);
+        return None;
     }
 
     let mode = result.mode.as_str();
+    let diagnostic = result.diagnostic.clone();
     let basis = match result.mode {
         NoteRetrievalMode::Recent => {
             "用户已允许将当前书有限数量的原始笔记用于本次助手回答；当前问题未提取出有效检索词，因此按近期和类型多样性选择上下文。"
@@ -9132,7 +10511,7 @@ fn read_assistant_retrieved_book_notes_context(
         .collect::<Vec<_>>();
     let included_item_count = items.len();
 
-    Ok(Some(json!({
+    Some(json!({
         "basis": basis,
         "selectionStrategy": "dynamicTopK",
         "retrievalMode": mode,
@@ -9141,11 +10520,79 @@ fn read_assistant_retrieved_book_notes_context(
         "availableItemCount": result.available_item_count,
         "matchedItemCount": result.matched_item_count,
         "includedItemCount": included_item_count,
+        "diagnostic": diagnostic,
         "truncated": result.truncated,
         "hasMore": result.has_more,
         "nextCursor": result.next_cursor,
         "items": items
-    })))
+    }))
+}
+
+fn add_reading_assistant_raw_note_context(
+    context_bundle: &mut ReadingAssistantContextBundle,
+    book_id: &str,
+    notes: Value,
+) -> Result<(), AiServiceError> {
+    let item_count = notes
+        .get("includedItemCount")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or(0);
+    if item_count == 0 {
+        return Ok(());
+    }
+    let available_item_count = notes
+        .get("availableItemCount")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize);
+    let matched_item_count = notes
+        .get("matchedItemCount")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize);
+    let coverage = notes
+        .get("coverage")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let truncated = notes.get("truncated").and_then(Value::as_bool);
+    let diagnostic = notes
+        .get("diagnostic")
+        .and_then(|value| serde_json::from_value(value.clone()).ok());
+    let source_refs = notes
+        .get("items")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("documentId").and_then(Value::as_str))
+                .map(|document_id| format!("retrieval:{document_id}"))
+                .collect::<Vec<_>>()
+        })
+        .filter(|items| !items.is_empty())
+        .unwrap_or_else(|| vec![format!("notes:{book_id}")]);
+    let context = context_bundle
+        .payload
+        .get_mut("context")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| {
+            AiServiceError::InvalidProviderOutput("阅读助手上下文缺少结构化容器。".to_string())
+        })?;
+    context.insert("rawBookNotes".to_string(), notes);
+    context_bundle
+        .used_context
+        .push(ReadingAssistantUsedContext {
+            context_type: ReadingAssistantContextOption::RawBookNotes,
+            label: "相关原始笔记".to_string(),
+            source_refs,
+            item_count,
+            available_item_count,
+            matched_item_count,
+            coverage,
+            truncated,
+            diagnostic,
+        });
+    context_bundle.source_count += item_count;
+
+    Ok(())
 }
 
 fn read_assistant_raw_book_notes_context(
@@ -10092,6 +11539,726 @@ fn reading_assistant_weread_search_answer(keyword: &str, result_count: usize) ->
     )
 }
 
+fn build_reading_assistant_book_catalog_output(
+    connection: &rusqlite::Connection,
+    message: &str,
+) -> Result<ReadingAssistantBookCatalogOutput, AiServiceError> {
+    let query = parse_reading_assistant_book_catalog_query(message).ok_or_else(|| {
+        AiServiceError::InvalidProviderOutput("未识别到明确的本地书名查询。".to_string())
+    })?;
+    let candidates = read_reading_assistant_book_catalog_candidates(connection)?;
+    let source_updated_at = read_reading_assistant_book_catalog_source_updated_at(connection)?;
+    let mut matched = candidates
+        .into_iter()
+        .filter_map(|candidate| {
+            match_reading_assistant_book_catalog_candidate(&candidate, &query.target_text)
+                .map(|reason| (candidate, reason))
+        })
+        .collect::<Vec<_>>();
+    let matched_metadata_count = matched.len();
+    let matched_reading_count = matched
+        .iter()
+        .filter(|(candidate, _)| candidate.has_reading_evidence())
+        .count();
+    let has_title_match = matched
+        .iter()
+        .any(|(_, reason)| !matches!(reason, ReadingAssistantBookCatalogMatchReason::Author));
+    let has_author_match = matched
+        .iter()
+        .any(|(_, reason)| matches!(reason, ReadingAssistantBookCatalogMatchReason::Author));
+
+    let mut unconfirmed = matched
+        .iter()
+        .filter(|(candidate, _)| match query.read_filter {
+            ReadingAssistantBookCatalogReadFilter::HasEvidence => !candidate.has_reading_evidence(),
+            ReadingAssistantBookCatalogReadFilter::Started => {
+                !candidate.has_reading_evidence() || candidate.is_finished
+            }
+            ReadingAssistantBookCatalogReadFilter::Finished => !candidate.is_finished,
+            ReadingAssistantBookCatalogReadFilter::AllLocalBooks => false,
+        })
+        .collect::<Vec<_>>();
+    unconfirmed.sort_by(|(left, left_reason), (right, right_reason)| {
+        reading_assistant_book_catalog_match_rank(*left_reason)
+            .cmp(&reading_assistant_book_catalog_match_rank(*right_reason))
+            .then_with(|| right.is_finished.cmp(&left.is_finished))
+            .then_with(|| {
+                right
+                    .progress_percent
+                    .unwrap_or_default()
+                    .cmp(&left.progress_percent.unwrap_or_default())
+            })
+            .then_with(|| {
+                right
+                    .last_read_at
+                    .unwrap_or_default()
+                    .cmp(&left.last_read_at.unwrap_or_default())
+            })
+            .then_with(|| left.title.cmp(&right.title))
+            .then_with(|| left.book_id.cmp(&right.book_id))
+    });
+    let unconfirmed_books = unconfirmed
+        .iter()
+        .take(MAX_READING_ASSISTANT_BOOK_CATALOG_BOOKS)
+        .map(|(candidate, reason)| reading_assistant_book_catalog_item(candidate, *reason))
+        .collect::<Vec<_>>();
+
+    matched.retain(|(candidate, _)| match query.read_filter {
+        ReadingAssistantBookCatalogReadFilter::HasEvidence => candidate.has_reading_evidence(),
+        ReadingAssistantBookCatalogReadFilter::Started => {
+            candidate.has_reading_evidence() && !candidate.is_finished
+        }
+        ReadingAssistantBookCatalogReadFilter::Finished => candidate.is_finished,
+        ReadingAssistantBookCatalogReadFilter::AllLocalBooks => true,
+    });
+    matched.sort_by(|(left, left_reason), (right, right_reason)| {
+        reading_assistant_book_catalog_match_rank(*left_reason)
+            .cmp(&reading_assistant_book_catalog_match_rank(*right_reason))
+            .then_with(|| right.is_finished.cmp(&left.is_finished))
+            .then_with(|| {
+                right
+                    .progress_percent
+                    .unwrap_or_default()
+                    .cmp(&left.progress_percent.unwrap_or_default())
+            })
+            .then_with(|| {
+                right
+                    .last_read_at
+                    .unwrap_or_default()
+                    .cmp(&left.last_read_at.unwrap_or_default())
+            })
+            .then_with(|| left.title.cmp(&right.title))
+            .then_with(|| left.book_id.cmp(&right.book_id))
+    });
+
+    let truncated = matched.len() > MAX_READING_ASSISTANT_BOOK_CATALOG_BOOKS;
+    let books = matched
+        .iter()
+        .take(MAX_READING_ASSISTANT_BOOK_CATALOG_BOOKS)
+        .map(|(candidate, reason)| reading_assistant_book_catalog_item(candidate, *reason))
+        .collect::<Vec<_>>();
+    let listed_count = books.len();
+    let query_status = if listed_count > 0 {
+        "found"
+    } else if matched_metadata_count > 0 {
+        "partial"
+    } else {
+        "empty"
+    }
+    .to_string();
+    let mut missing_reasons = Vec::new();
+    if matched_metadata_count > 0 && matched_reading_count == 0 {
+        missing_reasons.push("readingStateMissing".to_string());
+    }
+    let catalog_coverage = if source_updated_at.catalog.is_none() {
+        missing_reasons.push("bookMetadataNotSynced".to_string());
+        if source_updated_at.note_summary.is_some() {
+            "partial"
+        } else {
+            "unavailable"
+        }
+    } else if missing_reasons.is_empty() {
+        "complete"
+    } else {
+        "partial"
+    }
+    .to_string();
+    let query_kind = if !has_title_match && has_author_match {
+        "author"
+    } else {
+        "title"
+    }
+    .to_string();
+    let message = reading_assistant_book_catalog_message(
+        &query,
+        &query_kind,
+        matched_metadata_count,
+        matched_reading_count,
+        listed_count,
+        truncated,
+    );
+
+    Ok(ReadingAssistantBookCatalogOutput {
+        query_kind,
+        query_text: query.target_text,
+        query_status,
+        matched_metadata_count,
+        matched_reading_count,
+        listed_count,
+        truncated,
+        message,
+        books,
+        unconfirmed_books,
+        diagnostics: ReadingAssistantBookCatalogDiagnostics {
+            catalog_coverage,
+            missing_reasons,
+            source_updated_at: Some(source_updated_at),
+        },
+    })
+}
+
+fn reading_assistant_book_catalog_item(
+    candidate: &ReadingAssistantBookCatalogCandidate,
+    reason: ReadingAssistantBookCatalogMatchReason,
+) -> ReadingAssistantBookCatalogItem {
+    ReadingAssistantBookCatalogItem {
+        book_id: candidate.book_id.clone(),
+        title: candidate.title.clone(),
+        author: candidate.author.clone(),
+        category: candidate.category.clone(),
+        match_reason: reason.as_str().to_string(),
+        read_status: candidate.read_status().to_string(),
+        progress_percent: candidate.progress_percent,
+        total_note_count: candidate.total_note_count,
+        highlight_count: candidate.highlight_count,
+        thought_count: candidate.thought_count,
+        sources: candidate.sources.clone(),
+    }
+}
+
+fn reading_assistant_book_catalog_message(
+    query: &ReadingAssistantBookCatalogQuery,
+    query_kind: &str,
+    matched_metadata_count: usize,
+    matched_reading_count: usize,
+    listed_count: usize,
+    truncated: bool,
+) -> String {
+    if listed_count > 0 {
+        let relation = if query_kind == "author" {
+            "作者"
+        } else {
+            "书名"
+        };
+        let read_label = match query.read_filter {
+            ReadingAssistantBookCatalogReadFilter::Finished => "已读完",
+            ReadingAssistantBookCatalogReadFilter::Started => "有阅读记录但未完成",
+            ReadingAssistantBookCatalogReadFilter::HasEvidence => "有阅读证据",
+            ReadingAssistantBookCatalogReadFilter::AllLocalBooks => "本地记录",
+        };
+        let truncated_notice =
+            truncated.then_some("结果较多，已展示前 20 本；可补充完整书名或作者继续缩小范围。");
+        return [
+            format!(
+                "本机书目中找到 {} 本与“{}”{}匹配且{}的书。",
+                listed_count, query.target_text, relation, read_label
+            ),
+            truncated_notice.unwrap_or_default().to_string(),
+        ]
+        .into_iter()
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    }
+
+    if matched_metadata_count > 0 {
+        return format!(
+            "本机书目中找到 {} 本与“{}”匹配的书，但其中没有符合“{}”条件的可确认阅读记录。",
+            matched_metadata_count,
+            query.target_text,
+            match query.read_filter {
+                ReadingAssistantBookCatalogReadFilter::Finished => "已读完",
+                ReadingAssistantBookCatalogReadFilter::Started => "在读",
+                ReadingAssistantBookCatalogReadFilter::HasEvidence => "读过",
+                ReadingAssistantBookCatalogReadFilter::AllLocalBooks => "本地书目",
+            }
+        );
+    }
+
+    let _ = matched_reading_count;
+    format!(
+        "本机书目中没有找到与“{}”匹配的书籍记录。",
+        query.target_text
+    )
+}
+
+fn reading_assistant_book_catalog_answer(action: &ReadingAssistantBookCatalogOutput) -> String {
+    match action.query_status.as_str() {
+        "found" => {
+            let read_label = action
+                .books
+                .iter()
+                .filter(|book| book.read_status == "finished")
+                .count();
+            format!(
+                "{}\n\n范围说明：\n- 本机书目匹配 {} 本，其中 {} 本有阅读证据。\n- 下方列表只展示符合本次阅读状态条件的本地记录。",
+                action.message,
+                action.matched_metadata_count,
+                read_label.max(action.matched_reading_count)
+            )
+        }
+        "partial" => {
+            let has_catalog = action
+                .diagnostics
+                .source_updated_at
+                .as_ref()
+                .and_then(|source| source.catalog.as_ref())
+                .is_some();
+            let next_step = if has_catalog {
+                "请打开相关书籍详情页刷新阅读进度后再查询。"
+            } else {
+                "请先同步本地书架后再查询。"
+            };
+            format!(
+                "{}\n\n范围说明：\n- 本机存在匹配书目，但没有足够的阅读证据确认本次阅读状态。\n- {}",
+                action.message, next_step
+            )
+        }
+        _ => format!(
+            "{}\n\n建议：\n- 先同步本地书架后重试。\n- 也可以使用《书名》或作者名缩小查询范围。",
+            action.message
+        ),
+    }
+}
+
+fn read_reading_assistant_book_catalog_candidates(
+    connection: &rusqlite::Connection,
+) -> Result<Vec<ReadingAssistantBookCatalogCandidate>, AiServiceError> {
+    let mut candidates = Vec::new();
+    collect_reading_assistant_shelf_book_catalog_candidates(connection, &mut candidates)?;
+    collect_reading_assistant_detail_book_catalog_candidates(connection, &mut candidates)?;
+    collect_reading_assistant_progress_book_catalog_candidates(connection, &mut candidates)?;
+    collect_reading_assistant_state_book_catalog_candidates(connection, &mut candidates)?;
+    collect_reading_assistant_notebook_book_catalog_candidates(connection, &mut candidates)?;
+    let mut candidates = merge_reading_assistant_book_catalog_candidates(candidates);
+    let note_counts = read_reading_assistant_book_catalog_note_counts(connection)?;
+    for candidate in &mut candidates {
+        if let Some((total, highlights, thoughts)) = note_counts.get(&candidate.book_id) {
+            candidate.total_note_count = Some(*total);
+            candidate.highlight_count = Some(*highlights);
+            candidate.thought_count = Some(*thoughts);
+            append_reading_assistant_book_catalog_source(&mut candidate.sources, "notebookBooks");
+        }
+    }
+    Ok(candidates)
+}
+
+fn collect_reading_assistant_shelf_book_catalog_candidates(
+    connection: &rusqlite::Connection,
+    candidates: &mut Vec<ReadingAssistantBookCatalogCandidate>,
+) -> Result<(), AiServiceError> {
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT id, title, author, category, is_finished, last_read_at
+            FROM shelf_entries
+            WHERE type = 'book'
+              AND title IS NOT NULL
+              AND TRIM(title) != ''
+            ",
+        )
+        .map_err(AiServiceError::storage)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+            ))
+        })
+        .map_err(AiServiceError::storage)?;
+    for row in rows {
+        let (book_id, title, author, category, is_finished, last_read_at) =
+            row.map_err(AiServiceError::storage)?;
+        candidates.push(reading_assistant_book_catalog_candidate(
+            book_id,
+            title,
+            author,
+            category,
+            None,
+            is_finished.unwrap_or_default() != 0,
+            None,
+            last_read_at,
+            "shelf",
+        ));
+    }
+    Ok(())
+}
+
+fn collect_reading_assistant_detail_book_catalog_candidates(
+    connection: &rusqlite::Connection,
+    candidates: &mut Vec<ReadingAssistantBookCatalogCandidate>,
+) -> Result<(), AiServiceError> {
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT
+                detail.book_id,
+                detail.title,
+                detail.author,
+                detail.category,
+                progress.progress_percent,
+                progress.finish_time,
+                progress.record_reading_time_seconds
+            FROM book_details detail
+            LEFT JOIN book_progress progress ON progress.book_id = detail.book_id
+            WHERE detail.title IS NOT NULL
+              AND TRIM(detail.title) != ''
+            ",
+        )
+        .map_err(AiServiceError::storage)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+                row.get::<_, Option<i64>>(6)?,
+            ))
+        })
+        .map_err(AiServiceError::storage)?;
+    for row in rows {
+        let (book_id, title, author, category, progress_percent, finish_time, reading_time_seconds) =
+            row.map_err(AiServiceError::storage)?;
+        let has_progress =
+            progress_percent.is_some() || finish_time.is_some() || reading_time_seconds.is_some();
+        let mut candidate = reading_assistant_book_catalog_candidate(
+            book_id,
+            title,
+            author,
+            category,
+            progress_percent.map(|value| value.clamp(0, 100)),
+            progress_percent.unwrap_or_default() >= 99 || finish_time.unwrap_or_default() > 0,
+            reading_time_seconds.filter(|value| *value > 0),
+            None,
+            "detail",
+        );
+        if has_progress {
+            append_reading_assistant_book_catalog_source(&mut candidate.sources, "progress");
+        }
+        candidates.push(candidate);
+    }
+    Ok(())
+}
+
+fn collect_reading_assistant_progress_book_catalog_candidates(
+    connection: &rusqlite::Connection,
+    candidates: &mut Vec<ReadingAssistantBookCatalogCandidate>,
+) -> Result<(), AiServiceError> {
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT
+                progress.book_id,
+                COALESCE(shelf.title, detail.title, notes.title),
+                COALESCE(shelf.author, detail.author, notes.author),
+                COALESCE(shelf.category, detail.category),
+                progress.progress_percent,
+                progress.finish_time,
+                progress.record_reading_time_seconds
+            FROM book_progress progress
+            LEFT JOIN shelf_entries shelf
+                ON shelf.id = progress.book_id AND shelf.type = 'book'
+            LEFT JOIN book_details detail ON detail.book_id = progress.book_id
+            LEFT JOIN notebook_books notes ON notes.book_id = progress.book_id
+            WHERE COALESCE(shelf.title, detail.title, notes.title) IS NOT NULL
+              AND TRIM(COALESCE(shelf.title, detail.title, notes.title)) != ''
+            ",
+        )
+        .map_err(AiServiceError::storage)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+                row.get::<_, Option<i64>>(6)?,
+            ))
+        })
+        .map_err(AiServiceError::storage)?;
+    for row in rows {
+        let (book_id, title, author, category, progress_percent, finish_time, reading_time_seconds) =
+            row.map_err(AiServiceError::storage)?;
+        candidates.push(reading_assistant_book_catalog_candidate(
+            book_id,
+            title,
+            author,
+            category,
+            progress_percent.map(|value| value.clamp(0, 100)),
+            progress_percent.unwrap_or_default() >= 99 || finish_time.unwrap_or_default() > 0,
+            reading_time_seconds.filter(|value| *value > 0),
+            None,
+            "progress",
+        ));
+    }
+    Ok(())
+}
+
+fn collect_reading_assistant_state_book_catalog_candidates(
+    connection: &rusqlite::Connection,
+    candidates: &mut Vec<ReadingAssistantBookCatalogCandidate>,
+) -> Result<(), AiServiceError> {
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT item_id, status, title, author, category, updated_at, life_status
+            FROM reading_item_states
+            WHERE item_type = 'book'
+              AND status != 'toRead'
+              AND title IS NOT NULL
+              AND TRIM(title) != ''
+            ",
+        )
+        .map_err(AiServiceError::storage)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(6)?,
+            ))
+        })
+        .map_err(AiServiceError::storage)?;
+    for row in rows {
+        let (book_id, status, title, author, category, updated_at, life_status) =
+            row.map_err(AiServiceError::storage)?;
+        let is_finished = life_status.as_deref() == Some("finished")
+            || (life_status.as_deref() != Some("dropped") && status == "organized");
+        candidates.push(reading_assistant_book_catalog_candidate(
+            book_id,
+            title,
+            author,
+            category,
+            None,
+            is_finished,
+            None,
+            updated_at.parse::<i64>().ok(),
+            "localState",
+        ));
+    }
+    Ok(())
+}
+
+fn collect_reading_assistant_notebook_book_catalog_candidates(
+    connection: &rusqlite::Connection,
+    candidates: &mut Vec<ReadingAssistantBookCatalogCandidate>,
+) -> Result<(), AiServiceError> {
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT book_id, title, author, total_note_count, note_count, review_count, updated_at
+            FROM notebook_books
+            WHERE total_note_count > 0
+               OR note_count > 0
+               OR review_count > 0
+            ",
+        )
+        .map_err(AiServiceError::storage)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        })
+        .map_err(AiServiceError::storage)?;
+    for row in rows {
+        let (book_id, title, author, total, highlights, thoughts, updated_at) =
+            row.map_err(AiServiceError::storage)?;
+        let mut candidate = reading_assistant_book_catalog_candidate(
+            book_id,
+            title,
+            author,
+            None,
+            None,
+            false,
+            None,
+            updated_at.parse::<i64>().ok(),
+            "notebookBooks",
+        );
+        candidate.has_note_evidence = true;
+        candidate.total_note_count = Some(total.max(0));
+        candidate.highlight_count = Some(highlights.max(0));
+        candidate.thought_count = Some(thoughts.max(0));
+        candidates.push(candidate);
+    }
+    Ok(())
+}
+
+fn reading_assistant_book_catalog_candidate(
+    book_id: String,
+    title: String,
+    author: Option<String>,
+    category: Option<String>,
+    progress_percent: Option<i64>,
+    is_finished: bool,
+    reading_time_seconds: Option<i64>,
+    last_read_at: Option<i64>,
+    source: &str,
+) -> ReadingAssistantBookCatalogCandidate {
+    ReadingAssistantBookCatalogCandidate {
+        book_id,
+        title,
+        author: normalize_route_optional(author, 120),
+        category: normalize_route_optional(category, 120),
+        progress_percent,
+        is_finished,
+        reading_time_seconds,
+        last_read_at,
+        has_note_evidence: false,
+        sources: vec![source.to_string()],
+        total_note_count: None,
+        highlight_count: None,
+        thought_count: None,
+    }
+}
+
+fn merge_reading_assistant_book_catalog_candidates(
+    candidates: Vec<ReadingAssistantBookCatalogCandidate>,
+) -> Vec<ReadingAssistantBookCatalogCandidate> {
+    let mut merged = BTreeMap::<String, ReadingAssistantBookCatalogCandidate>::new();
+    for candidate in candidates {
+        if let Some(existing) = merged.get_mut(&candidate.book_id) {
+            existing.is_finished |= candidate.is_finished;
+            existing.progress_percent =
+                max_optional_i64(existing.progress_percent, candidate.progress_percent);
+            existing.reading_time_seconds = max_optional_i64(
+                existing.reading_time_seconds,
+                candidate.reading_time_seconds,
+            );
+            existing.last_read_at = max_optional_i64(existing.last_read_at, candidate.last_read_at);
+            existing.has_note_evidence |= candidate.has_note_evidence;
+            if existing.author.is_none() {
+                existing.author = candidate.author;
+            }
+            if existing.category.is_none() {
+                existing.category = candidate.category;
+            }
+            for source in candidate.sources {
+                append_reading_assistant_book_catalog_source(&mut existing.sources, &source);
+            }
+        } else {
+            merged.insert(candidate.book_id.clone(), candidate);
+        }
+    }
+    merged.into_values().collect()
+}
+
+fn append_reading_assistant_book_catalog_source(target: &mut Vec<String>, source: &str) {
+    if !target.iter().any(|item| item == source) {
+        target.push(source.to_string());
+    }
+}
+
+fn read_reading_assistant_book_catalog_note_counts(
+    connection: &rusqlite::Connection,
+) -> Result<HashMap<String, (i64, i64, i64)>, AiServiceError> {
+    let mut statement = connection
+        .prepare(
+            "
+            SELECT book_id, total_note_count, note_count, review_count
+            FROM notebook_books
+            ",
+        )
+        .map_err(AiServiceError::storage)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })
+        .map_err(AiServiceError::storage)?;
+    let mut counts = HashMap::new();
+    for row in rows {
+        let (book_id, total, highlights, thoughts) = row.map_err(AiServiceError::storage)?;
+        counts.insert(book_id, (total.max(0), highlights.max(0), thoughts.max(0)));
+    }
+    Ok(counts)
+}
+
+fn read_reading_assistant_book_catalog_source_updated_at(
+    connection: &rusqlite::Connection,
+) -> Result<ReadingAssistantBookCatalogSourceUpdatedAt, AiServiceError> {
+    let catalog = connection
+        .query_row(
+            "
+            SELECT MAX(updated_at)
+            FROM (
+                SELECT updated_at FROM shelf_entries
+                UNION ALL
+                SELECT updated_at FROM book_details
+            )
+            ",
+            [],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .map_err(AiServiceError::storage)?;
+    let progress = connection
+        .query_row("SELECT MAX(updated_at) FROM book_progress", [], |row| {
+            row.get::<_, Option<String>>(0)
+        })
+        .map_err(AiServiceError::storage)?;
+    let note_summary = connection
+        .query_row("SELECT MAX(updated_at) FROM notebook_books", [], |row| {
+            row.get::<_, Option<String>>(0)
+        })
+        .map_err(AiServiceError::storage)?;
+    Ok(ReadingAssistantBookCatalogSourceUpdatedAt {
+        catalog,
+        progress,
+        note_summary,
+    })
+}
+
+fn match_reading_assistant_book_catalog_candidate(
+    candidate: &ReadingAssistantBookCatalogCandidate,
+    target_text: &str,
+) -> Option<ReadingAssistantBookCatalogMatchReason> {
+    let target_key = normalize_local_book_title_key(target_text);
+    if target_key.is_empty() {
+        return None;
+    }
+    let title_key = normalize_local_book_title_key(&candidate.title);
+    if title_key == target_key {
+        return Some(ReadingAssistantBookCatalogMatchReason::ExactTitle);
+    }
+    if title_key.starts_with(&target_key) {
+        return Some(ReadingAssistantBookCatalogMatchReason::TitlePrefix);
+    }
+    if target_key.chars().count() >= 2 && title_key.contains(&target_key) {
+        return Some(ReadingAssistantBookCatalogMatchReason::TitleToken);
+    }
+    let author_key = candidate
+        .author
+        .as_deref()
+        .map(normalize_local_book_title_key)
+        .unwrap_or_default();
+    (!author_key.is_empty()
+        && target_key.chars().count() >= 2
+        && (author_key == target_key || author_key.contains(&target_key)))
+    .then_some(ReadingAssistantBookCatalogMatchReason::Author)
+}
+
+fn reading_assistant_book_catalog_match_rank(reason: ReadingAssistantBookCatalogMatchReason) -> u8 {
+    match reason {
+        ReadingAssistantBookCatalogMatchReason::ExactTitle => 0,
+        ReadingAssistantBookCatalogMatchReason::TitlePrefix => 1,
+        ReadingAssistantBookCatalogMatchReason::TitleToken => 2,
+        ReadingAssistantBookCatalogMatchReason::Author => 3,
+    }
+}
+
 fn build_reading_assistant_category_books_output(
     connection: &rusqlite::Connection,
     message: &str,
@@ -10149,9 +12316,21 @@ fn parse_reading_assistant_category_books_query(
         return None;
     }
 
-    let asks_book_list = ["哪些", "哪几本", "列出", "列一下", "书单", "书目", "有哪些"]
-        .iter()
-        .any(|token| message.contains(token));
+    let asks_book_list = [
+        "哪些",
+        "哪几本",
+        "列出",
+        "列一下",
+        "书单",
+        "书目",
+        "有哪些",
+        "梳理",
+        "归类",
+        "盘点",
+        "汇总",
+    ]
+    .iter()
+    .any(|token| message.contains(token));
     let mentions_book = message.contains("书") || message.contains("书籍");
     let mentions_read = ["读过", "看过", "读完", "已读", "读了", "阅读过", "读哪些"]
         .iter()
@@ -10193,9 +12372,14 @@ fn parse_reading_assistant_category_books_query(
             .then(|| ReadingAssistantCategoryBooksQuery {
                 label: (*label).to_string(),
                 aliases: aliases.iter().map(|alias| (*alias).to_string()).collect(),
-                require_finished: ["读完", "已读完", "完成"]
+                read_filter: if ["读完", "已读完", "完成"]
                     .iter()
-                    .any(|token| message.contains(token)),
+                    .any(|token| message.contains(token))
+                {
+                    ReadingAssistantCategoryReadFilter::Finished
+                } else {
+                    ReadingAssistantCategoryReadFilter::StartedOrFinished
+                },
             })
     })
 }
@@ -10253,14 +12437,15 @@ fn read_reading_assistant_category_books(
     query: &ReadingAssistantCategoryBooksQuery,
 ) -> Result<Vec<ReadingAssistantCategoryBookItem>, AiServiceError> {
     let mut candidates = Vec::new();
-    let mut seen = HashSet::new();
-    collect_shelf_category_books(connection, query, &mut seen, &mut candidates)?;
-    collect_progress_category_books(connection, query, &mut seen, &mut candidates)?;
-    collect_state_category_books(connection, query, &mut seen, &mut candidates)?;
+    collect_shelf_category_books(connection, query, &mut candidates)?;
+    collect_progress_category_books(connection, query, &mut candidates)?;
+    collect_state_category_books(connection, query, &mut candidates)?;
+    let mut candidates = merge_category_book_candidates(candidates);
 
-    if query.require_finished {
-        candidates.retain(|book| book.is_finished);
-    }
+    candidates.retain(|book| match query.read_filter {
+        ReadingAssistantCategoryReadFilter::Finished => book.is_finished,
+        ReadingAssistantCategoryReadFilter::StartedOrFinished => book.has_reading_evidence(),
+    });
 
     candidates.sort_by(|left, right| {
         right
@@ -10291,7 +12476,6 @@ fn read_reading_assistant_category_books(
 fn collect_shelf_category_books(
     connection: &rusqlite::Connection,
     query: &ReadingAssistantCategoryBooksQuery,
-    seen: &mut HashSet<String>,
     candidates: &mut Vec<ReadingAssistantCategoryBookCandidate>,
 ) -> Result<(), AiServiceError> {
     let mut statement = connection
@@ -10350,13 +12534,14 @@ fn collect_shelf_category_books(
             finish_time,
             reading_time_seconds,
         ) = row.map_err(AiServiceError::storage)?;
-        let category = normalize_route_optional(shelf_category, 120)
-            .or_else(|| normalize_route_optional(detail_category, 120));
-        if !category
-            .as_deref()
-            .is_some_and(|value| category_matches_query(value, query))
-            || !seen.insert(book_id.clone())
-        {
+        let category = select_matching_category(
+            query,
+            [
+                normalize_route_optional(shelf_category, 120),
+                normalize_route_optional(detail_category, 120),
+            ],
+        );
+        if category.is_none() {
             continue;
         }
 
@@ -10382,7 +12567,6 @@ fn collect_shelf_category_books(
 fn collect_progress_category_books(
     connection: &rusqlite::Connection,
     query: &ReadingAssistantCategoryBooksQuery,
-    seen: &mut HashSet<String>,
     candidates: &mut Vec<ReadingAssistantCategoryBookCandidate>,
 ) -> Result<(), AiServiceError> {
     let mut statement = connection
@@ -10429,7 +12613,6 @@ fn collect_progress_category_books(
         if !category
             .as_deref()
             .is_some_and(|value| category_matches_query(value, query))
-            || !seen.insert(book_id.clone())
         {
             continue;
         }
@@ -10453,7 +12636,6 @@ fn collect_progress_category_books(
 fn collect_state_category_books(
     connection: &rusqlite::Connection,
     query: &ReadingAssistantCategoryBooksQuery,
-    seen: &mut HashSet<String>,
     candidates: &mut Vec<ReadingAssistantCategoryBookCandidate>,
 ) -> Result<(), AiServiceError> {
     let mut statement = connection
@@ -10488,7 +12670,6 @@ fn collect_state_category_books(
         if !category
             .as_deref()
             .is_some_and(|value| category_matches_query(value, query))
-            || !seen.insert(book_id.clone())
         {
             continue;
         }
@@ -10512,6 +12693,7 @@ fn collect_state_category_books(
 fn reading_assistant_category_book_item(
     candidate: ReadingAssistantCategoryBookCandidate,
 ) -> ReadingAssistantCategoryBookItem {
+    let has_reading_evidence = candidate.has_reading_evidence();
     ReadingAssistantCategoryBookItem {
         book_id: candidate.book_id,
         title: candidate.title,
@@ -10519,8 +12701,53 @@ fn reading_assistant_category_book_item(
         category: candidate.category,
         progress_percent: candidate.progress_percent,
         is_finished: candidate.is_finished,
+        has_reading_evidence,
         reading_time_text: candidate.reading_time_seconds.map(format_duration_readable),
         source: candidate.source,
+    }
+}
+
+fn merge_category_book_candidates(
+    candidates: Vec<ReadingAssistantCategoryBookCandidate>,
+) -> Vec<ReadingAssistantCategoryBookCandidate> {
+    let mut merged = BTreeMap::<String, ReadingAssistantCategoryBookCandidate>::new();
+    for candidate in candidates {
+        let key = candidate.book_id.clone();
+        if let Some(existing) = merged.get_mut(&key) {
+            existing.is_finished |= candidate.is_finished;
+            existing.progress_percent =
+                max_optional_i64(existing.progress_percent, candidate.progress_percent);
+            existing.reading_time_seconds = max_optional_i64(
+                existing.reading_time_seconds,
+                candidate.reading_time_seconds,
+            );
+            existing.last_read_at = max_optional_i64(existing.last_read_at, candidate.last_read_at);
+            if existing.author.is_none() {
+                existing.author = candidate.author;
+            }
+            if existing.category.is_none() {
+                existing.category = candidate.category;
+            }
+            append_category_book_source(&mut existing.source, &candidate.source);
+        } else {
+            merged.insert(key, candidate);
+        }
+    }
+    merged.into_values().collect()
+}
+
+fn max_optional_i64(left: Option<i64>, right: Option<i64>) -> Option<i64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    }
+}
+
+fn append_category_book_source(target: &mut String, source: &str) {
+    if !target.split('、').any(|item| item == source) {
+        target.push('、');
+        target.push_str(source);
     }
 }
 
@@ -10559,7 +12786,10 @@ fn reading_assistant_category_books_message(
         return format!(
             "当前本地缓存没有找到“{}”相关的{}书目。可以先同步书架和阅读统计，或换一个更具体的分类关键词。",
             query.label,
-            if query.require_finished { "已读完" } else { "已读" }
+            match query.read_filter {
+                ReadingAssistantCategoryReadFilter::Finished => "已读完",
+                ReadingAssistantCategoryReadFilter::StartedOrFinished => "有阅读记录",
+            }
         );
     }
 
@@ -10656,6 +12886,23 @@ fn reading_assistant_category_books_answer(action: &ReadingAssistantCategoryBook
     format!("{listing_summary}\n\n范围说明：\n- {stat_summary}\n- {boundary}")
 }
 
+fn reading_assistant_category_books_analysis_unavailable_answer(
+    action: &ReadingAssistantCategoryBooksOutput,
+    personalized_context_disabled: bool,
+) -> String {
+    if personalized_context_disabled {
+        return format!(
+            "个性化阅读上下文已关闭，因此我不会将本地“{}”书目发送给 AI Provider，也不会据此推测它们对你的影响。\n\n可以先开启个性化阅读上下文，再基于下方可确认书目继续分析。",
+            action.category_label
+        );
+    }
+
+    format!(
+        "当前本地没有可确认的“{}”书目，因此无法可靠分析这些阅读对你的影响。我不会根据分类统计总数推测书名、阅读经历或偏好。\n\n建议先同步书架和书籍详情；有可确认书目后，再基于实际书名和阅读状态分析。",
+        action.category_label
+    )
+}
+
 fn category_matches_query(value: &str, query: &ReadingAssistantCategoryBooksQuery) -> bool {
     let key = normalize_local_book_title_key(value);
     if key.is_empty() {
@@ -10666,6 +12913,15 @@ fn category_matches_query(value: &str, query: &ReadingAssistantCategoryBooksQuer
         let alias_key = normalize_local_book_title_key(alias);
         !alias_key.is_empty() && (key == alias_key || key.contains(&alias_key))
     })
+}
+
+fn select_matching_category(
+    query: &ReadingAssistantCategoryBooksQuery,
+    candidates: impl IntoIterator<Item = Option<String>>,
+) -> Option<String> {
+    candidates
+        .into_iter()
+        .find_map(|category| category.filter(|value| category_matches_query(value, query)))
 }
 
 fn build_reading_assistant_stats_aggregate_output(
@@ -11023,11 +13279,14 @@ fn reading_assistant_intent_as_str(intent: ReadingAssistantIntent) -> &'static s
         ReadingAssistantIntent::NewBookRecommendation => "newBookRecommendation",
         ReadingAssistantIntent::CandidateShelfDecision => "candidateShelfDecision",
         ReadingAssistantIntent::WereadAvailabilitySearch => "wereadAvailabilitySearch",
+        ReadingAssistantIntent::BookCatalogQuery => "bookCatalogQuery",
         ReadingAssistantIntent::CategoryBooksQuery => "categoryBooksQuery",
+        ReadingAssistantIntent::CategoryBooksAnalysis => "categoryBooksAnalysis",
         ReadingAssistantIntent::ReadingStatsAggregate => "readingStatsAggregate",
         ReadingAssistantIntent::NoteSearchQuery => "noteSearchQuery",
         ReadingAssistantIntent::NoteCountQuery => "noteCountQuery",
         ReadingAssistantIntent::FullNoteSynthesisRequest => "fullNoteSynthesisRequest",
+        ReadingAssistantIntent::LibraryNoteSearchQuery => "libraryNoteSearchQuery",
     }
 }
 
@@ -11058,8 +13317,17 @@ fn infer_reading_assistant_intent(
         return ReadingAssistantIntent::CandidateShelfDecision;
     }
 
+    if is_library_note_search_query(message) {
+        return ReadingAssistantIntent::LibraryNoteSearchQuery;
+    }
+    if is_reading_assistant_book_catalog_query_intent(message) {
+        return ReadingAssistantIntent::BookCatalogQuery;
+    }
     if is_weread_availability_search_intent(scope, message) {
         return ReadingAssistantIntent::WereadAvailabilitySearch;
+    }
+    if is_reading_assistant_category_books_analysis_intent(message) {
+        return ReadingAssistantIntent::CategoryBooksAnalysis;
     }
     if is_reading_assistant_category_books_query_intent(message) {
         return ReadingAssistantIntent::CategoryBooksQuery;
@@ -11089,6 +13357,102 @@ fn infer_reading_assistant_intent(
     }
 }
 
+fn is_reading_assistant_book_catalog_query_intent(message: &str) -> bool {
+    parse_reading_assistant_book_catalog_query(message).is_some()
+}
+
+fn parse_reading_assistant_book_catalog_query(
+    message: &str,
+) -> Option<ReadingAssistantBookCatalogQuery> {
+    if mentions_note_records(message)
+        || message.contains("微信读书")
+        || parse_reading_assistant_category_books_query(message).is_some()
+        || [
+            "推荐",
+            "新书",
+            "加入候选",
+            "候选书",
+            "没读过",
+            "未读",
+            "还没读",
+            "想读",
+            "收藏",
+        ]
+        .iter()
+        .any(|token| message.contains(token))
+    {
+        return None;
+    }
+
+    let asks_book_list = ["哪些", "哪几本", "有哪些", "有没有", "有吗"]
+        .iter()
+        .any(|token| message.contains(token));
+    let read_filter = if ["读完", "已读完", "看完", "完成"]
+        .iter()
+        .any(|token| message.contains(token))
+    {
+        ReadingAssistantBookCatalogReadFilter::Finished
+    } else if ["正在读", "在读"]
+        .iter()
+        .any(|token| message.contains(token))
+    {
+        ReadingAssistantBookCatalogReadFilter::Started
+    } else if ["读过", "看过", "已读", "读了", "阅读过"]
+        .iter()
+        .any(|token| message.contains(token))
+    {
+        ReadingAssistantBookCatalogReadFilter::HasEvidence
+    } else if asks_book_list {
+        ReadingAssistantBookCatalogReadFilter::AllLocalBooks
+    } else {
+        return None;
+    };
+
+    let target_text = extract_quoted_book_title(message).or_else(|| {
+        let mut value = message.to_string();
+        for token in [
+            "我正在读",
+            "我读过",
+            "我看过",
+            "我读完",
+            "我已读",
+            "我读了",
+            "我阅读过",
+            "我在读",
+            "读完",
+            "读过",
+            "看过",
+            "已读",
+            "读了",
+            "阅读过",
+            "正在读",
+            "在读",
+            "有哪些",
+            "有没有",
+            "有吗",
+            "哪些",
+            "哪几本",
+            "吗",
+            "请问",
+            "帮我",
+            "列出",
+            "列一下",
+            "相关的书",
+            "的书",
+            "系列书",
+            "系列",
+        ] {
+            value = value.replace(token, "");
+        }
+        normalize_search_keyword(&value)
+    });
+
+    target_text.map(|target_text| ReadingAssistantBookCatalogQuery {
+        target_text,
+        read_filter,
+    })
+}
+
 fn is_weread_availability_search_intent(scope: &AssistantContextScope, message: &str) -> bool {
     let mentions_weread = message.contains("微信读书");
     let asks_search = message.contains("搜索")
@@ -11105,11 +13469,36 @@ fn is_weread_availability_search_intent(scope: &AssistantContextScope, message: 
                 || message.contains("当前书")
                 || message.contains("它")));
 
-    asks_search && (mentions_weread || has_book_reference)
+    let asks_explicit_weread_availability =
+        mentions_weread && extract_quoted_book_title(message).is_some() && message.contains("有《");
+
+    (asks_search || asks_explicit_weread_availability) && (mentions_weread || has_book_reference)
 }
 
 fn is_reading_assistant_category_books_query_intent(message: &str) -> bool {
     parse_reading_assistant_category_books_query(message).is_some()
+        && !is_reading_assistant_category_books_analysis_request(message)
+}
+
+fn is_reading_assistant_category_books_analysis_intent(message: &str) -> bool {
+    parse_reading_assistant_category_books_query(message).is_some()
+        && is_reading_assistant_category_books_analysis_request(message)
+}
+
+fn is_reading_assistant_category_books_analysis_request(message: &str) -> bool {
+    [
+        "影响",
+        "启发",
+        "改变",
+        "比较",
+        "对比",
+        "为什么",
+        "如何",
+        "原因",
+        "偏好",
+    ]
+    .iter()
+    .any(|token| message.contains(token))
 }
 
 fn is_reading_stats_aggregate_intent(scope: &AssistantContextScope, message: &str) -> bool {
@@ -11137,6 +13526,26 @@ fn mentions_note_records(message: &str) -> bool {
     ]
     .iter()
     .any(|token| message.contains(token))
+}
+
+fn is_library_note_search_query(message: &str) -> bool {
+    let asks_search = ["找", "查", "搜索", "检索", "哪些", "关于", "有关"]
+        .iter()
+        .any(|token| message.contains(token));
+    let has_library_target = [
+        "跨书",
+        "全库",
+        "所有书",
+        "我的笔记中",
+        "我的笔记里",
+        "读过的书里",
+        "读过的书中",
+        "所有笔记",
+    ]
+    .iter()
+    .any(|token| message.contains(token));
+
+    asks_search && has_library_target && mentions_note_records(message)
 }
 
 fn is_note_search_query(scope: &AssistantContextScope, message: &str) -> bool {
@@ -11552,10 +13961,25 @@ fn resolve_reading_assistant_search_keyword(
 }
 
 fn extract_quoted_book_title(message: &str) -> Option<String> {
-    let start = message.find('《')?;
-    let rest = &message[start + '《'.len_utf8()..];
-    let end = rest.find('》')?;
-    normalize_search_keyword(&rest[..end])
+    for (opening, closing) in [
+        ('《', '》'),
+        ('“', '”'),
+        ('「', '」'),
+        ('『', '』'),
+        ('"', '"'),
+    ] {
+        let Some(start) = message.find(opening) else {
+            continue;
+        };
+        let rest = &message[start + opening.len_utf8()..];
+        let Some(end) = rest.find(closing) else {
+            continue;
+        };
+        if let Some(title) = normalize_search_keyword(&rest[..end]) {
+            return Some(title);
+        }
+    }
+    None
 }
 
 fn reading_assistant_current_book_title(book: &Value) -> Option<String> {
@@ -15875,6 +18299,9 @@ fn book_review_target_failure(
         path: None,
         url: None,
         page_id: None,
+        operation_id: None,
+        operation_stage: None,
+        resource_id: None,
         file_count: None,
         warning: None,
         error: Some(ExportTargetError {
@@ -16695,24 +19122,30 @@ mod tests {
     use crate::{
         db::initialize_schema,
         mappers::discovery::DiscoveryBookRecord,
+        mappers::notes::{BookNotesRecord, HighlightRecord, ThoughtRecord},
         mappers::stats::{
             map_reading_stats_response, ReadingCategoryRecord, ReadingRankItemRecord,
             ReadingStatsRecord, ReadingTimeBucketRecord,
         },
+        services::retrieval::{
+            NoteRetrievalMode, NoteRetrievalResult, RetrievalDiagnostic, RetrievalHit,
+        },
     };
 
     use super::{
-        book_decision_json_schema, book_notes_summary_json_schema, build_book_decision_input,
-        build_chat_completion_payload, build_chat_completion_payload_without_response_format,
-        build_chat_completion_probe_payload, build_chat_completion_stream_payload,
+        add_reading_assistant_raw_note_context, book_decision_json_schema,
+        book_notes_summary_json_schema, build_book_decision_input, build_chat_completion_payload,
+        build_chat_completion_payload_without_response_format, build_chat_completion_probe_payload,
+        build_chat_completion_stream_payload,
         build_chat_completion_stream_payload_without_response_format,
-        build_local_reader_selection_question_input, build_reading_assistant_book_review_action,
-        build_reading_assistant_category_books_output, build_reading_assistant_context,
-        build_reading_assistant_payload, build_reading_assistant_stats_aggregate_output,
-        build_reading_route_input, build_reading_stats_review_input, build_summary_input,
-        cached_book_decision_response, cached_reading_route_response,
-        cached_reading_stats_review_response, chat_completion_stream_delta_from_frame,
-        chat_completions_url, default_json_object_response_format, default_provider_settings,
+        build_local_reader_selection_question_input, build_reading_assistant_book_catalog_output,
+        build_reading_assistant_book_review_action, build_reading_assistant_category_books_output,
+        build_reading_assistant_context, build_reading_assistant_payload,
+        build_reading_assistant_stats_aggregate_output, build_reading_route_input,
+        build_reading_stats_review_input, build_summary_input, cached_book_decision_response,
+        cached_reading_route_response, cached_reading_stats_review_response,
+        chat_completion_stream_delta_from_frame, chat_completions_url,
+        default_json_object_response_format, default_provider_settings,
         enforce_reading_assistant_book_review_routing, extract_chat_completion_json,
         filter_existing_reading_assistant_recommended_books, humanize_review_text,
         infer_reading_assistant_intent, insert_reading_assistant_message, is_empty_reading_stats,
@@ -16728,39 +19161,42 @@ mod tests {
         read_book_summary_list, read_latest_ai_output, read_local_book_notes,
         read_preferred_book_notes_summary_output, read_provider_settings,
         read_reading_assistant_messages, read_reading_assistant_preferences,
+        reading_assistant_category_books_analysis_unavailable_answer,
         reading_assistant_category_books_answer, reading_assistant_intent_supports_streaming,
-        reading_assistant_json_schema, reading_assistant_stats_aggregate_answer,
-        reading_assistant_system_prompt, reading_assistant_weread_search_answer,
-        reading_assistant_weread_search_result, reading_route_json_schema,
-        reading_route_update_context, reading_stage_signal, reading_stats_review_json_schema,
-        recommend_response_format_policy, replace_reading_assistant_thread_tail,
-        require_ai_credential_for_uncached_summary, resolve_book_summary_update_context,
-        resolve_reading_assistant_search_keyword, resolve_reading_persona,
-        response_format_attempts_for_policy, save_ai_review_feedback,
-        select_balanced_raw_note_items, serialize_book_summary_export_index, stable_hash_json,
-        streamed_json_string_field_prefix, update_reading_assistant_message_input_hash,
-        upsert_ai_output, upsert_reading_assistant_thread, AiCachedOutputRecord,
-        AiFeedbackExportRecord, AiOutputUpsert, AiProviderCapabilityStatus, AiResponseFormatKind,
-        AiResponseFormatPolicy, AiReviewFeedbackExport, AiReviewFeedbackState, AiService,
-        AiServiceError, AssistantContextScope, BookAiSummarySource, BookAiSummarySourceStats,
+        reading_assistant_json_schema, reading_assistant_retrieved_book_notes_context,
+        reading_assistant_stats_aggregate_answer, reading_assistant_system_prompt,
+        reading_assistant_weread_search_answer, reading_assistant_weread_search_result,
+        reading_route_json_schema, reading_route_update_context, reading_stage_signal,
+        reading_stats_review_json_schema, recommend_response_format_policy,
+        replace_reading_assistant_thread_tail, require_ai_credential_for_uncached_summary,
+        resolve_book_summary_update_context, resolve_reading_assistant_search_keyword,
+        resolve_reading_persona, response_format_attempts_for_policy, save_ai_review_feedback,
+        select_balanced_raw_note_items, select_summary_candidates,
+        serialize_book_summary_export_index, stable_hash_json, streamed_json_string_field_prefix,
+        update_reading_assistant_message_input_hash, upsert_ai_output,
+        upsert_reading_assistant_thread, AiCachedOutputRecord, AiFeedbackExportRecord,
+        AiOutputUpsert, AiProviderCapabilityStatus, AiResponseFormatKind, AiResponseFormatPolicy,
+        AiReviewFeedbackExport, AiReviewFeedbackState, AiService, AiServiceError,
+        AssistantContextScope, BookAiSummarySource, BookAiSummarySourceStats,
         BookAiSummaryUpdateContext, BookDecision, BookDecisionActiveCategoryInput,
         BookDecisionCandidateInput, BookDecisionRecentReadingContextInput, BookDecisionSourceStats,
         BookDecisionTopCandidate, BookSummaryExportItem, BookSummaryUpdateContext,
         LocalReaderSelectionBookInput, LocalReaderSelectionContextInput, LocalReaderSelectionInput,
         LocalReaderSelectionQuestionInput, ReadingAssistantActionOutput,
-        ReadingAssistantBookReviewActionOutput, ReadingAssistantContextBuildRequest,
-        ReadingAssistantContextBundle, ReadingAssistantContextOption,
-        ReadingAssistantGeneratedOutput, ReadingAssistantIntent, ReadingAssistantMessageDraft,
-        ReadingAssistantMessageOutput, ReadingAssistantPreferences,
-        ReadingAssistantRecommendedBook, ReadingAssistantUsedContext, ReadingPersonaPatch,
-        ReadingRouteBookInput, ReadingRouteRequest, ReadingRouteSourceStats,
+        ReadingAssistantBookReviewActionOutput, ReadingAssistantCategoryBooksOutput,
+        ReadingAssistantContextBuildRequest, ReadingAssistantContextBundle,
+        ReadingAssistantContextOption, ReadingAssistantDiagnostic, ReadingAssistantGeneratedOutput,
+        ReadingAssistantIntent, ReadingAssistantMessageDraft, ReadingAssistantMessageOutput,
+        ReadingAssistantPreferences, ReadingAssistantRecommendedBook, ReadingAssistantUsedContext,
+        ReadingPersonaPatch, ReadingRouteBookInput, ReadingRouteRequest, ReadingRouteSourceStats,
         ReadingRouteUpdateContext, ReadingRouteUpdateContextData, ReadingStageSignal,
-        ReadingStatsAiReviewSourceStats, SourceItemInput, BOOK_DECISION_PROMPT_VERSION,
-        BOOK_NOTES_SUMMARY_FEATURE, BOOK_NOTES_SUMMARY_FULL_PROMPT_VERSION,
-        BOOK_NOTES_SUMMARY_PROMPT_VERSION, LOCAL_READER_SELECTION_QA_PROMPT_VERSION,
-        MAX_LOCAL_READER_ANSWER_CHARS, MAX_LOCAL_READER_CONTEXT_TEXT_CHARS,
-        MAX_LOCAL_READER_LIST_ITEM_CHARS, READING_ROUTE_FEATURE, READING_ROUTE_PROMPT_VERSION,
-        READING_STATS_REVIEW_FEATURE, READING_STATS_REVIEW_PROMPT_VERSION,
+        ReadingStatsAiReviewSourceStats, SourceItemInput, SummaryNoteCandidate,
+        BOOK_DECISION_PROMPT_VERSION, BOOK_NOTES_SUMMARY_FEATURE,
+        BOOK_NOTES_SUMMARY_FULL_PROMPT_VERSION, BOOK_NOTES_SUMMARY_PROMPT_VERSION,
+        LOCAL_READER_SELECTION_QA_PROMPT_VERSION, MAX_LOCAL_READER_ANSWER_CHARS,
+        MAX_LOCAL_READER_CONTEXT_TEXT_CHARS, MAX_LOCAL_READER_LIST_ITEM_CHARS,
+        READING_ROUTE_FEATURE, READING_ROUTE_PROMPT_VERSION, READING_STATS_REVIEW_FEATURE,
+        READING_STATS_REVIEW_PROMPT_VERSION,
     };
 
     #[derive(Debug, Deserialize)]
@@ -17041,7 +19477,7 @@ mod tests {
         assert!(prompt.contains("必须是问句"));
         assert!(prompt.contains("不要在 actionItems 和 reflectionQuestions 中输出语义重复的条目"));
         assert!(prompt.contains("只能基于 updateContext 中的用户明确反馈"));
-        assert!(prompt.contains("如果没有真实反馈，不要生成 feedbackOutcomeSummary"));
+        assert!(prompt.contains("没有真实反馈时必须返回 null"));
         assert!(prompt.contains("不得评价用户执行力、完成率、坚持程度或表现"));
     }
 
@@ -17968,6 +20404,7 @@ mod tests {
                 preferences: ReadingAssistantPreferences::default(),
                 intent: ReadingAssistantIntent::General,
                 user_message: "测试笔记问题".to_string(),
+                category_books_analysis: None,
             },
         )
         .expect("assistant context should build");
@@ -17994,7 +20431,7 @@ mod tests {
             .iter()
             .any(|item| { item.context_type == ReadingAssistantContextOption::BookNotesSummary }));
 
-        let raw_bundle = build_reading_assistant_context(
+        let mut raw_bundle = build_reading_assistant_context(
             &connection,
             &ReadingAssistantContextBuildRequest {
                 scope: AssistantContextScope::BookDetail,
@@ -18007,15 +20444,57 @@ mod tests {
                 },
                 intent: ReadingAssistantIntent::General,
                 user_message: "找出包含“原始划线正文”的笔记".to_string(),
+                category_books_analysis: None,
             },
         )
-        .expect("assistant context should include raw notes when allowed");
+        .expect("assistant context should build before asynchronous note retrieval");
+        assert!(!raw_bundle.payload.to_string().contains("rawBookNotes"));
+
+        let notes = reading_assistant_retrieved_book_notes_context(NoteRetrievalResult {
+            mode: NoteRetrievalMode::Hybrid,
+            query_text: "原始划线正文".to_string(),
+            available_item_count: 1,
+            matched_item_count: 1,
+            exhaustive_match: false,
+            truncated: false,
+            has_more: false,
+            next_cursor: None,
+            diagnostic: RetrievalDiagnostic {
+                scope: "book".to_string(),
+                strategy: "hybrid".to_string(),
+                available_item_count: 1,
+                matched_item_count: 1,
+                included_item_count: 1,
+                coverage: "sampled".to_string(),
+                index_status: Some("ready".to_string()),
+                reason: None,
+            },
+            hits: vec![RetrievalHit {
+                document_id: "note:highlight:h1".to_string(),
+                source_type: "highlight".to_string(),
+                source_id: "h1".to_string(),
+                book_id: "book_1".to_string(),
+                book_title: Some("测试书籍".to_string()),
+                chapter_uid: Some(1),
+                chapter_title: Some("第一章".to_string()),
+                text: "原始划线正文不应默认进入助手上下文".to_string(),
+                created_at: Some(100),
+                score: 0.9,
+            }],
+        })
+        .expect("retrieved notes should produce context");
+        add_reading_assistant_raw_note_context(&mut raw_bundle, "book_1", notes)
+            .expect("retrieved notes should attach to assistant context");
         let raw_serialized = raw_bundle.payload.to_string();
 
         assert!(raw_serialized.contains("rawBookNotes"));
         assert_eq!(
             raw_bundle.payload["context"]["rawBookNotes"]["selectionStrategy"],
             "dynamicTopK"
+        );
+        assert_eq!(
+            raw_bundle.payload["context"]["rawBookNotes"]["retrievalMode"],
+            "hybrid"
         );
         assert_eq!(
             raw_bundle.payload["context"]["rawBookNotes"]["matchedItemCount"],
@@ -18061,6 +20540,7 @@ mod tests {
                 preferences: ReadingAssistantPreferences::default(),
                 intent: ReadingAssistantIntent::CandidateShelfDecision,
                 user_message: "测试候选书问题".to_string(),
+                category_books_analysis: None,
             },
         )
         .expect("assistant context should build");
@@ -18116,6 +20596,7 @@ mod tests {
                 preferences: ReadingAssistantPreferences::default(),
                 intent: ReadingAssistantIntent::NewBookRecommendation,
                 user_message: "测试新书推荐问题".to_string(),
+                category_books_analysis: None,
             },
         )
         .expect("assistant context should build");
@@ -18569,6 +21050,17 @@ mod tests {
     fn reading_assistant_intent_routes_note_counts_and_full_synthesis_without_conflicts() {
         assert_eq!(
             infer_reading_assistant_intent(
+                &AssistantContextScope::Global,
+                "从我的笔记中找跨书的经济理财主题"
+            ),
+            ReadingAssistantIntent::LibraryNoteSearchQuery
+        );
+        assert_eq!(
+            infer_reading_assistant_intent(&AssistantContextScope::Global, "我读过哪些理财类书籍"),
+            ReadingAssistantIntent::CategoryBooksQuery
+        );
+        assert_eq!(
+            infer_reading_assistant_intent(
                 &AssistantContextScope::BookNotes,
                 "这本书一共有多少条笔记？"
             ),
@@ -18606,6 +21098,209 @@ mod tests {
             ),
             ReadingAssistantIntent::CandidateShelfDecision
         );
+    }
+
+    #[test]
+    fn reading_assistant_book_catalog_query_routes_local_reading_facts_before_remote_search() {
+        assert_eq!(
+            infer_reading_assistant_intent(&AssistantContextScope::Global, "我读过富爸爸的书吗"),
+            ReadingAssistantIntent::BookCatalogQuery
+        );
+        assert_eq!(
+            infer_reading_assistant_intent(
+                &AssistantContextScope::Global,
+                "微信读书有《富爸爸穷爸爸》吗"
+            ),
+            ReadingAssistantIntent::WereadAvailabilitySearch
+        );
+        assert_ne!(
+            infer_reading_assistant_intent(&AssistantContextScope::Global, "我没读过富爸爸的书吗"),
+            ReadingAssistantIntent::BookCatalogQuery
+        );
+        assert_ne!(
+            infer_reading_assistant_intent(
+                &AssistantContextScope::Global,
+                "富爸爸的笔记里哪些内容讲复利"
+            ),
+            ReadingAssistantIntent::BookCatalogQuery
+        );
+    }
+
+    #[test]
+    fn reading_assistant_book_catalog_query_uses_complete_catalog_and_optional_note_counts() {
+        let connection = Connection::open_in_memory().expect("in-memory db should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        connection
+            .execute(
+                "
+                INSERT INTO shelf_entries (
+                    id, type, title, author, cover, category, is_top, is_secret, is_finished,
+                    last_read_at, raw_json, updated_at
+                ) VALUES
+                    ('book_finished', 'book', '富爸爸穷爸爸', '罗伯特·清崎', NULL, '经济理财', 0, 0, 1, 200, '{}', '200'),
+                    ('book_started', 'book', '富爸爸投资指南', '罗伯特·清崎', NULL, '经济理财', 0, 0, 0, NULL, '{}', '200'),
+                    ('book_unread', 'book', '富爸爸现金流', '罗伯特·清崎', NULL, '经济理财', 0, 0, 0, NULL, '{}', '200'),
+                    ('audio_match', 'album', '富爸爸音频版', '罗伯特·清崎', NULL, '经济理财', 0, 0, 1, 300, '{}', '200')
+                ",
+                [],
+            )
+            .expect("shelf entries should insert");
+        connection
+            .execute(
+                "
+                INSERT INTO book_progress (
+                    book_id, progress_percent, chapter_uid, record_reading_time_seconds,
+                    finish_time, raw_json, updated_at
+                ) VALUES ('book_started', 13, NULL, 600, NULL, '{}', '210')
+                ",
+                [],
+            )
+            .expect("book progress should insert");
+        connection
+            .execute(
+                "
+                INSERT INTO notebook_books (
+                    book_id, title, author, cover, review_count, note_count, bookmark_count,
+                    total_note_count, sort, raw_json, updated_at
+                ) VALUES ('book_finished', '富爸爸穷爸爸', '罗伯特·清崎', NULL, 15, 405, 6, 426, 0, '{}', '220')
+                ",
+                [],
+            )
+            .expect("notebook summary should insert");
+
+        let output = build_reading_assistant_book_catalog_output(&connection, "我读过富爸爸的书吗")
+            .expect("book catalog output should build");
+
+        assert_eq!(output.query_kind, "title");
+        assert_eq!(output.query_text, "富爸爸");
+        assert_eq!(output.matched_metadata_count, 3);
+        assert_eq!(output.matched_reading_count, 2);
+        assert_eq!(output.listed_count, 2);
+        assert_eq!(output.query_status, "found");
+        assert!(output
+            .books
+            .iter()
+            .all(|book| book.book_id != "book_unread"));
+        assert_eq!(output.unconfirmed_books.len(), 1);
+        assert_eq!(output.unconfirmed_books[0].book_id, "book_unread");
+        assert!(output
+            .books
+            .iter()
+            .all(|book| book.book_id != "audio_match"));
+        let finished = output
+            .books
+            .iter()
+            .find(|book| book.book_id == "book_finished")
+            .expect("finished book should be listed");
+        assert_eq!(finished.read_status, "finished");
+        assert_eq!(finished.total_note_count, Some(426));
+        assert_eq!(finished.highlight_count, Some(405));
+        assert_eq!(finished.thought_count, Some(15));
+        assert!(finished
+            .sources
+            .iter()
+            .any(|source| source == "notebookBooks"));
+
+        let all_local_output =
+            build_reading_assistant_book_catalog_output(&connection, "富爸爸的书有哪些")
+                .expect("all local catalog output should build");
+        assert_eq!(all_local_output.listed_count, 3);
+        assert!(all_local_output
+            .books
+            .iter()
+            .any(|book| book.book_id == "book_unread" && book.read_status == "unknown"));
+
+        let author_output =
+            build_reading_assistant_book_catalog_output(&connection, "罗伯特·清崎的书我读过哪些")
+                .expect("author catalog output should build");
+        assert_eq!(author_output.query_kind, "author");
+        assert_eq!(author_output.listed_count, 2);
+
+        let finished_by_quoted_keyword = build_reading_assistant_book_catalog_output(
+            &connection,
+            "帮我查询书名含“富爸爸”且已读完的书。",
+        )
+        .expect("quoted title-prefix catalog output should build");
+        assert_eq!(finished_by_quoted_keyword.query_text, "富爸爸");
+        assert_eq!(
+            finished_by_quoted_keyword.listed_count, 1,
+            "the Chinese quoted keyword should not include query suffixes"
+        );
+        assert_eq!(finished_by_quoted_keyword.books[0].book_id, "book_finished");
+        assert_eq!(finished_by_quoted_keyword.unconfirmed_books.len(), 2);
+        assert!(finished_by_quoted_keyword
+            .unconfirmed_books
+            .iter()
+            .any(|book| book.book_id == "book_started"));
+    }
+
+    #[test]
+    fn reading_assistant_book_catalog_query_uses_note_library_as_partial_reading_evidence() {
+        let connection = Connection::open_in_memory().expect("in-memory db should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        connection
+            .execute(
+                "
+                INSERT INTO notebook_books (
+                    book_id, title, author, cover, review_count, note_count, bookmark_count,
+                    total_note_count, sort, raw_json, updated_at
+                ) VALUES ('notes_only', '富爸爸笔记版', '罗伯特·清崎', NULL, 4, 12, 0, 16, 0, '{}', '220')
+                ",
+                [],
+            )
+            .expect("notebook summary should insert");
+
+        let output = build_reading_assistant_book_catalog_output(&connection, "我读过富爸爸的书吗")
+            .expect("note-backed catalog output should build");
+
+        assert_eq!(output.query_status, "found");
+        assert_eq!(output.matched_metadata_count, 1);
+        assert_eq!(output.matched_reading_count, 1);
+        assert_eq!(output.books[0].read_status, "started");
+        assert_eq!(output.diagnostics.catalog_coverage, "partial");
+        assert!(output
+            .diagnostics
+            .missing_reasons
+            .iter()
+            .any(|reason| reason == "bookMetadataNotSynced"));
+    }
+
+    #[test]
+    fn reading_assistant_book_catalog_query_keeps_finished_books_removed_from_shelf() {
+        let connection = Connection::open_in_memory().expect("in-memory db should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        connection
+            .execute(
+                "
+                INSERT INTO book_details (
+                    book_id, title, author, cover, category, intro, raw_json, updated_at
+                ) VALUES ('archived_book', '富爸爸现金流', '罗伯特·清崎', NULL, '经济理财', NULL, '{}', '200')
+                ",
+                [],
+            )
+            .expect("book detail should insert");
+        connection
+            .execute(
+                "
+                INSERT INTO book_progress (
+                    book_id, progress_percent, chapter_uid, record_reading_time_seconds,
+                    finish_time, raw_json, updated_at
+                ) VALUES ('archived_book', 99, NULL, 1200, NULL, '{}', '210')
+                ",
+                [],
+            )
+            .expect("book progress should insert");
+
+        let output = build_reading_assistant_book_catalog_output(&connection, "我读过富爸爸的书吗")
+            .expect("archived book catalog output should build");
+
+        assert_eq!(output.query_status, "found");
+        assert_eq!(output.listed_count, 1);
+        assert_eq!(output.matched_reading_count, 1);
+        assert_eq!(output.books[0].book_id, "archived_book");
+        assert_eq!(output.books[0].read_status, "finished");
+        assert_eq!(output.books[0].progress_percent, Some(99));
+        assert!(output.unconfirmed_books.is_empty());
     }
 
     #[test]
@@ -18719,6 +21414,50 @@ mod tests {
     }
 
     #[test]
+    fn reading_assistant_note_search_output_deserializes_legacy_string_diagnostic() {
+        let output = super::parse_reading_assistant_message_output(Some(
+            &json!({
+                "suggestions": [],
+                "recommendedBooks": [],
+                "basisNotice": "旧版本",
+                "action": {
+                    "type": "noteSearch",
+                    "payload": {
+                        "scope": "book",
+                        "bookId": "book_1",
+                        "searchedBookCount": 1,
+                        "diagnostic": "旧版本词法检索说明",
+                        "queryText": "宽恕",
+                        "mode": "lexical",
+                        "coverage": "exhaustiveMatch",
+                        "matchedItemCount": 1,
+                        "includedItemCount": 1,
+                        "truncated": false,
+                        "hasMore": false,
+                        "noteTypes": ["highlight"],
+                        "items": []
+                    }
+                }
+            })
+            .to_string(),
+        ));
+
+        let action = output
+            .and_then(|value| value.action)
+            .expect("legacy note search action should deserialize");
+        match action {
+            ReadingAssistantActionOutput::NoteSearch(payload) => {
+                assert!(matches!(
+                    payload.diagnostic,
+                    Some(ReadingAssistantDiagnostic::Legacy(message))
+                        if message == "旧版本词法检索说明"
+                ));
+            }
+            _ => panic!("expected note search action"),
+        }
+    }
+
+    #[test]
     fn reading_assistant_category_books_query_lists_local_books_with_stats_boundary() {
         let connection = Connection::open_in_memory().expect("in-memory db should open");
         initialize_schema(&connection).expect("schema should initialize");
@@ -18801,6 +21540,179 @@ mod tests {
 
         assert_eq!(output.listed_count, 1);
         assert_eq!(output.books[0].book_id, "book_done");
+    }
+
+    #[test]
+    fn reading_assistant_category_books_query_routes_catalog_summary_and_excludes_unread_books() {
+        let connection = Connection::open_in_memory().expect("in-memory db should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        connection
+            .execute(
+                "
+                INSERT INTO shelf_entries (
+                    id, type, title, author, cover, category, is_top, is_secret, is_finished,
+                    last_read_at, raw_json, updated_at
+                ) VALUES
+                    ('book_done', 'book', '富爸爸穷爸爸', '作者甲', NULL, '经济理财', 0, 0, 1, 200, '{}', '200'),
+                    ('book_started', 'book', '慢慢变富', '作者乙', NULL, '经济理财', 0, 0, 0, 100, '{}', '100'),
+                    ('book_unread', 'book', '理财入门', '作者丙', NULL, '经济理财', 0, 0, 0, 0, '{}', '100')
+                ",
+                [],
+            )
+            .expect("shelf entries should insert");
+
+        let output = build_reading_assistant_category_books_output(
+            &connection,
+            "帮我根据现有记录梳理读过的经济理财类书籍",
+        )
+        .expect("category books output should build");
+
+        assert_eq!(output.listed_count, 2);
+        assert!(output.books.iter().any(|book| book.book_id == "book_done"));
+        assert!(output
+            .books
+            .iter()
+            .any(|book| book.book_id == "book_started"));
+        assert!(!output
+            .books
+            .iter()
+            .any(|book| book.book_id == "book_unread"));
+        assert_eq!(
+            infer_reading_assistant_intent(
+                &AssistantContextScope::Global,
+                "帮我根据现有记录梳理读过的经济理财类书籍"
+            ),
+            ReadingAssistantIntent::CategoryBooksQuery
+        );
+        assert_eq!(
+            infer_reading_assistant_intent(
+                &AssistantContextScope::Global,
+                "梳理我读过的理财书如何影响投资观"
+            ),
+            ReadingAssistantIntent::CategoryBooksAnalysis
+        );
+
+        let analysis_bundle = build_reading_assistant_context(
+            &connection,
+            &ReadingAssistantContextBuildRequest {
+                scope: AssistantContextScope::BookDetail,
+                entity_id: Some("book_done".to_string()),
+                enabled_context: Vec::new(),
+                thread_id: Some("thread_1".to_string()),
+                preferences: ReadingAssistantPreferences {
+                    allow_raw_book_notes: true,
+                    ..ReadingAssistantPreferences::default()
+                },
+                intent: ReadingAssistantIntent::CategoryBooksAnalysis,
+                user_message: "梳理我读过的理财书如何影响投资观".to_string(),
+                category_books_analysis: Some(output.clone()),
+            },
+        )
+        .expect("catalog analysis context should build");
+        let serialized = analysis_bundle.payload.to_string();
+        assert!(serialized.contains("catalogAnalysis"));
+        assert!(serialized.contains("富爸爸穷爸爸"));
+        assert!(serialized.contains("慢慢变富"));
+        assert!(serialized.contains("readStatus"));
+        assert!(!serialized.contains("rawBookNotes"));
+        assert!(!serialized.contains("readingMemory"));
+        assert!(!serialized.contains("conversationHistory"));
+        assert!(analysis_bundle.used_context.iter().any(|item| {
+            item.context_type == ReadingAssistantContextOption::BookCatalog
+                && item.label == "分类书目"
+                && item.item_count == 2
+        }));
+
+        let no_catalog_answer = reading_assistant_category_books_analysis_unavailable_answer(
+            &ReadingAssistantCategoryBooksOutput {
+                category_label: "经济理财".to_string(),
+                matched_category_titles: Vec::new(),
+                query_status: "partial".to_string(),
+                total_stat_count: Some(4),
+                total_stat_reading_time_text: None,
+                listed_count: 0,
+                message: String::new(),
+                books: Vec::new(),
+            },
+            false,
+        );
+        assert!(no_catalog_answer.contains("无法可靠分析"));
+        assert!(no_catalog_answer.contains("不会根据分类统计总数推测书名"));
+    }
+
+    #[test]
+    fn reading_assistant_category_books_query_uses_matching_detail_category_when_shelf_differs() {
+        let connection = Connection::open_in_memory().expect("in-memory db should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        connection
+            .execute(
+                "
+                INSERT INTO shelf_entries (
+                    id, type, title, author, cover, category, is_top, is_secret, is_finished,
+                    last_read_at, raw_json, updated_at
+                ) VALUES ('book_money', 'book', '小狗钱钱', '博多·舍费尔', NULL, '畅销', 0, 0, 1, 200, '{}', '200')
+                ",
+                [],
+            )
+            .expect("shelf entry should insert");
+        connection
+            .execute(
+                "
+                INSERT INTO book_details (
+                    book_id, title, author, cover, category, intro, raw_json, updated_at
+                ) VALUES ('book_money', '小狗钱钱', '博多·舍费尔', NULL, '经济理财', NULL, '{}', '200')
+                ",
+                [],
+            )
+            .expect("book detail should insert");
+
+        let output = build_reading_assistant_category_books_output(
+            &connection,
+            "列出我读过的经济理财类书籍",
+        )
+        .expect("category books output should build");
+
+        assert_eq!(output.listed_count, 1);
+        assert_eq!(output.books[0].category.as_deref(), Some("经济理财"));
+    }
+
+    #[test]
+    fn reading_assistant_category_books_query_merges_completion_evidence_across_sources() {
+        let connection = Connection::open_in_memory().expect("in-memory db should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        connection
+            .execute(
+                "
+                INSERT INTO shelf_entries (
+                    id, type, title, author, cover, category, is_top, is_secret, is_finished,
+                    last_read_at, raw_json, updated_at
+                ) VALUES ('book_money', 'book', '小狗钱钱', '博多·舍费尔', NULL, '经济理财', 0, 0, 0, 0, '{}', '200')
+                ",
+                [],
+            )
+            .expect("shelf entry should insert");
+        connection
+            .execute(
+                "
+                INSERT INTO reading_item_states (
+                    item_id, item_type, status, title, author, cover, category, note, created_at, updated_at
+                ) VALUES ('book_money', 'book', 'organized', '小狗钱钱', '博多·舍费尔', NULL, '经济理财', NULL, '100', '200')
+                ",
+                [],
+            )
+            .expect("reading item state should insert");
+
+        let output = build_reading_assistant_category_books_output(
+            &connection,
+            "列出我读完的经济理财类书籍",
+        )
+        .expect("category books output should build");
+
+        assert_eq!(output.listed_count, 1);
+        assert!(output.books[0].is_finished);
+        assert!(output.books[0].has_reading_evidence);
+        assert!(output.books[0].source.contains("书架"));
+        assert!(output.books[0].source.contains("本地状态"));
     }
 
     #[test]
@@ -19438,6 +22350,7 @@ mod tests {
                 },
                 intent: ReadingAssistantIntent::General,
                 user_message: "测试笔记问题".to_string(),
+                category_books_analysis: None,
             },
         )
         .expect("assistant context should build");
@@ -19482,6 +22395,7 @@ mod tests {
                 preferences: ReadingAssistantPreferences::default(),
                 intent: ReadingAssistantIntent::General,
                 user_message: "测试笔记问题".to_string(),
+                category_books_analysis: None,
             },
         )
         .expect("assistant context should build");
@@ -19530,6 +22444,7 @@ mod tests {
                 },
                 intent: ReadingAssistantIntent::General,
                 user_message: "测试笔记问题".to_string(),
+                category_books_analysis: None,
             },
         )
         .expect("assistant context should build");
@@ -21749,8 +24664,13 @@ mod tests {
 
         assert_eq!(schema["required"][0], "overview");
         assert_eq!(schema["required"][5], "representativeQuotes");
+        assert_eq!(schema["required"][7], "feedbackOutcomeSummary");
         assert_eq!(
             schema["properties"]["representativeQuotes"]["items"]["required"][2],
+            "chapter"
+        );
+        assert_eq!(
+            schema["properties"]["representativeQuotes"]["items"]["required"][3],
             "noteType"
         );
         assert_eq!(
@@ -21767,12 +24687,19 @@ mod tests {
         assert_eq!(schema["required"][0], "overview");
         assert_eq!(schema["required"][1], "rhythmInsights");
         assert_eq!(schema["required"][4], "nextActions");
-        assert_eq!(schema["properties"]["readingPersona"]["type"], "object");
+        assert_eq!(
+            schema["properties"]["readingPersona"]["type"],
+            json!(["object", "null"])
+        );
         assert_eq!(
             schema["properties"]["readingPersona"]["properties"]["summary"]["type"],
             "string"
         );
-        assert!(!schema["required"]
+        assert_eq!(
+            schema["properties"]["readingPersona"]["required"],
+            json!(["summary", "suggestion"])
+        );
+        assert!(schema["required"]
             .as_array()
             .expect("required should be an array")
             .iter()
@@ -21818,6 +24745,126 @@ mod tests {
             .expect("hash should build");
 
         assert_eq!(left, right);
+    }
+
+    #[test]
+    fn quick_summary_sampling_is_stable_and_covers_chapters() {
+        let candidates = (0..12)
+            .map(|index| SummaryNoteCandidate {
+                index,
+                source_id: format!("note-{index}"),
+                chapter_key: format!("chapter-{}", index % 4),
+                chapter_sort_key: format!("chapter-{}", index % 4),
+                priority: super::stable_sampling_hash(&[
+                    "book-1",
+                    super::BOOK_NOTES_SUMMARY_SAMPLING_VERSION,
+                    "highlight",
+                    &format!("note-{index}"),
+                ]),
+            })
+            .collect::<Vec<_>>();
+        let reordered = candidates.iter().rev().cloned().collect::<Vec<_>>();
+
+        let first = select_summary_candidates(&candidates, 4, "book-1", "highlight");
+        let second = select_summary_candidates(&reordered, 4, "book-1", "highlight");
+        assert_eq!(first.indices, second.indices);
+        assert_eq!(first.indices.len(), 4);
+        assert_eq!(first.chapter_keys.len(), 4);
+    }
+
+    #[test]
+    fn quick_summary_sampling_returns_all_candidates_below_budget_in_canonical_order() {
+        let candidates = vec![
+            SummaryNoteCandidate {
+                index: 0,
+                source_id: "note-b".to_string(),
+                chapter_key: "chapter-b".to_string(),
+                chapter_sort_key: "chapter-b".to_string(),
+                priority: "02".to_string(),
+            },
+            SummaryNoteCandidate {
+                index: 1,
+                source_id: "note-a".to_string(),
+                chapter_key: "chapter-a".to_string(),
+                chapter_sort_key: "chapter-a".to_string(),
+                priority: "01".to_string(),
+            },
+        ];
+
+        let selected = select_summary_candidates(&candidates, 20, "book-1", "thought");
+        let ids = selected
+            .indices
+            .iter()
+            .map(|index| candidates[*index].source_id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, vec!["note-a", "note-b"]);
+        assert_eq!(selected.chapter_keys.len(), 2);
+    }
+
+    #[test]
+    fn quick_summary_input_applies_independent_highlight_and_thought_budgets() {
+        let highlights = (0..100)
+            .map(|index| HighlightRecord {
+                bookmark_id: format!("highlight-{index}"),
+                book_id: "book-1".to_string(),
+                chapter_uid: Some((index % 10) as i64),
+                chapter_title: Some(format!("第 {} 章", index % 10)),
+                mark_text: format!("划线 {index}"),
+                create_time: Some(index as i64),
+                range_text: None,
+                deep_link: None,
+                raw_json: "{}".to_string(),
+            })
+            .collect::<Vec<_>>();
+        let thoughts = (0..50)
+            .map(|index| ThoughtRecord {
+                review_id: format!("thought-{index}"),
+                book_id: "book-1".to_string(),
+                content: format!("想法 {index}"),
+                abstract_text: None,
+                create_time: Some(index as i64),
+                star: None,
+                chapter_name: Some(format!("第 {} 章", index % 10)),
+                chapter_uid: Some((index % 10) as i64),
+                range_text: None,
+                deep_link: None,
+                is_finish: None,
+                raw_json: "{}".to_string(),
+            })
+            .collect::<Vec<_>>();
+        let notes = BookNotesRecord {
+            book_id: "book-1".to_string(),
+            book: None,
+            highlights,
+            thoughts,
+            chapters: Vec::new(),
+            chapter_groups: Vec::new(),
+            bookmark_count: 0,
+            exportable_count: 150,
+            bookmark_content_notice: String::new(),
+        };
+
+        let input = build_summary_input(&notes, None).expect("summary input should build");
+        let payload_highlights = input.payload["notes"]["highlights"]
+            .as_array()
+            .expect("highlights should be an array");
+        let payload_thoughts = input.payload["notes"]["thoughts"]
+            .as_array()
+            .expect("thoughts should be an array");
+
+        assert_eq!(payload_highlights.len(), 80);
+        assert_eq!(payload_thoughts.len(), 20);
+        assert_eq!(input.source_stats.included_highlight_count, 80);
+        assert_eq!(input.source_stats.included_thought_count, 20);
+        assert_eq!(
+            input
+                .source_stats
+                .selection
+                .as_ref()
+                .map(|selection| selection.covered_chapter_count),
+            Some(10)
+        );
     }
 
     #[test]
@@ -21968,6 +25015,7 @@ mod tests {
                 chapter_count: 1,
                 included_highlight_count: 1,
                 included_thought_count: 1,
+                selection: None,
             },
             "100".to_string(),
             "book-notes-summary-v3",
@@ -22034,6 +25082,7 @@ mod tests {
                 chapter_count: 1,
                 included_highlight_count: 1,
                 included_thought_count: 1,
+                selection: None,
             },
             "100".to_string(),
             "book-notes-summary-v3",
@@ -22084,6 +25133,7 @@ mod tests {
                 chapter_count: 1,
                 included_highlight_count: 1,
                 included_thought_count: 1,
+                selection: None,
             },
             "100".to_string(),
             "book-notes-summary-v3",
@@ -22151,6 +25201,7 @@ mod tests {
                 chapter_count: 1,
                 included_highlight_count: 1,
                 included_thought_count: 0,
+                selection: None,
             },
             "100".to_string(),
             "book-notes-summary-v3",

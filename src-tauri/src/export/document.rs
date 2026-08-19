@@ -12,6 +12,50 @@ pub enum ExportSourceKind {
     BookDecision,
 }
 
+impl ExportSourceKind {
+    pub const fn as_config_value(self) -> &'static str {
+        match self {
+            Self::BookNotes => "bookNotes",
+            Self::BookReview => "bookReview",
+            Self::ReadingStatsReview => "readingStatsReview",
+            Self::ReadingRoute => "readingRoute",
+            Self::BookDecision => "bookDecision",
+        }
+    }
+
+    pub fn from_config_value(value: &str) -> Option<Self> {
+        match value {
+            "bookNotes" => Some(Self::BookNotes),
+            "bookReview" => Some(Self::BookReview),
+            "readingStatsReview" => Some(Self::ReadingStatsReview),
+            "readingRoute" => Some(Self::ReadingRoute),
+            "bookDecision" => Some(Self::BookDecision),
+            _ => None,
+        }
+    }
+
+    pub const fn supports_ima_export(self) -> bool {
+        matches!(
+            self,
+            Self::BookNotes
+                | Self::BookReview
+                | Self::ReadingStatsReview
+                | Self::ReadingRoute
+                | Self::BookDecision
+        )
+    }
+
+    pub const fn ima_asset_label(self) -> &'static str {
+        match self {
+            Self::BookNotes => "微信读书笔记",
+            Self::BookReview => "书籍复盘",
+            Self::ReadingStatsReview => "阅读统计复盘",
+            Self::ReadingRoute => "阅读路线",
+            Self::BookDecision => "选书决策",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportDocument {

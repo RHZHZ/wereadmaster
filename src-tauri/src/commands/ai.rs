@@ -306,10 +306,17 @@ pub async fn summarize_book_notes(
 pub fn get_latest_book_notes_summary(
     app: AppHandle,
     book_id: String,
+    review_kind: Option<String>,
 ) -> Result<Option<BookAiSummaryResponse>, AiCommandError> {
-    AiService::new(app)
-        .get_latest_book_notes_summary(book_id)
-        .map_err(Into::into)
+    let service = AiService::new(app);
+    match review_kind.as_deref() {
+        Some(review_kind) => service
+            .get_book_notes_summary_for_kind(book_id, review_kind)
+            .map_err(Into::into),
+        None => service
+            .get_latest_book_notes_summary(book_id)
+            .map_err(Into::into),
+    }
 }
 
 #[tauri::command]
@@ -329,9 +336,17 @@ pub async fn export_book_notes_summary_targets(
     book_id: String,
     review_feedback: Option<AiReviewFeedbackExport>,
     request: MultiTargetExportRequest,
+    review_kind: Option<String>,
+    input_hash: Option<String>,
 ) -> Result<MultiTargetExportResponse, AiCommandError> {
     AiService::new(app)
-        .export_book_notes_summary_targets(book_id, review_feedback, request)
+        .export_book_notes_summary_targets(
+            book_id,
+            review_feedback,
+            request,
+            review_kind,
+            input_hash,
+        )
         .await
         .map_err(Into::into)
 }

@@ -399,6 +399,12 @@
           "markdownDescription": "Enables the cancel_reading_assistant_stream command without any pre-configured scope."
         },
         {
+          "description": "Enables the check_ima_export_drift command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-check-ima-export-drift",
+          "markdownDescription": "Enables the check_ima_export_drift command without any pre-configured scope."
+        },
+        {
           "description": "Enables the choose_custom_data_directory command without any pre-configured scope.",
           "type": "string",
           "const": "allow-choose-custom-data-directory",
@@ -663,6 +669,12 @@
           "markdownDescription": "Enables the get_embedding_settings_state command without any pre-configured scope."
         },
         {
+          "description": "Enables the get_ima_credential_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-ima-credential-status",
+          "markdownDescription": "Enables the get_ima_credential_status command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_latest_book_decision command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-latest-book-decision",
@@ -709,6 +721,12 @@
           "type": "string",
           "const": "allow-get-note-synthesis-job",
           "markdownDescription": "Enables the get_note_synthesis_job command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_note_synthesis_job_summary command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-note-synthesis-job-summary",
+          "markdownDescription": "Enables the get_note_synthesis_job_summary command without any pre-configured scope."
         },
         {
           "description": "Enables the get_notebook_overview command without any pre-configured scope.",
@@ -813,6 +831,24 @@
           "markdownDescription": "Enables the list_book_notes_summaries command without any pre-configured scope."
         },
         {
+          "description": "Enables the list_ima_addable_knowledge_bases command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-list-ima-addable-knowledge-bases",
+          "markdownDescription": "Enables the list_ima_addable_knowledge_bases command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the list_ima_knowledge_items command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-list-ima-knowledge-items",
+          "markdownDescription": "Enables the list_ima_knowledge_items command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the list_ima_note_folders command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-list-ima-note-folders",
+          "markdownDescription": "Enables the list_ima_note_folders command without any pre-configured scope."
+        },
+        {
           "description": "Enables the list_local_books command without any pre-configured scope.",
           "type": "string",
           "const": "allow-list-local-books",
@@ -879,6 +915,12 @@
           "markdownDescription": "Enables the probe_ai_provider_capabilities command without any pre-configured scope."
         },
         {
+          "description": "Enables the refresh_ima_adapter_compatibility command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-refresh-ima-adapter-compatibility",
+          "markdownDescription": "Enables the refresh_ima_adapter_compatibility command without any pre-configured scope."
+        },
+        {
           "description": "Enables the remove_ai_credential command without any pre-configured scope.",
           "type": "string",
           "const": "allow-remove-ai-credential",
@@ -895,6 +937,12 @@
           "type": "string",
           "const": "allow-remove-embedding-credential",
           "markdownDescription": "Enables the remove_embedding_credential command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the remove_ima_credential command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-remove-ima-credential",
+          "markdownDescription": "Enables the remove_ima_credential command without any pre-configured scope."
         },
         {
           "description": "Enables the remove_notion_credential command without any pre-configured scope.",
@@ -921,6 +969,12 @@
           "markdownDescription": "Enables the reset_weread_proxy_url command without any pre-configured scope."
         },
         {
+          "description": "Enables the resolve_ima_unknown_attempt command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-resolve-ima-unknown-attempt",
+          "markdownDescription": "Enables the resolve_ima_unknown_attempt command without any pre-configured scope."
+        },
+        {
           "description": "Enables the resolve_notion_standard_database_provisioning command without any pre-configured scope.",
           "type": "string",
           "const": "allow-resolve-notion-standard-database-provisioning",
@@ -939,10 +993,22 @@
           "markdownDescription": "Enables the resume_embedding_index command without any pre-configured scope."
         },
         {
+          "description": "Enables the retarget_ima_knowledge_association command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-retarget-ima-knowledge-association",
+          "markdownDescription": "Enables the retarget_ima_knowledge_association command without any pre-configured scope."
+        },
+        {
           "description": "Enables the retry_failed_note_synthesis_batches command without any pre-configured scope.",
           "type": "string",
           "const": "allow-retry-failed-note-synthesis-batches",
           "markdownDescription": "Enables the retry_failed_note_synthesis_batches command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the retry_ima_export_attempt command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-retry-ima-export-attempt",
+          "markdownDescription": "Enables the retry_ima_export_attempt command without any pre-configured scope."
         },
         {
           "description": "Enables the run_notion_cover_backfill command without any pre-configured scope.",
@@ -985,6 +1051,18 @@
           "type": "string",
           "const": "allow-save-embedding-settings",
           "markdownDescription": "Enables the save_embedding_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the save_ima_credential command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-save-ima-credential",
+          "markdownDescription": "Enables the save_ima_credential command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the save_ima_export_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-save-ima-export-settings",
+          "markdownDescription": "Enables the save_ima_export_settings command without any pre-configured scope."
         },
         {
           "description": "Enables the save_local_reading_progress command without any pre-configured scope.",
@@ -1113,6 +1191,12 @@
           "markdownDescription": "Enables the validate_credential command without any pre-configured scope."
         },
         {
+          "description": "Enables the validate_ima_credential command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-validate-ima-credential",
+          "markdownDescription": "Enables the validate_ima_credential command without any pre-configured scope."
+        },
+        {
           "description": "Enables the validate_notion_credential command without any pre-configured scope.",
           "type": "string",
           "const": "allow-validate-notion-credential",
@@ -1171,6 +1255,12 @@
           "type": "string",
           "const": "deny-cancel-reading-assistant-stream",
           "markdownDescription": "Denies the cancel_reading_assistant_stream command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the check_ima_export_drift command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-check-ima-export-drift",
+          "markdownDescription": "Denies the check_ima_export_drift command without any pre-configured scope."
         },
         {
           "description": "Denies the choose_custom_data_directory command without any pre-configured scope.",
@@ -1437,6 +1527,12 @@
           "markdownDescription": "Denies the get_embedding_settings_state command without any pre-configured scope."
         },
         {
+          "description": "Denies the get_ima_credential_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-ima-credential-status",
+          "markdownDescription": "Denies the get_ima_credential_status command without any pre-configured scope."
+        },
+        {
           "description": "Denies the get_latest_book_decision command without any pre-configured scope.",
           "type": "string",
           "const": "deny-get-latest-book-decision",
@@ -1483,6 +1579,12 @@
           "type": "string",
           "const": "deny-get-note-synthesis-job",
           "markdownDescription": "Denies the get_note_synthesis_job command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_note_synthesis_job_summary command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-note-synthesis-job-summary",
+          "markdownDescription": "Denies the get_note_synthesis_job_summary command without any pre-configured scope."
         },
         {
           "description": "Denies the get_notebook_overview command without any pre-configured scope.",
@@ -1587,6 +1689,24 @@
           "markdownDescription": "Denies the list_book_notes_summaries command without any pre-configured scope."
         },
         {
+          "description": "Denies the list_ima_addable_knowledge_bases command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-list-ima-addable-knowledge-bases",
+          "markdownDescription": "Denies the list_ima_addable_knowledge_bases command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the list_ima_knowledge_items command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-list-ima-knowledge-items",
+          "markdownDescription": "Denies the list_ima_knowledge_items command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the list_ima_note_folders command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-list-ima-note-folders",
+          "markdownDescription": "Denies the list_ima_note_folders command without any pre-configured scope."
+        },
+        {
           "description": "Denies the list_local_books command without any pre-configured scope.",
           "type": "string",
           "const": "deny-list-local-books",
@@ -1653,6 +1773,12 @@
           "markdownDescription": "Denies the probe_ai_provider_capabilities command without any pre-configured scope."
         },
         {
+          "description": "Denies the refresh_ima_adapter_compatibility command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-refresh-ima-adapter-compatibility",
+          "markdownDescription": "Denies the refresh_ima_adapter_compatibility command without any pre-configured scope."
+        },
+        {
           "description": "Denies the remove_ai_credential command without any pre-configured scope.",
           "type": "string",
           "const": "deny-remove-ai-credential",
@@ -1669,6 +1795,12 @@
           "type": "string",
           "const": "deny-remove-embedding-credential",
           "markdownDescription": "Denies the remove_embedding_credential command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the remove_ima_credential command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-remove-ima-credential",
+          "markdownDescription": "Denies the remove_ima_credential command without any pre-configured scope."
         },
         {
           "description": "Denies the remove_notion_credential command without any pre-configured scope.",
@@ -1695,6 +1827,12 @@
           "markdownDescription": "Denies the reset_weread_proxy_url command without any pre-configured scope."
         },
         {
+          "description": "Denies the resolve_ima_unknown_attempt command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-resolve-ima-unknown-attempt",
+          "markdownDescription": "Denies the resolve_ima_unknown_attempt command without any pre-configured scope."
+        },
+        {
           "description": "Denies the resolve_notion_standard_database_provisioning command without any pre-configured scope.",
           "type": "string",
           "const": "deny-resolve-notion-standard-database-provisioning",
@@ -1713,10 +1851,22 @@
           "markdownDescription": "Denies the resume_embedding_index command without any pre-configured scope."
         },
         {
+          "description": "Denies the retarget_ima_knowledge_association command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-retarget-ima-knowledge-association",
+          "markdownDescription": "Denies the retarget_ima_knowledge_association command without any pre-configured scope."
+        },
+        {
           "description": "Denies the retry_failed_note_synthesis_batches command without any pre-configured scope.",
           "type": "string",
           "const": "deny-retry-failed-note-synthesis-batches",
           "markdownDescription": "Denies the retry_failed_note_synthesis_batches command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the retry_ima_export_attempt command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-retry-ima-export-attempt",
+          "markdownDescription": "Denies the retry_ima_export_attempt command without any pre-configured scope."
         },
         {
           "description": "Denies the run_notion_cover_backfill command without any pre-configured scope.",
@@ -1759,6 +1909,18 @@
           "type": "string",
           "const": "deny-save-embedding-settings",
           "markdownDescription": "Denies the save_embedding_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_ima_credential command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-save-ima-credential",
+          "markdownDescription": "Denies the save_ima_credential command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_ima_export_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-save-ima-export-settings",
+          "markdownDescription": "Denies the save_ima_export_settings command without any pre-configured scope."
         },
         {
           "description": "Denies the save_local_reading_progress command without any pre-configured scope.",
@@ -1885,6 +2047,12 @@
           "type": "string",
           "const": "deny-validate-credential",
           "markdownDescription": "Denies the validate_credential command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the validate_ima_credential command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-validate-ima-credential",
+          "markdownDescription": "Denies the validate_ima_credential command without any pre-configured scope."
         },
         {
           "description": "Denies the validate_notion_credential command without any pre-configured scope.",

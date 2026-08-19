@@ -3,6 +3,7 @@ pub mod book;
 pub mod credentials;
 pub mod discovery;
 pub mod embedding;
+pub mod ima;
 pub mod local_books;
 pub mod note_synthesis;
 pub mod notes;

@@ -28,6 +28,21 @@ pub enum NoteType {
     Thought,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoteRetrievalScope {
+    Book(String),
+    Library,
+}
+
+impl NoteRetrievalScope {
+    fn cursor_key(&self) -> String {
+        match self {
+            Self::Book(book_id) => format!("book:{book_id}"),
+            Self::Library => "library".to_string(),
+        }
+    }
+}
+
 impl NoteType {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -59,6 +74,24 @@ impl NoteRetrievalMode {
     }
 }
 
+/// 记录一次笔记检索的实际范围、策略和覆盖边界。
+///
+/// 该对象只描述本地检索事实，不包含 Provider 凭据或原始配置。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RetrievalDiagnostic {
+    pub scope: String,
+    pub strategy: String,
+    pub available_item_count: usize,
+    pub matched_item_count: usize,
+    pub included_item_count: usize,
+    pub coverage: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NoteRetrievalPlan {
     pub query_text: String,
@@ -77,6 +110,7 @@ pub struct RetrievalHit {
     pub source_type: String,
     pub source_id: String,
     pub book_id: String,
+    pub book_title: Option<String>,
     pub chapter_uid: Option<i64>,
     pub chapter_title: Option<String>,
     pub text: String,
@@ -95,6 +129,7 @@ pub struct NoteRetrievalResult {
     pub truncated: bool,
     pub has_more: bool,
     pub next_cursor: Option<String>,
+    pub diagnostic: RetrievalDiagnostic,
     pub hits: Vec<RetrievalHit>,
 }
 
@@ -107,6 +142,8 @@ struct NoteRetrievalCursor {
     created_at: i64,
     document_id: String,
     #[serde(default)]
+    scope_key: Option<String>,
+    #[serde(default)]
     ranked_document_ids: Vec<String>,
 }
 
@@ -116,6 +153,7 @@ struct StoredDocument {
     source_type: String,
     source_id: String,
     book_id: String,
+    title: Option<String>,
     chapter_uid: Option<i64>,
     chapter_title: Option<String>,
     content: String,
@@ -677,7 +715,39 @@ pub fn search_book_notes(
     } else {
         NoteRetrievalMode::LikeFallback
     };
-    search_book_notes_with_ranked_vector(connection, book_id, plan, cursor, page_limit, None, mode)
+    search_notes_with_scope(
+        connection,
+        &NoteRetrievalScope::Book(book_id.to_string()),
+        plan,
+        cursor,
+        page_limit,
+        None,
+        mode,
+    )
+}
+
+pub fn search_library_notes(
+    connection: &Connection,
+    plan: &NoteRetrievalPlan,
+    cursor: Option<&str>,
+    page_limit: Option<usize>,
+) -> rusqlite::Result<NoteRetrievalResult> {
+    let mode = if plan.query_text.is_empty() {
+        NoteRetrievalMode::Recent
+    } else if db::retrieval_fts_available(connection) {
+        NoteRetrievalMode::Lexical
+    } else {
+        NoteRetrievalMode::LikeFallback
+    };
+    search_notes_with_scope(
+        connection,
+        &NoteRetrievalScope::Library,
+        plan,
+        cursor,
+        page_limit,
+        None,
+        mode,
+    )
 }
 
 pub fn search_book_notes_with_ranked_vector(
@@ -689,12 +759,47 @@ pub fn search_book_notes_with_ranked_vector(
     vector_rank: Option<&[RankedDocument]>,
     mode: NoteRetrievalMode,
 ) -> rusqlite::Result<NoteRetrievalResult> {
-    let available_item_count = connection.query_row(
-        "SELECT COUNT(*) FROM retrieval_documents WHERE book_id = ?1 AND deleted_at IS NULL",
-        [book_id],
-        |row| row.get::<_, i64>(0),
-    )? as usize;
-    let mut documents = read_book_documents(connection, book_id, &plan.note_types)?;
+    search_notes_with_scope(
+        connection,
+        &NoteRetrievalScope::Book(book_id.to_string()),
+        plan,
+        cursor,
+        page_limit,
+        vector_rank,
+        mode,
+    )
+}
+
+pub fn search_library_notes_with_ranked_vector(
+    connection: &Connection,
+    plan: &NoteRetrievalPlan,
+    cursor: Option<&str>,
+    page_limit: Option<usize>,
+    vector_rank: Option<&[RankedDocument]>,
+    mode: NoteRetrievalMode,
+) -> rusqlite::Result<NoteRetrievalResult> {
+    search_notes_with_scope(
+        connection,
+        &NoteRetrievalScope::Library,
+        plan,
+        cursor,
+        page_limit,
+        vector_rank,
+        mode,
+    )
+}
+
+fn search_notes_with_scope(
+    connection: &Connection,
+    scope: &NoteRetrievalScope,
+    plan: &NoteRetrievalPlan,
+    cursor: Option<&str>,
+    page_limit: Option<usize>,
+    vector_rank: Option<&[RankedDocument]>,
+    mode: NoteRetrievalMode,
+) -> rusqlite::Result<NoteRetrievalResult> {
+    let available_item_count = read_scope_available_item_count(connection, scope)?;
+    let mut documents = read_scope_documents(connection, scope, &plan.note_types)?;
     let query_tokens = build_retrieval_tokens(&plan.query_text);
     let exact_phrase = plan
         .exact_phrase
@@ -703,13 +808,16 @@ pub fn search_book_notes_with_ranked_vector(
         .filter(|value| !value.is_empty());
     let fts_available = db::retrieval_fts_available(connection);
     let fts_ids = if fts_available && !query_tokens.is_empty() {
-        fts_candidate_ids(connection, book_id, &query_tokens, plan.candidate_limit)
+        fts_candidate_ids(connection, scope, &query_tokens, plan.candidate_limit)
             .unwrap_or_default()
     } else {
         HashSet::new()
     };
 
-    let cursor_state = cursor.and_then(decode_cursor);
+    let cursor_state = cursor.and_then(decode_cursor).filter(|state| {
+        state.scope_key.as_deref() == Some(scope.cursor_key().as_str())
+            || (matches!(scope, NoteRetrievalScope::Book(_)) && state.scope_key.is_none())
+    });
     let cursor_ranked_ids = cursor_state
         .as_ref()
         .filter(|state| matches!(state.mode, NoteRetrievalMode::Hybrid))
@@ -849,9 +957,14 @@ pub fn search_book_notes_with_ranked_vector(
         let has_more = selected.len() < remaining_item_count;
         let next_cursor = has_more
             .then(|| {
-                selected
-                    .last()
-                    .map(|document| encode_cursor(document, effective_mode, &ranked_document_ids))
+                selected.last().map(|document| {
+                    encode_cursor(
+                        document,
+                        effective_mode,
+                        &scope.cursor_key(),
+                        &ranked_document_ids,
+                    )
+                })
             })
             .flatten();
         (selected, has_more, next_cursor)
@@ -861,9 +974,14 @@ pub fn search_book_notes_with_ranked_vector(
             .into_iter()
             .take(candidate_window_limit)
             .collect::<Vec<_>>();
-        let next_cursor = page_candidates
-            .last()
-            .map(|document| encode_cursor(document, effective_mode, &ranked_document_ids));
+        let next_cursor = page_candidates.last().map(|document| {
+            encode_cursor(
+                document,
+                effective_mode,
+                &scope.cursor_key(),
+                &ranked_document_ids,
+            )
+        });
         let selected = diversity_rerank(
             page_candidates,
             requested_limit,
@@ -875,6 +993,15 @@ pub fn search_book_notes_with_ranked_vector(
         (selected, has_more, next_cursor)
     };
     let hits = selected.into_iter().map(to_hit).collect::<Vec<_>>();
+    let coverage = if plan.require_exhaustive_lexical_match {
+        "exhaustiveMatch"
+    } else {
+        "sampled"
+    };
+    let scope_label = match scope {
+        NoteRetrievalScope::Book(_) => "book",
+        NoteRetrievalScope::Library => "library",
+    };
 
     Ok(NoteRetrievalResult {
         mode: effective_mode,
@@ -885,6 +1012,16 @@ pub fn search_book_notes_with_ranked_vector(
         truncated: hits.len() < matched_item_count,
         has_more,
         next_cursor,
+        diagnostic: RetrievalDiagnostic {
+            scope: scope_label.to_string(),
+            strategy: effective_mode.as_str().to_string(),
+            available_item_count,
+            matched_item_count,
+            included_item_count: hits.len(),
+            coverage: coverage.to_string(),
+            index_status: None,
+            reason: None,
+        },
         hits,
     })
 }
@@ -904,35 +1041,68 @@ fn effective_vector_rank_ids(
         .unwrap_or_default()
 }
 
-fn read_book_documents(
+fn read_scope_available_item_count(
     connection: &Connection,
-    book_id: &str,
+    scope: &NoteRetrievalScope,
+) -> rusqlite::Result<usize> {
+    match scope {
+        NoteRetrievalScope::Book(book_id) => connection.query_row(
+            "SELECT COUNT(*) FROM retrieval_documents WHERE book_id = ?1 AND deleted_at IS NULL",
+            [book_id],
+            |row| row.get::<_, i64>(0),
+        ),
+        NoteRetrievalScope::Library => connection.query_row(
+            "SELECT COUNT(*) FROM retrieval_documents WHERE deleted_at IS NULL",
+            [],
+            |row| row.get::<_, i64>(0),
+        ),
+    }
+    .map(|count| count as usize)
+}
+
+fn read_scope_documents(
+    connection: &Connection,
+    scope: &NoteRetrievalScope,
     note_types: &[NoteType],
 ) -> rusqlite::Result<Vec<StoredDocument>> {
     let allowed = note_types
         .iter()
         .map(|value| value.as_str())
         .collect::<HashSet<_>>();
-    let mut statement = connection.prepare(
-        "SELECT id, source_type, source_id, book_id, chapter_uid, chapter_title,
-                content, normalized_content, metadata_json
-         FROM retrieval_documents
-         WHERE book_id = ?1 AND deleted_at IS NULL",
-    )?;
-    let rows = statement.query_map([book_id], |row| {
-        let metadata_json = row.get::<_, String>(8)?;
+    let sql = match scope {
+        NoteRetrievalScope::Book(_) => {
+            "SELECT id, source_type, source_id, book_id, title, chapter_uid, chapter_title,
+                    content, normalized_content, metadata_json
+             FROM retrieval_documents
+             WHERE book_id = ?1 AND deleted_at IS NULL"
+        }
+        NoteRetrievalScope::Library => {
+            "SELECT id, source_type, source_id, book_id, title, chapter_uid, chapter_title,
+                    content, normalized_content, metadata_json
+             FROM retrieval_documents
+             WHERE deleted_at IS NULL"
+        }
+    };
+    let mut statement = connection.prepare(sql)?;
+    let map_row = |row: &rusqlite::Row<'_>| {
+        let metadata_json = row.get::<_, String>(9)?;
         Ok(StoredDocument {
             id: row.get(0)?,
             source_type: row.get(1)?,
             source_id: row.get(2)?,
             book_id: row.get(3)?,
-            chapter_uid: row.get(4)?,
-            chapter_title: row.get(5)?,
-            content: row.get(6)?,
-            normalized_content: row.get(7)?,
+            title: row.get(4)?,
+            chapter_uid: row.get(5)?,
+            chapter_title: row.get(6)?,
+            content: row.get(7)?,
+            normalized_content: row.get(8)?,
             metadata: serde_json::from_str(&metadata_json).unwrap_or_else(|_| json!({})),
         })
-    })?;
+    };
+    let rows = match scope {
+        NoteRetrievalScope::Book(book_id) => statement.query_map([book_id], map_row)?,
+        NoteRetrievalScope::Library => statement.query_map([], map_row)?,
+    };
     rows.filter_map(|row| match row {
         Ok(document) if allowed.contains(document.source_type.as_str()) => Some(Ok(document)),
         Ok(_) => None,
@@ -943,7 +1113,7 @@ fn read_book_documents(
 
 fn fts_candidate_ids(
     connection: &Connection,
-    book_id: &str,
+    scope: &NoteRetrievalScope,
     query_tokens: &[String],
     limit: usize,
 ) -> rusqlite::Result<HashSet<String>> {
@@ -953,21 +1123,37 @@ fn fts_candidate_ids(
         .map(|token| format!("\"{}\"", token.replace('"', "\"\"")))
         .collect::<Vec<_>>()
         .join(" OR ");
-    let mut statement = connection.prepare(
-        "SELECT f.document_id
-         FROM retrieval_documents_fts f
-         JOIN retrieval_documents d ON d.id = f.document_id
-         WHERE retrieval_documents_fts MATCH ?1
-           AND d.book_id = ?2 AND d.deleted_at IS NULL
-         ORDER BY bm25(retrieval_documents_fts), f.document_id
-         LIMIT ?3",
-    )?;
-    let rows = statement
-        .query_map(params![match_query, book_id, limit as i64], |row| {
-            row.get(0)
-        })?
-        .collect();
-    rows
+    let sql = match scope {
+        NoteRetrievalScope::Book(_) => {
+            "SELECT f.document_id
+             FROM retrieval_documents_fts f
+             JOIN retrieval_documents d ON d.id = f.document_id
+             WHERE retrieval_documents_fts MATCH ?1
+               AND d.book_id = ?2 AND d.deleted_at IS NULL
+             ORDER BY bm25(retrieval_documents_fts), f.document_id
+             LIMIT ?3"
+        }
+        NoteRetrievalScope::Library => {
+            "SELECT f.document_id
+             FROM retrieval_documents_fts f
+             JOIN retrieval_documents d ON d.id = f.document_id
+             WHERE retrieval_documents_fts MATCH ?1
+               AND d.deleted_at IS NULL
+             ORDER BY bm25(retrieval_documents_fts), f.document_id
+             LIMIT ?2"
+        }
+    };
+    let mut statement = connection.prepare(sql)?;
+    match scope {
+        NoteRetrievalScope::Book(book_id) => statement
+            .query_map(params![match_query, book_id, limit as i64], |row| {
+                row.get(0)
+            })?
+            .collect(),
+        NoteRetrievalScope::Library => statement
+            .query_map(params![match_query, limit as i64], |row| row.get(0))?
+            .collect(),
+    }
 }
 
 fn diversity_rerank(
@@ -1091,6 +1277,7 @@ fn to_hit(document: StoredDocument) -> RetrievalHit {
         source_type: document.source_type,
         source_id: document.source_id,
         book_id: document.book_id,
+        book_title: document.title,
         chapter_uid: document.chapter_uid,
         chapter_title: document.chapter_title,
         text: document
@@ -1106,6 +1293,7 @@ fn to_hit(document: StoredDocument) -> RetrievalHit {
 fn encode_cursor(
     document: &StoredDocument,
     mode: NoteRetrievalMode,
+    scope_key: &str,
     ranked_document_ids: &[String],
 ) -> String {
     let state = NoteRetrievalCursor {
@@ -1114,6 +1302,7 @@ fn encode_cursor(
         score_bits: score_of(document).to_bits(),
         created_at: created_at_of(document),
         document_id: document.id.clone(),
+        scope_key: Some(scope_key.to_string()),
         ranked_document_ids: ranked_document_ids.to_vec(),
     };
     URL_SAFE_NO_PAD.encode(serde_json::to_vec(&state).unwrap_or_default())
@@ -1250,6 +1439,12 @@ mod tests {
         assert_eq!(result.available_item_count, 4);
         assert_eq!(result.matched_item_count, 2);
         assert_eq!(result.hits.len(), 2);
+        assert_eq!(result.diagnostic.scope, "book");
+        assert_eq!(result.diagnostic.strategy, "lexical");
+        assert_eq!(result.diagnostic.available_item_count, 4);
+        assert_eq!(result.diagnostic.matched_item_count, 2);
+        assert_eq!(result.diagnostic.included_item_count, 2);
+        assert_eq!(result.diagnostic.coverage, "sampled");
         assert!(result.hits.iter().any(|hit| hit.source_type == "highlight"));
         assert!(result.hits.iter().any(|hit| hit.source_type == "thought"));
     }
@@ -1283,6 +1478,8 @@ mod tests {
         assert_eq!(result.matched_item_count, 2);
         assert_eq!(result.hits.len(), 1);
         assert_eq!(result.hits[0].document_id, "note:highlight:h1");
+        assert_eq!(result.diagnostic.strategy, "hybrid");
+        assert_eq!(result.diagnostic.included_item_count, 1);
         assert!(result.has_more);
         let cursor = result
             .next_cursor
@@ -1319,6 +1516,8 @@ mod tests {
         assert_eq!(matched.available_item_count, 4);
         assert_eq!(matched.matched_item_count, 2);
         assert_eq!(matched.hits.len(), 2);
+        assert_eq!(matched.diagnostic.strategy, "likeFallback");
+        assert_eq!(matched.diagnostic.coverage, "sampled");
 
         let empty_plan = plan_note_retrieval("找出与量子纠缠有关的笔记");
         let empty = search_book_notes(&connection, "b1", &empty_plan, None, Some(20))

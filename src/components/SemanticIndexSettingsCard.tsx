@@ -69,10 +69,12 @@ export function SemanticIndexSettingsCard({
     [currentProfile],
   );
   const hasCredential = settingsState?.credential.hasCredential ?? false;
-  const canUseProvider =
-    Boolean(baseUrl.trim()) &&
-    Boolean(model.trim()) &&
-    (Boolean(apiKey.trim()) || hasCredential);
+  const canUseProvider = canUseEmbeddingProvider(
+    baseUrl,
+    model,
+    apiKey,
+    hasCredential,
+  );
   const canStart =
     canUseProvider &&
     remoteEnabled &&
@@ -328,7 +330,10 @@ export function SemanticIndexSettingsCard({
         </div>
       </div>
       <p>
-        使用独立的 OpenAI-compatible Embedding Provider 生成本地向量。索引完成后，普通笔记查询会自动融合本地词法与语义召回；精确短语、全量匹配和分页续查仍优先使用本地词法检索。
+        使用独立的 OpenAI-compatible Provider 或 Ollama 原生接口生成本地向量。索引完成后，普通笔记查询会自动融合本地词法与语义召回；精确短语、全量匹配和分页续查仍优先使用本地词法检索。
+      </p>
+      <p className="settings-card-hint">
+        索引未完成、Provider 配置发生漂移或向量查询失败时，笔记搜索仍会保留本地词法结果，并在结果卡片中标明回退原因；语义索引不是书目查询或本地笔记查询的前置条件。
       </p>
       <div className="status-message status-message--warning">
         <ShieldCheck aria-hidden="true" size={18} />
@@ -383,7 +388,13 @@ export function SemanticIndexSettingsCard({
             value={apiKey}
             type="password"
             autoComplete="off"
-            placeholder={hasCredential ? "已保存，留空则不更改" : "独立保存，不复用聊天 AI Key"}
+            placeholder={
+              isOllamaEndpoint(baseUrl)
+                ? "Ollama 本地接口无需 Key"
+                : hasCredential
+                  ? "已保存，留空则不更改"
+                  : "独立保存，不复用聊天 AI Key"
+            }
             onChange={(event) => setApiKey(event.target.value)}
           />
         </label>
@@ -551,6 +562,28 @@ export function SemanticIndexSettingsCard({
         onConfirm={() => void handleClearIndex()}
       />
     </section>
+  );
+}
+
+export function isOllamaEndpoint(baseUrl: string): boolean {
+  try {
+    const url = new URL(baseUrl.trim());
+    return url.pathname.replace(/\/+$/, "").endsWith("/api/embed");
+  } catch {
+    return false;
+  }
+}
+
+export function canUseEmbeddingProvider(
+  baseUrl: string,
+  model: string,
+  apiKey: string,
+  hasCredential: boolean,
+): boolean {
+  return (
+    Boolean(baseUrl.trim()) &&
+    Boolean(model.trim()) &&
+    (isOllamaEndpoint(baseUrl) || Boolean(apiKey.trim()) || hasCredential)
   );
 }
 

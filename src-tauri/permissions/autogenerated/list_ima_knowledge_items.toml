@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-ima-knowledge-items"
+description = "Enables the list_ima_knowledge_items command without any pre-configured scope."
+commands.allow = ["list_ima_knowledge_items"]
+
+[[permission]]
+identifier = "deny-list-ima-knowledge-items"
+description = "Denies the list_ima_knowledge_items command without any pre-configured scope."
+commands.deny = ["list_ima_knowledge_items"]

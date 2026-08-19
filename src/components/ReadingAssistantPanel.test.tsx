@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import {
   ReadingAssistantBookReviewAction,
+  ReadingAssistantBookCatalogAction,
   ReadingAssistantCategoryBooksAction,
   ReadingAssistantMarkdownLite,
   ReadingAssistantNoteCountAction,
@@ -29,6 +30,7 @@ describe("ReadingAssistantBookReviewAction", () => {
   it("uses distinct labels for AI assets and reading memory", () => {
     expect(getReadingAssistantContextLabel("aiAssetSummary")).toBe("资产摘要");
     expect(getReadingAssistantContextLabel("readingMemory")).toBe("阅读记忆");
+    expect(getReadingAssistantContextLabel("bookCatalog")).toBe("分类书目");
     expect(getReadingAssistantContextLabel("aiAssetSummary")).not.toBe(
       getReadingAssistantContextLabel("readingMemory")
     );
@@ -324,6 +326,33 @@ describe("ReadingAssistantCategoryBooksAction", () => {
     expect(markup).toContain("统计阅读时长 3小时28分钟");
   });
 
+  it("distinguishes a reading record from a completed book", () => {
+    const markup = renderToStaticMarkup(
+      <ReadingAssistantCategoryBooksAction
+        action={{
+          categoryLabel: "经济理财",
+          matchedCategoryTitles: ["经济理财"],
+          queryStatus: "found",
+          listedCount: 1,
+          message: "当前本地明细可验证到 1 本。",
+          books: [
+            {
+              bookId: "book_started",
+              title: "慢慢变富",
+              category: "经济理财",
+              progressPercent: 42,
+              isFinished: false,
+              source: "书架"
+            }
+          ]
+        }}
+      />
+    );
+
+    expect(markup).toContain("有阅读记录");
+    expect(markup).not.toContain("已读完");
+  });
+
   it("renders openable local books as buttons", () => {
     const markup = renderToStaticMarkup(
       <ReadingAssistantCategoryBooksAction
@@ -360,8 +389,11 @@ describe("ReadingAssistantCategoryBooksAction", () => {
     const markup = renderToStaticMarkup(
       <ReadingAssistantNoteSearchAction
         action={{
+          scope: "book",
           bookId: "book_1",
           title: "深度工作",
+          searchedBookCount: 1,
+          diagnostic: "本次使用本地词法检索；精确短语和需要完整匹配的查询不会混入语义结果。",
           queryText: "宽恕",
           mode: "lexical",
           coverage: "exhaustiveMatch",
@@ -374,6 +406,7 @@ describe("ReadingAssistantCategoryBooksAction", () => {
             {
               documentId: "note:highlight:h1",
               sourceId: "h1",
+              bookId: "book_1",
               noteType: "highlight",
               chapterTitle: "第二章"
             }
@@ -383,6 +416,7 @@ describe("ReadingAssistantCategoryBooksAction", () => {
     );
 
     expect(markup).toContain("词面全部匹配");
+    expect(markup).toContain("本次使用本地词法检索");
     expect(markup).toContain("匹配 2 条 · 展示 1 条");
     expect(markup).toContain("第二章");
     expect(markup).toContain("开启原始笔记展示后可查看正文");
@@ -392,7 +426,9 @@ describe("ReadingAssistantCategoryBooksAction", () => {
     const markup = renderToStaticMarkup(
       <ReadingAssistantNoteSearchAction
         action={{
+          scope: "book",
           bookId: "book_1",
+          searchedBookCount: 1,
           queryText: "宽恕",
           mode: "hybridFallback",
           coverage: "sampled",
@@ -409,9 +445,75 @@ describe("ReadingAssistantCategoryBooksAction", () => {
     expect(markup).toContain("本地词法回退");
   });
 
+  it("renders structured retrieval diagnostics and keeps the reason actionable", () => {
+    const markup = renderToStaticMarkup(
+      <ReadingAssistantNoteSearchAction
+        action={{
+          scope: "library",
+          searchedBookCount: 3,
+          queryText: "消费主义焦虑",
+          mode: "hybridFallback",
+          coverage: "sampled",
+          matchedItemCount: 2,
+          includedItemCount: 2,
+          truncated: false,
+          hasMore: false,
+          noteTypes: ["highlight"],
+          diagnostic: {
+            scope: "library",
+            strategy: "hybridFallback",
+            availableItemCount: 12,
+            matchedItemCount: 2,
+            includedItemCount: 2,
+            coverage: "sampled",
+            indexStatus: "ready",
+            reason: "providerSettingsChanged"
+          },
+          items: []
+        }}
+      />
+    );
+
+    expect(markup).toContain("语义索引与当前 Provider 设置不一致");
+  });
+
+  it("renders library note search scope and book provenance", () => {
+    const markup = renderToStaticMarkup(
+      <ReadingAssistantNoteSearchAction
+        action={{
+          scope: "library",
+          searchedBookCount: 2,
+          queryText: "消费主义焦虑",
+          mode: "hybrid",
+          coverage: "sampled",
+          matchedItemCount: 1,
+          includedItemCount: 1,
+          truncated: false,
+          hasMore: false,
+          noteTypes: ["highlight"],
+          items: [
+            {
+              documentId: "note:highlight:h1",
+              sourceId: "h1",
+              bookId: "book_1",
+              bookTitle: "纳瓦尔宝典",
+              noteType: "highlight"
+            }
+          ]
+        }}
+      />
+    );
+
+    expect(markup).toContain("我的笔记");
+    expect(markup).toContain("涉及 2 本书");
+    expect(markup).toContain("《纳瓦尔宝典》");
+  });
+
   it("deduplicates replayed note pages and derives the displayed count", () => {
     const current = {
+      scope: "book" as const,
       bookId: "book_1",
+      searchedBookCount: 1,
       queryText: "宽恕",
       mode: "lexical" as const,
       coverage: "exhaustiveMatch" as const,
@@ -425,6 +527,7 @@ describe("ReadingAssistantCategoryBooksAction", () => {
         {
           documentId: "note:highlight:h1",
           sourceId: "h1",
+          bookId: "book_1",
           noteType: "highlight" as const
         }
       ]
@@ -439,6 +542,7 @@ describe("ReadingAssistantCategoryBooksAction", () => {
         {
           documentId: "note:thought:t1",
           sourceId: "t1",
+          bookId: "book_1",
           noteType: "thought" as const
         }
       ]
@@ -505,5 +609,134 @@ describe("ReadingAssistantCategoryBooksAction", () => {
 
     expect(markup).toContain("经济理财 · 本地可列 0 本 / 统计 34 本");
     expect(markup).toContain("统计总数不会被展开成伪书名");
+  });
+});
+
+describe("ReadingAssistantBookCatalogAction", () => {
+  it("renders local title matches without treating metadata-only books as read", () => {
+    const markup = renderToStaticMarkup(
+      <ReadingAssistantBookCatalogAction
+        action={{
+          queryKind: "title",
+          queryText: "富爸爸",
+          queryStatus: "found",
+          matchedMetadataCount: 3,
+          matchedReadingCount: 2,
+          listedCount: 2,
+          truncated: false,
+          message: "本机书目中找到 2 本相关书籍。",
+          books: [
+            {
+              bookId: "book_finished",
+              title: "富爸爸穷爸爸",
+              author: "罗伯特·清崎",
+              matchReason: "titlePrefix",
+              readStatus: "finished",
+              progressPercent: 98,
+              totalNoteCount: 426,
+              highlightCount: 405,
+              thoughtCount: 15,
+              sources: ["shelf", "progress", "notebookBooks"]
+            },
+            {
+              bookId: "book_started",
+              title: "富爸爸投资指南",
+              author: "罗伯特·清崎",
+              matchReason: "titlePrefix",
+              readStatus: "started",
+              progressPercent: 13,
+              sources: ["shelf", "progress"]
+            }
+          ],
+          diagnostics: {
+            catalogCoverage: "complete",
+            missingReasons: [],
+            sourceUpdatedAt: { catalog: "200", progress: "210", noteSummary: "220" }
+          }
+        }}
+        onOpenBookDetail={() => undefined}
+        canOpenBookDetail={() => true}
+      />
+    );
+
+    expect(markup).toContain("富爸爸”相关书籍 · 有阅读证据 2 本");
+    expect(markup).toContain("本地匹配 3 本");
+    expect(markup).toContain("富爸爸穷爸爸");
+    expect(markup).toContain("已读完");
+    expect(markup).toContain("426 条笔记");
+    expect(markup).toContain("富爸爸投资指南");
+    expect(markup).toContain("有阅读记录");
+    expect(markup).toContain("笔记统计未同步");
+    expect(markup).toContain("标题前缀匹配");
+    expect(markup).toContain("reading-assistant-category-book is-clickable");
+  });
+
+  it("renders metadata matches that still need reading confirmation", () => {
+    const markup = renderToStaticMarkup(
+      <ReadingAssistantBookCatalogAction
+        action={{
+          queryKind: "title",
+          queryText: "富爸爸",
+          queryStatus: "partial",
+          matchedMetadataCount: 3,
+          matchedReadingCount: 0,
+          listedCount: 0,
+          truncated: false,
+          message: "本机书目中找到 3 本匹配的书，但没有符合已读完条件的记录。",
+          books: [],
+          unconfirmedBooks: [
+            {
+              bookId: "archived_book",
+              title: "富爸爸穷爸爸",
+              author: "罗伯特·清崎",
+              matchReason: "titlePrefix",
+              readStatus: "unknown",
+              progressPercent: 99,
+              sources: ["detail", "progress"]
+            }
+          ],
+          diagnostics: {
+            catalogCoverage: "complete",
+            missingReasons: [],
+            sourceUpdatedAt: { catalog: "200", progress: "210" }
+          }
+        }}
+        onOpenBookDetail={() => undefined}
+        canOpenBookDetail={() => true}
+      />
+    );
+
+    expect(markup).toContain("匹配但待确认 1 本");
+    expect(markup).toContain("匹配到书目，但暂时没有符合本次阅读状态条件的记录");
+    expect(markup).toContain("富爸爸穷爸爸");
+    expect(markup).toContain("99%");
+    expect(markup).toContain("reading-assistant-category-book is-clickable");
+  });
+
+  it("offers a shelf sync CTA when the local catalog is incomplete", () => {
+    const markup = renderToStaticMarkup(
+      <ReadingAssistantBookCatalogAction
+        action={{
+          queryKind: "title",
+          queryText: "富爸爸",
+          queryStatus: "partial",
+          matchedMetadataCount: 0,
+          matchedReadingCount: 0,
+          listedCount: 0,
+          truncated: false,
+          message: "本地书目缓存不可用。",
+          books: [],
+          diagnostics: {
+            catalogCoverage: "unavailable",
+            missingReasons: ["bookMetadataNotSynced"]
+          }
+        }}
+        onSyncShelf={() => undefined}
+      />
+    );
+
+    expect(markup).toContain("本地书目缓存不完整");
+    expect(markup).toContain("同步书架");
+    expect(markup).toContain("reading-assistant-catalog-sync-button");
   });
 });

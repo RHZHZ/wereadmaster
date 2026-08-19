@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-retry-ima-export-attempt"
+description = "Enables the retry_ima_export_attempt command without any pre-configured scope."
+commands.allow = ["retry_ima_export_attempt"]
+
+[[permission]]
+identifier = "deny-retry-ima-export-attempt"
+description = "Denies the retry_ima_export_attempt command without any pre-configured scope."
+commands.deny = ["retry_ima_export_attempt"]

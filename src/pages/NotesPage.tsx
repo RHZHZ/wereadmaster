@@ -33,6 +33,7 @@ import {
   type OrganizeCandidate
 } from "../lib/reading-selectors";
 import {
+  buildMultiTargetExportRequest,
   exportTargetLabel,
   exportTargetsFromDestination,
   type ExportDestination
@@ -48,6 +49,8 @@ import {
   listBookNotesSummaries,
   listReadingItemStates,
   preflightBulkExport,
+  resolveImaUnknownAttempt,
+  retryImaExportAttempt,
   type CommandErrorInfo,
   type NotebookOverviewResponse
 } from "../lib/reading-api";
@@ -60,6 +63,7 @@ import type {
   BulkExportStrategy,
   CredentialStatus,
   ExportTargetResult,
+  ImaUnknownResolution,
   MultiTargetExportRequest,
   NotebookBook,
   ReadingItemState
@@ -96,6 +100,7 @@ export function NotesPage({
   const [bulkExportError, setBulkExportError] = useState<string>();
   const [bulkStrategy, setBulkStrategy] = useState<BulkExportStrategy>("localCachedOnly");
   const [bulkDestination, setBulkDestination] = useState<ExportDestination>("markdown");
+  const [bulkImaBodyExportConfirmed, setBulkImaBodyExportConfirmed] = useState(false);
   const [bulkConcurrency, setBulkConcurrency] = useState(2);
   const [selectedBookIds, setSelectedBookIds] = useState<string[]>([]);
   const [bulkSearchQuery, setBulkSearchQuery] = useState("");
@@ -272,7 +277,15 @@ export function NotesPage({
     setBulkProgress(undefined);
     setBulkSearchQuery("");
     setExcludeWithoutExportableNotes(true);
+    setBulkImaBodyExportConfirmed(false);
     await runBulkPreflight(undefined, true);
+  }
+
+  function handleBulkDestinationChange(destination: ExportDestination) {
+    setBulkDestination(destination);
+    if (destination !== "ima") {
+      setBulkImaBodyExportConfirmed(false);
+    }
   }
 
   async function runBulkPreflight(
@@ -306,7 +319,7 @@ export function NotesPage({
   }
 
   async function handleRunBulkExport() {
-    if (!bulkPreflight) {
+    if (!bulkPreflight || (bulkDestination === "ima" && !bulkImaBodyExportConfirmed)) {
       return;
     }
 
@@ -325,7 +338,7 @@ export function NotesPage({
         selectedBookIds: selectedIds,
         concurrency: bulkStrategy === "syncMissingNotes" ? bulkConcurrency : 2,
         excludeWithoutExportableNotes,
-        targets: bulkTargetsRequest(bulkDestination)
+        targets: bulkTargetsRequest(bulkDestination, bulkImaBodyExportConfirmed)
       });
       setBulkResult(response);
       showToast({
@@ -357,7 +370,7 @@ export function NotesPage({
         selectedBookIds: [bookId],
         concurrency: 1,
         excludeWithoutExportableNotes,
-        targets: bulkTargetsRequest(bulkDestination)
+        targets: bulkTargetsRequest(bulkDestination, bulkImaBodyExportConfirmed)
       });
       setBulkResult(response);
       showToast({
@@ -368,6 +381,64 @@ export function NotesPage({
       const message = getCommandErrorMessage(retryError);
       setBulkExportError(message);
       showToast({ message, tone: "error" });
+    } finally {
+      setIsBulkExporting(false);
+    }
+  }
+
+  async function handleRecoverBulkImaTarget(
+    bookId: string,
+    target: ExportTargetResult,
+    action?: ImaUnknownResolution,
+  ) {
+    if (!target.operationId || isBulkExporting) {
+      return;
+    }
+    if (action) {
+      const label = action === "confirmSucceeded"
+        ? "确认远端已成功"
+        : action === "abandon"
+          ? "放弃本次恢复"
+          : "创建新的完整快照";
+      if (!window.confirm(`${label}？此操作只处理《${bulkResult?.report.items.find((item) => item.bookId === bookId)?.title ?? "当前书籍"}》的 Ima 导出。`)) {
+        return;
+      }
+    }
+    setIsBulkExporting(true);
+    setBulkExportError(undefined);
+    try {
+      const next = action
+        ? await resolveImaUnknownAttempt({
+            operationId: target.operationId,
+            action,
+            confirm: true,
+          })
+        : await retryImaExportAttempt(target.operationId);
+      const resolved = next ?? {
+        ...target,
+        status: "skipped" as const,
+        warning: "已放弃本次 Ima 导出恢复。",
+        operationStage: undefined,
+        error: undefined,
+      };
+      setBulkResult((current) => current ? {
+        ...current,
+        report: {
+          ...current.report,
+          items: current.report.items.map((item) => item.bookId === bookId ? {
+            ...item,
+            targets: (item.targets ?? []).map((itemTarget) =>
+              itemTarget.target === "ima" ? resolved : itemTarget
+            ),
+          } : item),
+        },
+      } : current);
+      showToast({
+        message: resolved.status === "succeeded" ? "Ima 导出已恢复完成。" : resolved.warning ?? resolved.error?.message ?? "Ima 导出状态已更新。",
+        tone: resolved.status === "succeeded" ? "success" : "warning",
+      });
+    } catch (recoveryError) {
+      setBulkExportError(getCommandErrorMessage(recoveryError));
     } finally {
       setIsBulkExporting(false);
     }
@@ -583,6 +654,7 @@ export function NotesPage({
           progress={bulkProgress}
           strategy={bulkStrategy}
           destination={bulkDestination}
+          imaBodyExportConfirmed={bulkImaBodyExportConfirmed}
           concurrency={bulkConcurrency}
           excludeWithoutExportableNotes={excludeWithoutExportableNotes}
           selectedBookIds={selectedBookIds}
@@ -590,7 +662,8 @@ export function NotesPage({
           isPreflighting={isBulkPreflighting}
           isExporting={isBulkExporting}
           onStrategyChange={handleBulkStrategyChange}
-          onDestinationChange={setBulkDestination}
+          onDestinationChange={handleBulkDestinationChange}
+          onImaBodyExportConfirmedChange={setBulkImaBodyExportConfirmed}
           onOpenTargetLink={(url, label) => void handleOpenBulkTargetLink(url, label)}
           onConcurrencyChange={setBulkConcurrency}
           onExcludeWithoutExportableNotesChange={handleExcludeWithoutExportableNotesChange}
@@ -600,6 +673,9 @@ export function NotesPage({
           onExport={() => void handleRunBulkExport()}
           onClearExportError={handleClearBulkExportError}
           onRetryItem={(bookId) => void handleRetryBulkExportItem(bookId)}
+          onRecoverImaTarget={(bookId, target, action) =>
+            void handleRecoverBulkImaTarget(bookId, target, action)
+          }
           onCancelExport={() => void handleCancelBulkExport()}
           onClose={() => setIsBulkWizardOpen(false)}
         />
@@ -615,6 +691,7 @@ function BulkExportWizard({
   progress,
   strategy,
   destination,
+  imaBodyExportConfirmed,
   concurrency,
   excludeWithoutExportableNotes,
   selectedBookIds,
@@ -623,6 +700,7 @@ function BulkExportWizard({
   isExporting,
   onStrategyChange,
   onDestinationChange,
+  onImaBodyExportConfirmedChange,
   onOpenTargetLink,
   onConcurrencyChange,
   onExcludeWithoutExportableNotesChange,
@@ -632,6 +710,7 @@ function BulkExportWizard({
   onExport,
   onClearExportError,
   onRetryItem,
+  onRecoverImaTarget,
   onCancelExport,
   onClose
 }: {
@@ -641,6 +720,7 @@ function BulkExportWizard({
   progress?: BulkExportProgress;
   strategy: BulkExportStrategy;
   destination: ExportDestination;
+  imaBodyExportConfirmed: boolean;
   concurrency: number;
   excludeWithoutExportableNotes: boolean;
   selectedBookIds: string[];
@@ -649,6 +729,7 @@ function BulkExportWizard({
   isExporting: boolean;
   onStrategyChange: (strategy: BulkExportStrategy) => void;
   onDestinationChange: (destination: ExportDestination) => void;
+  onImaBodyExportConfirmedChange: (confirmed: boolean) => void;
   onOpenTargetLink: (url: string, fallbackLabel: string) => void;
   onConcurrencyChange: (concurrency: number) => void;
   onExcludeWithoutExportableNotesChange: (checked: boolean) => void;
@@ -658,6 +739,11 @@ function BulkExportWizard({
   onExport: () => void;
   onClearExportError: () => void;
   onRetryItem: (bookId: string) => void;
+  onRecoverImaTarget: (
+    bookId: string,
+    target: ExportTargetResult,
+    action?: ImaUnknownResolution,
+  ) => void;
   onCancelExport: () => void;
   onClose: () => void;
 }) {
@@ -670,6 +756,7 @@ function BulkExportWizard({
     isExporting ||
     !preflight ||
     preflight.items.length === 0 ||
+    (destination === "ima" && !imaBodyExportConfirmed) ||
     (strategy === "selectedBooksOnly" && selectedCount === 0);
   const stage = exportError ? "error" : result ? "result" : isExporting ? "running" : "setup";
   const showStatus = stage !== "result" && stage !== "error" && (isPreflighting || isExporting);
@@ -813,6 +900,7 @@ function BulkExportWizard({
                     <option value="markdown">仅 Markdown</option>
                     <option value="obsidian">Markdown + Obsidian</option>
                     <option value="notion">Markdown + Notion</option>
+                    <option value="ima">Markdown + Ima</option>
                     <option value="obsidianNotion">Markdown + Obsidian + Notion</option>
                   </select>
                 </label>
@@ -866,6 +954,21 @@ function BulkExportWizard({
                   Notion 批量导入按书串行，可能较慢；单本失败不影响其他书，Markdown 始终保留在批量目录。
                 </p>
               ) : null}
+              {destination === "ima" ? (
+                <>
+                  <p className="bulk-export-selection-summary">
+                    Ima 按书串行创建笔记，并使用设置页保存的默认笔记本和知识库。
+                  </p>
+                  <label className="asset-export-consent">
+                    <input
+                      type="checkbox"
+                      checked={imaBodyExportConfirmed}
+                      onChange={(event) => onImaBodyExportConfirmedChange(event.target.checked)}
+                    />
+                    <span>我确认：本批次所选书籍的划线、想法和相关元数据将发送到 Ima。</span>
+                  </label>
+                </>
+              ) : null}
             </section>
 
             <section className="bulk-export-list" aria-label="批量导出书籍预检">
@@ -905,10 +1008,14 @@ function BulkExportWizard({
                       key={`${item.bookId}-${target.target}`}
                       target={target}
                       onOpenLink={onOpenTargetLink}
+                      onRetryIma={() => onRecoverImaTarget(item.bookId, target)}
+                      onResolveIma={(action) => onRecoverImaTarget(item.bookId, target, action)}
                     />
                   ))}
                   {item.status === "failed" ||
-                  (item.targets ?? []).some((target) => target.status === "failed") ? (
+                  (item.targets ?? []).some((target) =>
+                    target.status === "failed" && !(target.target === "ima" && target.operationId)
+                  ) ? (
                     <button
                       className="text-button"
                       type="button"
@@ -970,30 +1077,43 @@ function BulkExportWizard({
   );
 }
 
-function bulkTargetsRequest(destination: ExportDestination): MultiTargetExportRequest | undefined {
+function bulkTargetsRequest(
+  destination: ExportDestination,
+  confirmImaBodyExport = false
+): MultiTargetExportRequest | undefined {
   if (destination === "markdown") {
     return undefined;
   }
-  return { targets: exportTargetsFromDestination(destination) };
+  const targets = exportTargetsFromDestination(destination);
+  return buildMultiTargetExportRequest(targets, confirmImaBodyExport);
 }
 
 function sortBulkResultItemsFailedFirst(items: BulkExportResponse["report"]["items"]) {
   return [...items].sort((left, right) => {
     const leftFailed =
-      left.status === "failed" || (left.targets ?? []).some((target) => target.status === "failed");
+      left.status === "failed" ||
+      (left.targets ?? []).some((target) =>
+        target.status === "failed" || target.status === "partial" || target.status === "unknown"
+      );
     const rightFailed =
       right.status === "failed" ||
-      (right.targets ?? []).some((target) => target.status === "failed");
+      (right.targets ?? []).some((target) =>
+        target.status === "failed" || target.status === "partial" || target.status === "unknown"
+      );
     return Number(rightFailed) - Number(leftFailed);
   });
 }
 
 function BulkExportTargetLine({
   target,
-  onOpenLink
+  onOpenLink,
+  onRetryIma,
+  onResolveIma
 }: {
   target: ExportTargetResult;
   onOpenLink: (url: string, fallbackLabel: string) => void;
+  onRetryIma: () => void;
+  onResolveIma: (action: ImaUnknownResolution) => void;
 }) {
   const label = exportTargetLabel(target.target);
   return (
@@ -1011,12 +1131,22 @@ function BulkExportTargetLine({
         ) : (
           <span>{target.path ?? "已完成"}</span>
         )
-      ) : target.status === "failed" ? (
+      ) : target.status === "failed" || target.status === "partial" || target.status === "unknown" ? (
         <span>{target.error?.message ?? "失败"}</span>
       ) : (
         <span>已跳过</span>
       )}
       {target.warning ? <small>{target.warning}</small> : null}
+      {target.target === "ima" && target.operationId && (target.status === "failed" || target.status === "partial") ? (
+        <button className="text-button" type="button" onClick={onRetryIma}>精确重试</button>
+      ) : null}
+      {target.target === "ima" && target.operationId && target.status === "unknown" ? (
+        <span className="bulk-export-target-actions">
+          <button className="text-button" type="button" onClick={() => onResolveIma("confirmSucceeded")}>确认成功</button>
+          <button className="text-button" type="button" onClick={() => onResolveIma("createNewSnapshot")}>创建新版本</button>
+          <button className="text-button" type="button" onClick={() => onResolveIma("abandon")}>放弃</button>
+        </span>
+      ) : null}
     </p>
   );
 }

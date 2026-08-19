@@ -29,8 +29,8 @@ describe("prepared asset update prompt", () => {
 
     expect(markup).toContain("准备更新上一版书籍复盘");
     expect(markup).toContain("将参考你上次记录的阅读成果生成新版");
-    expect(markup).toContain("点击“生成复盘”时使用当前书笔记");
-    expect(markup).toContain("点击“生成复盘”后，会使用当前书笔记生成书籍复盘");
+    expect(markup).toContain("点击“生成快速复盘”时使用当前书笔记");
+    expect(markup).toContain("点击“生成快速复盘”后，会使用当前书笔记生成有限样本复盘");
   });
 
   test("reading route generation page shows prepared update context without auto generation", () => {

@@ -22,9 +22,11 @@ import type {
   BookDecisionRequest,
   BookDecisionResponse,
   BookAiSummaryUpdateContext,
+  BookAiSummaryVariants,
   BookAiSummaryListItem,
   BookAiSummaryResponse,
   NoteSynthesisJob,
+  NoteSynthesisJobSummary,
   NoteSynthesisPreview,
   StartNoteSynthesisResult,
   BookNotesSummariesExportOptions,
@@ -64,8 +66,16 @@ import type {
   EmbeddingIndexState,
   EmbeddingProviderSettings,
   EmbeddingSettingsState,
+  ExportSourceKind,
   SaveEmbeddingSettingsRequest,
   Highlight,
+  ImaCredentialStatus,
+  ImaAssetRoute,
+  ImaKnowledgeBase,
+  ImaKnowledgeList,
+  ImaNoteFolder,
+  ImaRemoteDriftReport,
+  ImaUnknownResolution,
   LocalDataState,
   AnalyzeNotionDatabaseResult,
   CreateNotionStandardDatabaseResult,
@@ -115,11 +125,14 @@ import type {
   ReadingCategory,
   ReadingAssistantActionOutput,
   ReadingAssistantAnswer,
+  ReadingAssistantBookCatalogDiagnostics,
+  ReadingAssistantBookCatalogItem,
   ReadingAssistantCategoryBookItem,
   ReadingAssistantNoteSearchOutput,
   ReadingAssistantNoteSearchRequest,
   ReadingAssistantMessage,
   ReadingAssistantUsedContext,
+  RetrievalDiagnostic,
   ReadingAssistantMessageOutput,
   ReadingAssistantPreferences,
   ReadingAssistantRecommendedBook,
@@ -638,6 +651,25 @@ type SettingsStateResponseRecord = {
       coverMode?: unknown;
       databaseConnection?: unknown;
     };
+    ima?: {
+      credential?: ImaCredentialStatus;
+      noteFolderId?: unknown;
+      knowledgeBaseId?: unknown;
+      knowledgeBaseFolderId?: unknown;
+      publishToKnowledgeBase?: unknown;
+      assetRoutes?: unknown;
+      adapterVersion?: unknown;
+      checkedAdapterVersion?: unknown;
+      latestVersion?: unknown;
+      releaseDesc?: unknown;
+      updateInstruction?: unknown;
+      updateCheckedDate?: unknown;
+      lastAttemptAt?: unknown;
+      lastSuccessAt?: unknown;
+      compatibilityStatus?: unknown;
+      canAttemptWrite?: unknown;
+      isWriteCompatible?: unknown;
+    };
   };
   network?: {
     wereadProxyUrl?: unknown;
@@ -793,6 +825,7 @@ type ReadingAssistantCategoryBookItemRecord = {
   category?: unknown;
   progressPercent?: unknown;
   isFinished?: unknown;
+  hasReadingEvidence?: unknown;
   readingTimeText?: unknown;
   source?: unknown;
 };
@@ -808,6 +841,34 @@ type ReadingAssistantCategoryBooksActionRecord = {
   books?: unknown;
 };
 
+type ReadingAssistantBookCatalogItemRecord = {
+  bookId?: unknown;
+  title?: unknown;
+  author?: unknown;
+  category?: unknown;
+  matchReason?: unknown;
+  readStatus?: unknown;
+  progressPercent?: unknown;
+  totalNoteCount?: unknown;
+  highlightCount?: unknown;
+  thoughtCount?: unknown;
+  sources?: unknown;
+};
+
+type ReadingAssistantBookCatalogActionRecord = {
+  queryKind?: unknown;
+  queryText?: unknown;
+  queryStatus?: unknown;
+  matchedMetadataCount?: unknown;
+  matchedReadingCount?: unknown;
+  listedCount?: unknown;
+  truncated?: unknown;
+  message?: unknown;
+  books?: unknown;
+  unconfirmedBooks?: unknown;
+  diagnostics?: unknown;
+};
+
 type ReadingAssistantNoteCountActionRecord = {
   bookId?: unknown;
   title?: unknown;
@@ -820,6 +881,8 @@ type ReadingAssistantNoteCountActionRecord = {
 type ReadingAssistantNoteSearchItemRecord = {
   documentId?: unknown;
   sourceId?: unknown;
+  bookId?: unknown;
+  bookTitle?: unknown;
   noteType?: unknown;
   chapterUid?: unknown;
   chapterTitle?: unknown;
@@ -828,8 +891,11 @@ type ReadingAssistantNoteSearchItemRecord = {
 };
 
 type ReadingAssistantNoteSearchActionRecord = {
+  scope?: unknown;
   bookId?: unknown;
   title?: unknown;
+  searchedBookCount?: unknown;
+  diagnostic?: unknown;
   queryText?: unknown;
   mode?: unknown;
   coverage?: unknown;
@@ -851,6 +917,7 @@ type ReadingAssistantUsedContextRecord = {
   matchedItemCount?: unknown;
   coverage?: unknown;
   truncated?: unknown;
+  diagnostic?: unknown;
 };
 
 type ReadingAssistantActionOutputRecord = {
@@ -1343,12 +1410,25 @@ export async function summarizeBookNotes({
   return invoke<BookAiSummaryResponse>("summarize_book_notes", { bookId, regenerate, updateFrom });
 }
 
-export async function getLatestBookNotesSummary(bookId: string): Promise<BookAiSummaryResponse | undefined> {
+export async function getLatestBookNotesSummary(
+  bookId: string,
+  reviewKind?: "quick" | "full"
+): Promise<BookAiSummaryResponse | undefined> {
   const response = await invoke<BookAiSummaryResponse | null>("get_latest_book_notes_summary", {
-    bookId
+    bookId,
+    reviewKind
   });
 
   return response ?? undefined;
+}
+
+export async function getBookNotesSummaryVariants(bookId: string): Promise<BookAiSummaryVariants> {
+  const [quick, full] = await Promise.all([
+    getLatestBookNotesSummary(bookId, "quick"),
+    getLatestBookNotesSummary(bookId, "full")
+  ]);
+
+  return { quick, full };
 }
 
 export async function previewNoteSynthesis(bookId: string): Promise<NoteSynthesisPreview> {
@@ -1369,6 +1449,10 @@ export async function getNoteSynthesisJob(jobId: string): Promise<NoteSynthesisJ
 export async function getActiveNoteSynthesisJob(bookId: string): Promise<NoteSynthesisJob | undefined> {
   const response = await invoke<NoteSynthesisJob | null>("get_active_note_synthesis_job", { bookId });
   return response ?? undefined;
+}
+
+export async function getNoteSynthesisJobSummary(bookId: string): Promise<NoteSynthesisJobSummary> {
+  return invoke<NoteSynthesisJobSummary>("get_note_synthesis_job_summary", { bookId });
 }
 
 export async function continueNoteSynthesis(jobId: string): Promise<NoteSynthesisJob> {
@@ -1393,7 +1477,9 @@ export async function exportBookNotesSummaryMarkdown(
 export async function exportBookNotesSummaryTargets(
   bookId: string,
   reviewFeedback: AiReviewFeedbackExport | undefined,
-  request: MultiTargetExportRequest
+  request: MultiTargetExportRequest,
+  reviewKind?: "quick" | "full",
+  inputHash?: string
 ): Promise<MultiTargetExportResponse> {
   if (!hasTauriRuntime()) {
     throw new Error("外部知识库导出需要在桌面应用中使用。");
@@ -1401,7 +1487,9 @@ export async function exportBookNotesSummaryTargets(
   return invoke<MultiTargetExportResponse>("export_book_notes_summary_targets", {
     bookId,
     reviewFeedback,
-    request
+    request,
+    reviewKind,
+    inputHash
   });
 }
 
@@ -2130,6 +2218,36 @@ export async function saveNotionExportSettings({
   return mapSettingsState(response);
 }
 
+export async function saveImaExportSettings({
+  noteFolderId,
+  knowledgeBaseId,
+  knowledgeBaseFolderId,
+  publishToKnowledgeBase,
+  assetRoutes
+}: {
+  noteFolderId?: string;
+  knowledgeBaseId?: string;
+  knowledgeBaseFolderId?: string;
+  publishToKnowledgeBase: boolean;
+  assetRoutes?: Partial<Record<ExportSourceKind, ImaAssetRoute>>;
+}): Promise<SettingsState> {
+  const args: {
+    noteFolderId?: string;
+    knowledgeBaseId?: string;
+    knowledgeBaseFolderId?: string;
+    publishToKnowledgeBase: boolean;
+    assetRoutes?: Partial<Record<ExportSourceKind, ImaAssetRoute>>;
+  } = { noteFolderId, knowledgeBaseId, knowledgeBaseFolderId, publishToKnowledgeBase };
+  if (assetRoutes !== undefined) {
+    args.assetRoutes = assetRoutes;
+  }
+  const response = await invokeSettingsCommand<SettingsStateResponseRecord>(
+    "save_ima_export_settings",
+    args
+  );
+  return mapSettingsState(response);
+}
+
 export async function analyzeNotionDatabase(
   databaseId: string
 ): Promise<AnalyzeNotionDatabaseResult> {
@@ -2458,6 +2576,98 @@ export async function removeNotionCredential(confirm: boolean): Promise<Credenti
 
 export async function validateNotionCredential(): Promise<CredentialStatus> {
   return invokeSettingsCommand<CredentialStatus>("validate_notion_credential");
+}
+
+export async function getImaCredentialStatus(): Promise<ImaCredentialStatus> {
+  return invokeSettingsCommand<ImaCredentialStatus>("get_ima_credential_status");
+}
+
+export async function saveImaCredential(
+  clientId: string,
+  apiKey: string
+): Promise<ImaCredentialStatus> {
+  return invokeSettingsCommand<ImaCredentialStatus>("save_ima_credential", {
+    clientId,
+    apiKey
+  });
+}
+
+export async function removeImaCredential(confirm: boolean): Promise<ImaCredentialStatus> {
+  return invokeSettingsCommand<ImaCredentialStatus>("remove_ima_credential", { confirm });
+}
+
+export async function validateImaCredential(): Promise<ImaCredentialStatus> {
+  return invokeSettingsCommand<ImaCredentialStatus>("validate_ima_credential");
+}
+
+export async function refreshImaAdapterCompatibility(): Promise<SettingsState> {
+  const response = await invokeSettingsCommand<SettingsStateResponseRecord>(
+    "refresh_ima_adapter_compatibility"
+  );
+  return mapSettingsState(response);
+}
+
+export async function listImaNoteFolders(): Promise<ImaNoteFolder[]> {
+  return invokeSettingsCommand<ImaNoteFolder[]>("list_ima_note_folders");
+}
+
+export async function listImaAddableKnowledgeBases(): Promise<ImaKnowledgeBase[]> {
+  return invokeSettingsCommand<ImaKnowledgeBase[]>("list_ima_addable_knowledge_bases");
+}
+
+export async function listImaKnowledgeItems(
+  knowledgeBaseId: string,
+  folderId?: string
+): Promise<ImaKnowledgeList> {
+  return invokeSettingsCommand<ImaKnowledgeList>("list_ima_knowledge_items", {
+    knowledgeBaseId,
+    folderId
+  });
+}
+
+export async function retryImaExportAttempt(operationId: string): Promise<ExportTargetResult> {
+  return invokeSettingsCommand<ExportTargetResult>("retry_ima_export_attempt", { operationId });
+}
+
+export async function retargetImaKnowledgeAssociation({
+  operationId,
+  knowledgeBaseId,
+  knowledgeBaseFolderId,
+  confirm
+}: {
+  operationId: string;
+  knowledgeBaseId: string;
+  knowledgeBaseFolderId?: string;
+  confirm: boolean;
+}): Promise<ExportTargetResult> {
+  return invokeSettingsCommand<ExportTargetResult>("retarget_ima_knowledge_association", {
+    operationId,
+    knowledgeBaseId,
+    knowledgeBaseFolderId,
+    confirm
+  });
+}
+
+export async function checkImaExportDrift(
+  operationId: string
+): Promise<ImaRemoteDriftReport> {
+  return invokeSettingsCommand<ImaRemoteDriftReport>("check_ima_export_drift", { operationId });
+}
+
+export async function resolveImaUnknownAttempt({
+  operationId,
+  action,
+  confirm
+}: {
+  operationId: string;
+  action: ImaUnknownResolution;
+  confirm: boolean;
+}): Promise<ExportTargetResult | undefined> {
+  return invokeSettingsCommand<ExportTargetResult | null>("resolve_ima_unknown_attempt", {
+    operationId,
+    action,
+    confirm
+  }).then((result) => result ?? undefined);
 }
 
 export async function getAppUpdateRuntime(): Promise<AppUpdateRuntime> {
@@ -3640,6 +3850,7 @@ function mapReadingAssistantUsedContext(record: unknown): ReadingAssistantUsedCo
     "currentBook",
     "bookNotesSummary",
     "rawBookNotes",
+    "bookCatalog",
     "readingStats",
     "readingPersona",
     "candidateBooks",
@@ -3658,6 +3869,7 @@ function mapReadingAssistantUsedContext(record: unknown): ReadingAssistantUsedCo
   const coverage = ["sampled", "exhaustiveMatch", "fullSnapshot"].includes(coverageValue ?? "")
     ? (coverageValue as ReadingAssistantUsedContext["coverage"])
     : undefined;
+  const diagnostic = mapRetrievalDiagnostic(candidate.diagnostic);
 
   return {
     contextType: contextType as ReadingAssistantUsedContext["contextType"],
@@ -3669,7 +3881,65 @@ function mapReadingAssistantUsedContext(record: unknown): ReadingAssistantUsedCo
       : {}),
     ...(matchedItemCount !== undefined && matchedItemCount >= 0 ? { matchedItemCount } : {}),
     ...(coverage ? { coverage } : {}),
-    ...(typeof candidate.truncated === "boolean" ? { truncated: candidate.truncated } : {})
+    ...(typeof candidate.truncated === "boolean" ? { truncated: candidate.truncated } : {}),
+    ...(diagnostic ? { diagnostic } : {})
+  };
+}
+
+function mapRetrievalDiagnostic(value: unknown): RetrievalDiagnostic | undefined {
+  if (!isObject(value)) {
+    return undefined;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const scope = candidate.scope === "library" ? "library" : candidate.scope === "book" ? "book" : undefined;
+  const strategy = candidate.strategy;
+  const allowedStrategies: RetrievalDiagnostic["strategy"][] = [
+    "structured",
+    "recent",
+    "lexical",
+    "likeFallback",
+    "hybrid",
+    "hybridFallback",
+    "notRequested"
+  ];
+  if (!scope || !allowedStrategies.includes(strategy as RetrievalDiagnostic["strategy"])) {
+    return undefined;
+  }
+
+  const coverage =
+    candidate.coverage === "exhaustiveMatch" || candidate.coverage === "sampled"
+      ? candidate.coverage
+      : undefined;
+  const indexStatus = ["ready", "missing", "building", "failed", "cancelled", "superseded"].includes(
+    String(candidate.indexStatus)
+  )
+    ? (candidate.indexStatus as RetrievalDiagnostic["indexStatus"])
+    : undefined;
+  const reasons: RetrievalDiagnostic["reason"][] = [
+    "structuredCatalogQuery",
+    "noNoteIntent",
+    "globalScopeNoNoteSearch",
+    "indexUnavailable",
+    "providerSettingsChanged",
+    "embeddingQueryFailed"
+  ];
+  const reason = reasons.includes(candidate.reason as RetrievalDiagnostic["reason"])
+    ? (candidate.reason as RetrievalDiagnostic["reason"])
+    : undefined;
+  const availableItemCount = nonNegativeNumberValue(candidate.availableItemCount);
+  const matchedItemCount = nonNegativeNumberValue(candidate.matchedItemCount);
+  const includedItemCount = nonNegativeNumberValue(candidate.includedItemCount);
+
+  return {
+    scope,
+    strategy: strategy as RetrievalDiagnostic["strategy"],
+    ...(availableItemCount !== undefined ? { availableItemCount } : {}),
+    ...(matchedItemCount !== undefined ? { matchedItemCount } : {}),
+    ...(includedItemCount !== undefined ? { includedItemCount } : {}),
+    ...(coverage ? { coverage } : {}),
+    ...(indexStatus ? { indexStatus } : {}),
+    ...(reason ? { reason } : {})
   };
 }
 
@@ -3742,6 +4012,10 @@ function mapReadingAssistantActionOutput(record: unknown): ReadingAssistantActio
 
   if (type === "bookReview") {
     return mapReadingAssistantBookReviewAction(candidate.payload);
+  }
+
+  if (type === "bookCatalog") {
+    return mapReadingAssistantBookCatalogAction(candidate.payload);
   }
 
   if (type === "categoryBooks") {
@@ -3900,6 +4174,154 @@ function mapReadingAssistantBookReviewAction(
   };
 }
 
+function mapReadingAssistantBookCatalogAction(
+  record: unknown
+): ReadingAssistantActionOutput | undefined {
+  if (!isObject(record)) {
+    return undefined;
+  }
+
+  const payload = record as ReadingAssistantBookCatalogActionRecord;
+  const queryText = stringValue(payload.queryText);
+  const matchedMetadataCount = nonNegativeNumberValue(payload.matchedMetadataCount);
+  const matchedReadingCount = nonNegativeNumberValue(payload.matchedReadingCount);
+  const listedCount = nonNegativeNumberValue(payload.listedCount);
+  if (
+    !queryText ||
+    matchedMetadataCount === undefined ||
+    matchedReadingCount === undefined ||
+    listedCount === undefined
+  ) {
+    return undefined;
+  }
+
+  const diagnostics = mapReadingAssistantBookCatalogDiagnostics(payload.diagnostics);
+  if (!diagnostics) {
+    return undefined;
+  }
+
+  return {
+    type: "bookCatalog",
+    payload: {
+      queryKind: payload.queryKind === "author" ? "author" : "title",
+      queryText,
+      queryStatus: normalizeReadingAssistantBookCatalogStatus(payload.queryStatus),
+      matchedMetadataCount,
+      matchedReadingCount,
+      listedCount,
+      truncated: booleanValue(payload.truncated),
+      message: stringValue(payload.message) ?? "本机书目查询结果。",
+      books: Array.isArray(payload.books)
+        ? payload.books.map(mapReadingAssistantBookCatalogItem).filter(isDefined)
+        : [],
+      ...(Array.isArray(payload.unconfirmedBooks)
+        ? {
+            unconfirmedBooks: payload.unconfirmedBooks
+              .map(mapReadingAssistantBookCatalogItem)
+              .filter(isDefined)
+          }
+        : {}),
+      diagnostics
+    }
+  };
+}
+
+function mapReadingAssistantBookCatalogDiagnostics(
+  record: unknown
+): ReadingAssistantBookCatalogDiagnostics | undefined {
+  if (!isObject(record)) {
+    return undefined;
+  }
+
+  const candidate = record as Record<string, unknown>;
+  const catalogCoverage =
+    candidate.catalogCoverage === "complete" ||
+    candidate.catalogCoverage === "unavailable" ||
+    candidate.catalogCoverage === "partial"
+      ? candidate.catalogCoverage
+      : undefined;
+  if (!catalogCoverage) {
+    return undefined;
+  }
+
+  const allowedReasons = [
+    "bookMetadataNotSynced",
+    "readingStateMissing",
+    "noteSummaryMissing",
+    "progressNotSynced",
+    "queryAmbiguous"
+  ] as const;
+  const sourceUpdatedAt = isObject(candidate.sourceUpdatedAt)
+    ? {
+        catalog: stringValue(candidate.sourceUpdatedAt.catalog),
+        progress: stringValue(candidate.sourceUpdatedAt.progress),
+        noteSummary: stringValue(candidate.sourceUpdatedAt.noteSummary)
+      }
+    : undefined;
+  const hasSourceUpdatedAt = Boolean(
+    sourceUpdatedAt?.catalog || sourceUpdatedAt?.progress || sourceUpdatedAt?.noteSummary
+  );
+
+  return {
+    catalogCoverage,
+    missingReasons: toStringArray(candidate.missingReasons).filter((reason) =>
+      allowedReasons.includes(reason as (typeof allowedReasons)[number])
+    ) as Array<(typeof allowedReasons)[number]>,
+    ...(hasSourceUpdatedAt ? { sourceUpdatedAt } : {})
+  };
+}
+
+function normalizeReadingAssistantBookCatalogStatus(
+  value: unknown
+): "found" | "partial" | "empty" | "ambiguous" {
+  if (value === "found" || value === "partial" || value === "empty" || value === "ambiguous") {
+    return value;
+  }
+
+  return "partial";
+}
+
+function mapReadingAssistantBookCatalogItem(
+  record: unknown
+): ReadingAssistantBookCatalogItem | undefined {
+  if (!isObject(record)) {
+    return undefined;
+  }
+
+  const candidate = record as ReadingAssistantBookCatalogItemRecord;
+  const bookId = stringValue(candidate.bookId);
+  const title = stringValue(candidate.title);
+  const matchReason = candidate.matchReason;
+  if (
+    !bookId ||
+    !title ||
+    !["exactTitle", "titlePrefix", "titleToken", "author"].includes(String(matchReason))
+  ) {
+    return undefined;
+  }
+
+  const readStatus =
+    candidate.readStatus === "finished" || candidate.readStatus === "started"
+      ? candidate.readStatus
+      : "unknown";
+  const allowedSources = ["shelf", "detail", "progress", "localState", "notebookBooks"] as const;
+  return {
+    bookId,
+    title,
+    author: stringValue(candidate.author),
+    category: stringValue(candidate.category),
+    matchReason: matchReason as ReadingAssistantBookCatalogItem["matchReason"],
+    readStatus,
+    progressPercent: nonNegativeNumberValue(candidate.progressPercent),
+    totalNoteCount: nonNegativeNumberValue(candidate.totalNoteCount),
+    highlightCount: nonNegativeNumberValue(candidate.highlightCount),
+    thoughtCount: nonNegativeNumberValue(candidate.thoughtCount),
+    sources: toStringArray(candidate.sources).filter((source) =>
+      allowedSources.includes(source as (typeof allowedSources)[number])
+    ) as ReadingAssistantBookCatalogItem["sources"]
+  };
+}
+
 function mapReadingAssistantCategoryBooksAction(
   record: unknown
 ): ReadingAssistantActionOutput | undefined {
@@ -3939,14 +4361,18 @@ function mapReadingAssistantNoteSearchPayload(
     return undefined;
   }
   const payload = record as ReadingAssistantNoteSearchActionRecord;
+  const scope = payload.scope === "library" ? "library" : "book";
   const bookId = stringValue(payload.bookId);
+  const searchedBookCount =
+    nonNegativeNumberValue(payload.searchedBookCount) ?? (scope === "book" ? 1 : 0);
+  const diagnostic = mapRetrievalDiagnostic(payload.diagnostic) ?? stringValue(payload.diagnostic);
   const queryText = stringValue(payload.queryText);
   const matchedItemCount = nonNegativeNumberValue(payload.matchedItemCount);
   const includedItemCount = nonNegativeNumberValue(payload.includedItemCount);
   const mode = payload.mode;
   const coverage = payload.coverage;
   if (
-    !bookId ||
+    (scope === "book" && !bookId) ||
     queryText === undefined ||
     matchedItemCount === undefined ||
     includedItemCount === undefined ||
@@ -3961,13 +4387,15 @@ function mapReadingAssistantNoteSearchPayload(
   }
   const items = Array.isArray(payload.items)
     ? payload.items
-        .map(mapReadingAssistantNoteSearchItem)
+        .map((item) => mapReadingAssistantNoteSearchItem(item, bookId))
         .filter(isDefined)
     : [];
   const hasMore = booleanValue(payload.hasMore) && Boolean(stringValue(payload.nextCursor));
   return {
+    scope,
     bookId,
     title: stringValue(payload.title),
+    searchedBookCount,
     queryText,
     mode,
     coverage,
@@ -3982,12 +4410,14 @@ function mapReadingAssistantNoteSearchPayload(
             value === "highlight" || value === "thought"
         )
       : [],
-    items
+    items,
+    ...(diagnostic ? { diagnostic } : {})
   };
 }
 
 function mapReadingAssistantNoteSearchItem(
-  record: unknown
+  record: unknown,
+  fallbackBookId?: string
 ): ReadingAssistantNoteSearchOutput["items"][number] | undefined {
   if (!isObject(record)) {
     return undefined;
@@ -3995,10 +4425,12 @@ function mapReadingAssistantNoteSearchItem(
   const candidate = record as ReadingAssistantNoteSearchItemRecord;
   const documentId = stringValue(candidate.documentId);
   const sourceId = stringValue(candidate.sourceId);
+  const bookId = stringValue(candidate.bookId) ?? fallbackBookId;
   const noteType = candidate.noteType;
   if (
     !documentId ||
     !sourceId ||
+    !bookId ||
     (noteType !== "highlight" && noteType !== "thought")
   ) {
     return undefined;
@@ -4006,6 +4438,8 @@ function mapReadingAssistantNoteSearchItem(
   return {
     documentId,
     sourceId,
+    bookId,
+    bookTitle: stringValue(candidate.bookTitle),
     noteType,
     chapterUid: numberValue(candidate.chapterUid),
     chapterTitle: stringValue(candidate.chapterTitle),
@@ -4082,6 +4516,7 @@ function mapReadingAssistantCategoryBookItem(
     category: stringValue(candidate.category),
     progressPercent: numberValue(candidate.progressPercent),
     isFinished: booleanValue(candidate.isFinished),
+    hasReadingEvidence: booleanValue(candidate.hasReadingEvidence),
     readingTimeText: stringValue(candidate.readingTimeText),
     source: stringValue(candidate.source) ?? "本地缓存"
   };
@@ -4531,6 +4966,44 @@ function mapSettingsState(response: SettingsStateResponseRecord): SettingsState 
         databaseConnection: mapNotionDatabaseConnection(
           response.integrationData?.notion?.databaseConnection
         )
+      },
+      ima: {
+        credential: response.integrationData?.ima?.credential ?? {
+          hasCredential: false
+        },
+        noteFolderId: stringValue(response.integrationData?.ima?.noteFolderId),
+        knowledgeBaseId: stringValue(response.integrationData?.ima?.knowledgeBaseId),
+        knowledgeBaseFolderId: stringValue(
+          response.integrationData?.ima?.knowledgeBaseFolderId
+        ),
+        publishToKnowledgeBase: booleanValue(
+          response.integrationData?.ima?.publishToKnowledgeBase
+        ),
+        assetRoutes: mapImaAssetRoutes(response.integrationData?.ima?.assetRoutes),
+        adapterVersion: stringValue(response.integrationData?.ima?.adapterVersion) || "1.1.9",
+        checkedAdapterVersion: stringValue(
+          response.integrationData?.ima?.checkedAdapterVersion
+        ),
+        latestVersion: stringValue(response.integrationData?.ima?.latestVersion),
+        releaseDesc: stringValue(response.integrationData?.ima?.releaseDesc),
+        updateInstruction: stringValue(response.integrationData?.ima?.updateInstruction),
+        updateCheckedDate: stringValue(response.integrationData?.ima?.updateCheckedDate),
+        lastAttemptAt: stringValue(response.integrationData?.ima?.lastAttemptAt),
+        lastSuccessAt: stringValue(response.integrationData?.ima?.lastSuccessAt),
+        compatibilityStatus:
+          response.integrationData?.ima?.compatibilityStatus === "compatible"
+            ? "compatible"
+            : response.integrationData?.ima?.compatibilityStatus === "incompatible"
+              ? "incompatible"
+              : "unconfirmed",
+        canAttemptWrite:
+          response.integrationData?.ima?.compatibilityStatus === "compatible" &&
+          booleanValue(response.integrationData?.ima?.canAttemptWrite) &&
+          booleanValue(response.integrationData?.ima?.isWriteCompatible),
+        isWriteCompatible:
+          response.integrationData?.ima?.compatibilityStatus === "compatible" &&
+          booleanValue(response.integrationData?.ima?.canAttemptWrite) &&
+          booleanValue(response.integrationData?.ima?.isWriteCompatible)
       }
     },
     network: {
@@ -4540,6 +5013,31 @@ function mapSettingsState(response: SettingsStateResponseRecord): SettingsState 
     appVersion: stringValue(response.appVersion) || "0.1.0",
     supportsNativeUpdater: booleanValue(response.supportsNativeUpdater)
   };
+}
+
+function mapImaAssetRoutes(value: unknown): Partial<Record<ExportSourceKind, ImaAssetRoute>> {
+  const record = asUnknownRecord(value);
+  if (!record) {
+    return {};
+  }
+
+  const routes: Partial<Record<ExportSourceKind, ImaAssetRoute>> = {};
+  for (const sourceKind of ["bookNotes", "bookReview", "readingStatsReview", "readingRoute", "bookDecision"] as const) {
+    const route = asUnknownRecord(record[sourceKind]);
+    if (!route) {
+      continue;
+    }
+    routes[sourceKind] = {
+      noteFolderId: stringValue(route.noteFolderId),
+      knowledgeBaseId: stringValue(route.knowledgeBaseId),
+      knowledgeBaseFolderId: stringValue(route.knowledgeBaseFolderId),
+      publishToKnowledgeBase:
+        typeof route.publishToKnowledgeBase === "boolean"
+          ? route.publishToKnowledgeBase
+          : undefined
+    };
+  }
+  return routes;
 }
 
 function mapNotionDatabaseConnection(value: unknown): NotionDatabaseConnection | undefined {

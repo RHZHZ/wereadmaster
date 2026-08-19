@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-retarget-ima-knowledge-association"
+description = "Enables the retarget_ima_knowledge_association command without any pre-configured scope."
+commands.allow = ["retarget_ima_knowledge_association"]
+
+[[permission]]
+identifier = "deny-retarget-ima-knowledge-association"
+description = "Denies the retarget_ima_knowledge_association command without any pre-configured scope."
+commands.deny = ["retarget_ima_knowledge_association"]
