@@ -917,12 +917,18 @@ export function SettingsPage({
         return;
       }
 
-      if (probe.recommendedPolicy !== aiResponseFormatPolicy) {
+      const recommendedPolicyChanged =
+        probe.recommendedPolicy !== aiResponseFormatPolicy;
+      const recommendedPolicyNeedsSave =
+        probe.recommendedPolicy !== aiState?.provider.responseFormatPolicy;
+      if (recommendedPolicyChanged) {
         setAiResponseFormatPolicy(probe.recommendedPolicy);
       }
 
       showToast({
-        message: probe.message || "AI Provider 兼容性探测完成。",
+        message: recommendedPolicyNeedsSave
+          ? `${probe.message || "AI Provider 兼容性探测完成。"} 建议模式已填入，请保存 AI 设置后生效。`
+          : probe.message || "AI Provider 兼容性探测完成。",
         tone:
           probe.jsonObject === "failed" && probe.jsonSchema === "failed"
             ? "warning"
@@ -2575,6 +2581,13 @@ export function SettingsPage({
                       </dl>
                       {aiProviderProbe.message ? (
                         <p>{aiProviderProbe.message}</p>
+                      ) : null}
+                      {aiProviderProbe.recommendedPolicy !==
+                      aiState?.provider.responseFormatPolicy ? (
+                        <p className="credential-help-note">
+                          建议模式已填入上方表单，请点击“保存 AI
+                          设置”后用于书籍复盘、阅读报告、阅读指南和选书决策。
+                        </p>
                       ) : null}
                     </section>
                   ) : null}

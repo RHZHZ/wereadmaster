@@ -80,6 +80,7 @@ export function SemanticIndexSettingsCard({
     remoteEnabled &&
     Boolean(consentConfirmedAt) &&
     !indexState?.active &&
+    !currentProfile?.workerActive &&
     !isIndexActionRunning;
   const canResume =
     canStart &&
@@ -118,7 +119,8 @@ export function SemanticIndexSettingsCard({
   }, [onError]);
 
   useEffect(() => {
-    if (!isIndexActionRunning && indexState?.active?.status !== "building") {
+    const profileToPoll = indexState?.active ?? indexState?.latest;
+    if (!isIndexActionRunning && !profileToPoll?.workerActive) {
       return;
     }
 
@@ -141,7 +143,14 @@ export function SemanticIndexSettingsCard({
       disposed = true;
       window.clearInterval(timer);
     };
-  }, [indexState?.active?.status, isIndexActionRunning, onError]);
+  }, [
+    indexState?.active?.status,
+    indexState?.active?.workerActive,
+    indexState?.latest?.status,
+    indexState?.latest?.workerActive,
+    isIndexActionRunning,
+    onError,
+  ]);
 
   function applyProviderSettings(provider: EmbeddingProviderSettings) {
     setBaseUrl(provider.baseUrl);
@@ -264,7 +273,7 @@ export function SemanticIndexSettingsCard({
         message:
           profile.status === "ready"
             ? "语义索引构建完成。普通笔记查询将自动使用混合检索。"
-            : profile.errorMessage || formatProfileStatus(profile.status),
+            : profile.errorMessage || formatProfileStatus(profile),
         tone: profile.status === "ready" ? "success" : "warning",
       });
     } catch (error) {
@@ -289,7 +298,11 @@ export function SemanticIndexSettingsCard({
     try {
       await cancelEmbeddingIndex(profileId);
       await refreshIndexState();
-      showToast({ message: "已请求在当前批次结束后取消索引构建。", tone: "neutral" });
+      showToast({
+        message:
+          "已取消后续索引构建；当前批次若已进入原子提交，可能保留已完成结果，正在等待 Worker 收尾。",
+        tone: "neutral",
+      });
     } catch (error) {
       onError(getCommandErrorMessage(error));
     } finally {
@@ -458,7 +471,7 @@ export function SemanticIndexSettingsCard({
       <dl className="settings-dl">
         <div>
           <dt>任务状态</dt>
-          <dd>{currentProfile ? formatProfileStatus(currentProfile.status) : "尚未构建"}</dd>
+          <dd>{currentProfile ? formatProfileStatus(currentProfile) : "尚未构建"}</dd>
         </div>
         <div>
           <dt>进度</dt>
@@ -504,6 +517,8 @@ export function SemanticIndexSettingsCard({
           )}
           {isIndexActionRunning
             ? "构建中"
+            : currentProfile?.status === "cancelled" && currentProfile.workerActive
+              ? "等待取消收尾"
             : canResume
               ? "继续构建"
               : indexState?.ready
@@ -514,15 +529,23 @@ export function SemanticIndexSettingsCard({
           className="sync-button"
           type="button"
           onClick={() => void handleCancel()}
-          disabled={!indexState?.active || isCancelling}
+          disabled={
+            !currentProfile?.workerActive ||
+            currentProfile.status !== "building" ||
+            isCancelling
+          }
         >
-          {isCancelling ? "取消中" : "取消构建"}
+          {currentProfile?.status === "cancelled" && currentProfile.workerActive
+            ? "取消收尾中"
+            : isCancelling
+              ? "取消中"
+              : "取消构建"}
         </button>
         <button
           className="sync-button"
           type="button"
           onClick={() => setPendingAction("clearIndex")}
-          disabled={Boolean(indexState?.active) || isClearing || !indexState?.latest}
+          disabled={Boolean(currentProfile?.workerActive) || isClearing || !indexState?.latest}
         >
           <Trash2 aria-hidden="true" size={18} />
           {isClearing ? "清除中" : "清除语义索引"}
@@ -603,16 +626,18 @@ function profileProgress(profile?: EmbeddingIndexProfile): number {
   );
 }
 
-function formatProfileStatus(status: EmbeddingIndexProfile["status"]): string {
-  switch (status) {
+function formatProfileStatus(profile: EmbeddingIndexProfile): string {
+  switch (profile.status) {
     case "building":
       return "正在构建";
     case "ready":
       return "构建完成";
     case "failed":
-      return "构建失败，可继续";
+      return profile.errorCode === "embedding_worker_lost"
+        ? "上次构建中断，可继续"
+        : "构建失败，可继续";
     case "cancelled":
-      return "已取消，可继续";
+      return profile.workerActive ? "已取消，正在结束当前批次" : "已取消，可继续";
     case "superseded":
       return "已被新索引替代";
   }

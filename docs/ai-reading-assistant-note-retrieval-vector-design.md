@@ -2,7 +2,7 @@
 
 ## 1. 文档信息
 
-- 状态：设计稿
+- 状态：设计稿；17.4 取消/租约/恢复改造已实现并完成审计
 - 适用范围：AI 阅读助手中的微信读书划线、想法/点评检索与归纳
 - 关联文档：
   - [AI 阅读对话助手设计文档](./ai-reading-dialog-assistant-design.md)
@@ -1082,10 +1082,118 @@ reading-note-synthesis-merge-v1
 ### 17.3 索引任务
 
 - 每批 embedding upsert 后提交进度；
-- 应用重启后从未完成批次继续；
+- 应用重启后识别未完成批次；只有用户明确点击“继续构建”后才恢复远程请求；
 - Provider 限流使用有上限的指数退避；
 - 单文档失败不阻断整个索引，最终状态可为 `partial`；
 - 删除或修改文档优先使旧向量失效，避免召回过期内容。
+
+### 17.4 取消、孤儿任务与多实例恢复（实现与审计）
+
+#### 17.4.1 已确认的现场问题
+
+2026 年 9 月 4 日对真实本地数据库只读核查得到一份历史现场快照：
+
+| 字段 | 快照值 | 解释 |
+| --- | --- | --- |
+| `status` | `building` | 页面继续把任务当作活动任务 |
+| `total_document_count` | `3416` | 本次索引目标 |
+| `indexed_document_count` | `1773` | 已写入约 51.9% 的向量 |
+| `cancel_requested_at` | `1788511728`（2026-09-04 16:48:48，Asia/Shanghai） | 取消请求已经持久化 |
+| `last_started_at` | `1786941236`（2026-08-17 12:33:56，Asia/Shanghai） | 远早于本次取消请求，当前执行者已不存在或不是同一实例 |
+| `updated_at` | `1788511903`（2026-09-04 16:51:43，Asia/Shanghai） | 取消命令更新过记录，但没有完成终态转换 |
+
+改造前的后端只在每个批次开始前、远程请求结束后检查 `cancel_requested_at`；取消命令本身只写标记，仍保留 `building`。Embedding 请求总超时为 60 秒，且没有持久化心跳、执行实例 ID 或启动恢复。因此只要 Worker 在请求中途退出、应用重启，或另一个应用实例接管页面，这条记录就会永久停在“构建中”。
+
+这不是向量内容损坏，也不是 1773 条已写入向量与数据库冲突；它是“任务控制状态没有完成收敛”的一致性缺口。
+
+上述表格是 2026 年 9 月 4 日 16:51:43 的历史现场快照，不代表当前状态。随后通过只读方式复核同一数据库：该 profile 已收敛为 `cancelled`，`indexed_document_count` 仍为 `1773`，`execution_id`、`heartbeat_at` 和 `lease_expires_at` 均为空，说明取消后的派生向量没有被删除，执行租约也已释放。
+
+#### 17.4.2 最小状态模型
+
+保留现有业务状态枚举，避免一次迁移引入新的终态：
+
+- `building + cancel_requested_at IS NULL`：执行中，但必须同时满足租约未过期；
+- `cancelled + execution_id IS NOT NULL`：取消已落盘，Worker 正在收尾；不能继续、清除或重复取消，直到租约释放；
+- `cancelled + execution_id IS NULL`：取消已落盘且没有活动 Worker，可以继续或清除；
+- `failed + error_code = embedding_worker_lost`：执行者失联或应用异常退出，允许用户继续；
+- `ready`：仅当有效向量数等于任务快照总数时成立。
+
+不把 `updated_at` 当作心跳。它代表任意一次业务写入，不能证明 Worker 仍存活。
+
+#### 17.4.3 持久化执行租约
+
+在 `retrieval_index_profiles` 增加以下非正文元数据：
+
+- `execution_id TEXT`：本次 Worker 的不透明实例 ID（包含进程级唯一材料，不向 UI 暴露）；
+- `heartbeat_at TEXT`：Worker 最近一次心跳；
+- `lease_expires_at TEXT`：租约过期时间。
+
+启动或继续构建时必须使用条件更新抢占租约；当前实现会在每批开始前、远程请求返回后刷新心跳，且把 90 秒租约设置为大于 60 秒 Provider 请求超时并留有写库余量。所有进度、成功、失败和取消写入都必须带 `execution_id` 条件，旧 Worker 不能覆盖新 Worker 的状态。若未来把单次 Provider 超时上调到接近租约时长，必须再增加 in-flight 心跳或同步延长租约。
+
+该租约同时解决两个遗漏：应用存在两个实例时不能让两个 Worker 并行写同一 profile；页面重新打开时可以区分“仍有执行者”和“数据库残留状态”。
+
+#### 17.4.4 取消语义
+
+取消命令返回 profile 和 `workerActive`，而不是只返回 `building` profile：
+
+1. 租约有效：立即把状态转换为 `cancelled`，写入 `cancel_requested_at` 和 `completed_at`，但保留执行 ID 与租约；当前远程请求可以完成，但禁止写入该批次结果，Worker 返回后释放租约。
+2. 租约已过期或不存在：在同一事务中直接转换为 `cancelled`，写入 `completed_at`、非敏感的 `error_code = embedding_cancelled_after_worker_loss`，并清除租约。
+3. profile 已经是终态：幂等返回终态，不报“取消失败”。
+
+本地 Worker 还应使用数据库标记作为跨进程、跨重启的取消通道；当前实现会在批次边界和远程请求返回后检查标记。不能承诺已经发出的远程 HTTP 请求在 Provider 侧被撤回。
+
+#### 17.4.5 启动恢复
+
+数据库 schema 初始化完成后执行一次轻量 reconciliation，不自动发送新的 embedding 请求：
+
+- `building + cancel_requested_at IS NOT NULL + lease 已过期` → `cancelled`；
+- `building + cancel_requested_at IS NULL + lease 已过期` → `failed / embedding_worker_lost`，文案为“上次构建中断，可继续”；
+- 租约仍有效 → 保留任务，页面按心跳轮询；
+- 任何终态 → 不恢复轮询，不创建新 profile。
+
+用户点击“继续构建”时复用原 `profile_id`、Provider 快照、内容哈希和已完成向量，只处理剩余文档；不得通过新建 profile 伪装恢复，也不得在启动时盲目重复发送不确定的远程请求。
+
+#### 17.4.6 UI 合同
+
+设置页至少区分四种可见态：
+
+| 后端事实 | UI 文案 | 可用操作 |
+| --- | --- | --- |
+| Worker 有效、未取消 | `正在构建 · N / M` | `取消构建` |
+| Worker 有效、已取消并收尾 | `已取消，正在结束当前批次 · N / M` | 禁用继续、清除和重复取消；继续显示轮询 |
+| 租约过期、未完成恢复 | `上次构建中断 · 已保存 N / M` | `继续构建`、`清除索引` |
+| 已取消 | `已取消 · 已保存 N / M` | `继续构建`、`清除索引` |
+
+点击取消后，按钮不能在命令返回瞬间恢复成普通“取消构建”。后端立即返回 `cancelled` 时，若 `workerActive=true`，UI 显示“取消收尾中”并继续轮询，直到租约释放。轮询只针对“可确认仍有执行者”的任务；孤儿任务应先由 reconciliation 收敛。
+
+`canStart` 不应只判断是否存在 `building` profile；应判断是否存在租约有效的活动 Worker。`canResume` 必须允许 `failed / embedding_worker_lost` 和 `cancelled`，但不能直接把未知的 `building` 当作可恢复，避免两个 Worker 同时运行。
+
+#### 17.4.7 迁移与回滚
+
+- 新增列使用 `ALTER TABLE ... ADD COLUMN`，默认允许 NULL，不触碰原始笔记和既有向量；
+- 首次启动先把没有 `execution_id` 的旧 `building` profile 视为“无租约”；若存在取消请求则收敛为 `cancelled`，否则收敛为 `failed / embedding_worker_lost`；
+- 不自动清除 1773 条已写入向量；继续任务通过内容哈希校验决定是否复用；
+- 若迁移失败，只回滚元数据迁移，不删除 profile、向量或源笔记；
+- 旧前端和新后端不应被视为可独立升级的协议组合。若前端收到缺少 `workerActive` 的旧响应，应按“执行者未知”保守处理，不能把 `building` 自动当作可取消、可清除或可恢复；发布时应让前后端成组升级。
+
+#### 17.4.8 必测用例
+
+- 取消发生在批次开始前：不发 Provider 请求，直接得到 `cancelled`；
+- 取消发生在 60 秒内的 in-flight 请求中：请求结果不 upsert，随后得到 `cancelled`；
+- 取消后 Worker 退出：重启 reconciliation 将 `building + cancel_requested_at` 收敛为 `cancelled`；
+- 无取消时应用异常退出：重启将孤儿 `building` 标为 `failed / embedding_worker_lost`，点击继续只处理剩余文档；
+- 两个应用实例同时继续：只有持有有效 `execution_id` 的 Worker 能写入进度；
+- 心跳过期但旧 Worker 恢复写库：条件更新失败，不能覆盖新 Worker；
+- UI 在取消命令返回后不会闪回“取消构建”，终态后停止轮询；
+- 现有 ready profile 在新 profile 失败、取消或失联时仍可用于本地词法检索和已就绪的语义查询。
+
+#### 17.4.9 收口审计与暂缓项
+
+- 已验证：Embedding 索引租约/取消相关 Rust 测试 9 项通过；启动 reconciliation 回归通过；前端设置页与读取 API 相关测试 87 项通过；此前全量 Rust 测试 544 项、前端测试 562 项及生产构建均通过。
+- 已验证：真实本地数据库只读复核不会改写笔记正文或向量；取消后的 profile 可以保留已完成的 1773 条向量，并进入可继续或清除的终态。
+- 暂缓：当前单次 Provider 超时为 60 秒、执行租约为 90 秒，批次边界和远程请求返回后刷新租约已经足够。只有当 Provider 超时上调到接近 90 秒，或需要抵抗系统睡眠导致的长时间 in-flight 请求时，才增加真正的定时心跳。
+- 暂缓：已经发出的 HTTP 请求无法保证在 Provider 侧撤回；租约过期后接管可能导致一次重复计算或重复计费，这是取消语义无法消除的外部副作用，UI 不应承诺“远程请求已撤销”。
+- 约束：租约使用本地 Unix 秒时间戳。若未来需要应对系统时钟大幅跳变，应改为单调时钟辅助记录或增加时钟异常检测；当前桌面单实例场景不为此引入额外复杂度。
 
 ## 18. 迁移与兼容
 

@@ -309,9 +309,10 @@ describe("M3 语义索引 API", () => {
       modelId: "embed-v1",
       dimensions: 1536,
       status: "building",
-      totalDocumentCount: 10,
-      indexedDocumentCount: 0,
-      createdAt: "100",
+       totalDocumentCount: 10,
+       indexedDocumentCount: 0,
+       workerActive: true,
+       createdAt: "100",
       updatedAt: "100"
     };
     invokeMock

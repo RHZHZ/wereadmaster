@@ -599,6 +599,9 @@ pub fn initialize_schema(connection: &Connection) -> SqliteResult<()> {
             ),
             cancel_requested_at TEXT,
             last_started_at TEXT,
+            execution_id TEXT,
+            heartbeat_at TEXT,
+            lease_expires_at TEXT,
             error_code TEXT,
             error_message TEXT,
             created_at TEXT NOT NULL,
@@ -943,11 +946,64 @@ pub fn initialize_schema(connection: &Connection) -> SqliteResult<()> {
     add_column_if_missing(connection, "thoughts", "deep_link", "TEXT")?;
     add_column_if_missing(connection, "ai_assistant_messages", "output_json", "TEXT")?;
     ensure_retrieval_profile_schema(connection)?;
+    reconcile_cancelled_embedding_profiles(connection)?;
     ensure_retrieval_fts_schema(connection)?;
     ensure_local_books_support_markdown(connection)?;
     ensure_local_reading_progress_schema(connection)?;
     ensure_reading_item_dimensions(connection)?;
 
+    Ok(())
+}
+
+fn reconcile_cancelled_embedding_profiles(connection: &Connection) -> SqliteResult<()> {
+    let now = current_unix_seconds_string();
+    connection.execute(
+        "UPDATE retrieval_index_profiles
+         SET status = 'cancelled',
+             completed_at = COALESCE(completed_at, ?1),
+             execution_id = NULL,
+             heartbeat_at = NULL,
+             lease_expires_at = NULL,
+             updated_at = ?1
+         WHERE status = 'building'
+           AND cancel_requested_at IS NOT NULL
+           AND (
+             execution_id IS NULL
+             OR lease_expires_at IS NULL
+             OR CAST(lease_expires_at AS INTEGER) <= CAST(?1 AS INTEGER)
+           )",
+        [&now],
+    )?;
+    connection.execute(
+        "UPDATE retrieval_index_profiles
+         SET status = 'failed',
+             error_code = 'embedding_worker_lost',
+             error_message = '上次语义索引构建已中断，可以继续处理剩余笔记。',
+             completed_at = COALESCE(completed_at, ?1),
+             execution_id = NULL,
+             heartbeat_at = NULL,
+             lease_expires_at = NULL,
+             updated_at = ?1
+         WHERE status = 'building'
+           AND cancel_requested_at IS NULL
+           AND (
+             execution_id IS NULL
+             OR lease_expires_at IS NULL
+             OR CAST(lease_expires_at AS INTEGER) <= CAST(?1 AS INTEGER)
+           )",
+        [&now],
+    )?;
+    connection.execute(
+        "UPDATE retrieval_index_profiles
+         SET execution_id = NULL, heartbeat_at = NULL, lease_expires_at = NULL
+         WHERE status <> 'building'
+           AND execution_id IS NOT NULL
+           AND (
+             lease_expires_at IS NULL
+             OR CAST(lease_expires_at AS INTEGER) <= CAST(?1 AS INTEGER)
+           )",
+        [&now],
+    )?;
     Ok(())
 }
 
@@ -1000,6 +1056,9 @@ fn ensure_retrieval_profile_schema(connection: &Connection) -> SqliteResult<()> 
                 ),
                 cancel_requested_at TEXT,
                 last_started_at TEXT,
+                execution_id TEXT,
+                heartbeat_at TEXT,
+                lease_expires_at TEXT,
                 error_code TEXT,
                 error_message TEXT,
                 created_at TEXT NOT NULL,
@@ -1079,6 +1138,25 @@ fn ensure_retrieval_profile_schema(connection: &Connection) -> SqliteResult<()> 
             ));
         }
     }
+
+    add_column_if_missing(
+        connection,
+        "retrieval_index_profiles",
+        "execution_id",
+        "TEXT",
+    )?;
+    add_column_if_missing(
+        connection,
+        "retrieval_index_profiles",
+        "heartbeat_at",
+        "TEXT",
+    )?;
+    add_column_if_missing(
+        connection,
+        "retrieval_index_profiles",
+        "lease_expires_at",
+        "TEXT",
+    )?;
 
     connection.execute(
         "UPDATE retrieval_index_profiles
@@ -1907,6 +1985,113 @@ mod tests {
 
         initialize_schema(&connection).expect("schema should initialize idempotently");
         assert!(super::retrieval_fts_available(&connection));
+    }
+
+    #[test]
+    fn initialize_schema_reconciles_cancel_requested_building_profile() {
+        let connection = Connection::open_in_memory().expect("in-memory database should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        connection
+            .execute(
+                "INSERT INTO retrieval_index_profiles (
+                    id, provider_kind, model_id, dimensions, distance_metric,
+                    normalization_version, chunking_version, content_hash_version,
+                    status, total_document_count, indexed_document_count,
+                    cancel_requested_at, created_at, updated_at
+                 ) VALUES ('profile-stale-cancel', 'test', 'embed-v1', 2, 'cosine',
+                    'retrieval-text-v1', 'document-v1', 'sha256-v1',
+                    'building', 1, 0, '100', '100', '100')",
+                [],
+            )
+            .expect("stale profile should insert");
+
+        super::reconcile_cancelled_embedding_profiles(&connection)
+            .expect("stale cancellation should reconcile");
+
+        let state: (String, Option<String>) = connection
+            .query_row(
+                "SELECT status, completed_at FROM retrieval_index_profiles
+                 WHERE id = 'profile-stale-cancel'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("reconciled profile should read");
+        assert_eq!(state.0, "cancelled");
+        assert!(state.1.is_some());
+    }
+
+    #[test]
+    fn reconcile_embedding_profile_leases_preserves_live_and_reaps_stale_workers() {
+        let connection = Connection::open_in_memory().expect("in-memory database should open");
+        initialize_schema(&connection).expect("schema should initialize");
+        let now = super::current_unix_seconds_string();
+        let live_lease = now
+            .parse::<u64>()
+            .expect("current time should parse")
+            .saturating_add(90)
+            .to_string();
+
+        connection
+            .execute(
+                "INSERT INTO retrieval_index_profiles (
+                    id, provider_kind, model_id, dimensions, distance_metric,
+                    normalization_version, chunking_version, content_hash_version,
+                    status, total_document_count, indexed_document_count,
+                    execution_id, heartbeat_at, lease_expires_at, created_at, updated_at
+                 ) VALUES ('profile-live', 'test', 'embed-v1', 2, 'cosine',
+                    'retrieval-text-v1', 'document-v1', 'sha256-v1',
+                    'building', 1, 0, 'execution-live', ?1, ?2, ?1, ?1)",
+                rusqlite::params![now, live_lease],
+            )
+            .expect("live profile should insert");
+        super::reconcile_cancelled_embedding_profiles(&connection)
+            .expect("live lease reconciliation should succeed");
+        let live: (String, Option<String>) = connection
+            .query_row(
+                "SELECT status, execution_id FROM retrieval_index_profiles
+                 WHERE id = 'profile-live'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("live profile should read");
+        assert_eq!(live.0, "building");
+        assert_eq!(live.1.as_deref(), Some("execution-live"));
+
+        connection
+            .execute(
+                "UPDATE retrieval_index_profiles
+                 SET status = 'failed', execution_id = NULL,
+                     heartbeat_at = NULL, lease_expires_at = NULL
+                 WHERE id = 'profile-live'",
+                [],
+            )
+            .expect("live profile should be released for the next fixture");
+        connection
+            .execute(
+                "INSERT INTO retrieval_index_profiles (
+                    id, provider_kind, model_id, dimensions, distance_metric,
+                    normalization_version, chunking_version, content_hash_version, status,
+                    total_document_count, indexed_document_count,
+                    execution_id, heartbeat_at, lease_expires_at, created_at, updated_at
+                 ) VALUES ('profile-stale', 'test', 'embed-v1', 2, 'cosine',
+                    'retrieval-text-v1', 'document-v1', 'sha256-v1', 'building', 1, 0,
+                    'execution-stale', '100', '0', '100', '100')",
+                [],
+            )
+            .expect("stale profile should insert");
+        super::reconcile_cancelled_embedding_profiles(&connection)
+            .expect("stale lease reconciliation should succeed");
+        let stale: (String, Option<String>, Option<String>) = connection
+            .query_row(
+                "SELECT status, error_code, execution_id
+                 FROM retrieval_index_profiles WHERE id = 'profile-stale'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("stale profile should read");
+        assert_eq!(stale.0, "failed");
+        assert_eq!(stale.1.as_deref(), Some("embedding_worker_lost"));
+        assert!(stale.2.is_none());
     }
 
     #[test]

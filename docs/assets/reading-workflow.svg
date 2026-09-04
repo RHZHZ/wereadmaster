@@ -1,56 +1,95 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="470" viewBox="0 0 1200 470" role="img" aria-labelledby="title desc">
-  <title id="title">WxReadMaster 阅读闭环</title>
-  <desc id="desc">从同步、阅读整理、生成成果到导出备份的四阶段循环流程图。</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="650" viewBox="0 0 1400 650" role="img" aria-labelledby="title desc">
+  <title id="title">WxReadMaster 阅读工作流与能力地图</title>
+  <desc id="desc">从同步、阅读整理、生成成果到导出备份的四阶段阅读闭环，并展示阅读路线、周期复盘、选书决策、AI 助手和 IMA 等能力。</desc>
   <defs>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
       <path d="M0,0 L10,5 L0,10 Z" fill="#8b8a80"/>
     </marker>
+    <marker id="loop-arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#ad8d48"/>
+    </marker>
     <style>
-      .title { font: 700 27px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #2f2f2a; }
+      .title { font: 700 29px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #2f2f2a; }
       .subtitle { font: 400 16px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #6f6d63; }
       .step { font: 700 18px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #2f2f2a; }
       .body { font: 400 15px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #4b4a43; }
+      .small { font: 400 14px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #5e5c54; }
+      .tag { font: 700 13px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #6f5b21; }
       .loop { font: 400 15px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #8b5c00; }
+      .panel-title { font: 700 15px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #3f3d36; }
     </style>
   </defs>
-  <rect x="1" y="1" width="1198" height="468" rx="18" fill="#fffdf8" stroke="#dedbd1"/>
-  <text x="52" y="58" class="title">一条主线，四个阶段</text>
-  <text x="52" y="88" class="subtitle">把阅读记录变成可继续使用的本地成果</text>
+  <rect x="1" y="1" width="1398" height="648" rx="18" fill="#fffdf8" stroke="#dedbd1"/>
+  <text x="52" y="54" class="title">一条主线，四个阶段，一张阅读能力地图</text>
+  <text x="52" y="82" class="subtitle">从原始阅读数据，到可继续阅读、复盘、规划、发布和备份的本地成果</text>
 
-  <rect x="52" y="145" width="240" height="132" rx="16" fill="#e4f2ff" stroke="#2d8cff"/>
-  <circle cx="84" cy="181" r="18" fill="#1677ff"/>
-  <text x="84" y="187" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" font-weight="700" fill="#ffffff">1</text>
-  <text x="116" y="183" class="step">同步</text>
-  <text x="116" y="213" class="body">书架、笔记、统计</text>
-  <text x="116" y="239" class="body">也可导入本地图书</text>
+  <!-- Main workflow -->
+  <rect x="52" y="122" width="286" height="144" rx="16" fill="#e4f2ff" stroke="#2d8cff" stroke-width="1.5"/>
+  <circle cx="84" cy="158" r="18" fill="#1677ff"/>
+  <text x="84" y="164" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" font-weight="700" fill="#ffffff">1</text>
+  <text x="116" y="160" class="step">同步与导入</text>
+  <text x="116" y="190" class="body">微信书架、笔记、统计</text>
+  <text x="116" y="216" class="body">EPUB、TXT、Markdown</text>
+  <text x="116" y="242" class="small">把材料带入本地工作区</text>
 
-  <line x1="305" y1="211" x2="354" y2="211" stroke="#8b8a80" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="351" y1="194" x2="390" y2="194" stroke="#8b8a80" stroke-width="2" marker-end="url(#arrow)"/>
 
-  <rect x="370" y="145" width="240" height="132" rx="16" fill="#e4faf2" stroke="#28b88a"/>
-  <circle cx="402" cy="181" r="18" fill="#079669"/>
-  <text x="402" y="187" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" font-weight="700" fill="#ffffff">2</text>
-  <text x="434" y="183" class="step">阅读与整理</text>
-  <text x="434" y="213" class="body">候选、进度、待整理</text>
-  <text x="434" y="239" class="body">划线、想法与本地记录</text>
+  <rect x="406" y="122" width="286" height="144" rx="16" fill="#e4faf2" stroke="#28b88a" stroke-width="1.5"/>
+  <circle cx="438" cy="158" r="18" fill="#079669"/>
+  <text x="438" y="164" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" font-weight="700" fill="#ffffff">2</text>
+  <text x="470" y="160" class="step">阅读与整理</text>
+  <text x="470" y="190" class="body">候选、进度、整理状态</text>
+  <text x="470" y="216" class="body">本地阅读器、划线、想法</text>
+  <text x="470" y="242" class="small">语义检索与 AI 上下文准备</text>
 
-  <line x1="623" y1="211" x2="672" y2="211" stroke="#8b8a80" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="705" y1="194" x2="744" y2="194" stroke="#8b8a80" stroke-width="2" marker-end="url(#arrow)"/>
 
-  <rect x="688" y="145" width="240" height="132" rx="16" fill="#fff0d9" stroke="#ef9419"/>
-  <circle cx="720" cy="181" r="18" fill="#d56500"/>
-  <text x="720" y="187" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" font-weight="700" fill="#ffffff">3</text>
-  <text x="752" y="183" class="step">生成成果</text>
-  <text x="752" y="213" class="body">书籍复盘、阅读指南</text>
-  <text x="752" y="239" class="body">阅读路线、报告图片</text>
+  <rect x="760" y="122" width="286" height="144" rx="16" fill="#fff0d9" stroke="#ef9419" stroke-width="1.5"/>
+  <circle cx="792" cy="158" r="18" fill="#d56500"/>
+  <text x="792" y="164" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" font-weight="700" fill="#ffffff">3</text>
+  <text x="824" y="160" class="step">生成与规划</text>
+  <text x="824" y="190" class="body">书籍复盘、阅读指南</text>
+  <text x="824" y="216" class="body">阅读路线、周期复盘</text>
+  <text x="824" y="242" class="small">选书决策、报告图片、AI 助手</text>
 
-  <line x1="941" y1="211" x2="990" y2="211" stroke="#8b8a80" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="1059" y1="194" x2="1098" y2="194" stroke="#8b8a80" stroke-width="2" marker-end="url(#arrow)"/>
 
-  <rect x="1006" y="145" width="142" height="132" rx="16" fill="#f3efe2" stroke="#9b9789"/>
-  <circle cx="1038" cy="181" r="18" fill="#66645e"/>
-  <text x="1038" y="187" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" font-weight="700" fill="#ffffff">4</text>
-  <text x="1070" y="183" class="step">带走</text>
-  <text x="1070" y="213" class="body">导出</text>
-  <text x="1070" y="239" class="body">备份</text>
+  <rect x="1114" y="122" width="234" height="144" rx="16" fill="#f3efe2" stroke="#9b9789" stroke-width="1.5"/>
+  <circle cx="1146" cy="158" r="18" fill="#66645e"/>
+  <text x="1146" y="164" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" font-weight="700" fill="#ffffff">4</text>
+  <text x="1178" y="160" class="step">发布与备份</text>
+  <text x="1178" y="190" class="body">Markdown、Obsidian</text>
+  <text x="1178" y="216" class="body">Notion、IMA</text>
+  <text x="1178" y="242" class="small">本地 SQLite 备份</text>
 
-  <path d="M1078 310 V365 H172 V310" fill="none" stroke="#b7a982" stroke-width="2" stroke-dasharray="7 7" marker-end="url(#arrow)"/>
-  <text x="625" y="405" text-anchor="middle" class="loop">持续循环：有新笔记或新进度时，再回到同步、整理或刷新成果</text>
+  <!-- Capability groups -->
+  <text x="52" y="317" class="panel-title">阶段内能力</text>
+
+  <rect x="52" y="340" width="286" height="126" rx="12" fill="#f5faff" stroke="#b9d9fa"/>
+  <text x="72" y="367" class="tag">输入来源</text>
+  <text x="72" y="396" class="body">微信读书同步 · 本地书库</text>
+  <text x="72" y="422" class="body">书架 · 候选书架 · 统计</text>
+  <text x="72" y="448" class="small">来源分开保存，可人工关联</text>
+
+  <rect x="406" y="340" width="286" height="126" rx="12" fill="#f3fcf8" stroke="#b9e8d7"/>
+  <text x="426" y="367" class="tag">阅读资产</text>
+  <text x="426" y="396" class="body">本地阅读器 · 章节搜索</text>
+  <text x="426" y="422" class="body">划线 · 想法 · 语义检索</text>
+  <text x="426" y="448" class="small">AI 只在主动授权后使用上下文</text>
+
+  <rect x="760" y="340" width="286" height="126" rx="12" fill="#fffaf0" stroke="#f1d39b"/>
+  <text x="780" y="367" class="tag">成果与决策</text>
+  <text x="780" y="396" class="body">书籍复盘 · 阅读指南</text>
+  <text x="780" y="422" class="body">阅读路线 · 周期复盘</text>
+  <text x="780" y="448" class="small">选书决策 · AI 阅读助手</text>
+
+  <rect x="1114" y="340" width="234" height="126" rx="12" fill="#faf8f0" stroke="#d7d0bd"/>
+  <text x="1134" y="367" class="tag">交付去向</text>
+  <text x="1134" y="396" class="body">文件与知识库</text>
+  <text x="1134" y="422" class="body">单本与批量导出</text>
+  <text x="1134" y="448" class="small">IMA 当前按预览边界使用</text>
+
+  <!-- Loop -->
+  <path d="M1242 500 V555 H158 V500" fill="none" stroke="#b7a982" stroke-width="2" stroke-dasharray="7 7" marker-end="url(#loop-arrow)"/>
+  <text x="700" y="594" text-anchor="middle" class="loop">持续循环：有新笔记、新进度或新判断时，回到同步、整理或刷新成果</text>
 </svg>

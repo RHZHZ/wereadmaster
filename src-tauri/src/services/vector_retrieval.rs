@@ -266,18 +266,48 @@ pub(crate) fn upsert_embedding_batch(
     documents: &[EmbeddedDocument],
     now: &str,
 ) -> Result<usize, String> {
+    upsert_embedding_batch_inner(connection, profile_id, None, documents, now)
+}
+
+pub(crate) fn upsert_embedding_batch_for_execution(
+    connection: &Connection,
+    profile_id: &str,
+    execution_id: &str,
+    documents: &[EmbeddedDocument],
+    now: &str,
+) -> Result<usize, String> {
+    upsert_embedding_batch_inner(connection, profile_id, Some(execution_id), documents, now)
+}
+
+fn upsert_embedding_batch_inner(
+    connection: &Connection,
+    profile_id: &str,
+    execution_id: Option<&str>,
+    documents: &[EmbeddedDocument],
+    now: &str,
+) -> Result<usize, String> {
     let transaction = connection
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
-    let (status, dimensions) = transaction
+    let (status, dimensions, current_execution_id) = transaction
         .query_row(
-            "SELECT status, dimensions FROM retrieval_index_profiles WHERE id = ?1",
+            "SELECT status, dimensions, execution_id
+             FROM retrieval_index_profiles WHERE id = ?1",
             [profile_id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
         )
         .map_err(|error| error.to_string())?;
     if status != "building" {
         return Err("embedding profile is not building".to_string());
+    }
+    if execution_id.is_some() && current_execution_id.as_deref() != execution_id {
+        return Err("embedding profile execution is no longer owned".to_string());
     }
     let dimensions =
         usize::try_from(dimensions).map_err(|_| "invalid profile dimensions".to_string())?;
@@ -335,14 +365,17 @@ pub(crate) fn upsert_embedding_batch(
         )
         .map_err(|error| error.to_string())?
         .max(0) as usize;
-    transaction
+    let changed = transaction
         .execute(
             "UPDATE retrieval_index_profiles
              SET indexed_document_count = ?2, updated_at = ?3
-             WHERE id = ?1",
-            params![profile_id, indexed as i64, now],
+             WHERE id = ?1 AND (?4 IS NULL OR execution_id = ?4)",
+            params![profile_id, indexed as i64, now, execution_id],
         )
         .map_err(|error| error.to_string())?;
+    if changed != 1 {
+        return Err("embedding profile execution is no longer owned".to_string());
+    }
     transaction.commit().map_err(|error| error.to_string())?;
     Ok(indexed)
 }
@@ -352,12 +385,30 @@ pub(crate) fn complete_profile(
     profile_id: &str,
     now: &str,
 ) -> Result<(), String> {
+    complete_profile_inner(connection, profile_id, None, now)
+}
+
+pub(crate) fn complete_profile_for_execution(
+    connection: &Connection,
+    profile_id: &str,
+    execution_id: &str,
+    now: &str,
+) -> Result<(), String> {
+    complete_profile_inner(connection, profile_id, Some(execution_id), now)
+}
+
+fn complete_profile_inner(
+    connection: &Connection,
+    profile_id: &str,
+    execution_id: Option<&str>,
+    now: &str,
+) -> Result<(), String> {
     let transaction = connection
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
-    let (status, total, indexed) = transaction
+    let (status, total, indexed, current_execution_id) = transaction
         .query_row(
-            "SELECT status, total_document_count, indexed_document_count
+            "SELECT status, total_document_count, indexed_document_count, execution_id
              FROM retrieval_index_profiles WHERE id = ?1",
             [profile_id],
             |row| {
@@ -365,12 +416,16 @@ pub(crate) fn complete_profile(
                     row.get::<_, String>(0)?,
                     row.get::<_, i64>(1)?,
                     row.get::<_, i64>(2)?,
+                    row.get::<_, Option<String>>(3)?,
                 ))
             },
         )
         .map_err(|error| error.to_string())?;
     if status != "building" || indexed != total {
         return Err("embedding profile is incomplete".to_string());
+    }
+    if execution_id.is_some() && current_execution_id.as_deref() != execution_id {
+        return Err("embedding profile execution is no longer owned".to_string());
     }
     let valid_count = transaction
         .query_row(
@@ -396,14 +451,19 @@ pub(crate) fn complete_profile(
             params![profile_id, now],
         )
         .map_err(|error| error.to_string())?;
-    transaction
+    let changed = transaction
         .execute(
             "UPDATE retrieval_index_profiles
-             SET status = 'ready', completed_at = ?2, updated_at = ?2
-             WHERE id = ?1 AND status = 'building'",
-            params![profile_id, now],
+             SET status = 'ready', completed_at = ?2, updated_at = ?2,
+                 execution_id = NULL, heartbeat_at = NULL, lease_expires_at = NULL
+             WHERE id = ?1 AND status = 'building'
+               AND (?3 IS NULL OR execution_id = ?3)",
+            params![profile_id, now, execution_id],
         )
         .map_err(|error| error.to_string())?;
+    if changed != 1 {
+        return Err("embedding profile execution is no longer owned".to_string());
+    }
     transaction.commit().map_err(|error| error.to_string())
 }
 
@@ -417,7 +477,8 @@ pub(crate) fn fail_profile(
     let changed = connection
         .execute(
             "UPDATE retrieval_index_profiles
-             SET status = 'failed', error_code = ?2, error_message = ?3, updated_at = ?4
+             SET status = 'failed', error_code = ?2, error_message = ?3, updated_at = ?4,
+                 execution_id = NULL, heartbeat_at = NULL, lease_expires_at = NULL
              WHERE id = ?1 AND status = 'building'",
             params![profile_id, error_code, error_message, now],
         )
@@ -806,6 +867,36 @@ mod tests {
         assert_eq!(ready_after_incomplete, "profile-old");
         assert!(delete_profile(&connection, "profile-failed").unwrap());
         assert!(!delete_profile(&connection, "profile-missing").unwrap());
+    }
+
+    #[test]
+    fn completing_profile_releases_execution_lease() {
+        let connection = fixture();
+        let provider = DeterministicEmbeddingProvider;
+        create_building_profile(&connection, &profile("profile-lease"), "100").unwrap();
+        connection
+            .execute(
+                "UPDATE retrieval_index_profiles
+                 SET execution_id = 'execution-1', heartbeat_at = '100',
+                     lease_expires_at = '200'
+                 WHERE id = 'profile-lease'",
+                [],
+            )
+            .unwrap();
+        embed_pending_batch(&connection, "profile-lease", &provider, 10, "101").unwrap();
+        complete_profile(&connection, "profile-lease", "102").unwrap();
+        let lease: (String, Option<String>, Option<String>, Option<String>) = connection
+            .query_row(
+                "SELECT status, execution_id, heartbeat_at, lease_expires_at
+                 FROM retrieval_index_profiles WHERE id = 'profile-lease'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(lease.0, "ready");
+        assert!(lease.1.is_none());
+        assert!(lease.2.is_none());
+        assert!(lease.3.is_none());
     }
 
     #[test]

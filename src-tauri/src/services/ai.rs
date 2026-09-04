@@ -6285,6 +6285,7 @@ pub(crate) async fn request_ai_json_with_schema_fallback(
     let mut first_invalid_json_error = None;
 
     for (index, response_format) in response_format_attempts.into_iter().enumerate() {
+        let attempted_with_response_format = response_format.is_some();
         let result = if let Some((response_format, response_format_kind)) = response_format {
             request_ai_json_with_response_format(
                 api_key,
@@ -6301,7 +6302,10 @@ pub(crate) async fn request_ai_json_with_schema_fallback(
 
         match result {
             Ok(value) => return Ok(value),
-            Err(error) if index + 1 < attempt_count && should_retry_json_format_attempt(&error) => {
+            Err(error)
+                if index + 1 < attempt_count
+                    && should_retry_json_format_attempt(&error, attempted_with_response_format) =>
+            {
                 if first_invalid_json_error.is_none() && is_invalid_json_output_error(&error) {
                     first_invalid_json_error = Some(error.clone());
                 }
@@ -6339,6 +6343,7 @@ async fn request_ai_json_stream_with_schema(
     let mut first_invalid_json_error = None;
 
     for (index, stream_response_format) in response_format_attempts.into_iter().enumerate() {
+        let attempted_with_response_format = stream_response_format.is_some();
         match request_ai_json_stream_once(
             api_key,
             provider,
@@ -6351,7 +6356,10 @@ async fn request_ai_json_stream_with_schema(
         .await
         {
             Ok(result) => return Ok(result),
-            Err(error) if index + 1 < attempt_count && should_retry_json_format_attempt(&error) => {
+            Err(error)
+                if index + 1 < attempt_count
+                    && should_retry_json_format_attempt(&error, attempted_with_response_format) =>
+            {
                 if first_invalid_json_error.is_none() && is_invalid_json_output_error(&error) {
                     first_invalid_json_error = Some(error.clone());
                 }
@@ -6407,8 +6415,21 @@ fn json_schema_response_format(schema_name: &str, schema: &Value) -> Value {
     })
 }
 
-fn should_retry_json_format_attempt(error: &AiServiceError) -> bool {
-    is_unsupported_response_format_error(error) || is_invalid_json_output_error(error)
+fn should_retry_json_format_attempt(
+    error: &AiServiceError,
+    attempted_with_response_format: bool,
+) -> bool {
+    is_unsupported_response_format_error(error)
+        || is_invalid_json_output_error(error)
+        || (attempted_with_response_format && is_response_format_gateway_error(error))
+}
+
+fn is_response_format_gateway_error(error: &AiServiceError) -> bool {
+    matches!(
+        error,
+        AiServiceError::ProviderNetwork(message)
+            if provider_network_http_status(message) == Some(StatusCode::BAD_GATEWAY.as_u16())
+    )
 }
 
 fn is_unsupported_response_format_error(error: &AiServiceError) -> bool {
@@ -7202,7 +7223,7 @@ fn reading_route_json_schema() -> Value {
     json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["routeOverview", "books", "dependencies", "reviewCheckpoints", "nextActions", "readingStage"],
+        "required": ["routeOverview", "books", "dependencies", "reviewCheckpoints", "nextActions", "readingStage", "feedbackOutcomeSummary"],
         "properties": {
             "routeOverview": { "type": "string" },
             "books": {
@@ -7211,16 +7232,16 @@ fn reading_route_json_schema() -> Value {
                 "items": {
                     "type": "object",
                     "additionalProperties": false,
-                    "required": ["bookId", "title", "order", "role", "readingPurpose", "estimatedEffort", "basis"],
+                    "required": ["bookId", "title", "author", "order", "role", "readingPurpose", "estimatedEffort", "localStatus", "basis"],
                     "properties": {
                         "bookId": { "type": "string" },
                         "title": { "type": "string" },
-                        "author": { "type": "string" },
+                        "author": { "type": ["string", "null"] },
                         "order": { "type": "integer" },
                         "role": { "type": "string" },
                         "readingPurpose": { "type": "string" },
                         "estimatedEffort": { "type": "string" },
-                        "localStatus": { "type": "string" },
+                        "localStatus": { "type": ["string", "null"] },
                         "basis": { "type": "string" }
                     }
                 }
@@ -7258,7 +7279,7 @@ fn reading_route_json_schema() -> Value {
             "readingStage": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["stage", "label", "progressPercent"],
+                "required": ["stage", "label", "progressPercent", "refreshReason"],
                 "properties": {
                     "stage": {
                         "type": "string",
@@ -7267,13 +7288,13 @@ fn reading_route_json_schema() -> Value {
                     "label": { "type": "string" },
                     "progressPercent": { "type": "integer" },
                     "refreshReason": {
-                        "type": "string",
-                        "enum": ["stage_changed", "notes_changed", "stalled", "completed"]
+                        "type": ["string", "null"],
+                        "enum": ["stage_changed", "notes_changed", "stalled", "completed", null]
                     }
                 }
             },
             "feedbackOutcomeSummary": {
-                "type": "object",
+                "type": ["object", "null"],
                 "additionalProperties": false,
                 "required": ["summary", "appliedChanges"],
                 "properties": {
@@ -7301,11 +7322,11 @@ fn book_decision_json_schema() -> Value {
                 "items": {
                     "type": "object",
                     "additionalProperties": false,
-                    "required": ["bookId", "title", "rank", "whyNow", "tradeoff", "estimatedEffort", "prerequisiteAction", "reviewTrigger", "basis"],
+                    "required": ["bookId", "title", "author", "rank", "whyNow", "tradeoff", "estimatedEffort", "prerequisiteAction", "reviewTrigger", "basis"],
                     "properties": {
                         "bookId": { "type": "string" },
                         "title": { "type": "string" },
-                        "author": { "type": "string" },
+                        "author": { "type": ["string", "null"] },
                         "rank": { "type": "integer" },
                         "whyNow": { "type": "string" },
                         "tradeoff": { "type": "string" },
@@ -7616,7 +7637,7 @@ fn safe_provider_decode_message(error: reqwest::Error) -> String {
 fn provider_network_user_message(message: &str) -> String {
     let trimmed = message.trim();
 
-    if let Some(status) = trimmed.strip_prefix("HTTP ") {
+    if let Some(status) = provider_network_http_status(trimmed) {
         return format!(
             "AI Provider 请求失败（HTTP {status}）。请检查 Base URL 是否为 OpenAI-compatible 地址、模型是否可用，或稍后重试。"
         );
@@ -7634,6 +7655,15 @@ fn provider_network_user_message(message: &str) -> String {
     };
 
     format!("AI Provider 无法连接（{reason}）。请检查 Base URL、网络代理、防火墙，或稍后重试。")
+}
+
+fn provider_network_http_status(message: &str) -> Option<u16> {
+    let status = message.trim().strip_prefix("HTTP ")?;
+    let end = status
+        .find(|character: char| !character.is_ascii_digit())
+        .unwrap_or(status.len());
+
+    status.get(..end)?.parse().ok()
 }
 
 #[derive(Debug, Clone)]
@@ -13317,7 +13347,7 @@ fn infer_reading_assistant_intent(
         return ReadingAssistantIntent::CandidateShelfDecision;
     }
 
-    if is_library_note_search_query(message) {
+    if is_library_note_search_query(scope, message) {
         return ReadingAssistantIntent::LibraryNoteSearchQuery;
     }
     if is_reading_assistant_book_catalog_query_intent(message) {
@@ -13528,11 +13558,14 @@ fn mentions_note_records(message: &str) -> bool {
     .any(|token| message.contains(token))
 }
 
-fn is_library_note_search_query(message: &str) -> bool {
+fn is_library_note_search_query(scope: &AssistantContextScope, message: &str) -> bool {
     let asks_search = ["找", "查", "搜索", "检索", "哪些", "关于", "有关"]
         .iter()
         .any(|token| message.contains(token));
-    let has_library_target = [
+    let asks_unscoped_search = ["找", "查", "搜索", "检索", "哪些", "哪几条"]
+        .iter()
+        .any(|token| message.contains(token));
+    let has_explicit_library_target = [
         "跨书",
         "全库",
         "所有书",
@@ -13544,8 +13577,16 @@ fn is_library_note_search_query(message: &str) -> bool {
     ]
     .iter()
     .any(|token| message.contains(token));
+    let has_explicit_book_target = extract_quoted_book_title(message).is_some();
+    let defaults_to_library_scope = matches!(
+        scope,
+        AssistantContextScope::Global | AssistantContextScope::ReadingStats
+    ) && !has_explicit_book_target
+        && asks_unscoped_search;
 
-    asks_search && has_library_target && mentions_note_records(message)
+    asks_search
+        && mentions_note_records(message)
+        && (has_explicit_library_target || defaults_to_library_scope)
 }
 
 fn is_note_search_query(scope: &AssistantContextScope, message: &str) -> bool {
@@ -19117,7 +19158,7 @@ mod tests {
 
     use rusqlite::Connection;
     use serde::Deserialize;
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     use crate::{
         db::initialize_schema,
@@ -19154,9 +19195,10 @@ mod tests {
         normalize_local_reader_selection_answer_output, normalize_provider_settings,
         normalize_reading_assistant_output, normalize_reading_route_output,
         normalize_reading_stats_review_output, normalize_summary_output, parse_provider_model_list,
-        provider_capability_probe_json_schema, provider_network_user_message, read_ai_asset_detail,
-        read_ai_asset_summaries, read_ai_asset_version_detail, read_ai_asset_version_history,
-        read_ai_output, read_ai_review_feedback, read_assistant_local_book_index,
+        provider_capability_probe_json_schema, provider_network_http_status,
+        provider_network_user_message, read_ai_asset_detail, read_ai_asset_summaries,
+        read_ai_asset_version_detail, read_ai_asset_version_history, read_ai_output,
+        read_ai_review_feedback, read_assistant_local_book_index,
         read_assistant_raw_book_notes_context, read_book_summary_export_items,
         read_book_summary_list, read_latest_ai_output, read_local_book_notes,
         read_preferred_book_notes_summary_output, read_provider_settings,
@@ -19172,12 +19214,12 @@ mod tests {
         resolve_book_summary_update_context, resolve_reading_assistant_search_keyword,
         resolve_reading_persona, response_format_attempts_for_policy, save_ai_review_feedback,
         select_balanced_raw_note_items, select_summary_candidates,
-        serialize_book_summary_export_index, stable_hash_json, streamed_json_string_field_prefix,
-        update_reading_assistant_message_input_hash, upsert_ai_output,
-        upsert_reading_assistant_thread, AiCachedOutputRecord, AiFeedbackExportRecord,
-        AiOutputUpsert, AiProviderCapabilityStatus, AiResponseFormatKind, AiResponseFormatPolicy,
-        AiReviewFeedbackExport, AiReviewFeedbackState, AiService, AiServiceError,
-        AssistantContextScope, BookAiSummarySource, BookAiSummarySourceStats,
+        serialize_book_summary_export_index, should_retry_json_format_attempt, stable_hash_json,
+        streamed_json_string_field_prefix, update_reading_assistant_message_input_hash,
+        upsert_ai_output, upsert_reading_assistant_thread, AiCachedOutputRecord,
+        AiFeedbackExportRecord, AiOutputUpsert, AiProviderCapabilityStatus, AiResponseFormatKind,
+        AiResponseFormatPolicy, AiReviewFeedbackExport, AiReviewFeedbackState, AiService,
+        AiServiceError, AssistantContextScope, BookAiSummarySource, BookAiSummarySourceStats,
         BookAiSummaryUpdateContext, BookDecision, BookDecisionActiveCategoryInput,
         BookDecisionCandidateInput, BookDecisionRecentReadingContextInput, BookDecisionSourceStats,
         BookDecisionTopCandidate, BookSummaryExportItem, BookSummaryUpdateContext,
@@ -21048,6 +21090,45 @@ mod tests {
 
     #[test]
     fn reading_assistant_intent_routes_note_counts_and_full_synthesis_without_conflicts() {
+        assert_eq!(
+            infer_reading_assistant_intent(
+                &AssistantContextScope::Global,
+                "关于我的笔记，下一步如何复盘？"
+            ),
+            ReadingAssistantIntent::General
+        );
+        assert_eq!(
+            infer_reading_assistant_intent(&AssistantContextScope::Global, "找出与宽恕有关的笔记"),
+            ReadingAssistantIntent::LibraryNoteSearchQuery
+        );
+        assert_eq!(
+            infer_reading_assistant_intent(
+                &AssistantContextScope::ReadingStats,
+                "找出与宽恕有关的笔记"
+            ),
+            ReadingAssistantIntent::LibraryNoteSearchQuery
+        );
+        assert_eq!(
+            infer_reading_assistant_intent(
+                &AssistantContextScope::ReadingStats,
+                "关于我的笔记，下一步如何复盘？"
+            ),
+            ReadingAssistantIntent::General
+        );
+        assert_eq!(
+            infer_reading_assistant_intent(
+                &AssistantContextScope::Global,
+                "找出《富爸爸穷爸爸》里与复利有关的笔记"
+            ),
+            ReadingAssistantIntent::NoteSearchQuery
+        );
+        assert_eq!(
+            infer_reading_assistant_intent(
+                &AssistantContextScope::ReadingStats,
+                "找出《富爸爸穷爸爸》里与复利有关的笔记"
+            ),
+            ReadingAssistantIntent::NoteSearchQuery
+        );
         assert_eq!(
             infer_reading_assistant_intent(
                 &AssistantContextScope::Global,
@@ -24680,6 +24761,72 @@ mod tests {
         );
     }
 
+    fn assert_strict_schema_required_fields(schema: &Value, path: &str) {
+        let Some(object) = schema.as_object() else {
+            return;
+        };
+
+        if let Some(properties) = object.get("properties").and_then(Value::as_object) {
+            let required = object
+                .get("required")
+                .and_then(Value::as_array)
+                .unwrap_or_else(|| panic!("{path} must declare required for properties"));
+            let required = required
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<HashSet<_>>();
+
+            for property_name in properties.keys() {
+                assert!(
+                    required.contains(property_name.as_str()),
+                    "{path} is missing required property {property_name}"
+                );
+                assert_strict_schema_required_fields(
+                    &properties[property_name],
+                    &format!("{path}.properties.{property_name}"),
+                );
+            }
+        }
+
+        if let Some(items) = object.get("items") {
+            assert_strict_schema_required_fields(items, &format!("{path}.items"));
+        }
+
+        for keyword in ["allOf", "anyOf", "oneOf"] {
+            if let Some(branches) = object.get(keyword).and_then(Value::as_array) {
+                for (index, branch) in branches.iter().enumerate() {
+                    assert_strict_schema_required_fields(
+                        branch,
+                        &format!("{path}.{keyword}[{index}]"),
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn strict_response_schemas_require_every_declared_property() {
+        let schemas = [
+            ("book_notes_summary", book_notes_summary_json_schema()),
+            ("reading_stats_review", reading_stats_review_json_schema()),
+            ("reading_route", reading_route_json_schema()),
+            ("book_decision", book_decision_json_schema()),
+            (
+                "local_reader_selection_question",
+                local_reader_selection_question_json_schema(),
+            ),
+            ("reading_assistant", reading_assistant_json_schema()),
+            (
+                "provider_capability_probe",
+                provider_capability_probe_json_schema(),
+            ),
+        ];
+
+        for (name, schema) in schemas {
+            assert_strict_schema_required_fields(&schema, name);
+        }
+    }
+
     #[test]
     fn reading_stats_review_json_schema_requires_core_sections() {
         let schema = reading_stats_review_json_schema();
@@ -24711,10 +24858,11 @@ mod tests {
         let schema = book_decision_json_schema();
 
         assert_eq!(schema["required"][0], "decisionOverview");
-        assert_eq!(
-            schema["properties"]["topCandidates"]["items"]["required"][5],
-            "estimatedEffort"
-        );
+        assert!(schema["properties"]["topCandidates"]["items"]["required"]
+            .as_array()
+            .expect("top candidate required should be an array")
+            .iter()
+            .any(|item| item == "estimatedEffort"));
         assert_eq!(
             schema["properties"]["deferredCandidates"]["items"]["required"][2],
             "reason"
@@ -24985,6 +25133,27 @@ mod tests {
             provider_network_user_message("HTTP 404"),
             "AI Provider 请求失败（HTTP 404）。请检查 Base URL 是否为 OpenAI-compatible 地址、模型是否可用，或稍后重试。"
         );
+        assert_eq!(
+            provider_network_user_message("HTTP 502：上游网关返回 Bad Gateway"),
+            "AI Provider 请求失败（HTTP 502）。请检查 Base URL 是否为 OpenAI-compatible 地址、模型是否可用，或稍后重试。"
+        );
+        assert_eq!(
+            provider_network_http_status("HTTP 502：上游网关返回 Bad Gateway"),
+            Some(502)
+        );
+    }
+
+    #[test]
+    fn response_format_bad_gateway_retries_only_for_formatted_attempt() {
+        let bad_gateway = AiServiceError::ProviderNetwork("HTTP 502".to_string());
+        let service_unavailable = AiServiceError::ProviderNetwork("HTTP 503".to_string());
+
+        assert!(should_retry_json_format_attempt(&bad_gateway, true));
+        assert!(!should_retry_json_format_attempt(&bad_gateway, false));
+        assert!(!should_retry_json_format_attempt(
+            &service_unavailable,
+            true
+        ));
     }
 
     #[test]

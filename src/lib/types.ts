@@ -140,6 +140,7 @@ export type EmbeddingIndexProfile = {
   createdAt: string;
   updatedAt: string;
   completedAt?: string;
+  workerActive: boolean;
 };
 
 export type EmbeddingIndexState = {
