@@ -1544,6 +1544,7 @@ export type SearchResult = {
   readingCount?: number;
   soldout?: boolean;
   searchIdx?: number;
+  readerLink?: string;
   deepLink?: string;
 };
 

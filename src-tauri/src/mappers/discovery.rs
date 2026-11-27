@@ -19,6 +19,7 @@ pub struct DiscoveryBookRecord {
     pub reading_count: Option<i64>,
     pub soldout: Option<bool>,
     pub search_idx: Option<i64>,
+    pub reader_link: Option<String>,
     pub deep_link: Option<String>,
     pub reason: Option<String>,
     #[serde(skip_serializing)]
@@ -421,6 +422,8 @@ fn map_discovery_book(value: &Value, wrapper: Option<&Value>) -> Option<Discover
         soldout: value.get("soldout").map(boolish_value),
         search_idx: non_negative_integer_field(wrapper, "searchIdx")
             .or_else(|| non_negative_integer_field(wrapper, "idx")),
+        reader_link: string_field(value, "readerLink")
+            .or_else(|| string_field(wrapper, "readerLink")),
         deep_link: string_field(value, "deepLink").or_else(|| string_field(wrapper, "deepLink")),
         reason: string_field(wrapper, "reason").or_else(|| string_field(value, "reason")),
         raw_json: wrapper.to_string(),
@@ -648,6 +651,52 @@ mod tests {
             record.results[0].deep_link,
             Some("weread://book/search-result".to_string())
         );
+    }
+
+    #[test]
+    fn discovery_mappers_preserve_reader_and_detail_links() {
+        for book in [
+            json!({
+                "bookId": "b1",
+                "readerLink": "weread://reader/b1",
+                "deepLink": "weread://book/b1"
+            }),
+            json!({
+                "bookInfo": {
+                    "bookId": "b1",
+                    "readerLink": "weread://reader/b1",
+                    "deepLink": "weread://book/b1"
+                }
+            }),
+            json!({
+                "readerLink": "weread://reader/b1",
+                "deepLink": "weread://book/b1",
+                "bookInfo": { "bookId": "b1" }
+            }),
+        ] {
+            let search = map_search_books_response(
+                10,
+                &json!({
+                    "results": [{ "books": [book.clone()] }]
+                }),
+            );
+            let recommendations = map_recommendations_response(&json!({
+                "books": [book.clone()]
+            }));
+            let similar = map_similar_books_response(&json!({
+                "booksimilar": { "books": [book] }
+            }));
+
+            for record in [
+                &search.results[0],
+                &recommendations.books[0],
+                &similar.books[0],
+            ] {
+                let serialized = serde_json::to_value(record).expect("book should serialize");
+                assert_eq!(serialized["readerLink"], "weread://reader/b1");
+                assert_eq!(serialized["deepLink"], "weread://book/b1");
+            }
+        }
     }
 
     #[test]

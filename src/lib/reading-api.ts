@@ -486,6 +486,7 @@ type DiscoveryBookRecord = {
   readingCount?: unknown;
   soldout?: unknown;
   searchIdx?: unknown;
+  readerLink?: unknown;
   deepLink?: unknown;
   reason?: unknown;
 };
@@ -5378,6 +5379,7 @@ function mapDiscoveryBook(record: DiscoveryBookRecord): Recommendation | undefin
         ? undefined
         : booleanValue(record.soldout),
     searchIdx: numberValue(record.searchIdx),
+    readerLink: stringValue(record.readerLink),
     deepLink: stringValue(record.deepLink),
     reason: stringValue(record.reason)
   };

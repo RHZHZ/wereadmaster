@@ -87,12 +87,13 @@ WxReadMaster 是一个本地优先的个人阅读管理工作台。它可以接�
 | 文档导出与本地备份 | 支持 Markdown、Obsidian、Notion；IMA 按预览边界 | 按移动端能力 | 不支持本地写操作 |
 | 应用更新 | 应用内更新或下载安装包 | 下载 APK 后按系统安装 | 不适用 |
 
-## v1.0.21 重点
+## v1.0.22 重点
 
-- 微信读书网关上报的 Skill 版本更新为 `1.0.5`，修复因服务端要求升级导致书架、发现、笔记和统计同步全部失败的问题。
-- 运行时请求与仓库内两份微信读书能力文档保持同一版本，避免文档和真实请求再次漂移。
+- 微信读书网关上报的 Skill 版本更新为 `1.0.6`，并同步两份能力文档和调用示例。
+- 升级通知不再中断正常同步，也不会触发当次请求重试；认证、网络和业务错误仍按原有方式处理。
+- 搜索、个性化推荐和相似书结果保留 `readerLink` 阅读器链接，同时保留 `deepLink` 详情链接。
 
-完整变化见 [v1.0.21 Release Notes](docs/release-notes-v1.0.21.json)。
+完整变化见 [v1.0.22 Release Notes](docs/release-notes-v1.0.22.json)。
 
 > IMA 导出已提供新版本入口和用户教程，但真实服务、权限、版本兼容和 Android 全链路仍需按发布门禁完成验收；在验收收敛前，请将 IMA 视为预览能力，不作为无条件稳定发布承诺。
 
@@ -158,7 +159,7 @@ cargo test --lib
 ## 文档入口
 
 - [用户指南](docs/user-guide.md)：按任务查找安装、同步、阅读、成果、导出、备份和排障步骤。
-- [v1.0.21 Release Notes](docs/release-notes-v1.0.21.json)：版本变化、隐私和兼容边界。
+- [v1.0.22 Release Notes](docs/release-notes-v1.0.22.json)：版本变化、隐私和兼容边界。
 - [产品术语表](docs/GLOSSARY.md)：现行页面文案和产品命名。
 - [GitHub Releases 更新说明](docs/github-release-updates.md)：应用更新说明。
 - [docs 目录](docs/)：设计、验收和维护资料。

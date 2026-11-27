@@ -1693,7 +1693,7 @@ describe("settings export directory API", () => {
     });
   });
 
-  test("search results preserve API deep links when present", async () => {
+  test("search results preserve API reader and detail links when present", async () => {
     invokeMock.mockResolvedValue({
       result: {
         scope: 10,
@@ -1704,7 +1704,8 @@ describe("settings export directory API", () => {
               {
                 bookId: "b1",
                 title: "书名",
-                deepLink: "weread://book/search-result"
+                deepLink: "weread://book/search-result",
+                readerLink: "weread://reader/search-result"
               }
             ]
           }
@@ -1716,6 +1717,8 @@ describe("settings export directory API", () => {
 
     expect(response.result.results[0]?.deepLink).toBe("weread://book/search-result");
     expect(response.result.groups[0]?.books[0]?.deepLink).toBe("weread://book/search-result");
+    expect(response.result.results[0]).toMatchObject({ readerLink: "weread://reader/search-result" });
+    expect(response.result.groups[0]?.books[0]).toMatchObject({ readerLink: "weread://reader/search-result" });
   });
 
   test("maps public reviews without exposing html content", async () => {

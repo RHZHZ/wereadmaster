@@ -6,7 +6,7 @@ use tauri::AppHandle;
 
 use crate::{
     config::{WEREAD_GATEWAY_URL, WEREAD_SKILL_VERSION},
-    errors::{AppError, UpgradeInfo},
+    errors::AppError,
     services::credentials::CredentialService,
 };
 
@@ -215,10 +215,6 @@ fn flatten_params(params: Value) -> Result<Map<String, Value>, AppError> {
 }
 
 fn normalize_gateway_response(status: StatusCode, value: Value) -> Result<Value, AppError> {
-    if let Some(info) = extract_upgrade_info(&value) {
-        return Err(AppError::UpgradeRequired(info));
-    }
-
     if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
         return Err(AppError::Authentication(
             "微信读书 API Key 无效或已失效，请在设置中更新。".to_string(),
@@ -246,18 +242,8 @@ fn normalize_gateway_response(status: StatusCode, value: Value) -> Result<Value,
         }
     }
 
+    // upgrade_info is advisory; preserve this response without retrying the request.
     Ok(value)
-}
-
-fn extract_upgrade_info(value: &Value) -> Option<UpgradeInfo> {
-    let info = value.get("upgrade_info")?;
-    let message = info
-        .get("message")
-        .and_then(Value::as_str)
-        .unwrap_or("微信读书能力需要升级后才能继续同步。")
-        .to_string();
-
-    Some(UpgradeInfo { message })
 }
 
 fn looks_like_auth_error(errcode: i64, message: &str) -> bool {
@@ -276,10 +262,7 @@ mod tests {
     use serde_json::json;
 
     use super::{normalize_gateway_response, normalize_weread_proxy_url, WereadApi, WereadGateway};
-    use crate::{
-        config::WEREAD_SKILL_VERSION,
-        errors::{AppError, UpgradeInfo},
-    };
+    use crate::config::WEREAD_SKILL_VERSION;
 
     #[test]
     fn build_payload_flattens_business_fields_at_top_level() {
@@ -355,17 +338,73 @@ mod tests {
     }
 
     #[test]
-    fn normalize_response_stops_on_upgrade_info() {
-        let error = normalize_gateway_response(
-            StatusCode::OK,
-            json!({ "upgrade_info": { "message": "请升级能力文档" } }),
-        )
-        .expect_err("upgrade info should stop flow");
+    fn normalize_response_preserves_business_data_with_upgrade_notice() {
+        for business_data in [
+            json!({ "books": [{ "bookId": "b1", "title": "三体" }] }),
+            json!({ "results": [] }),
+            json!({ "bookmarks": [] }),
+            json!({ "readTime": 3600 }),
+        ] {
+            let mut response = business_data;
+            response["errcode"] = json!(0);
+            response["upgrade_info"] = json!({
+                "latest_version": "1.0.6",
+                "message": "本次请求已正常处理，不要因升级提示重试本次请求"
+            });
 
-        assert!(matches!(
-            error,
-            AppError::UpgradeRequired(UpgradeInfo { message }) if message == "请升级能力文档"
-        ));
+            let result = normalize_gateway_response(StatusCode::OK, response.clone())
+                .expect("upgrade notice must not discard a successful response");
+
+            assert_eq!(result, response);
+        }
+    }
+
+    #[test]
+    fn normalize_response_accepts_upgrade_notice_without_errcode() {
+        let response = json!({
+            "books": [],
+            "upgrade_info": { "message": "后续可升级" }
+        });
+
+        let result = normalize_gateway_response(StatusCode::OK, response.clone())
+            .expect("successful response does not require errcode");
+
+        assert_eq!(result, response);
+    }
+
+    #[test]
+    fn normalize_response_does_not_mask_errors_with_upgrade_notice() {
+        for (status, business_error, expected_code) in [
+            (
+                StatusCode::UNAUTHORIZED,
+                json!({}),
+                "gateway_authentication_failed",
+            ),
+            (
+                StatusCode::FORBIDDEN,
+                json!({}),
+                "gateway_authentication_failed",
+            ),
+            (StatusCode::BAD_GATEWAY, json!({}), "gateway_network_error"),
+            (
+                StatusCode::OK,
+                json!({ "errcode": 1001, "errmsg": "请求失败" }),
+                "gateway_error",
+            ),
+            (
+                StatusCode::OK,
+                json!({ "errcode": 401, "errmsg": "认证失败" }),
+                "gateway_authentication_failed",
+            ),
+        ] {
+            let mut response = business_error;
+            response["upgrade_info"] = json!({ "message": "后续可升级" });
+
+            let error = normalize_gateway_response(status, response)
+                .expect_err("upgrade notice must not hide an actual failure");
+
+            assert_eq!(error.code(), expected_code);
+        }
     }
 
     #[test]

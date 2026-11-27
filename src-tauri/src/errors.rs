@@ -1,19 +1,10 @@
-use serde::Serialize;
-
 use crate::services::credentials::CredentialServiceError;
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct UpgradeInfo {
-    pub message: String,
-}
 
 #[derive(Debug)]
 pub enum AppError {
     Credential(CredentialServiceError),
     UnsupportedApi(String),
     InvalidPayload(String),
-    UpgradeRequired(UpgradeInfo),
     Authentication(String),
     Gateway(String),
     Network(String),
@@ -27,7 +18,6 @@ impl AppError {
             Self::Credential(error) => error.code(),
             Self::UnsupportedApi(_) => "unsupported_api",
             Self::InvalidPayload(_) => "invalid_gateway_payload",
-            Self::UpgradeRequired(_) => "upgrade_required",
             Self::Authentication(_) => "gateway_authentication_failed",
             Self::Gateway(_) => "gateway_error",
             Self::Network(_) => "gateway_network_error",
@@ -41,7 +31,6 @@ impl AppError {
             Self::Credential(error) => error.user_message(),
             Self::UnsupportedApi(api_name) => format!("暂不支持调用接口：{api_name}。"),
             Self::InvalidPayload(message) => message.clone(),
-            Self::UpgradeRequired(info) => info.message.clone(),
             Self::Authentication(message) => message.clone(),
             Self::Gateway(message) => message.clone(),
             Self::Network(message) if is_notion_network_detail(message) => {
