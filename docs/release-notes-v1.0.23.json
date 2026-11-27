@@ -1,0 +1,11 @@
+{
+  "version": "v1.0.23",
+  "date": "2026-11-27",
+  "title": "修复 Windows 更新后启动闪退",
+  "summary": "修复部分 Windows 用户更新后启动数秒即闪退的问题，并固定 Windows 发布构建使用已验证的 Rust 工具链版本。",
+  "highlights": [
+    "Windows 发布构建固定使用 Rust 1.99.1，避免新版 Rust 工具链与当前依赖组合引入不兼容的系统导入。",
+    "维持微信读书 Skill 1.0.6 适配，升级通知仍不会中断当前同步请求。"
+  ],
+  "releaseNotesMarkdown": "## 本次更新\n\n### 修复 Windows 启动闪退\n\n- 修复部分用户安装更新后，应用启动数秒即闪退的问题。\n- Windows 发布构建固定使用经过验证的 Rust `1.99.1` 工具链，避免新版工具链与当前依赖组合引入不兼容的系统导入。\n\n### 微信读书同步兼容性\n\n- 延续微信读书 Skill `1.0.6` 适配。\n- 服务端返回升级通知时，继续使用同一回包完成当前用户请求，不暂停或重试当次同步。\n\n## 升级说明\n\n- Windows x64：通过“设置 > 应用更新”检查更新，或下载 `weread_1.0.23_x64-setup.exe` 安装。\n- Android：从同一 GitHub Release 下载签名 APK，覆盖安装；Android 不使用桌面 Tauri updater。\n- Windows 修复通过应用版本 `v1.0.23` 分发；若应用无法启动，请从 GitHub Release 手动下载安装。\n- 本版本不改变本地书架、笔记和统计的数据结构。\n\n## 兼容范围\n\n- Windows 适用于 Windows 10 / 11 x64。\n- Android 版本包含一致的应用版本号与当前主线功能；Windows Rust 工具链调整仅影响 Windows 桌面构建。"
+}

@@ -36,7 +36,7 @@ jobs:
           cache: npm
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.99.1
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
